@@ -1,0 +1,24 @@
+[package]
+name = "synra-net"
+description = "Transport: discovery, connections, heartbeats and reconnection"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+synra-protocol = { path = "../synra-protocol" }
+synra-observe = { path = "../synra-observe" }
+
+serde.workspace = true
+thiserror.workspace = true
+parking_lot.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+rstest.workspace = true
+
+[lints]
+workspace = true
