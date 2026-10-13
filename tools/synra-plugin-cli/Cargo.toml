@@ -1,0 +1,24 @@
+[package]
+name = "synra-plugin-cli"
+description = "The plugin author's tool: scaffold, build, verify, sign and publish"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+synra-protocol = { path = "../../crates/synra-protocol" }
+synra-plugin-api = { path = "../../crates/synra-plugin-api" }
+
+clap = { workspace = true }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+rstest.workspace = true
+
+[lints]
+workspace = true

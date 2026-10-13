@@ -15,6 +15,7 @@ members = [
   "crates/synra-store",
   "crates/synra-protocol",
   "apps/synra-cli",
+  "tools/synra-plugin-cli",
   "apps/synra-daemon",
 ]
 
