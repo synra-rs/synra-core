@@ -188,7 +188,8 @@ pub enum CapabilityError {
 ///
 /// Whether a value is exact or a pattern is asked with [`Self::is_exact`]; a pattern is asked whether
 /// it covers a concrete capability with [`Self::matches`]. Nothing else branches on which it is.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "String", into = "String")]
 pub struct Capability {
     /// The whole string, so it can be handed back without rebuilding it.
     text: CompactString,
@@ -494,6 +495,17 @@ impl core::str::FromStr for Capability {
 
     fn from_str(text: &str) -> Result<Self, Self::Err> {
         Self::parse(text)
+    }
+}
+
+/// Serialises as the capability string, and deserialises through the parser.
+///
+/// Validation on the way in is what makes this safe: a capability reconstructed from a database or a
+/// configuration file is checked by the same grammar as one written in a manifest, so a stored grant cannot
+/// become a value the matcher was never designed for.
+impl From<Capability> for String {
+    fn from(value: Capability) -> Self {
+        value.text.into_string()
     }
 }
 

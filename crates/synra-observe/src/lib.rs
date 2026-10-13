@@ -37,12 +37,14 @@
     )
 )]
 
+pub mod audit;
 pub mod crash;
 pub mod logging;
 pub mod metrics;
 pub mod redact;
 pub mod trace;
 
+pub use audit::{AuditEntry, AuditOutcome, AuditRing, PluginActivity, Retention};
 pub use crash::{CrashReport, CrashStore, StartupVerdict};
 pub use logging::{LogLevel, RedactingWriter, Verbosity};
 pub use metrics::{CardinalityGuard, HistogramSnapshot, MetricsSnapshot, RingRecorder, SeriesKey};
