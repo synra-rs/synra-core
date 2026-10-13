@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
   "crates/synra-capability",
+  "crates/synra-observe",
   "crates/synra-protocol",
 ]
 
@@ -32,6 +33,14 @@ time = { version = "0.3", features = ["serde", "formatting", "parsing"] }
 
 # ── 外部：错误 ──
 thiserror = "2"
+
+# ── 外部：可观测性 ──
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "registry"] }
+metrics = "0.24"
+
+# ── 外部：并发原语 ──
+parking_lot = "0.12"
 
 # ── 外部：测试 ──
 proptest = "1"
