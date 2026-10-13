@@ -11,6 +11,7 @@ authors.workspace = true
 [dependencies]
 synra-protocol = { path = "../../crates/synra-protocol" }
 synra-plugin-api = { path = "../../crates/synra-plugin-api" }
+synra-plugin-host = { path = "../../crates/synra-plugin-host" }
 
 clap = { workspace = true }
 serde.workspace = true

@@ -45,10 +45,16 @@
     )
 )]
 
+pub mod host_surface;
 pub mod lifecycle;
 pub mod pool;
 pub mod quota;
 
+pub use host_surface::{
+    HostGate, CAPABILITIES, EXPORTED_INTERFACES, HOST_FUNCTIONS, HOST_INTERFACE, PACKAGE, PACKAGE_VERSION,
+    gate, gated, is_declared_capability, permits, provided, provides, required_capabilities, undeclared_imports,
+    ungated,
+};
 pub use lifecycle::{
     Lifecycle, State, StopRecord, Transition, TransitionError, UNSTABLE_THRESHOLD,
 };

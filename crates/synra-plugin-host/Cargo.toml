@@ -19,9 +19,15 @@ serde_json.workspace = true
 thiserror.workspace = true
 parking_lot.workspace = true
 
+[build-dependencies]
+# The generator, as a library. The table is regenerated before every build, so a contract change that is not
+# reflected in it cannot produce a binary — see `build.rs`.
+wit-codegen = { path = "../../tools/wit-codegen" }
+
 [dev-dependencies]
 proptest.workspace = true
 rstest.workspace = true
 
+# The build script is where the table is regenerated, and its only way to fail is a panic — see `build.rs`.
 [lints]
 workspace = true

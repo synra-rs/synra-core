@@ -1,10 +1,10 @@
 synra:plugin@1.0.0
 world plugin
-import host (36 function(s))
+import host (35 function(s))
 export lifecycle (4 function(s))
 export share (2 function(s))
 export actions (1 function(s))
-29 gated function(s), 7 ungated, 25 distinct capabilit(ies)
+28 gated function(s), 7 ungated, 24 distinct capabilit(ies)
 
 ungated:
   env-sdk-version: reads a fact about the environment
@@ -34,7 +34,6 @@ gated:
   platform-reveal-path: platform:reveal-path
   platform-simulate-keys: platform:simulate-keys
   platform-write-clipboard: platform:write-clipboard
-  plugin-clear-data: plugin:data:clear
   secret-delete: storage:secure:write
   secret-get: storage:secure:read
   secret-set: storage:secure:write
@@ -67,7 +66,6 @@ capabilities:
   platform:reveal-path
   platform:simulate-keys
   platform:write-clipboard
-  plugin:data:clear
   storage:local:read
   storage:local:write
   storage:secure:read

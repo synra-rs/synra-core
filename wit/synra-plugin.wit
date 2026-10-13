@@ -278,17 +278,20 @@ interface host {
     /// @capability("action:list")
     action-list: func() -> string;
 
-    // ── plugin:* ────────────────────────────────────────────────────────────────────────────────────
+    // ── The plugin's own identity ───────────────────────────────────────────────────────────────────
     //
-    // The plugin's own lifecycle and its own data, which are the two things it may always ask about.
+    // One function, ungated, and deliberately the only thing about the plugin itself the host answers. Its *data* is
+    // reached through `storage:*`, which is a domain the capability system has and whose grants a user already
+    // understands — a `plugin:data:clear` capability would be a second way to reach the same storage, gated by a name
+    // that had to be invented for it.
 
     /// The plugin's own id.
+    ///
+    /// Ungated because it is the identity the kernel already used to load the component: a plugin asking who it is has
+    /// told the host nothing it did not know, and a gate would mean a plugin had to request a capability to label its
+    /// own log lines.
     /// @ungated
     plugin-id: func() -> string;
-
-    /// Delete the plugin's own data.
-    /// @capability("plugin:data:clear")
-    plugin-clear-data: func() -> outcome;
 }
 
 /// What a plugin must implement.
