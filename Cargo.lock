@@ -741,6 +741,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "synra-core"
+version = "0.1.0"
+dependencies = [
+ "parking_lot",
+ "proptest",
+ "rstest",
+ "serde",
+ "serde_json",
+ "synra-capability",
+ "synra-net",
+ "synra-observe",
+ "synra-platform",
+ "synra-plugin-api",
+ "synra-plugin-host",
+ "synra-protocol",
+ "synra-store",
+ "thiserror",
+]
+
+[[package]]
 name = "synra-net"
 version = "0.1.0"
 dependencies = [

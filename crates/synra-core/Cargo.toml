@@ -1,0 +1,31 @@
+[package]
+name = "synra-core"
+description = "The kernel: domain model, aggregates, state machines and orchestration"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+synra-protocol = { path = "../synra-protocol" }
+synra-capability = { path = "../synra-capability" }
+synra-plugin-api = { path = "../synra-plugin-api" }
+synra-plugin-host = { path = "../synra-plugin-host" }
+synra-net = { path = "../synra-net" }
+synra-store = { path = "../synra-store" }
+synra-platform = { path = "../synra-platform" }
+synra-observe = { path = "../synra-observe" }
+
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+parking_lot.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+rstest.workspace = true
+
+[lints]
+workspace = true

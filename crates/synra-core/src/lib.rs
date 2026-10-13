@@ -1,0 +1,49 @@
+//! The kernel: the domain model, the aggregates, and the orchestration that ties the other crates together.
+//!
+//! # The one crate that knows everything
+//!
+//! Every other crate in the workspace has a narrow dependency: the protocol knows nothing of storage, the storage
+//! knows nothing of plugins, the plugin host knows nothing of the network. This one depends on all of them, and the
+//! reason is that a decision about a cross-device action is genuinely a decision about all of them at once — is the
+//! sender paired, is the plugin active, has the user granted this, can this machine do it, and has this exact request
+//! already been answered.
+//!
+//! That is why the checks live here rather than in the plugin host. The host knows whether a capability gate opens; it
+//! does not know whether the caller is a device the user paired, and putting the sequence in the host would mean the
+//! host knowing about pairing.
+//!
+//! # What is here so far
+//!
+//! * [`admission`] — the eight checks an intent passes before anything runs, in the order the design document gives,
+//!   with a property that an admission never leaves a requirement ungranted.
+//! * [`routing`] — the event registry: names numbered once, routes resolved by table lookup, with a bounded cache for
+//!   names that arrive from a peer.
+//!
+//! # What is deliberately not here
+//!
+//! No runtime, no sockets, no database handles. The kernel's pieces are pure decisions over values a caller supplies,
+//! so the tests need neither a network nor a disk — and the parts that get the answers wrong are the decisions, not the
+//! plumbing.
+
+#![forbid(unsafe_code)]
+#![warn(missing_docs)]
+
+// Test code is exempt from the no-panic rules; see `synra-protocol` for the reasoning.
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::indexing_slicing,
+        clippy::needless_pass_by_value,
+    )
+)]
+
+pub mod admission;
+pub mod routing;
+
+pub use admission::{
+    AdmissionContext, AdmissionRefusal, AdmissionStep, PluginKey, admit, check, host_requirement,
+};
+pub use routing::{EventId, EventRegistry, RouteOutcome, RouterError};
