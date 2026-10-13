@@ -8,6 +8,7 @@ members = [
   "crates/synra-plugin-api",
   "crates/synra-net",
   "crates/synra-plugin-host",
+  "crates/synra-plugin-ui",
   "crates/synra-platform",
   "crates/synra-testkit",
   "crates/synra-testkit-alloc",
