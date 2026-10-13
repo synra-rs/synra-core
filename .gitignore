@@ -1,0 +1,21 @@
+# 编辑器 / 系统
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+*.swp
+*~
+
+# 依赖与构建产物
+node_modules/
+dist/
+target/
+.vitepress/cache/
+.vitepress/.temp/
+
+# 日志
+*.log
+npm-debug.log*
+pnpm-debug.log*

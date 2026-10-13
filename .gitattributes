@@ -1,0 +1,21 @@
+# 行尾与编码：跨平台一致，避免"只有行尾变了"的巨型 diff
+* text=auto eol=lf
+
+*.md text eol=lf
+*.rs text eol=lf
+*.toml text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.ts text eol=lf
+*.vue text eol=lf
+*.wit text eol=lf
+
+*.png binary
+*.jpg binary
+*.webp binary
+*.ico binary
+*.svg text eol=lf
+
+*.rs linguist-language=Rust
+*.wit linguist-language=WebAssembly
