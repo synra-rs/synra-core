@@ -1,0 +1,25 @@
+[package]
+name = "synra-ipc"
+description = "The contract between the host shell and its interface: commands, events and errors"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+synra-protocol = { path = "../synra-protocol" }
+synra-capability = { path = "../synra-capability" }
+synra-observe = { path = "../synra-observe" }
+
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+rstest.workspace = true
+
+[lints]
+workspace = true

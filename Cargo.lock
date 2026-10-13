@@ -761,6 +761,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "synra-ipc"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "rstest",
+ "serde",
+ "serde_json",
+ "synra-capability",
+ "synra-observe",
+ "synra-protocol",
+ "thiserror",
+]
+
+[[package]]
 name = "synra-net"
 version = "0.1.0"
 dependencies = [
