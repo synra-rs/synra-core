@@ -62,6 +62,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "api-guard"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1072,6 +1079,7 @@ dependencies = [
 name = "synra-core"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "parking_lot",
  "proptest",
  "rstest",
@@ -1085,6 +1093,7 @@ dependencies = [
  "synra-plugin-host",
  "synra-protocol",
  "synra-store",
+ "synra-testkit-alloc",
  "thiserror",
 ]
 

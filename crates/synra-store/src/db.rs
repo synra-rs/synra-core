@@ -248,6 +248,7 @@ pub const PRAGMAS: &[(&str, &str)] = &[
 
 /// Which version a database is at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SchemaState {
     /// A fresh database. Nothing has been applied.
     Empty,
@@ -457,6 +458,7 @@ pub const VERSION_TABLE: &str = "CREATE TABLE IF NOT EXISTS __rusqlite_migration
 
 /// How healthy the database is.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Health {
     /// The integrity check passed.
     Sound,

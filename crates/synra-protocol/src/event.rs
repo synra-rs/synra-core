@@ -486,6 +486,7 @@ pub const NO_AUTO_ACK: &[&str] = &[
 
 /// Whether a message waits for an acknowledgement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AckPolicy {
     /// Do not wait. For heartbeats, and for progress that is worthless once superseded.
     FireAndForget,

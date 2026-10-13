@@ -36,6 +36,7 @@ use synra_capability::CapabilitySet;
 
 /// What the host checks before a function runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum HostGate {
     /// Nothing: the call reads a fact about the environment.
     Ungated,

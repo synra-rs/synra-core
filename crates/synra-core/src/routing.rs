@@ -131,6 +131,7 @@ struct Subscription {
 
 /// What routing an event produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RouteOutcome {
     /// The event went to these plugins, in the order they were registered.
     Routed(Vec<PluginKey>),

@@ -202,6 +202,7 @@ impl fmt::Display for ErrorCode {
 /// messages: a transient reset during reconnect should say nothing at all, while a heartbeat
 /// timeout means the device is showing as offline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
 pub enum UserVisibility {
     /// Do not surface it. Transient network noise and local shutdowns.
     Silent,

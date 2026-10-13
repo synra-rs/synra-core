@@ -818,7 +818,19 @@ pub struct QuotaReport {
     /// The quota in force.
     pub quota: Quota,
     /// Refusals by kind, for a caller showing where the pressure is.
-    pub refusals_by_kind: std::collections::BTreeMap<String, u64>,
+    /// Refusals by kind, in the order the kinds are declared.
+    ///
+    /// # Why a slice and not a map
+    ///
+    /// This is part of a stable crate's public signature, and a public map is a promise about the implementation:
+    /// replacing it would be a breaking change, and that replacement is exactly what a determinism problem calls for.
+    /// The report is a *list* of at most five counters that a caller shows in a row, so a sequence says the same thing
+    /// and promises less — and the order is the declared one rather than whatever a hash happened to produce, which is
+    /// what a test comparing two reports wants.
+    ///
+    /// The kind is a string rather than a [`RateKind`] because this is a report a caller displays and logs, and a
+    /// stable crate's report does not make a consumer depend on an internal enum's spelling.
+    pub refusals_by_kind: Vec<(String, u64)>,
 }
 
 #[cfg(test)]
@@ -1289,7 +1301,14 @@ mod tests {
         assert_eq!(report.admitted, 1);
         assert_eq!(report.refused, 1);
         assert!(!report.explanation.is_empty());
-        assert_eq!(report.refusals_by_kind.get("host-calls"), Some(&1));
+        assert_eq!(
+            report
+                .refusals_by_kind
+                .iter()
+                .find(|(kind, _)| kind == "host-calls")
+                .map(|(_, count)| *count),
+            Some(1)
+        );
         assert_eq!(report.quota, refusal_quota());
     }
 

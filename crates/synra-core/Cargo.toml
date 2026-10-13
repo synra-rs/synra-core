@@ -26,6 +26,12 @@ parking_lot.workspace = true
 [dev-dependencies]
 proptest.workspace = true
 rstest.workspace = true
+# The hot-path assertions reach across the workspace — a frame decoder, a capability match, the gate, the router — so
+# they live in the crate that already depends on all of them rather than in a crate that would have to gain four
+# dependencies to host one test file.
+synra-plugin-host = { path = "../synra-plugin-host" }
+synra-testkit-alloc = { path = "../synra-testkit-alloc" }
+bytes.workspace = true
 
 [lints]
 workspace = true

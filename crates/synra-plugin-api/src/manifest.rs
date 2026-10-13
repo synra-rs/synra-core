@@ -35,9 +35,9 @@
 //!   filesystem and the Wasm module, so they arrive as [`ManifestContext`] and [`Implementation`].
 //! * It does not compile capabilities. [`synra_capability`] does that; this calls it.
 
-use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 use synra_capability::{Capability, CapabilityError, Domain};
 use synra_protocol::PluginId;
@@ -371,7 +371,17 @@ pub struct ManifestContext {
     ///
     /// `None` skips the existence check, which is what the schema-level validation wants: a manifest can be
     /// checked for self-consistency before anything has been unpacked.
-    pub present_artifacts: Option<HashSet<String>>,
+    ///
+    /// # Why a slice and not a set
+    ///
+    /// This field is part of a stable crate's public signature, and a public `HashSet` is a promise about the
+    /// implementation: replacing it with a `BTreeSet` would be a breaking change, and that replacement is exactly what
+    /// a determinism problem calls for. The check it feeds is a membership test over a handful of paths, so the
+    /// container's choice buys nothing and costs a promise.
+    ///
+    /// A slice also takes what a caller has: a package's file list comes from walking a directory, and a `Vec` is what
+    /// that produces.
+    pub present_artifacts: Option<Vec<String>>,
     /// Which entry points the implementation provides.
     pub implementation: Option<Implementation>,
 }
@@ -382,6 +392,7 @@ pub struct ManifestContext {
 /// disk and the module parsed; the CLI has the source tree. A check that needs something neither has is not
 /// in either level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[non_exhaustive]
 pub enum ValidationLevel {
     /// What the manifest alone can be held to: schema, names, namespaces, capability syntax, runtime shape.
     ///
@@ -951,7 +962,7 @@ impl Manifest {
 
         if let Some(present) = &context.present_artifacts {
             let check = |kind: &'static str, path: &str| {
-                if present.contains(path) {
+                if present.iter().any(|artifact| artifact == path) {
                     Ok(())
                 }
                 else {
@@ -1595,7 +1606,7 @@ mod tests {
     #[test]
     fn a_missing_artifact_is_reported_when_the_package_is_known() {
         let context = ManifestContext {
-            present_artifacts: Some(HashSet::from(["dist/other.wasm".to_owned()])),
+            present_artifacts: Some(vec!["dist/other.wasm".to_owned()]),
             ..ManifestContext::default()
         };
         match minimal().validate(ValidationLevel::Schema, &context) {
@@ -1610,7 +1621,7 @@ mod tests {
     #[test]
     fn a_present_artifact_passes_that_check() {
         let context = ManifestContext {
-            present_artifacts: Some(HashSet::from(["dist/plugin.wasm".to_owned()])),
+            present_artifacts: Some(vec!["dist/plugin.wasm".to_owned()]),
             ..ManifestContext::default()
         };
         assert_eq!(minimal().validate(ValidationLevel::Schema, &context), Ok(()));
@@ -2503,10 +2514,10 @@ mod tests {
         let context = ManifestContext {
             host_sdk: Some("1.0.0".to_owned()),
             host_wit: Some("synra:plugin@1.0.0".to_owned()),
-            present_artifacts: Some(HashSet::from([
+            present_artifacts: Some(vec![
                 "dist/plugin.wasm".to_owned(),
                 "dist/ui.zip".to_owned(),
-            ])),
+            ]),
             implementation: Some(Implementation { on_event: true, execute: true, activate: true }),
         };
         assert_eq!(manifest.validate(ValidationLevel::Verify, &context), Ok(()));
@@ -2605,7 +2616,7 @@ mod proptests {
             let context = ManifestContext {
                 host_sdk: Some("1.0.0".to_owned()),
                 host_wit: None,
-                present_artifacts: has_artifacts.then(HashSet::new),
+                present_artifacts: has_artifacts.then(Vec::new),
                 implementation: has_implementation.then(Implementation::default),
             };
             let _ = manifest.validate(ValidationLevel::Schema, &context);

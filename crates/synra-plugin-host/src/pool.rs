@@ -31,6 +31,7 @@ use serde::{Deserialize, Serialize};
 /// Whether a plugin's instances are interchangeable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+#[non_exhaustive]
 pub enum InstancePolicy {
     /// Memory does not persist between calls, so any instance will do.
     Stateless,

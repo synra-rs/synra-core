@@ -1,0 +1,17 @@
+[package]
+name = "api-guard"
+description = "Checks the stable crates' public signatures against the rules STABILITY.md promises"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+
+[dev-dependencies]
+
+[lints]
+workspace = true
