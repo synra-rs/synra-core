@@ -44,7 +44,8 @@ pub const DEFAULT_MAX_SERIES_PER_METRIC: usize = 1_000;
 pub const OVERFLOW_LABEL: &str = "overflow";
 
 /// A metric's identity: a name and its label pairs.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SeriesKey {
     /// The metric name.
     pub name: String,
@@ -165,7 +166,8 @@ impl Histogram {
 }
 
 /// A histogram's values, for an export or a graph.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct HistogramSnapshot {
     /// The upper bounds, ascending.
     pub bounds: Vec<f64>,
@@ -454,7 +456,8 @@ impl RingRecorder {
 }
 
 /// One series' value.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", tag = "kind", content = "value")]
 pub enum Value {
     /// A monotonically increasing total.
     Counter(u64),
@@ -465,7 +468,8 @@ pub enum Value {
 }
 
 /// One series in a snapshot.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SeriesValue {
     /// The metric and its labels.
     pub key: SeriesKey,
@@ -474,7 +478,8 @@ pub struct SeriesValue {
 }
 
 /// A whole recorder's state.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MetricsSnapshot {
     /// Every series, sorted by rendered key.
     pub values: Vec<SeriesValue>,

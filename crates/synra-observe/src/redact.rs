@@ -547,8 +547,10 @@ mod proptests {
         ) {
             let redacted = Redactor::new().value(field, &value);
             prop_assert_eq!(redacted.text.as_str(), REDACTED);
-            // A non-empty value must not appear.
-            if !value.is_empty() {
+            // The value must not be *recoverable* from the output. Asserting that the output does not contain the
+            // value as a substring is the wrong check: a value of `<` occurs inside the marker itself, which
+            // says nothing about whether the value was withheld.
+            if !value.is_empty() && !REDACTED.contains(&value) {
                 prop_assert!(!redacted.text.contains(&value));
             }
         }
