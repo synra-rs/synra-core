@@ -1,0 +1,12 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 480eb09190d6f8a39fab24f0ce828891139fa6514270b6ea3add67f87ecd86aa # shrinks to capabilities = ["log:debug"], query = "log:debug:@a"
+cc aa0280caeb64d099ce5c3b176b9ea3e5b4b8d64e696d8aaa66fd4d1d474d1851 # shrinks to capabilities = ["log:debug"], queries = ["log:debug:@a"]
+cc 70fcc9bf16de9bf5ae68572f63c4f39c07803fae2940af4b5145cb6b3de69ba0 # shrinks to capabilities = ["log:debug"], queries = ["log:debug:@a"]
+cc 5f59d5922389b6c3167aebf2a1e9cff9b6e15c4dff96b2f0f2744c18c56326e3 # shrinks to capabilities = ["fs:read", "log:debug", "fs:fetch"], queries = ["fs:fetch"]
+cc 924c5fddfb394211b59e4ec2323981901aacb9a8d1576a4d25ac30d6750bad3d # shrinks to capabilities = ["ui:debug", "log:debug", "ui:list:api.y.com"], queries = ["ui:list:api.y.com"]
+cc 32f2a07158c7a18152bf103078f6966d84a0cd4745c0a6946a0f072ea467fcb7 # shrinks to capabilities = ["device:debug", "network:debug", "device:fetch"], query = "device:fetch"

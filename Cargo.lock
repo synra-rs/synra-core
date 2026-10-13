@@ -617,6 +617,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "synra-capability"
+version = "0.1.0"
+dependencies = [
+ "compact_str",
+ "proptest",
+ "rstest",
+ "serde",
+ "smallvec",
+ "synra-protocol",
+ "thiserror",
+]
+
+[[package]]
 name = "synra-protocol"
 version = "0.1.0"
 dependencies = [

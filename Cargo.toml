@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+  "crates/synra-capability",
   "crates/synra-protocol",
 ]
 
