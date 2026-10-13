@@ -28,6 +28,24 @@ pub enum Outcome {
         /// Whether the lines are a failure, so `main` writes them to the error stream.
         failure: bool,
     },
+    /// A build to run.
+    Build {
+        /// What it will do.
+        plan: Box<crate::build::BuildPlan>,
+        /// The lines to print.
+        lines: Vec<String>,
+    },
+    /// A signature to write beside a public key.
+    Signature {
+        /// Where the signature goes.
+        path: PathBuf,
+        /// The signature, as hex.
+        signature: String,
+        /// The public key, as hex, written beside it.
+        public: String,
+        /// The lines to print.
+        lines: Vec<String>,
+    },
     /// A scaffold to write.
     ///
     /// The paths are **relative** to the root rather than joined, so the caller is the one that decides where the
@@ -47,7 +65,10 @@ impl Outcome {
     #[must_use]
     pub fn lines(&self) -> &[String] {
         match self {
-            Self::Reported { lines, .. } | Self::Scaffold { lines, .. } => lines,
+            Self::Reported { lines, .. }
+            | Self::Build { lines, .. }
+            | Self::Signature { lines, .. }
+            | Self::Scaffold { lines, .. } => lines,
         }
     }
 
@@ -56,8 +77,9 @@ impl Outcome {
     pub const fn exit_code(&self) -> u8 {
         match self {
             Self::Reported { code, .. } => *code,
-            // A scaffold that was built is one that will be written; a failure to build it never reaches here.
-            Self::Scaffold { .. } => 0,
+            // A scaffold, a build and a signature that were decided are ones the caller will carry out; a failure to
+            // decide them never reaches here.
+            Self::Scaffold { .. } | Self::Build { .. } | Self::Signature { .. } => 0,
         }
     }
 
@@ -66,7 +88,7 @@ impl Outcome {
     pub const fn is_failure(&self) -> bool {
         match self {
             Self::Reported { failure, .. } => *failure,
-            Self::Scaffold { .. } => false,
+            Self::Scaffold { .. } | Self::Build { .. } | Self::Signature { .. } => false,
         }
     }
 }
@@ -121,6 +143,108 @@ pub fn new_plugin(args: &NewArgs) -> Result<Outcome, String> {
     }
 
     Ok(Outcome::Scaffold { root, files, lines })
+}
+
+/// What `build` will do.
+///
+/// # Errors
+///
+/// The build's refusal, as a sentence: no manifest, one that does not parse, no runtime, or a UI plugin with no build
+/// script. Each names the file, because it is read at the moment the author is least able to guess.
+pub fn build_plugin(args: &crate::args::BuildArgs) -> Result<Outcome, String> {
+    let plan = crate::build::BuildPlan::resolve(&args.dir).map_err(|error| error.to_string())?;
+
+    let mut lines = plan.lines();
+    lines.push(String::new());
+    if args.dry_run {
+        lines.push("dry run: nothing was run".to_owned());
+    }
+    else {
+        // The commands are run by `main`, because running one is I/O and this function decides. What comes back is
+        // what the *plan* says should have been produced, which `main` checks after the commands finish.
+        lines.push(format!("{} command(s) to run", plan.steps.len()));
+    }
+
+    Ok(Outcome::Build { plan: Box::new(plan), lines })
+}
+
+/// Signs a plugin, or checks a signature.
+///
+/// # Errors
+///
+/// The signing error, as a sentence: a key that cannot be read, a manifest that does not parse, an artifact that is
+/// not there.
+pub fn sign_plugin(args: &crate::args::SignArgs) -> Result<Outcome, String> {
+    // Generating a key is its own command because there is nothing to sign yet: an author does this once, before the
+    // first publish, and printing the secret is the point — a tool that hid it would be one whose keys they cannot back
+    // up, and a publisher who loses theirs cannot ship an update to a plugin users already trust.
+    if args.generate_key {
+        let key = crate::sign::SigningKeyFile::generate()?;
+        return Ok(Outcome::Reported {
+            lines: vec![
+                "a new signing key. Keep the secret somewhere you can restore it from, and publish the public half."
+                    .to_owned(),
+                String::new(),
+                format!("secret  {}", key.to_hex()),
+                format!("public  {}", key.public_hex()),
+            ],
+            code: 0,
+            failure: false,
+        });
+    }
+
+    let content = crate::sign::SignedContent::read(&args.dir).map_err(|error| error.to_string())?;
+
+    if let Some(signature_path) = &args.verify {
+        let signature = std::fs::read_to_string(signature_path).map_err(|error| {
+            format!("the signature at {} could not be read: {error}", signature_path.display())
+        })?;
+        let public_path = args.dir.join("public-key.txt");
+        let public = std::fs::read_to_string(&public_path).map_err(|error| {
+            format!(
+                "the public key at {} could not be read: {error}",
+                public_path.display()
+            )
+        })?;
+
+        let ok = crate::sign::verify(&content, public.trim(), signature.trim()).is_ok();
+        // One sentence either way, both naming the plugin: the answer an author needs is which plugin and which
+        // verdict, and a bare "ok" beside a filename is one they have to match up themselves.
+        let line = if ok {
+            format!("{} {} is signed by that key", content.plugin_id, content.version)
+        }
+        else {
+            format!(
+                "the signature does not verify against {} {} — the artifact, the manifest or the key is not the one \
+                 that signed it",
+                content.plugin_id, content.version
+            )
+        };
+
+        return Ok(Outcome::Reported {
+            lines: vec![line],
+            code: if ok { 0 } else { 1 },
+            failure: !ok,
+        });
+    }
+
+    let Some(key_path) = &args.key else {
+        return Err(
+            "a signature needs `--key <path>`, or `--generate-key` to make one first".to_owned()
+        );
+    };
+    let key = crate::sign::SigningKeyFile::read(key_path).map_err(|error| error.to_string())?;
+    let signature = key.sign(&content);
+
+    Ok(Outcome::Signature {
+        path: args.dir.join("plugin.sig"),
+        signature,
+        public: key.public_hex(),
+        lines: vec![
+            format!("signed {} {}", content.plugin_id, content.version),
+            format!("public key {}", key.public_hex()),
+        ],
+    })
 }
 
 /// What `verify` concluded.

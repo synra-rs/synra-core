@@ -16,6 +16,10 @@ clap = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+ed25519-dalek = { workspace = true }
+# For `OsRng` alone. Reading the system's randomness by hand needs an `unsafe` block on Windows, which this workspace
+# forbids everywhere — and a key from a weak source is one an attacker can forge, silently.
+rand_core = { workspace = true }
 
 [dev-dependencies]
 rstest.workspace = true

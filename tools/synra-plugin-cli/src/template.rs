@@ -184,12 +184,14 @@ impl Scaffold {
 
         // The directory is the wire slug, so a plugin's directory is the name its artifact uses everywhere else — the
         // registry, the cache, the log. A directory named after the raw id would contain a `/` and a scope.
-        let slug = synra_plugin_api::manifest::to_wire_slug(
-            &synra_protocol::PluginId::parse(plugin_id).map_err(|error| ScaffoldError::BadId {
-                reason: error.to_string(),
-            })?,
-        )
-        .map_err(|error| ScaffoldError::BadId { reason: error.to_string() })?;
+        //
+        // Parsed once, here, and the result used for both the directory and the crate name: parsing again where the
+        // crate manifest is written would need an `expect` on a value that was already proven valid, and an `expect` in
+        // production code is what this workspace forbids.
+        let id = synra_protocol::PluginId::parse(plugin_id)
+            .map_err(|error| ScaffoldError::BadId { reason: error.to_string() })?;
+        let slug = synra_plugin_api::manifest::to_wire_slug(&id)
+            .map_err(|error| ScaffoldError::BadId { reason: error.to_string() })?;
 
         let manifest = manifest_json(plugin_id, version, title, kind);
         let mut files = vec![
@@ -206,18 +208,58 @@ impl Scaffold {
             },
         ];
 
+        // A crate manifest, so `build` has something to compile. Written as text rather than left out, because a
+        // scaffold whose `build` needs a file the author has to invent is a scaffold that does not build.
+        let crate_manifest = format!(
+            r#"[package]
+name = "{name}"
+version = "0.1.0"
+edition = "2021"
+
+# A plugin is a library, not a binary: the kernel loads it, nothing runs it.
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# The SDK is `no_std`-friendly and dependency-free on purpose: a plugin's size is what the user pays for on every
+# install, and a plugin that pulled in an async runtime would be one `verify` refuses.
+synra-plugin-sdk = "0.1"
+
+# Release builds are what get published, and a plugin is loaded once and called many times.
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+"#,
+            name = slug,
+        );
+
         match kind {
-            TemplateKind::Headless => files.push(ScaffoldFile {
-                path: "src/lib.rs".to_owned(),
-                contents: HEADLESS_SOURCE.to_owned(),
-                authored: true,
-            }),
+            TemplateKind::Headless => {
+                files.push(ScaffoldFile {
+                    path: "Cargo.toml".to_owned(),
+                    contents: crate_manifest,
+                    authored: false,
+                });
+                files.push(ScaffoldFile {
+                    path: "src/lib.rs".to_owned(),
+                    contents: HEADLESS_SOURCE.to_owned(),
+                    authored: true,
+                });
+            }
             TemplateKind::Ui => files.push(ScaffoldFile {
                 path: "ui/index.html".to_owned(),
                 contents: ui_document(title),
                 authored: true,
             }),
             TemplateKind::Hybrid => {
+                files.push(ScaffoldFile {
+                    path: "Cargo.toml".to_owned(),
+                    contents: crate_manifest,
+                    authored: false,
+                });
                 files.push(ScaffoldFile {
                     path: "src/lib.rs".to_owned(),
                     contents: hybrid_source(),

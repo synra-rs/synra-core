@@ -35,8 +35,47 @@ pub struct Cli {
 pub enum Command {
     /// Scaffold a new plugin.
     New(NewArgs),
+    /// Build a plugin's artifacts.
+    Build(BuildArgs),
     /// Check a plugin before publishing it.
     Verify(VerifyArgs),
+    /// Sign a plugin with a publisher's key.
+    Sign(SignArgs),
+}
+
+/// Options for `build`.
+#[derive(Debug, Args)]
+pub struct BuildArgs {
+    /// The plugin's directory.
+    #[arg(long, value_name = "DIR", default_value = ".")]
+    pub dir: PathBuf,
+
+    /// Print the commands without running them.
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+/// Options for `sign`.
+#[derive(Debug, Args)]
+pub struct SignArgs {
+    /// The plugin's directory.
+    #[arg(long, value_name = "DIR", default_value = ".")]
+    pub dir: PathBuf,
+
+    /// The signing key: 32 bytes of hex.
+    #[arg(long, value_name = "PATH")]
+    pub key: Option<PathBuf>,
+
+    /// Generate a key, print it, and write the public half to `public-key.txt`.
+    ///
+    /// For an author who has never published: a tool that hid the key would be one whose keys they cannot back up, and
+    /// a publisher who loses theirs cannot ship an update to a plugin users already trust.
+    #[arg(long)]
+    pub generate_key: bool,
+
+    /// Check an existing signature instead of making one.
+    #[arg(long, value_name = "PATH")]
+    pub verify: Option<PathBuf>,
 }
 
 /// Options for `new`.
@@ -125,12 +164,14 @@ mod tests {
 
     #[test]
     fn every_documented_command_exists() {
-        // The design document's list, as an executable statement. `build`, `sign`, `publish` and `dev` are documented
-        // and not implemented — see the crate docs for why a version of them that only printed what it would do would
-        // be worse than one that says it is not implemented.
+        // The design document's list, as an executable statement. `publish` and `dev` are documented and not
+        // implemented — see the crate docs for why a version of them that only printed what it would do would be worse
+        // than one that says it is not implemented.
         for args in [
             vec!["synra-plugin", "new", "@scope/plugin"],
+            vec!["synra-plugin", "build"],
             vec!["synra-plugin", "verify"],
+            vec!["synra-plugin", "sign", "--generate-key"],
         ] {
             assert!(parse(&args).is_ok(), "{args:?} should parse");
         }
@@ -138,9 +179,9 @@ mod tests {
 
     #[test]
     fn an_unimplemented_command_is_refused_rather_than_silently_absent() {
-        // An author who read the document and typed `build` gets `clap`'s "unrecognized subcommand", which is the
-        // honest answer. A stub that printed "would build" would be worse: it exits zero.
-        for command in ["build", "sign", "publish", "dev"] {
+        // `publish` and `dev` need a registry client and a running host, and a stub that printed "would publish" would
+        // be worse than an absent one: it exits zero. `clap`'s "unrecognized subcommand" is the honest answer.
+        for command in ["publish", "dev"] {
             let error = parse(&["synra-plugin", command]).expect_err("not implemented");
             assert!(
                 error.to_string().contains("unrecognized"),
