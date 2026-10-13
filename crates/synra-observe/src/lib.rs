@@ -38,7 +38,9 @@
 )]
 
 pub mod logging;
+pub mod metrics;
 pub mod redact;
 
 pub use logging::{LogLevel, RedactingWriter, Verbosity};
+pub use metrics::{CardinalityGuard, HistogramSnapshot, MetricsSnapshot, RingRecorder, SeriesKey};
 pub use redact::{REDACTED, Redacted, Redaction, Redactor};
