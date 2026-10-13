@@ -1,0 +1,17 @@
+[package]
+name = "wit-codegen"
+description = "Reads wit/synra-plugin.wit and derives the capability table the kernel enforces"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+
+[dev-dependencies]
+
+[lints]
+workspace = true

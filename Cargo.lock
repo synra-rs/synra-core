@@ -1566,6 +1566,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "wit-codegen"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
 name = "zeroize"
 version = "1.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

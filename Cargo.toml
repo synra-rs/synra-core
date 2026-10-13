@@ -16,6 +16,7 @@ members = [
   "crates/synra-protocol",
   "apps/synra-cli",
   "tools/synra-plugin-cli",
+  "tools/wit-codegen",
   "apps/synra-daemon",
 ]
 
