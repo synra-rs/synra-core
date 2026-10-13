@@ -896,6 +896,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "synra-daemon"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "proptest",
+ "serde",
+ "serde_json",
+ "synra-observe",
+ "synra-platform",
+ "synra-protocol",
+ "synra-store",
+ "thiserror",
+]
+
+[[package]]
 name = "synra-ipc"
 version = "0.1.0"
 dependencies = [

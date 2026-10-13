@@ -1,0 +1,26 @@
+[package]
+name = "synra-daemon"
+description = "The kernel's windowless host, which exists to prove the kernel needs no interface"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+synra-protocol = { path = "../../crates/synra-protocol" }
+synra-store = { path = "../../crates/synra-store" }
+synra-observe = { path = "../../crates/synra-observe" }
+synra-platform = { path = "../../crates/synra-platform" }
+
+clap = { workspace = true }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true
