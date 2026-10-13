@@ -43,6 +43,18 @@ pub const INTERNAL_PREFIX: &str = "synra.internal.";
 /// Length limit for an event name, generous enough for a nested plugin name.
 pub const MAX_EVENT_NAME_LEN: usize = 128;
 
+/// The largest gap a consumer is told the *size* of.
+///
+/// # Why a gap has a size at all, and why it is capped
+///
+/// When events are lost — a subscriber that fell behind, a link that reconnected — the consumer learns that it missed
+/// some and, when it is worth saying, how many. The count is useful: one missed event is a hiccup, and ten thousand is
+/// a subscriber that stopped keeping up and a bug worth reporting.
+///
+/// Beyond the cap the consumer is told only that there was a gap, which is the same instruction — re-read the snapshot
+/// — without a number it would believe. A *reported* count of four billion says nothing.
+pub const MAX_COUNTED_GAP: u32 = 1_000;
+
 /// Why an event name is not acceptable.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
