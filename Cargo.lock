@@ -1215,6 +1215,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "synra-plugin-sdk"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "synra-plugin-api",
+]
+
+[[package]]
 name = "synra-plugin-ui"
 version = "0.1.0"
 dependencies = [

@@ -27,8 +27,10 @@
     )
 )]
 
+pub mod boundary;
 pub mod manifest;
 
+pub use boundary::{DeviceTarget, LogLevel, Outcome};
 pub use manifest::{
     ActionDeclaration, CapabilityDeclaration, ComposeDependency, EventDeclaration, HandleDeclaration,
     HeadlessRuntime, Implementation, Manifest, ManifestContext, ManifestError, Publisher,

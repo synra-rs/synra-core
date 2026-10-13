@@ -1,0 +1,558 @@
+//! The host trait and the SDK bindings, generated from the contract.
+//!
+//! # What each output is for
+//!
+//! * **The host trait** is what the kernel implements. One method per host function, with the signature the contract
+//!   declares — so a function added to `wit/synra-plugin.wit` is a method the host does not have, which is a compile
+//!   error rather than a call that traps.
+//! * **The SDK bindings** are what a plugin author calls. The same functions, from the other side, with the import
+//!   names the component model uses — so a plugin that calls a function the contract does not declare gets a compile
+//!   error in its own crate rather than a trap in the kernel.
+//!
+//! # Why generating these is worth it, when the table was the urgent one
+//!
+//! The capability table was urgent because its absence had no symptom. These are the opposite: a missing host method is
+//! a compile error, so a hand-written trait would be *noticed*. What it would not be is *complete* — a function the
+//! contract declares and the trait forgot is one the host silently does not implement, and the component that imports it
+//! fails to instantiate with a message about a missing export that names neither file.
+//!
+//! # What is not generated
+//!
+//! The bodies. A host method's body is the kernel's own logic — reading a socket, checking a quota — and a generator
+//! that produced one would be producing a stub that traps, which is worse than a compile error. The trait is
+//! `todo!`-free: it has no default methods, so an unimplemented one does not compile.
+
+use crate::parse::{Contract, Function};
+
+/// Why bindings could not be rendered.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum BindingError {
+    /// The contract has no imported interface, so there is nothing to generate a trait from.
+    #[error("the contract imports no interface, so there is no host surface to generate a trait for")]
+    NoHost,
+
+    /// A WIT type this generator does not know how to spell in Rust.
+    ///
+    /// ★ A refusal rather than a fallback. A type mapped to `String` because the generator did not recognise it would
+    /// compile and would be wrong: the component model would pass a list where the host expected a string, and the
+    /// failure is at the boundary with no type to blame.
+    #[error("`{function}` uses `{wit_type}`, which this generator does not know how to spell in Rust")]
+    UnknownType {
+        /// The function.
+        function: String,
+        /// The WIT type.
+        wit_type: String,
+    },
+}
+
+/// The Rust type a WIT type maps to.
+///
+/// # Why the list is short and why it refuses
+///
+/// The contract uses ten types, and each has exactly one Rust spelling. A generator that guessed at an eleventh would
+/// be one whose output compiles and is wrong — and the wrongness surfaces inside the component model, where the
+/// message is about a signature mismatch rather than about the type that was not understood.
+fn rust_type(wit: &str, function: &str) -> Result<String, BindingError> {
+    let mapped = match wit.trim() {
+        "string" => "String".to_owned(),
+        "bool" => "bool".to_owned(),
+        "u64" => "u64".to_owned(),
+        "f64" => "f64".to_owned(),
+        "outcome" => "Outcome".to_owned(),
+        "log-level" => "LogLevel".to_owned(),
+        "device-target" => "DeviceTarget".to_owned(),
+        "list<string>" => "Vec<String>".to_owned(),
+        "list<device-target>" => "Vec<DeviceTarget>".to_owned(),
+        "tuple<u64, u64>" => "(u64, u64)".to_owned(),
+        other => {
+            // `option<T>` is the one shape rather than a list of instantiations, because the element is itself a WIT
+            // type and may nest.
+            if let Some(inner) = other.strip_prefix("option<").and_then(|rest| rest.strip_suffix('>')) {
+                format!("Option<{}>", rust_type(inner, function)?)
+            }
+            else {
+                return Err(BindingError::UnknownType {
+                    function: function.to_owned(),
+                    wit_type: other.to_owned(),
+                });
+            }
+        }
+    };
+    Ok(mapped)
+}
+
+/// The reference types the generated code needs, and where they come from.
+///
+/// Emitted as a `use` rather than declared, because they are the kernel's own types: a generated `Outcome` would be a
+/// second definition of the thing the plugin and the host exchange, and the two would drift at the first field added.
+const REFERENCE_TYPES: &str = "\
+use synra_plugin_api::{DeviceTarget, LogLevel, Outcome};";
+
+/// Renders the trait the kernel implements.
+///
+/// # Errors
+///
+/// [`BindingError`] when the contract imports nothing, or uses a type this generator does not know.
+pub fn emit_host_trait(contract: &Contract) -> Result<String, BindingError> {
+    let host = contract.host().ok_or(BindingError::NoHost)?;
+
+    let mut out = String::from(
+        "// Generated by `wit-codegen` from `wit/synra-plugin.wit`. Do not edit.\n\
+         //\n\
+         // One method per host function the contract declares. The trait has no default methods on purpose: a\n\
+         // function the contract gained is a method a host does not implement, which is a compile error rather than\n\
+         // a call that traps at the boundary.\n\n\
+         /// What a plugin may ask the host to do.\n\
+         ///\n\
+         /// Every method is one function of the `host` interface. The capability each needs is in the generated\n\
+         /// `capability_table`, and the gate is checked before the method is called rather than inside it — a method\n\
+         /// that checked its own gate would be one a caller could forget to reach.\n\
+         pub trait Host {\n",
+    );
+
+    for function in &host.functions {
+        let mut params = Vec::new();
+        for (name, ty) in &function.params {
+            params.push(format!("{}: {}", rust_param(name), rust_type(ty, &function.name)?));
+        }
+        let returns = match &function.returns {
+            Some(ty) => format!(" -> {}", rust_type(ty, &function.name)?),
+            // `deactivate` returns nothing. A unit return is written as nothing rather than as `()` because the
+            // component model distinguishes "returns nothing" from "returns unit", and the generated trait is what a
+            // host implements against the model.
+            None => String::new(),
+        };
+
+        out.push_str(&format!(
+            "    /// {}\n    fn {}({}){};\n",
+            doc_for(function),
+            rust_ident(&function.name),
+            params.join(", "),
+            returns,
+        ));
+    }
+
+    out.push_str("}\n\n");
+    out.push_str(REFERENCE_TYPES);
+    out.push('\n');
+    Ok(out)
+}
+
+/// Renders the module a plugin author calls.
+///
+/// # Errors
+///
+/// [`BindingError`] when the contract imports nothing, or uses a type this generator does not know.
+pub fn emit_sdk_bindings(contract: &Contract) -> Result<String, BindingError> {
+    let host = contract.host().ok_or(BindingError::NoHost)?;
+
+    let mut out = format!(
+        "// Generated by `wit-codegen` from `wit/synra-plugin.wit`. Do not edit.\n\
+         //\n\
+         // One function per host call, each with the *import name* the component model uses. The name is written\n\
+         // down rather than derived from the Rust function's, because the two spell the same thing differently —\n\
+         // `device-list` becomes `device_list` and `synra:plugin/host#device-list` — and a plugin that called the\n\
+         // wrong one would trap at the boundary.\n\n\
+         /// The package this module was generated from, as a component names it.\n\
+         pub const PACKAGE: &str = \"{}\";\n\n\
+         /// The interface a plugin imports.\n\
+         pub const HOST_INTERFACE: &str = \"{}\";\n\n",
+        contract.package, host.name,
+    );
+
+    out.push_str("/// One host call, by the import name a component carries.\n");
+    out.push_str("pub mod host {\n");
+    // ★ An explicit import rather than `use super::*`. The glob looked like it would reach the crate root's re-exports
+    // and did not: inside a module brought in by `include!`, a glob import does not carry a parent's `pub use` into
+    // scope, so the module could see neither. An explicit import of the three types is one line and states where they
+    // come from.
+    out.push_str("    use synra_plugin_api::{DeviceTarget, LogLevel, Outcome};\n\n");
+
+    for function in &host.functions {
+        let mut params = Vec::new();
+        for (name, ty) in &function.params {
+            params.push(format!("{}: {}", rust_param(name), rust_type(ty, &function.name)?));
+        }
+        let returns = match &function.returns {
+            Some(ty) => format!(" -> {}", rust_type(ty, &function.name)?),
+            None => String::new(),
+        };
+
+        // The import name, verbatim. It is the string the component model resolves, and a plugin cannot call anything
+        // else.
+        out.push_str(&format!(
+            "    /// The import name, as the component model resolves it.\n    pub const {}_IMPORT: &str = \"{}\";\n\n",
+            rust_const(&function.name),
+            function.import_name(&contract.package, &host.name),
+        ));
+        out.push_str(&format!(
+            "    /// {}\n    pub fn {}({}){} {{ todo!() }}\n\n",
+            doc_for(function),
+            rust_ident(&function.name),
+            params.join(", "),
+            returns,
+        ));
+    }
+
+    out.push_str("}\n\n");
+    Ok(out)
+}
+
+/// The paths the binding generator writes, relative to the contract file's directory.
+///
+/// Four files: a trait and a table for the host, and a module and its import-name constants for the SDK. Returned
+/// rather than assumed, so the writer and a check cannot disagree about where they go.
+#[must_use]
+pub const fn binding_paths() -> [&'static str; 4] {
+    [
+        "../crates/synra-plugin-host/src/generated/host_trait.rs",
+        "GENERATED.md",
+        "../crates/synra-plugin-sdk/src/generated/host.rs",
+        "../crates/synra-plugin-sdk/src/generated/imports.rs",
+    ]
+}
+
+/// The index of the parenthesis matching the one at `open`, if there is one.
+///
+/// Used by the test that asserts the host trait and the SDK bindings declare the same signatures — the check that makes
+/// generating both worth it, since a disagreement between them is what the component model refuses at instantiation.
+#[cfg(test)]
+///
+/// A byte-wise scan with a depth counter, because the text is generated Rust and a signature cannot contain a string
+/// literal that balanced a parenthesis differently from a bracket.
+fn matching_paren(text: &str, open: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    if bytes.get(open) != Some(&b'(') {
+        return None;
+    }
+    let mut depth = 0usize;
+    for (index, byte) in bytes.iter().enumerate().skip(open) {
+        match byte {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// A WIT name as a Rust identifier: `device-list` becomes `device_list`.
+fn rust_ident(name: &str) -> String {
+    name.replace('-', "_")
+}
+
+/// A WIT name as an upper-case constant name: `device-list` becomes `DEVICE_LIST`.
+fn rust_const(name: &str) -> String {
+    name.replace('-', "_").to_uppercase()
+}
+
+/// A parameter name as a Rust identifier.
+///
+/// The WIT name is already a valid Rust identifier once the hyphens are gone, and the two are the same word in both
+/// languages — a transformation beyond that would make the generated signature unrecognisable to someone reading the
+/// contract.
+fn rust_param(name: &str) -> String {
+    rust_ident(name)
+}
+
+/// A doc comment for a generated method.
+///
+/// The contract's own documentation is not carried across: the WIT parser reads annotations and skips prose, and a
+/// generated method whose doc comment was a stale copy of the contract's would be a second place the sentence lives.
+/// What is emitted is the one fact a caller needs — which capability the call needs — and a note that the contract has
+/// the rest.
+fn doc_for(function: &Function) -> String {
+    match function.gate.capability() {
+        Some(capability) => {
+            format!("`{}`. Requires `{capability}`. The contract documents it.", function.name)
+        }
+        None => format!("`{}`. Ungated: it reads a fact about the environment.", function.name),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const REAL: &str = include_str!("../../../wit/synra-plugin.wit");
+
+    fn contract() -> Contract {
+        Contract::parse(REAL).expect("the repository's contract parses")
+    }
+
+    // ── The host trait ────────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn the_host_trait_has_one_method_per_host_function() {
+        // The property that makes the trait worth generating: a function the contract declares is a method the host
+        // must implement, so the host cannot silently not provide one.
+        let contract = contract();
+        let trait_text = emit_host_trait(&contract).expect("renders");
+        let host = contract.host().expect("a host");
+
+        assert!(trait_text.contains("pub trait Host {"), "{trait_text}");
+        for function in &host.functions {
+            let method = format!("fn {}(", rust_ident(&function.name));
+            assert!(trait_text.contains(&method), "{} is missing from the trait", function.name);
+        }
+        // And no method beyond them: a trait with a stale method is a host that implements something the contract does
+        // not declare.
+        let methods = trait_text.matches("    fn ").count();
+        assert_eq!(methods, host.functions.len(), "{trait_text}");
+    }
+
+    #[test]
+    fn a_method_takes_the_parameters_the_contract_declares() {
+        let trait_text = emit_host_trait(&contract()).expect("renders");
+        assert!(
+            trait_text.contains("fn log(level: LogLevel, message: String, ctx: Option<String>)"),
+            "{trait_text}"
+        );
+        assert!(
+            trait_text.contains("fn device_send(target: String, event: String, payload: String) -> Outcome"),
+            "{trait_text}"
+        );
+    }
+
+    #[test]
+    fn a_function_that_returns_nothing_returns_nothing() {
+        // The component model distinguishes "returns nothing" from "returns unit", and the one function in the contract
+        // with no return is `plugin-id`'s opposite number — the one a host implements against the model.
+        let contract = contract();
+        let trait_text = emit_host_trait(&contract).expect("renders");
+        let without: Vec<&str> = contract
+            .host()
+            .expect("a host")
+            .functions
+            .iter()
+            .filter(|function| function.returns.is_none())
+            .map(|function| function.name.as_str())
+            .collect();
+
+        for name in without {
+            let method = format!("fn {}(", rust_ident(name));
+            let at = trait_text.find(&method).expect("the method");
+            let end = trait_text[at..].find(';').expect("the end of the declaration");
+            let declaration = &trait_text[at..at + end];
+            assert!(!declaration.contains("->"), "{declaration}");
+        }
+    }
+
+    #[test]
+    fn every_type_the_contract_uses_is_spelled() {
+        // ★ The refusal that matters. A type mapped to whatever the generator guessed would compile and would be wrong
+        // — the component model would pass a list where the host expected a string, and the failure is at the boundary
+        // with no type to blame.
+        let contract = contract();
+        assert!(emit_host_trait(&contract).is_ok());
+        assert!(emit_sdk_bindings(&contract).is_ok());
+    }
+
+    #[test]
+    fn an_unknown_type_is_refused_rather_than_guessed() {
+        let text = "package synra:plugin@1.0.0;\ninterface host {\n    /// @ungated\n    x: func(a: list<float>) -> string;\n}\nworld plugin { import host; }\n";
+        let contract = Contract::parse(text).expect("parses");
+        match emit_host_trait(&contract) {
+            Err(BindingError::UnknownType { function, wit_type }) => {
+                assert_eq!(function, "x");
+                assert_eq!(wit_type, "list<float>");
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_option_of_an_unknown_type_is_refused_too() {
+        // The nesting is followed, so `option<list<float>>` is refused for the same reason `list<float>` is.
+        let text = "package synra:plugin@1.0.0;\ninterface host {\n    /// @ungated\n    x: func(a: option<list<float>>) -> string;\n}\nworld plugin { import host; }\n";
+        let contract = Contract::parse(text).expect("parses");
+        assert!(matches!(emit_host_trait(&contract), Err(BindingError::UnknownType { .. })));
+    }
+
+    #[test]
+    fn a_contract_with_no_host_is_refused() {
+        let text = "package synra:plugin@1.0.0;\ninterface lifecycle {\n    activate: func();\n}\nworld plugin { export lifecycle; }\n";
+        let contract = Contract::parse(text).expect("parses");
+        assert_eq!(emit_host_trait(&contract), Err(BindingError::NoHost));
+        assert_eq!(emit_sdk_bindings(&contract), Err(BindingError::NoHost));
+    }
+
+    // ── The SDK bindings ──────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn the_sdk_bindings_name_the_import_the_component_model_resolves() {
+        // ★ The name is written down rather than derived from the Rust function's, because the two spell the same thing
+        // differently. A plugin that called the wrong one would trap at the boundary, and the message would name a
+        // function nothing in the repository declares.
+        let contract = contract();
+        let sdk = emit_sdk_bindings(&contract).expect("renders");
+
+        for function in &contract.host().expect("a host").functions {
+            let import = function.import_name(&contract.package, "host");
+            assert!(
+                sdk.contains(&import),
+                "{} does not carry {import}",
+                function.name
+            );
+        }
+        assert!(sdk.contains("\"synra:plugin/host#device-list\""), "{sdk}");
+    }
+
+    #[test]
+    fn the_sdk_bindings_have_one_function_per_host_call() {
+        let contract = contract();
+        let sdk = emit_sdk_bindings(&contract).expect("renders");
+        let host = contract.host().expect("a host");
+        assert_eq!(sdk.matches("pub fn ").count(), host.functions.len(), "{sdk}");
+        assert_eq!(
+            sdk.matches("_IMPORT: &str =").count(),
+            host.functions.len(),
+            "{sdk}"
+        );
+    }
+
+    #[test]
+    fn the_sdk_signature_matches_the_hosts() {
+        // The two sides have to agree or the component model refuses the instantiation, and generating both is what
+        // makes the agreement checkable here rather than at load time.
+        let contract = contract();
+        let r#trait = emit_host_trait(&contract).expect("renders");
+        let sdk = emit_sdk_bindings(&contract).expect("renders");
+
+        for function in &contract.host().expect("a host").functions {
+            let name = rust_ident(&function.name);
+            // ★ The declaration is found by its *shape* rather than by filtering lines: the doc comment above a method
+            // names the function too, so a search for `fn log(` matches the comment first. What makes a match a
+            // declaration is that the parenthesis after the name is followed by a matching one and then, without an
+            // intervening `;` or `{`, the return type — which a sentence cannot produce.
+            //
+            // The indentation is not assumed: the trait's methods are one level deep and the SDK's are two, because the
+            // SDK module is a module.
+            let signature = |text: &str| -> String {
+                let needle = format!("fn {name}(");
+                let mut from = 0;
+                // A `loop` rather than a `while`: every path either returns the declaration or advances `from`, and the
+                // compiler knows the loop cannot fall through — so there is no unreachable tail to write.
+                loop {
+                    let found = text[from..]
+                        .find(&needle)
+                        .unwrap_or_else(|| panic!("{name} has no declaration"));
+                    let absolute = from + found;
+                    let line_start = text[..absolute].rfind('\n').map_or(0, |newline| newline + 1);
+
+                    if let Some(close) = matching_paren(text, absolute + needle.len() - 1) {
+                        // The end of the declaration: `;` for a trait method, `{` for a function with a body.
+                        if let Some(terminator) =
+                            text[close..].find([';', '{']).map(|offset| close + offset)
+                        {
+                            return text[line_start..terminator]
+                                .trim()
+                                .trim_start_matches("pub ")
+                                .to_owned();
+                        }
+                    }
+
+                    // Not a declaration — the comment's mention. Carry on from the next character.
+                    from = absolute + 1;
+                }
+            };            assert_eq!(signature(&r#trait), signature(&sdk), "{} disagrees", function.name);
+        }
+    }
+
+    // ── Both ──────────────────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn the_output_is_sorted_by_the_contracts_order_and_deterministic() {
+        // A generator whose output depended on a hash map's order would produce a diff on every run, and the person
+        // reviewing it would stop reading.
+        assert_eq!(emit_host_trait(&contract()), emit_host_trait(&contract()));
+        assert_eq!(emit_sdk_bindings(&contract()), emit_sdk_bindings(&contract()));
+    }
+
+    #[test]
+    fn neither_output_declares_the_reference_types() {
+        // ★ A generated `Outcome` would be a second definition of the thing the plugin and the host exchange, and the
+        // two would drift at the first field added. Where they arrive from differs — the trait imports them, the SDK
+        // module reaches them through its crate root — and what must not happen either way is a declaration.
+        for output in [
+            emit_host_trait(&contract()).expect("renders"),
+            emit_sdk_bindings(&contract()).expect("renders"),
+        ] {
+            assert!(!output.contains("pub struct Outcome"), "{output}");
+            assert!(!output.contains("pub enum Outcome"), "{output}");
+            assert!(!output.contains("pub enum LogLevel"), "{output}");
+            assert!(!output.contains("pub struct DeviceTarget"), "{output}");
+        }
+
+        // The trait imports them, because nothing above it does.
+        let r#trait = emit_host_trait(&contract()).expect("renders");
+        assert!(r#trait.contains("use synra_plugin_api::{DeviceTarget, LogLevel, Outcome};"), "{trait}");
+    }
+
+    #[test]
+    fn both_outputs_import_the_reference_types_explicitly() {
+        // ★ An explicit import rather than a glob over the parent. The first version relied on `use super::*` reaching
+        // the crate root's re-exports, and inside a module brought in by `include!` a glob does not carry a parent's
+        // `pub use` into scope — so the module could see neither, and the fix is to say where the types come from.
+        for output in [
+            emit_host_trait(&contract()).expect("renders"),
+            emit_sdk_bindings(&contract()).expect("renders"),
+        ] {
+            assert!(
+                output.contains("use synra_plugin_api::{DeviceTarget, LogLevel, Outcome};"),
+                "{output}"
+            );
+            assert!(!output.contains("use super::*"), "{output}");
+        }
+    }
+
+    #[test]
+    fn the_doc_comment_says_which_capability_the_call_needs() {
+        // The one fact a caller needs at the declaration, and the contract has the rest.
+        let trait_text = emit_host_trait(&contract()).expect("renders");
+        assert!(trait_text.contains("Requires `log:*`"), "{trait_text}");
+        assert!(trait_text.contains("Ungated: it reads a fact about the environment"), "{trait_text}");
+    }
+
+    #[test]
+    fn the_binding_paths_are_where_the_generated_files_live() {
+        let [host, report, sdk, imports] = binding_paths();
+        assert!(host.ends_with("host_trait.rs"), "{host}");
+        assert!(host.starts_with("../crates/synra-plugin-host/"), "{host}");
+        assert_eq!(report, "GENERATED.md");
+        assert!(sdk.starts_with("../crates/synra-plugin-sdk/"), "{sdk}");
+        assert!(imports.ends_with("imports.rs"), "{imports}");
+    }
+
+    #[test]
+    fn names_are_translated_by_hyphen_alone() {
+        // The two languages spell a hyphenated name the same way otherwise, and a transformation beyond that would make
+        // the generated signature unrecognisable to someone reading the contract.
+        assert_eq!(rust_ident("device-list"), "device_list");
+        assert_eq!(rust_const("device-list"), "DEVICE_LIST");
+        assert_eq!(rust_param("request-json"), "request_json");
+        assert_eq!(rust_ident("log"), "log");
+    }
+
+    #[test]
+    fn binding_errors_explain_themselves() {
+        let errors = [
+            BindingError::NoHost,
+            BindingError::UnknownType {
+                function: "x".to_owned(),
+                wit_type: "list<float>".to_owned(),
+            },
+        ];
+        for error in errors {
+            let text = error.to_string();
+            assert!(text.len() > 30, "{error:?} -> {text}");
+            assert!(!text.contains('{'), "{error:?} -> {text}");
+        }
+    }
+}

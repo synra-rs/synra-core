@@ -35,8 +35,12 @@
     )
 )]
 
+pub mod bindings;
 pub mod emit;
 pub mod parse;
 
+pub use bindings::{
+    BindingError, binding_paths, emit_host_trait, emit_sdk_bindings,
+};
 pub use emit::{RenderError, emit_rust, emit_text, emitted_paths};
 pub use parse::{Contract, Direction, Function, Gate, Interface, ParseError};

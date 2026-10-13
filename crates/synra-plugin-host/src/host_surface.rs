@@ -28,7 +28,25 @@
 /// purpose is to be a dependency.
 mod generated {
     include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/generated/capability_table.rs"));
+
+    /// The trait the host implements, one method per contract function.
+    ///
+    /// ★ Included rather than written, and the reason it matters is subtle: a hand-written trait is a trait somebody
+    /// *noticed* was incomplete, whereas a generated one cannot be. A function the contract declares and the trait
+    /// forgot is one the host silently does not implement, and the plugin that imports it fails to instantiate with a
+    /// message about a missing export that names neither file.
+    ///
+    /// The trait's methods take no `&self`. A host's methods are the kernel's own logic, and whether they need state is
+    /// the implementation's business: a trait that demanded `&self` would force every host to be an object, and one
+    /// that demanded nothing lets a ZST implementation exist for a host that has no state.
+    /// `pub(crate)` rather than `pub`: the trait is re-exported below, and an item a private module's `pub` cannot
+    /// reach is what `unreachable_pub` warns about. The re-export is the public path, and it is the only one.
+    pub(crate) mod host {
+        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/generated/host_trait.rs"));
+    }
 }
+
+pub use generated::host::Host;
 
 pub use generated::{CAPABILITIES, EXPORTED_INTERFACES, HOST_FUNCTIONS, HOST_INTERFACE, PACKAGE, PACKAGE_VERSION};
 

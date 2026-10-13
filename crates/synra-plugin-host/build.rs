@@ -78,4 +78,33 @@ fn main() {
     // And the readable report, so a reviewer reads prose rather than a Rust constant.
     let report: PathBuf = Path::new(&manifest_dir).join("../../wit/GENERATED.md");
     let _ = std::fs::write(report, wit_codegen::emit_text(&contract));
+
+    // The trait the host implements, from the same contract and for the same reason as the table: a function the
+    // contract gained is a method this crate does not implement, which is a compile error rather than a call that traps
+    // at the component boundary.
+    let trait_path = Path::new(&manifest_dir).join("src/generated/host_trait.rs");
+    match wit_codegen::emit_host_trait(&contract) {
+        Ok(rendered) => write_if_changed(&trait_path, &rendered),
+        // A type the generator does not know: refused rather than mapped to something that compiles and is wrong at
+        // the boundary.
+        Err(error) => panic!("the host trait could not be rendered: {error}"),
+    }
+}
+
+/// Writes a generated file, but only when its contents changed.
+///
+/// A build script that rewrote every file on every run would touch their timestamps, which makes every `cargo build` a
+/// rebuild of this crate and everything above it.
+fn write_if_changed(path: &Path, contents: &str) {
+    if std::fs::read_to_string(path).is_ok_and(|current| current == contents) {
+        return;
+    }
+    if let Some(parent) = path.parent()
+        && let Err(error) = std::fs::create_dir_all(parent)
+    {
+        panic!("{}: {error}", parent.display());
+    }
+    if let Err(error) = std::fs::write(path, contents) {
+        panic!("{}: {error}", path.display());
+    }
 }

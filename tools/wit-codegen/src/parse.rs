@@ -118,6 +118,14 @@ pub struct Function {
     pub name: String,
     /// What the host checks before calling it.
     pub gate: Gate,
+    /// The parameters, as `(name, WIT type)` pairs, in declaration order.
+    ///
+    /// Kept as WIT text rather than mapped here, because the mapping belongs to whatever is being *generated*: a Rust
+    /// trait and a TypeScript declaration spell the same `option<string>` differently, and a parser that chose would be
+    /// choosing for both.
+    pub params: Vec<(String, String)>,
+    /// The return type, as WIT text. `None` for a function that returns nothing.
+    pub returns: Option<String>,
     /// The line it is declared on, for a message.
     pub line: usize,
 }
@@ -354,7 +362,7 @@ impl Contract {
             //
             // `async` is not a WIT keyword today; it is accepted because a signature that grew one should not be read
             // as a function with no gate.
-            if let Some((name, _)) = split_function(trimmed) {
+            if let Some((name, signature)) = split_function(trimmed) {
                 let Some(interface) = current.as_mut() else {
                     return Err(ParseError::Syntax {
                         line,
@@ -384,7 +392,8 @@ impl Contract {
                 let gate = annotated.unwrap_or(Gate::Ungated);
                 pending.clear();
 
-                interface.functions.push(Function { name, gate, line });
+                let (params, returns) = read_signature(signature);
+                interface.functions.push(Function { name, gate, params, returns, line });
                 continue;
             }
 
@@ -595,6 +604,47 @@ fn split_function(line: &str) -> Option<(String, &str)> {
         return None;
     }
     Some((name.to_owned(), rest))
+}
+
+/// Reads a function's parameters and return type from its signature.
+///
+/// # Why the text is kept rather than parsed into a type tree
+///
+/// The WIT this contract uses has ten distinct types, and the generator that consumes them needs to spell each one in
+/// Rust. A tree here would be a second representation of the same thing, and the mapping from it would be as long as the
+/// mapping from the text — with the difference that a reader cannot see what the generator understood by looking at the
+/// file.
+///
+/// `None` for the return when the signature has none, which is `deactivate` and nothing else today.
+fn read_signature(signature: &str) -> (Vec<(String, String)>, Option<String>) {
+    let Some(open) = signature.find('(') else {
+        return (Vec::new(), None);
+    };
+    // The closing parenthesis is the *matching* one, and a parameter may itself be a generic: `list<device-target>` has
+    // an angle bracket and no parenthesis, so the first `)` after the open parenthesis is the right one today — and a
+    // type that contained a parenthesis would need this to count depth. Stated rather than assumed.
+    let Some(close) = signature[open..].find(')').map(|at| open + at) else {
+        return (Vec::new(), None);
+    };
+
+    let mut params = Vec::new();
+    for raw in signature[open + 1..close].split(',') {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            continue;
+        }
+        if let Some((name, ty)) = raw.split_once(':') {
+            params.push((name.trim().to_owned(), ty.trim().to_owned()));
+        }
+    }
+
+    let returns = signature[close + 1..]
+        .trim()
+        .strip_prefix("->")
+        .map(|rest| rest.trim().trim_end_matches(';').trim().to_owned())
+        .filter(|rest| !rest.is_empty());
+
+    (params, returns)
 }
 
 /// Reads the gate from the annotations above a function.
