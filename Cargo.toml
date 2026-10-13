@@ -14,6 +14,7 @@ members = [
   "crates/synra-testkit-alloc",
   "crates/synra-store",
   "crates/synra-protocol",
+  "apps/synra-cli",
 ]
 
 [workspace.package]
@@ -35,6 +36,7 @@ compact_str = { version = "0.9", features = ["serde"] }
 
 # ── 外部：字节与集合 ──
 bytes = "1"
+clap = { version = "4", features = ["derive"] }
 smallvec = { version = "1", features = ["serde", "union"] }
 
 # ── 外部：标识与时间 ──

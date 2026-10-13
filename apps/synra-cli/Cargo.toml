@@ -1,0 +1,26 @@
+[package]
+name = "synra-cli"
+description = "The kernel's command-line host, and the tool that proves the kernel needs no UI"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+synra-protocol = { path = "../../crates/synra-protocol" }
+synra-store = { path = "../../crates/synra-store" }
+synra-observe = { path = "../../crates/synra-observe" }
+synra-ipc = { path = "../../crates/synra-ipc" }
+
+clap = { workspace = true }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+rstest.workspace = true
+
+[lints]
+workspace = true
