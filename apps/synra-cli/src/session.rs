@@ -326,10 +326,32 @@ mod tests {
     #[test]
     fn a_quiet_doctor_shows_only_failures() {
         // `--failures-only` is for a script and for a user who has already read the full report once.
+        //
+        // ★ What is asserted is the *shape*, not the count of failures. The probes touch the real machine — a port that
+        // happens to be busy, a directory that happens to be read-only — so an assertion like "at most one failure"
+        // would pass on this machine and fail on a busy one. The properties that hold everywhere are that the header
+        // is printed, that no tally is printed for a script to skip, and that every line is either the header or a
+        // failure.
         let outcome = dispatch(&cli(&["synra", "doctor", "--failures-only"]));
         match outcome {
             CommandOutcome::Lines(lines) => {
-                assert!(lines.len() <= 2, "expected the header and at most a failure: {lines:?}");
+                assert!(!lines.is_empty(), "nothing was printed at all");
+                assert!(lines[0].contains("synra"), "the header is missing: {lines:?}");
+                assert!(
+                    !lines.iter().any(|line| line.contains(" ok,")),
+                    "a tally reached a failures-only report: {lines:?}"
+                );
+                for line in lines.iter().skip(1) {
+                    // Three shapes are allowed: a failure, the indented suggestion under one, and the sentence a
+                    // healthy machine gets instead of silence — which is the difference between "nothing is wrong"
+                    // and "the command did not run".
+                    assert!(
+                        line.starts_with("FAIL")
+                            || line.starts_with("      ")
+                            || line == "no failures",
+                        "a non-failure reached the output: {line:?}"
+                    );
+                }
             }
             other => panic!("expected text lines, got {other:?}"),
         }

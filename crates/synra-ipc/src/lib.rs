@@ -45,6 +45,7 @@
 )]
 
 pub mod command;
+pub mod ts_export;
 pub mod dto;
 pub mod error;
 pub mod event;

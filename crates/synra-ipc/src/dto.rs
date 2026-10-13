@@ -195,7 +195,7 @@ pub enum IntentSourceDto {
         /// The action.
         action: String,
         /// Its arguments, as JSON.
-        args: serde_json::Value,
+    args: serde_json::Value,
     },
 }
 

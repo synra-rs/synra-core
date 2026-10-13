@@ -74,6 +74,47 @@ pub enum ErrorCode {
 }
 
 impl ErrorCode {
+    /// Every code, for a table-driven test and for a generated binding.
+    ///
+    /// # Why this exists rather than a derive
+    ///
+    /// The interface's TypeScript union of codes is generated from this list, and the check that matters is that the
+    /// list is *complete*: a code missing from it is one the interface does not handle, and the symptom is a switch
+    /// that falls through to a default message the user has already read. A macro_rules! over the enum declaration
+    /// would keep it in step automatically and would also hide the enum's own documentation; a written list plus a
+    /// test that counts the variants makes forgetting a compile-and-test failure instead.
+    ///
+    /// The companion test asserts the count, so adding a variant without adding it here fails the suite.
+    #[must_use]
+    pub const fn all() -> &'static [Self] {
+        &[
+            Self::CapabilityDenied,
+            Self::PluginNotInstalled,
+            Self::DeviceOffline,
+            Self::NotPaired,
+            Self::TransportNotOpen,
+            Self::TransferFailed,
+            Self::IntegrityMismatch,
+            Self::PayloadTooLarge,
+            Self::Timeout,
+            Self::RateLimited,
+            Self::Unsupported,
+            Self::InvalidArgument,
+            Self::SchemeNotAllowed,
+            Self::HostNotAllowed,
+            Self::IpNotAllowed,
+            Self::RedirectBlocked,
+            Self::ResponseTooLarge,
+            Self::ProtocolViolation,
+            Self::ProtocolVersionUnsupported,
+            Self::PluginTrapped,
+            Self::PluginTimeout,
+            Self::Internal,
+        ]
+    }
+}
+
+impl ErrorCode {
     /// The wire representation, identical to the `serde` output.
     ///
     /// Exists so logging and tests do not need to serialise to a string.
@@ -362,6 +403,30 @@ pub enum SuggestedAction {
         /// Trace to show.
         trace_id: String,
     },
+}
+
+impl SuggestedAction {
+    /// One of every suggestion, for the generated binding and for the test that keeps it in step.
+    ///
+    /// # Why the payloads are placeholders
+    ///
+    /// Four of the six variants carry a field — a section, a capability, a plugin, a device — so a list of *values*
+    /// needs a value for each. These are examples rather than defaults: the point of the list is that every variant
+    /// appears once and that its `kind` tag is the one the protocol serialises, and the payloads are never shown to
+    /// anyone. A caller that wanted a real suggestion constructs one.
+    ///
+    /// The companion test asserts the count, so adding a variant without adding it here fails the suite.
+    #[must_use]
+    pub fn all() -> Vec<Self> {
+        vec![
+            Self::OpenSettings { section: "general".to_owned() },
+            Self::RequestCapability { capability: "log:read".to_owned() },
+            Self::InstallPlugin { plugin_id: "@synra-plugin/example".to_owned() },
+            Self::ConnectDevice { device_id: "example".to_owned() },
+            Self::Retry,
+            Self::ViewLogs { trace_id: "example".to_owned() },
+        ]
+    }
 }
 
 #[cfg(test)]

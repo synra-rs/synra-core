@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 use synra_protocol::error::SuggestedAction;
 use synra_protocol::ErrorCode;
 
+
 /// A localisable message.
 ///
 /// A newtype rather than a bare `String` so a sentence cannot be passed where a key is wanted. The mistake it
