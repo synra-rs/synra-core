@@ -20,6 +20,8 @@
 //!   names that arrive from a peer.
 //! * [`bus`] — where kernel events come from: one numbering, a bounded queue per subscriber, and a count of what was
 //!   dropped so an interface that fell behind learns that it did.
+//! * [`sessions`] — the links to peers: how far each has got, when a silent one is given up on, and what a reconnect
+//!   does to the session it replaces.
 //!
 //! # What is deliberately not here
 //!
@@ -45,6 +47,7 @@
 pub mod admission;
 pub mod bus;
 pub mod routing;
+pub mod sessions;
 
 pub use admission::{
     AdmissionContext, AdmissionRefusal, AdmissionStep, PluginKey, admit, check, host_requirement,
@@ -54,3 +57,6 @@ pub use bus::{
     SUBSCRIBER_QUEUE_CAPACITY,
 };
 pub use routing::{EventId, EventRegistry, RouteOutcome, RouterError};
+pub use sessions::{
+    ClosureReason, LinkState, PeerSession, RegistryError, RegistryEvent, SessionKey, SessionRegistry,
+};
