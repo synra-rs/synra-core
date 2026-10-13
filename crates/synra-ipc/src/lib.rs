@@ -22,7 +22,7 @@
 //! * [`dto`] — the shapes that cross. Every one is a plain data type: no handles, no sockets, no plugin
 //!   instances. The interface holds a picture of the kernel, not the kernel.
 //! * [`event`] — what the kernel pushes. A sequence number, because an interface that missed an event has to be
-//!   able to *tell* that it missed one.
+//!   able to *tell* that it missed one, and to re-read rather than drift.
 //!
 //! # What does not live here
 //!
@@ -47,9 +47,13 @@
 pub mod command;
 pub mod dto;
 pub mod error;
+pub mod event;
 
 pub use command::{
     CommandDescriptor, CommandRegistry, Domain, Interface, RegistryError, ReturnShape,
 };
 pub use dto::*;
 pub use error::{IpcError, MessageKey};
+pub use event::{
+    EventVerdict, KernelEvent, KernelEventEnvelope, MAX_COUNTED_GAP, SequenceReport, SequenceTracker,
+};
