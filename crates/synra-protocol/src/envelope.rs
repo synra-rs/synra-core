@@ -350,33 +350,7 @@ impl fmt::Display for Envelope {
 
 impl PartialEq for Envelope {
     /// Compares two envelopes by what they say, not by how they were spelled.
-    ///
-    /// Hand-written rather than derived because `RawValue` has no `PartialEq`: it stores text, so a
-    /// derived comparison would have to compare the payload bytes. Two peers can encode the same
-    /// JSON with different key order or whitespace, and a round-trip assertion should call those
-    /// equal.
-    ///
-    /// Parsing the payload is the price of that. It is acceptable here because equality is used by
-    /// tests and by diagnostic comparisons, not on the hot path — routing never compares payloads.
     fn eq(&self, other: &Self) -> bool {
-        fn payload_eq(mine: Option<&RawValue>, theirs: Option<&RawValue>) -> bool {
-            match (mine, theirs) {
-                (None, None) => true,
-                (Some(mine), Some(theirs)) => {
-                    match (
-                        serde_json::from_str::<serde_json::Value>(mine.get()),
-                        serde_json::from_str::<serde_json::Value>(theirs.get()),
-                    ) {
-                        (Ok(mine), Ok(theirs)) => mine == theirs,
-                        // Unparseable payloads cannot be compared structurally, so fall back to the
-                        // text. That is still better than reporting equality for different bytes.
-                        _ => mine.get() == theirs.get(),
-                    }
-                }
-                _ => false,
-            }
-        }
-
         self.request_id == other.request_id
             && self.event == other.event
             && self.target == other.target
@@ -385,11 +359,40 @@ impl PartialEq for Envelope {
             && self.trace_id == other.trace_id
             && self.sent_at_ms == other.sent_at_ms
             && self.ttl_ms == other.ttl_ms
-            && payload_eq(self.payload.as_deref(), other.payload.as_deref())
+            && raw_json_eq(self.payload.as_deref(), other.payload.as_deref())
     }
 }
 
 impl Eq for Envelope {}
+
+/// Compares two optional raw JSON payloads by value rather than by spelling.
+///
+/// Hand-written because `RawValue` has no `PartialEq`: it stores text, so a derived comparison would
+/// compare bytes. Two peers can encode the same JSON with different key order or whitespace, and a
+/// round-trip assertion should call those equal.
+///
+/// Parsing is the price. Acceptable because this is used by tests and by diagnostic comparisons, not
+/// on the hot path: routing never compares payloads.
+///
+/// Shared with the session types, which carry raw JSON in the same way and would otherwise each need
+/// their own copy of this reasoning.
+pub(crate) fn raw_json_eq(mine: Option<&RawValue>, theirs: Option<&RawValue>) -> bool {
+    match (mine, theirs) {
+        (None, None) => true,
+        (Some(mine), Some(theirs)) => {
+            match (
+                serde_json::from_str::<serde_json::Value>(mine.get()),
+                serde_json::from_str::<serde_json::Value>(theirs.get()),
+            ) {
+                (Ok(mine), Ok(theirs)) => mine == theirs,
+                // Unparseable payloads cannot be compared structurally, so fall back to the text.
+                // Still better than reporting equality for different bytes.
+                _ => mine.get() == theirs.get(),
+            }
+        }
+        _ => false,
+    }
+}
 
 /// Serialises a payload, enforcing the size and depth ceilings.
 fn encode_payload<P>(payload: Option<&P>) -> Result<Option<Box<RawValue>>, EnvelopeError>
