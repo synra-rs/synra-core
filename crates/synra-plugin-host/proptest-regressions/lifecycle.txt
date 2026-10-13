@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc bf77776b7dc9dd719910ad64bb3baca8a993c6975f5dd53c21ae23c20dc3ddcf # shrinks to steps = [Validate { manifest_digest: "d" }]
+cc b3fd9798d5f02704bed683823aaa6fbedb16e6052ca801360d06c4e4aeb4a22c # shrinks to steps = [Fault { reason: "r" }, Park, Upgrade { version: "2.0.0" }, Validate { manifest_digest: "d" }, Grant { partially_denied: false }, Activate]
+cc d9708fed0f5ca01d6279c9fcbd9498d0b996b5c3da161eebaa0767587c1df30e # shrinks to steps = [Fault { reason: "r" }, ClearFault, Grant { partially_denied: false }, Activate]

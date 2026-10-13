@@ -5,6 +5,7 @@ members = [
   "crates/synra-observe",
   "crates/synra-plugin-api",
   "crates/synra-net",
+  "crates/synra-plugin-host",
   "crates/synra-platform",
   "crates/synra-store",
   "crates/synra-protocol",
