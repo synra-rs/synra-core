@@ -24,7 +24,6 @@
 //! Comparison here is by string, which is correct but not free. Routing does not use it: the host
 //! resolves a name to a small integer once and looks that up thereafter, so the per-frame cost is an
 //! array index rather than a string compare. See `design-docs/04-wire-protocol.md` §6.8.
-
 use core::fmt;
 
 use compact_str::CompactString;
@@ -275,11 +274,18 @@ impl From<EventName> for String {
 
 /// Rejects an empty logical name, or one with an empty or malformed segment.
 ///
-/// Each dot-separated segment must be `[A-Za-z0-9_-]+`, plus the two pattern wildcards `*` and `**`.
-/// Requiring a known character set is what keeps an event name from ever being usable as something
-/// else — a path, a shell argument, a URL fragment — if some future code passes one along to
-/// another system. The wildcards are admitted because `handles` patterns are parsed by this same
-/// grammar; whether they mean "match" is decided when the pattern is compiled, not here.
+/// Each dot-separated segment must be `[A-Za-z0-9_-]+`.
+///
+/// Requiring a known character set keeps an event name from ever being usable as something else — a
+/// path, a shell argument, a URL fragment — if some later code passes one along to another system.
+///
+/// # No wildcards
+///
+/// `*` is deliberately **not** allowed here. It belongs to `handles` patterns, which describe what a
+/// plugin wants to receive, and a pattern is not a name: nothing can be *sent* as `_plugin.chat.*`.
+/// Keeping the two grammars apart means an [`EventName`] is always something a peer could
+/// legitimately have sent, so a routing table built from names never has to ask whether an entry is
+/// a pattern. [`crate::inbound::HandlePattern`] is the grammar that accepts wildcards.
 fn validate_segments(logical: &str) -> Result<(), EventNameError> {
     if logical.is_empty() {
         return Err(EventNameError::Malformed("empty event name".to_owned()));
@@ -293,10 +299,10 @@ fn validate_segments(logical: &str) -> Result<(), EventNameError> {
         }
         let valid = segment
             .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '*');
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-');
         if !valid {
             return Err(EventNameError::Malformed(format!(
-                "event name {logical:?} has a character outside [A-Za-z0-9_-*]"
+                "event name {logical:?} has a character outside [A-Za-z0-9_-]"
             )));
         }
     }
@@ -398,6 +404,32 @@ pub mod builtin {
     pub const HOST_BACKGROUND: &str = "_synra.host.background";
     /// A network interface came up, went down, or changed.
     pub const NETWORK_CHANGED: &str = "_synra.network.changed";
+
+    /// Every built-in name, so routing, the catalogue tests and the exhaustiveness guard all read
+    /// from one list.
+    ///
+    /// A name missing here is never classified as a built-in, so it would be treated as unknown and
+    /// silently not delivered to any subscriber — a failure with no error anywhere.
+    pub const ALL: &[&str] = &[
+        DEVICE_CHANGED,
+        DEVICE_OFFLINE,
+        DEVICE_RENAMED,
+        PAIRING_CHANGED,
+        SHARE_RECEIVED,
+        INTENT_COMPLETED,
+        INTENT_FAILED,
+        TRANSFER_COMPLETED,
+        TRANSFER_FAILED,
+        TRANSFER_PROGRESS,
+        CLIPBOARD_RECEIVED,
+        PLUGIN_INSTALLED,
+        PLUGIN_UPDATED,
+        PLUGIN_UNINSTALLED,
+        PLUGIN_CAPABILITY_CHANGED,
+        HOST_FOREGROUND,
+        HOST_BACKGROUND,
+        NETWORK_CHANGED,
+    ];
 }
 
 /// Host events a plugin **is** allowed to emit.
@@ -568,6 +600,30 @@ mod tests {
             EventName::parse(&long),
             Err(EventNameError::TooLong { .. })
         ));
+    }
+
+    #[test]
+    fn a_wildcard_is_not_a_sendable_event_name() {
+        // `*` belongs to `handles` patterns, which describe what a plugin wants to receive. A
+        // pattern is not a name: nothing can be sent as `_plugin.chat.*`. Keeping the two grammars
+        // apart means an `EventName` is always something a peer could legitimately have sent.
+        for pattern in ["_plugin.chat.*", "_synra.*", "file.*", "*"] {
+            assert!(
+                EventName::parse(pattern).is_err(),
+                "{pattern:?} is a pattern, not a name",
+            );
+        }
+        // The matching grammar accepts them; see `inbound::HandlePattern`.
+        assert!(crate::inbound::HandlePattern::parse("_plugin.chat.*").is_ok());
+    }
+
+    #[test]
+    fn characters_outside_the_grammar_are_refused() {
+        // A name that could be read as a path, a shell argument or a URL fragment is refused, so a
+        // name can never be passed to another system and mean something there.
+        for name in ["_plugin.chat.a/b", "device.pi ng", "device.ping;rm", "a..b"] {
+            assert!(EventName::parse(name).is_err(), "{name:?} should not parse");
+        }
     }
 
     #[test]
