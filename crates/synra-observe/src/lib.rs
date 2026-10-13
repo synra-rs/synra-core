@@ -40,7 +40,9 @@
 pub mod logging;
 pub mod metrics;
 pub mod redact;
+pub mod trace;
 
 pub use logging::{LogLevel, RedactingWriter, Verbosity};
 pub use metrics::{CardinalityGuard, HistogramSnapshot, MetricsSnapshot, RingRecorder, SeriesKey};
 pub use redact::{REDACTED, Redacted, Redaction, Redactor};
+pub use trace::{Sampler, Span, SpanId, TraceContext, TraceOrigin, TraceRing};
