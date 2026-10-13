@@ -875,6 +875,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "synra-testkit"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "parking_lot",
+ "proptest",
+ "rstest",
+ "serde",
+ "serde_json",
+ "synra-capability",
+ "synra-protocol",
+ "synra-testkit-alloc",
+ "thiserror",
+]
+
+[[package]]
+name = "synra-testkit-alloc"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+]
+
+[[package]]
 name = "tempfile"
 version = "3.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

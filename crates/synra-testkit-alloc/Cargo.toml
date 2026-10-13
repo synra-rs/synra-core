@@ -1,0 +1,32 @@
+[package]
+name = "synra-testkit-alloc"
+description = "A counting global allocator, so `synra-testkit` can measure allocations"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+
+[dev-dependencies]
+proptest.workspace = true
+
+# Not `workspace = true`: the workspace forbids `unsafe`, and this crate is where the exception lives. `forbid` cannot
+# be relaxed by a local `allow`, so the only place the exception can be stated is here — which is the point, because it
+# makes the exception a property of one crate rather than of one file inside a crate that mostly does something else.
+[lints.rust]
+unsafe_code = "allow"
+missing_docs = "warn"
+unreachable_pub = "warn"
+unused_qualifications = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+correctness = { level = "deny", priority = -1 }
+suspicious = { level = "deny", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
