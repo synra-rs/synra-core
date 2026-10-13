@@ -22,6 +22,8 @@
 //!   dropped so an interface that fell behind learns that it did.
 //! * [`sessions`] — the links to peers: how far each has got, when a silent one is given up on, and what a reconnect
 //!   does to the session it replaces.
+//! * [`config`] — the settings: an open bag of named values with the defaults kept apart from the overrides, so a
+//!   settings screen can mark what the user chose and a reset can restore what they did not.
 //!
 //! # What is deliberately not here
 //!
@@ -46,11 +48,15 @@
 
 pub mod admission;
 pub mod bus;
+pub mod config;
 pub mod routing;
 pub mod sessions;
 
 pub use admission::{
     AdmissionContext, AdmissionRefusal, AdmissionStep, PluginKey, admit, check, host_requirement,
+};
+pub use config::{
+    Catalog, Config, ConfigError, ConfigSnapshot, Setting, SettingKey, SettingKind,
 };
 pub use bus::{
     Delivery, EventBus, Judgement, SequenceTracker, SubscriberId, SubscriberReport,
