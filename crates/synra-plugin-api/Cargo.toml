@@ -1,0 +1,24 @@
+[package]
+name = "synra-plugin-api"
+description = "The plugin contract: manifest, host calls, and the stable API surface"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+synra-protocol = { path = "../synra-protocol" }
+synra-capability = { path = "../synra-capability" }
+
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+rstest.workspace = true
+
+[lints]
+workspace = true

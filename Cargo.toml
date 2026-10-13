@@ -3,6 +3,7 @@ resolver = "3"
 members = [
   "crates/synra-capability",
   "crates/synra-observe",
+  "crates/synra-plugin-api",
   "crates/synra-protocol",
 ]
 

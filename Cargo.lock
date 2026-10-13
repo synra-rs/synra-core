@@ -758,6 +758,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "synra-plugin-api"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "rstest",
+ "serde",
+ "serde_json",
+ "synra-capability",
+ "synra-protocol",
+ "thiserror",
+]
+
+[[package]]
 name = "synra-protocol"
 version = "0.1.0"
 dependencies = [

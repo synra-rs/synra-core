@@ -349,6 +349,30 @@ pub mod events {
     pub const PLUGIN_QUERY_REPLY: &str = "_synra.plugin.query.reply";
     /// Reports the result of a plugin sync.
     pub const PLUGIN_SYNC_RESULT: &str = "_synra.plugin.sync.result";
+
+    /// Every kernel-internal event name.
+    ///
+    /// A name missing here is a `handles` entry that looks like a typo rather than a subscription, so a plugin
+    /// asking for it is refused at load. Reading the list from one place is what keeps the manifest validator
+    /// and the inbound dispatcher agreeing about what the kernel owns.
+    pub const ALL: &[&str] = &[
+        HELLO,
+        HELLO_ACK,
+        ACK,
+        PING,
+        PONG,
+        BYE,
+        ERROR,
+        PAIR_REQUEST,
+        PAIR_RESPONSE,
+        UNPAIR,
+        INTENT_INVOKE,
+        INTENT_RESULT,
+        INTENT_CANCEL,
+        PLUGIN_QUERY,
+        PLUGIN_QUERY_REPLY,
+        PLUGIN_SYNC_RESULT,
+    ];
 }
 
 /// Built-in events a plugin may subscribe to.
