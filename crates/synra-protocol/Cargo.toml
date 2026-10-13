@@ -1,0 +1,31 @@
+[package]
+name = "synra-protocol"
+description = "Synra wire protocol: frames, envelopes, events, sessions. Pure data — no I/O."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords = ["synra", "protocol", "lan"]
+categories = ["network-programming"]
+
+# ★ 稳定层（[06 §7.1.2](../../design-docs/06-workspace-layout.md)）：遵守 SemVer。
+# ★ 无 IO 依赖是硬约束：tokio / rusqlite / wasmtime / tauri 一律不得出现。
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+compact_str.workspace = true
+bytes.workspace = true
+smallvec.workspace = true
+uuid.workspace = true
+time.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+rstest.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

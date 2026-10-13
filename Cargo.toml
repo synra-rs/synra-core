@@ -1,0 +1,80 @@
+[workspace]
+resolver = "3"
+members = [
+  "crates/synra-protocol",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+repository = "https://github.com/synra-rs/synra-core"
+authors = ["imba97 <mail@imba97.cn>"]
+
+[workspace.dependencies]
+# ── 内部 ──
+# （随实现推进逐个加入；未加入前不写占位，否则 cargo 会警告 unused）
+
+# ── 外部：序列化与文本 ──
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = { version = "1", features = ["raw_value", "preserve_order"] }
+compact_str = { version = "0.9", features = ["serde"] }
+
+# ── 外部：字节与集合 ──
+bytes = "1"
+smallvec = { version = "1", features = ["serde", "union"] }
+
+# ── 外部：标识与时间 ──
+uuid = { version = "1", features = ["v7", "serde"] }
+time = { version = "0.3", features = ["serde", "formatting", "parsing"] }
+
+# ── 外部：错误 ──
+thiserror = "2"
+
+# ── 外部：测试 ──
+proptest = "1"
+rstest = "0.24"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+unreachable_pub = "warn"
+unused_qualifications = "warn"
+
+# ★ 严格 lint 集，沿用本机 clash-verge-rev 的做法。
+# 内核不许 panic / unwrap / expect：所有失败路径都要给出结构化错误。
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+# 正确性与可疑写法直接拒绝
+correctness = { level = "deny", priority = -1 }
+suspicious = { level = "deny", priority = -1 }
+# 内核里禁止 panic 系列
+panic = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"
+# 并发与异步的正确性
+await_holding_lock = "deny"
+async_yields_async = "deny"
+future_not_send = "deny"
+large_futures = "deny"
+# 性能与分配（[26 §4.2](../design-docs/26-core-stability-and-perf.md)）
+redundant_clone = "deny"
+needless_pass_by_value = "deny"
+significant_drop_tightening = "deny"
+# 可读性
+cognitive_complexity = "deny"
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+use_self = "deny"
+wildcard_imports = "deny"
+missing_const_for_fn = "warn"
+
+[profile.release]
+# ★ unwind 而不是 abort：插件 panic 必须能被 catch_unwind 捕获
+panic = "unwind"
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"
