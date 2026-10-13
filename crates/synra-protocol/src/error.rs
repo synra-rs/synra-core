@@ -293,7 +293,7 @@ impl SynraError {
 
     /// What the user should be told.
     #[must_use]
-    pub fn visibility(&self) -> UserVisibility {
+    pub const fn visibility(&self) -> UserVisibility {
         match self.code {
             // The user asked for something that cannot happen; silence would be a bug report.
             ErrorCode::CapabilityDenied

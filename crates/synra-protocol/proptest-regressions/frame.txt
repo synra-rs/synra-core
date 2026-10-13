@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc fa9910938db89dfb94e033a5d46798b34c7697dc62ba72ebfa13f53d34ad3259 # shrinks to frame = Frame { kind: Envelope, flags: 1, body: Envelope(b"\xb5\xb3") }
+cc 0b66ae40a7b48523502f2c74e29dda4baedc48dad74ef13b2542a479fac9b318 # shrinks to frames = [Frame { kind: Envelope, flags: 1, body: Envelope(b"\x7f*\xf0$\x9b\xaf\x8a\x030\x8e\x8a\xcaH\x9c\t") }], cuts = [13, 17, 14, 38, 1]

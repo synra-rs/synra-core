@@ -44,6 +44,27 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+// Test code is exempt from the no-panic rules, and the exemption is deliberate rather than a
+// convenience.
+//
+// The workspace denies `unwrap_used`, `expect_used` and `panic` because a running kernel must return
+// a structured error instead of tearing down the process. In a test the opposite holds: a test that
+// cannot proceed *should* fail loudly and immediately, and one that returned an error instead of
+// panicking would be silent about the very failure it exists to catch. Writing every assertion as a
+// `match` to satisfy the lint would also bury the assertions that matter in noise.
+//
+// Scoped to `cfg(test)`, so none of this relaxes the library itself.
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::indexing_slicing,
+        clippy::needless_pass_by_value,
+    )
+)]
+
 pub mod discovery;
 pub mod envelope;
 pub mod error;
