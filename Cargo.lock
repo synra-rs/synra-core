@@ -1076,6 +1076,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "synra-control"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "synra-core"
 version = "0.1.0"
 dependencies = [

@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
   "crates/synra-ipc",
+  "crates/synra-control",
   "crates/synra-core",
   "crates/synra-capability",
   "crates/synra-observe",
