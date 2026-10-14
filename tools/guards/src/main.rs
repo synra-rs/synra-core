@@ -131,10 +131,16 @@ fn check_msrv(root: &Path) -> bool {
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
             // A toolchain whose components are only *partly* installed is not an MSRV failure: `cargo +X` then tries to
-            // fetch the missing pieces, and a machine without network reports a download error. Reporting that as "does
-            // not build on the MSRV" would be a false accusation — and a guard that cries wolf is one people learn to
+            // fetch the missing pieces, and a machine without network reports a download error instead. Reporting that as
+            // "does not build on the MSRV" is a false accusation, and a guard that cries wolf is one people learn to
             // ignore. The distinction is the point: "could not check" and "checked and failed" are different answers.
-            if stderr.contains("component download failed") || stderr.contains("error downloading file") {
+            //
+            // Every wording rustup has used is listed, because the first version of this check recognised only one of
+            // them and reported a network timeout as a build failure — the exact mistake it exists to avoid.
+            if ["component download failed", "error downloading file", "could not download file"]
+                .iter()
+                .any(|phrase| stderr.contains(phrase))
+            {
                 println!("SKIP  the MSRV check needs a component that is not installed ({msrv})");
                 println!("        install it once with `rustup toolchain install {msrv}` while online");
                 return true;
