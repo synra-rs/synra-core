@@ -24,8 +24,10 @@ use synra_protocol::handshake::LinkToken;
 use synra_protocol::ids::{DeviceId, RequestId};
 
 pub mod desk;
+pub mod outbound;
 
 pub use desk::{Offer, PairingDesk, Waiter};
+pub use outbound::{Answered, NotAnAnswer, OutboundPairing, PairingTarget};
 use synra_protocol::session::PairRequest;
 
 /// What the kernel needs written down when a pairing is accepted.
