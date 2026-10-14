@@ -38,11 +38,14 @@ wasmtime = { version = "38", optional = true, default-features = false, features
   "runtime",
   "std",
 ] }
+# Only for the engine's own trait signatures: `ResourceLimiter` returns `anyhow::Result`. Nothing in this crate's own
+# API carries it — the design document forbids `anyhow` in a public signature, and this is not one.
+anyhow = { version = "1", optional = true }
 
 [features]
 default = []
 # The Wasm engine, and the only configuration that can execute a plugin's code.
-wasm-runtime = ["dep:wasmtime"]
+wasm-runtime = ["dep:wasmtime", "dep:anyhow"]
 
 [build-dependencies]
 # The generator, as a library. The table is regenerated before every build, so a contract change that is not

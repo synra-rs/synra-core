@@ -19,9 +19,11 @@
 //!
 //! # What is not here yet
 //!
-//! `build`, `sign`, `publish` and `dev`. Each needs something this crate does not have — a compiler invocation, an
-//! ed25519 key, a registry client, a running host — and a version of them that only printed what it would do would be
-//! worse than one that says it is not implemented.
+//! `publish` and `dev`. Each needs something this crate does not have — a registry client, a running host — and a
+//! version of them that only printed what it would do would be worse than one that says it is not implemented.
+//!
+//! [`build`] and [`sign`] are here: a build shell is a compiler invocation this tool can make, and a signature is an
+//! ed25519 key and a canonical form of the artifact, both of which are values rather than services.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]

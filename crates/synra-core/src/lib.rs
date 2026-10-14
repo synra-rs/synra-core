@@ -24,6 +24,9 @@
 //!   does to the session it replaces.
 //! * [`config`] — the settings: an open bag of named values with the defaults kept apart from the overrides, so a
 //!   settings screen can mark what the user chose and a reset can restore what they did not.
+//! * [`intent`] — the orchestration the product exists for: what a user asked for, which plugins answered, whether a
+//!   person is interrupted, and what happened — with the deadline, the idempotency key and the choice between
+//!   automatic and asking all decided by a value rather than by a timer.
 //!
 //! # What is deliberately not here
 //!
@@ -52,6 +55,7 @@ pub mod config;
 pub mod discovery;
 pub mod host;
 pub mod identity;
+pub mod intent;
 pub mod link;
 pub mod messaging;
 pub mod pairing;
@@ -100,7 +104,6 @@ pub use bus::{
     Delivery, EventBus, Judgement, SequenceTracker, SubscriberId, SubscriberReport,
     SUBSCRIBER_QUEUE_CAPACITY,
 };
-pub use routing::{EventId, EventRegistry, RouteOutcome, RouterError};
-pub use sessions::{
+pub use routing::{EventId, EventRegistry, RouteOutcome, RouterError};pub use sessions::{
     ClosureReason, LinkState, PeerSession, RegistryError, RegistryEvent, SessionKey, SessionRegistry,
 };

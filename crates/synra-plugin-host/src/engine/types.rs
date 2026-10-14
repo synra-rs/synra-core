@@ -449,7 +449,11 @@ impl Enforcement {
 ///
 /// The engine's compiled artefact, behind a trait object: compiling once and instantiating many times is the whole
 /// basis of the instance pool, and it is also what makes a compile cache worth having.
-pub trait CompiledArtifact: Send + Sync {
+///
+/// `Any` is a supertrait so a backend can recognise **its own** artefact: one from another engine is not something to
+/// be instantiated, and the alternative to a type check is bytes that decode as instructions rather than fail. It is
+/// also what lets a test read what a component imports without the backend having to expose a method for it.
+pub trait CompiledArtifact: Send + Sync + std::any::Any {
     /// The backend that produced it.
     fn kind(&self) -> BackendKind;
 

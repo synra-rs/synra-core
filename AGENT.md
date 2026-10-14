@@ -10,7 +10,7 @@ promises. This says how to work.
 
 ## 1. The repository is Rust, and only Rust
 
-`synra-core` is a Cargo workspace of 20 members: 15 libraries in `crates/`, two binaries in `apps/`, three tools in
+`synra-core` is a Cargo workspace of 21 members: 15 libraries in `crates/`, two binaries in `apps/`, four tools in
 `tools/`. Tracked files are `.rs`, `.toml`, `.md`, `.wit`, `.lock`, `.txt` (proptest regressions) and `.gitignore`.
 
 - **Do not add a file in another language.** No `.js`, `.mjs`, `.ts`, `.py`, `.sh`, not even as a helper. A script that
@@ -35,9 +35,9 @@ From `Cargo.toml` at the root — read it rather than trusting this list if they
 | Author | `imba97 <mail@imba97.cn>` |
 | Profile | `panic = "unwind"` — a plugin panic must be catchable |
 
-Twenty workspace members. `crates/synra-protocol`, `crates/synra-capability` and `crates/synra-plugin-api` are **Stable**:
-a breaking change there needs a major version, an ADR and a migration note. `STABILITY.md` names the tier of every crate and
-what enforces it.
+Twenty-one workspace members. `crates/synra-protocol`, `crates/synra-capability` and `crates/synra-plugin-api` are
+**Stable**: a breaking change there needs a major version, an ADR and a migration note. `STABILITY.md` names the tier of
+every crate and what enforces it.
 
 ---
 

@@ -10,7 +10,11 @@
 > | [`synra-app`](https://github.com/synra-rs/synra-app)      | Tauri 应用（桌面 + 移动 + 宿主 UI）             |
 > | [`design-docs`](https://github.com/synra-rs/design-docs)  | 设计文档（唯一权威）                           |
 >
-> ⚠️ **尚未开始实现。** 目前只有这份 README。**动手前必须先跑 M0 的技术验证 spike**（见「下一步」）。
+> ✅ **已在实现中。** 21 个 workspace 成员：15 个库、2 个二进制（`synra-cli` / `synra-daemon`）、4 个工具
+> （插件 CLI、WIT 代码生成、结构守卫、API 快照守卫）。线协议、能力 DSL、UDP 发现与 TCP 传输、配对、会话与传输、
+> SQLite 存储、可观测性、插件沙箱（能力表、配额、生命周期、实例池、执行层）都已落地并有单测。
+>
+> 未完成的部分写在每个 crate 的 `lib.rs` 顶部（"what is not here"）与 [19 路线图](https://github.com/synra-rs/design-docs/blob/main/19-roadmap.md)；
 
 ---
 
@@ -76,10 +80,15 @@ synra-core/
    - 先读 [26 核心稳定性、封装与性能](https://github.com/synra-rs/design-docs/blob/main/26-core-stability-and-perf.md)
      与 [11 设计原则](https://github.com/synra-rs/design-docs/blob/main/11-design-principles.md)（已踩过的坑）；
    - 再读 [06 Workspace 与 Crate 规划](https://github.com/synra-rs/design-docs/blob/main/06-workspace-layout.md)。
-2. **跑 M0 的 8 个技术验证 spike**（[19 路线图 §0.1](https://github.com/synra-rs/design-docs/blob/main/19-roadmap.md)）
-   —— **在写任何 crate 之前**。本机生态里没有先例的三件事：
-   wasmtime 组件模型、Tauri 移动端、UDP 局域网发现。
-3. 搭 workspace 与 CI（含结构守卫与 `cargo public-api` 快照）。
+2. **M0 的技术验证 spike**（[19 路线图 §0.1](https://github.com/synra-rs/design-docs/blob/main/19-roadmap.md)）
+   —— UDP 局域网发现与配对已经在真机 loopback 上验证；`wasmtime` 组件模型在
+   `cargo test -p synra-plugin-host --features wasm-runtime` 下有真实组件的单测；只剩 Tauri 移动端要等 `synra-app`。
+3. **接下来要做的**（按依赖顺序）：
+   - `synra-plugin-host` 的宿主函数绑定：`wit/synra-plugin.wit` 的 33 个函数要用组件模型的生成绑定接上
+     （表已生成，见 `host_surface`；现在导入这些函数的组件会在装载期被拒绝）；
+   - `synra-core` 的 `Kernel` 聚合与 `Supervisor`；
+   - 插件安装链路：11 步校验、`signature.json`、发布者信任、归档解包安全、registry 客户端；
+   - `justfile` / CI / `api/*.txt` 快照。
 
 ## NOTES
 
