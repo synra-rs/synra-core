@@ -28,6 +28,15 @@ use synra_core::session::{self, Receiving, Received};
 /// The directory incoming files land in, under the data directory.
 pub const INBOX_DIR: &str = "inbox";
 
+/// How long a transfer in progress may be quiet before the connection is abandoned.
+///
+/// # Why this is generous
+///
+/// Because a transfer is not idle: blocks are arriving, and each one is evidence the peer is there. What this bounds is a
+/// peer that stops mid-file — which is worth waiting a long time for, because giving up throws away a transfer that was
+/// almost complete. The connection as a whole is bounded by the process that owns it, not by this.
+const TRANSFER_PATIENCE: std::time::Duration = std::time::Duration::from_secs(120);
+
 /// What to do with a message that arrived on an inbound connection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -127,6 +136,15 @@ impl Inbox {
         now_ms: i64,
         patience: std::time::Duration,
     ) -> Result<Decision, synra_core::SessionError> {
+        // * The patience is re-armed on **every** call, and it is what bounds a *quiet* peer rather than a slow one. An
+        // earlier version computed the deadline once from the connection's start, so a receiver that was still working
+        // through a large transfer ran out of patience and closed the link with the sender's completion unread -- which is
+        // exactly what an end-to-end run showed: the file arrived byte-for-byte and the confirmation was never sent.
+        //
+        // A transfer in progress gets a long wait, because blocks are arriving and each arrival is the evidence that the
+        // peer is still there. A connection with nothing in progress gets the short one, so a peer that connects and says
+        // nothing is still abandoned promptly.
+        let patience = if self.receiving.is_some() { TRANSFER_PATIENCE } else { patience };
         let deadline = std::time::Instant::now() + patience;
         // ★ The proposal arrives as an envelope, before there is anything to receive into. A block that arrives with no
         // transfer in progress is a protocol violation rather than something to guess about — the peer is sending part of

@@ -357,8 +357,8 @@ pub fn send_blocks(
         }
 
         match read_control(link)? {
-            // * A quiet link is not the end of the transfer. ead_control reports a socket timeout this way, and an
-            // earlier version treated it as 'no message ever' and abandoned the loop -- so the socket's six-second read
+            // ★ A quiet link is not the end of the transfer. `read_control` reports a socket timeout this way, and an
+            // earlier version treated it as "no message ever" and abandoned the loop — so the socket's six-second read
             // timeout became the deadline for the whole transfer, and a slow receiver was reported as a broken link. The
             // caller's deadline is the deadline, and it is checked at the top of the loop; this just reads again.
             None => continue,
@@ -807,7 +807,9 @@ pub fn await_confirmation(
                 }
                 continue;
             }
-            Err(error) => return Err(SessionError::Link(error)),
+            Err(error) => {
+                return Err(SessionError::Link(error));
+            }
         };
         match inbound {
             // A block at the sending end belongs to a transfer this kernel is not running the receiving half of.
