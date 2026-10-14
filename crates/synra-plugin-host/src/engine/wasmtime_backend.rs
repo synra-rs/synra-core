@@ -318,15 +318,29 @@ impl EngineInstance {
         let function = work.function();
         let arguments = arguments_of(work);
 
-        // ★ The lookup is on the *flattened* name: `wasmtime` presents a component's exports as one map, and everything
-        // a nested instance holds appears in it as `<interface>#<function>`. That is the name the engine looks up, and
-        // it is why an export cannot be reached by guessing — the interface half carries the package and the version.
+        // ★ The lookup is two steps, and the first version of this got it wrong in a way that only showed up when a
+        // real component was instantiated: a world exports `synra:plugin/lifecycle@1.0.0` as a **nested instance**, and
+        // `wasmtime` does not flatten one into `<interface>#<function>`. The name of the instance is one export and the
+        // name of the function inside it is another, and the second is only reachable *through* the first — which is
+        // `Instance::get_export_index` with the instance's index, exactly as the API's own documentation shows.
+        //
+        // A component may also export the same interface flattened, one name per function, because that is what some
+        // toolchains emit. Both are tried, in that order, and the flattened form is the fallback rather than the first
+        // attempt — because the nested form is what a component built from the WIT file has.
         let flat = export_name(interface, function);
-        let by_index = self
+        // ★ The *fully qualified* interface name, not the bare one: `Work::interface` answers `"lifecycle"` because
+        // that is the interface's own name, and an export is keyed by `synra:plugin/lifecycle@1.0.0` because an
+        // interface name is only unique within its package and version. Looking up `"lifecycle"` finds nothing, and the
+        // symptom is a component reporting that it does not export a function it plainly does.
+        let qualified = interface_name(interface);
+        let nested = self
             .instance
-            .get_export_index(&mut self.store, None, &flat)
+            .get_export_index(&mut self.store, None, &qualified)
+            .and_then(|instance_index| {
+                self.instance.get_export_index(&mut self.store, Some(&instance_index), function)
+            })
             .and_then(|index| self.instance.get_func(&mut self.store, index));
-        let export = match by_index {
+        let export = match nested {
             Some(export) => export,
             None => self
                 .instance
