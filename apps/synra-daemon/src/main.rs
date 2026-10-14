@@ -73,6 +73,29 @@ fn serve(decision: &synra_daemon::Startup) -> ExitCode {
         return ExitCode::FAILURE;
     };
 
+    // ★ The database is opened and migrated **before** the socket is bound, so a client cannot connect to a kernel whose
+    // storage is not ready. A daemon that bound first would answer the first command with a statement error about a
+    // missing table — and the user would read that as a corrupt database rather than as a start that had not finished.
+    let db_path = std::path::PathBuf::from(&plan.db_path);
+    let mut db = match synra_store::SynraDb::open(&db_path) {
+        Ok(db) => db,
+        Err(error) => {
+            eprintln!("synra-daemon: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match db.migrate() {
+        Ok(applied) => {
+            if applied > 0 {
+                println!("applied {applied} migration(s)");
+            }
+        }
+        Err(error) => {
+            eprintln!("synra-daemon: {error}");
+            return ExitCode::FAILURE;
+        }
+    }
+
     let runtime = Runtime {
         version: env!("CARGO_PKG_VERSION").to_owned(),
         data_dir: std::path::PathBuf::from(&plan.data_dir),
@@ -80,6 +103,7 @@ fn serve(decision: &synra_daemon::Startup) -> ExitCode {
         listen_port: plan.listen_port,
         discovery_port: plan.discovery_port,
         started_at_ms: now_ms(),
+        db,
     };
 
     let listener = match Listener::bind(&runtime.data_dir) {

@@ -25,7 +25,6 @@ use synra_control::{Kernel, Refusal};
 use synra_protocol::error::ErrorCode;
 
 /// What the daemon knows about itself.
-#[derive(Debug, Clone)]
 pub struct Runtime {
     /// The kernel's version, for a bug report.
     pub version: String,
@@ -42,6 +41,30 @@ pub struct Runtime {
     /// A wall clock rather than a monotonic reading, because it is reported to a *client* — a separate process, whose
     /// monotonic clock is not comparable with this one. The same reasoning the claim file follows.
     pub started_at_ms: u64,
+    /// The kernel's database.
+    ///
+    /// # Why the runtime holds it rather than the caller
+    ///
+    /// Because the commands that read it are the runtime's, and a caller that had to pass it in would be one that could
+    /// pass a different database from the one the daemon claimed. The claim is about the *data directory*, and the
+    /// database is derived from it — so holding both here is what keeps them from being able to disagree.
+    pub db: synra_store::SynraDb,
+}
+
+impl std::fmt::Debug for Runtime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The connection is not printable, and printing a database handle would leak its path into a log line. The rest
+        // is, so it is listed rather than omitted.
+        f.debug_struct("Runtime")
+            .field("version", &self.version)
+            .field("data_dir", &self.data_dir)
+            .field("plugins_dir", &self.plugins_dir)
+            .field("listen_port", &self.listen_port)
+            .field("discovery_port", &self.discovery_port)
+            .field("started_at_ms", &self.started_at_ms)
+            .field("db", &"SynraDb")
+            .finish()
+    }
 }
 
 /// The layers that are not written yet.
@@ -64,6 +87,15 @@ impl Runtime {
     /// part is not built" belongs. A status that reported a healthy daemon and nothing else would leave a user
     /// wondering why the next command refuses.
     fn status_value(&self, now_ms: u64) -> serde_json::Value {
+        // ★ The schema version and the row counts are read rather than described. A status that said "database: ok"
+        // without asking would be a status that cannot be wrong — and therefore one that cannot tell a user anything.
+        let schema = self.db.recorded_version().ok().flatten();
+        let counts = self.db.counts().ok().map(|rows| {
+            rows.into_iter()
+                .map(|(table, count)| (table, serde_json::json!(count)))
+                .collect::<serde_json::Map<String, serde_json::Value>>()
+        });
+
         serde_json::json!({
             "state": "running",
             "version": self.version,
@@ -72,9 +104,12 @@ impl Runtime {
             "transportPort": self.listen_port,
             "discoveryPort": self.discovery_port,
             "uptimeMs": now_ms.saturating_sub(self.started_at_ms),
+            "schemaVersion": schema,
+            "schemaKnown": synra_store::SynraDb::known_version(),
+            "tables": counts,
             // ★ Present rather than omitted, so a client can print it. An absent field would be indistinguishable from
-            // an older kernel that does not have the concept.
-            "notImplemented": ["session", "discovery", "database"],
+            // an older kernel that does not have the concept. `database` is gone from this list because it is now real.
+            "notImplemented": ["session", "discovery"],
         })
     }
 
@@ -86,49 +121,38 @@ impl Runtime {
     /// with a `manifest.json` in it, so the listing is a listing — reported as it is, with no claim about whether the
     /// kernel has *loaded* any of them, which it has not.
     fn plugins_value(&self) -> Result<serde_json::Value, Refusal> {
-        let entries = match std::fs::read_dir(&self.plugins_dir) {
-            Ok(entries) => entries,
-            // A missing directory is not an error: no plugins are installed, which is the state of every fresh
-            // installation and the honest answer rather than a refusal.
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(serde_json::json!({"plugins": [], "loaded": false}));
-            }
-            Err(error) => {
-                return Err(Refusal::new(
-                    ErrorCode::Internal,
-                    format!("could not read {}: {error}", self.plugins_dir.display()),
-                ));
-            }
-        };
+        // ★ The database is the source of truth for what is *installed*, and the directory is where the artifacts are.
+        // The first version of this listed the directory, which answered a different question: a plugin whose directory
+        // is there but whose row is not has never been installed by the kernel, and one whose row is there and whose
+        // directory is gone has been removed from disk behind its back. Both are states a user needs to see.
+        let rows = self.db.plugins().map_err(|error| {
+            Refusal::new(ErrorCode::Internal, format!("could not read the plugins table: {error}"))
+        })?;
 
         let mut installed: Vec<serde_json::Value> = Vec::new();
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-            let manifest = path.join("manifest.json");
-            let id = entry.file_name().to_string_lossy().to_string();
-            // The manifest is read for its title and version when it is there, and its absence is reported rather than
-            // skipped: a directory in the plugins directory that is not a plugin is something the user should see.
-            match std::fs::read_to_string(&manifest) {
-                Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
-                    Ok(value) => installed.push(serde_json::json!({
-                        "id": value.get("id").and_then(serde_json::Value::as_str).unwrap_or(&id),
-                        "version": value.get("version").and_then(serde_json::Value::as_str),
-                        "title": value.get("title").and_then(serde_json::Value::as_str),
-                        "enabled": false,
-                    })),
-                    Err(error) => installed.push(serde_json::json!({
-                        "id": id,
-                        "problem": format!("the manifest is not readable JSON: {error}"),
-                    })),
-                },
-                Err(_) => installed.push(serde_json::json!({
-                    "id": id,
-                    "problem": "there is no manifest.json in this directory",
-                })),
-            }
+        for row in rows {
+            // The manifest is read for the title, and its absence is reported rather than skipped: a row whose artifact
+            // is gone is something the user should see, because the plugin will fail the next time it is called.
+            let manifest_path = self.plugins_dir.join(&row.plugin_id).join("manifest.json");
+            let manifest = std::fs::read_to_string(&manifest_path)
+                .ok()
+                .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok());
+
+            installed.push(serde_json::json!({
+                "id": row.plugin_id,
+                "title": manifest
+                    .as_ref()
+                    .and_then(|value| value.get("title"))
+                    .and_then(serde_json::Value::as_str),
+                "enabled": row.enabled,
+                "trusted": row.trusted,
+                "health": row.health,
+                "installedAtMs": row.installed_at_ms,
+                "updatedAtMs": row.updated_at_ms,
+                // ★ Reported rather than assumed. A row whose directory is gone is one `should_run` would say yes to and
+                // the host would fail to load.
+                "artifactPresent": manifest_path.exists(),
+            }));
         }
 
         Ok(serde_json::json!({
@@ -286,7 +310,10 @@ mod tests {
         }
     }
 
+    /// A runtime over a migrated in-memory database, and a plugins directory under `dir`.
     fn runtime(dir: &Path) -> Runtime {
+        let mut db = synra_store::SynraDb::open_in_memory().expect("opens");
+        db.migrate().expect("migrates");
         Runtime {
             version: "0.1.0-test".to_owned(),
             data_dir: dir.to_path_buf(),
@@ -294,6 +321,7 @@ mod tests {
             listen_port: 47100,
             discovery_port: 47101,
             started_at_ms: 1_000,
+            db,
         }
     }
 
@@ -386,68 +414,92 @@ mod tests {
         assert_eq!(value["loaded"], false);
     }
 
-    #[test]
-    fn an_installed_plugin_is_reported_with_its_manifest() {
-        let dir = TempDir::new("plugins-one");
-        let plugin = dir.path().join("plugins").join("hello");
-        std::fs::create_dir_all(&plugin).expect("a plugin directory");
-        std::fs::write(
-            plugin.join("manifest.json"),
-            r#"{"id": "@acme/hello", "version": "1.2.3", "title": "Hello"}"#,
-        )
-        .expect("a manifest");
+    /// Inserts a plugin row, which is what the database is the source of truth for.
+    fn install(runtime: &Runtime, id: &str, enabled: i64, trusted: i64) {
+        runtime
+            .db
+            .insert_plugin(id, enabled != 0, trusted != 0, "healthy", 100, 200)
+            .expect("a plugin row");
+    }
 
-        let value = runtime(dir.path()).plugins().expect("plugins");
+    #[test]
+    fn an_installed_plugin_is_reported_from_the_database() {
+        // ★ The database is the source of truth for what is *installed*. The first version of this listed the plugins
+        // directory, which answered a different question: a plugin whose directory is there but whose row is not has
+        // never been installed by the kernel.
+        let dir = TempDir::new("plugins-one");
+        let runtime = runtime(dir.path());
+        install(&runtime, "@acme/hello", 1, 1);
+
+        let value = runtime.plugins().expect("plugins");
         let plugins = value["plugins"].as_array().expect("a list");
         assert_eq!(plugins.len(), 1);
         assert_eq!(plugins[0]["id"], "@acme/hello");
-        assert_eq!(plugins[0]["version"], "1.2.3");
-        assert_eq!(plugins[0]["title"], "Hello");
-        // ★ Not enabled: the kernel has loaded nothing, and a client that showed an installed plugin as running would be
-        // describing a state that does not exist.
-        assert_eq!(plugins[0]["enabled"], false);
+        assert_eq!(plugins[0]["enabled"], true);
+        assert_eq!(plugins[0]["trusted"], true);
+        assert_eq!(plugins[0]["health"], "healthy");
+        // And it says the artifact is not on disk, which it is not — a row without a directory is one the host would
+        // fail to load, and a user needs to see that rather than discover it at the next call.
+        assert_eq!(plugins[0]["artifactPresent"], false);
     }
 
     #[test]
-    fn a_directory_with_no_manifest_is_reported_as_a_problem_rather_than_skipped() {
-        // A directory in the plugins directory that is not a plugin is something the user should see — silently skipping
-        // it would make a mislaid plugin look like a plugin that is not installed.
-        let dir = TempDir::new("plugins-nomanifest");
-        std::fs::create_dir_all(dir.path().join("plugins").join("broken")).expect("a directory");
+    fn a_plugin_whose_artifact_is_on_disk_says_so() {
+        let dir = TempDir::new("plugins-artifact");
+        let runtime = runtime(dir.path());
+        install(&runtime, "@acme/hello", 1, 1);
+        let plugin_dir = dir.path().join("plugins").join("@acme/hello");
+        std::fs::create_dir_all(&plugin_dir).expect("a plugin directory");
+        std::fs::write(
+            plugin_dir.join("manifest.json"),
+            r#"{"id": "@acme/hello", "title": "Hello"}"#,
+        )
+        .expect("a manifest");
 
-        let value = runtime(dir.path()).plugins().expect("plugins");
-        let plugins = value["plugins"].as_array().expect("a list");
-        assert_eq!(plugins.len(), 1);
-        assert_eq!(plugins[0]["id"], "broken");
-        assert!(plugins[0]["problem"].as_str().is_some_and(|s| s.contains("manifest")));
+        let value = runtime.plugins().expect("plugins");
+        assert_eq!(value["plugins"][0]["artifactPresent"], true);
+        // The title comes from the manifest, which is the one thing the directory is read for.
+        assert_eq!(value["plugins"][0]["title"], "Hello");
     }
 
     #[test]
-    fn a_manifest_that_is_not_json_is_reported_rather_than_failing_the_listing() {
-        // One broken plugin must not make the whole list unreadable: a user with four plugins and one bad manifest needs
-        // to see the other three.
-        let dir = TempDir::new("plugins-badjson");
-        let plugin = dir.path().join("plugins").join("bad");
-        std::fs::create_dir_all(&plugin).expect("a plugin directory");
-        std::fs::write(plugin.join("manifest.json"), "{ not json").expect("a manifest");
+    fn a_plugin_the_user_never_trusted_is_reported_as_untrusted() {
+        // ★ Enabled and trusted are two questions, and the report carries both: `should_run` is `enabled && trusted`, so
+        // a plugin that is on but never confirmed is one nobody approved capabilities for.
+        let dir = TempDir::new("plugins-untrusted");
+        let runtime = runtime(dir.path());
+        install(&runtime, "@acme/hello", 1, 0);
 
-        let value = runtime(dir.path()).plugins().expect("plugins");
-        let plugins = value["plugins"].as_array().expect("a list");
-        assert_eq!(plugins.len(), 1);
-        assert!(plugins[0]["problem"].as_str().is_some_and(|s| s.contains("JSON")));
+        let value = runtime.plugins().expect("plugins");
+        assert_eq!(value["plugins"][0]["enabled"], true);
+        assert_eq!(value["plugins"][0]["trusted"], false);
     }
 
     #[test]
-    fn a_file_in_the_plugins_directory_is_not_a_plugin() {
-        // A stray file — a lock, a readme — is not an installed plugin, and reporting it as one would be wrong.
-        let dir = TempDir::new("plugins-file");
-        std::fs::create_dir_all(dir.path().join("plugins")).expect("the directory");
-        std::fs::write(dir.path().join("plugins").join("README.md"), "hi").expect("a file");
-
+    fn an_empty_plugins_table_is_an_empty_list() {
+        let dir = TempDir::new("plugins-none");
         let value = runtime(dir.path()).plugins().expect("plugins");
         assert_eq!(value["plugins"].as_array().map(Vec::len), Some(0));
+        // And it says nothing is loaded, so a client does not present an installed plugin as one that is running.
+        assert_eq!(value["loaded"], false);
     }
 
+    #[test]
+    fn the_plugins_come_back_in_a_stable_order() {
+        // Two runs of `synra plugin list` have to agree, or a diff of two reports is noise.
+        let dir = TempDir::new("plugins-order");
+        let runtime = runtime(dir.path());
+        install(&runtime, "@acme/zeta", 1, 1);
+        install(&runtime, "@acme/alpha", 1, 1);
+
+        let ids: Vec<String> = runtime.plugins().expect("plugins")["plugins"]
+            .as_array()
+            .expect("a list")
+            .iter()
+            .filter_map(|plugin| plugin["id"].as_str().map(ToOwned::to_owned))
+            .collect();
+        assert_eq!(ids, vec!["@acme/alpha", "@acme/zeta"]);
+    }
     // ── Logs ──────────────────────────────────────────────────────────────────────────────────────
 
     #[test]

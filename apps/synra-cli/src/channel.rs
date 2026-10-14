@@ -171,6 +171,12 @@ fn prose(value: &serde_json::Value) -> Vec<String> {
         if let Some(uptime) = value.get("uptimeMs").and_then(serde_json::Value::as_u64) {
             out.push(format!("  uptime       {}s", uptime / 1_000));
         }
+        // The schema version against what this build understands, because the two disagreeing is the one database
+        // problem a user can see coming rather than discover.
+        if let Some(schema) = value.get("schemaVersion").and_then(serde_json::Value::as_u64) {
+            let known = value.get("schemaKnown").and_then(serde_json::Value::as_u64).unwrap_or(0);
+            out.push(format!("  schema       {schema} (this build knows {known})"));
+        }
         // ★ The missing layers are printed, because `status` is the command a user runs to find out what is going on
         // and a summary that hid them would leave them wondering why the next command refuses.
         if let Some(missing) = value.get("notImplemented").and_then(serde_json::Value::as_array) {

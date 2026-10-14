@@ -443,6 +443,45 @@ impl SynraDb {
         Ok(out)
     }
 
+    /// Inserts a plugin row.
+    ///
+    /// # Why this is a real method rather than a test helper
+    ///
+    /// Because it is what the kernel does when a plugin is installed, and the daemon's own tests need it to build the
+    /// state they assert about. A `#[cfg(test)]` helper would be invisible across the crate boundary, and the
+    /// alternative — every test writing its own `INSERT` — is the schema spelled a second time in each of them, which
+    /// drifts at the first column added.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::Statement`] when the insert is refused, which for a well-formed argument means the table is absent or
+    /// the identifier is already there.
+    pub fn insert_plugin(
+        &self,
+        plugin_id: &str,
+        enabled: bool,
+        trusted: bool,
+        health: &str,
+        installed_at_ms: i64,
+        updated_at_ms: i64,
+    ) -> Result<(), DbError> {
+        self.connection
+            .execute(
+                "INSERT INTO plugins (plugin_id, enabled, trusted, health, installed_at_ms, updated_at_ms) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    plugin_id,
+                    i64::from(enabled),
+                    i64::from(trusted),
+                    health,
+                    installed_at_ms,
+                    updated_at_ms
+                ],
+            )
+            .map_err(|error| DbError::Statement { why: error.to_string() })?;
+        Ok(())
+    }
+
     /// Whether a table exists.
     ///
     /// # Errors
