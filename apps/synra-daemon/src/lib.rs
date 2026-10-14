@@ -43,6 +43,7 @@
 )]
 
 pub mod args;
+pub mod dispatch;
 pub mod lock;
 pub mod plan;
 pub mod runtime;
@@ -58,7 +59,7 @@ pub use startup::{
     Startup, StartupReport, begin, looks_like_a_data_dir, mark_clean_shutdown, now_ms, release,
     startup,
 };
-pub use runtime::{MISSING_SESSION_LAYER, Runtime, now_ms as runtime_now_ms};
+pub use runtime::{Runtime, now_ms as runtime_now_ms};
 pub use plan::{
     DATA_DIR_VAR, DEFAULT_DISCOVERY_PORT, DEFAULT_LISTEN_PORT, DaemonOptions, DaemonPlan,
     LOCK_FILE_NAME, PlanError, checked_component, data_root_from, default_data_root,

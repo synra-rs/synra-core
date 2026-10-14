@@ -607,6 +607,12 @@ impl Receiving {
         self.receiver.path()
     }
 
+    /// How large the object is.
+    #[must_use]
+    pub const fn byte_length(&self) -> u64 {
+        self.receiver.byte_length()
+    }
+
     /// Takes one inbound message.
     ///
     /// # Errors

@@ -99,23 +99,15 @@ impl std::fmt::Debug for Runtime {
     }
 }
 
-/// What is still missing for a file to move.
+/// How long one file transfer may take before the daemon stops waiting.
 ///
-/// # Why the wording has shrunk twice
+/// # Why this is a ceiling and not an expectation
 ///
-/// It first said the kernel could neither discover, pair with nor send to a device, and four commands refused with it.
-/// Discovery, pairing and text sending became real, so keeping that sentence would have told a user that working features
-/// were missing. Now the transfer *engine* exists — [`synra_core::TransferSender`] splits a file and hashes it,
-/// [`synra_core::TransferReceiver`] reassembles it and checks the digest — so the sentence has to shrink again, to the part
-/// that is genuinely absent.
-///
-/// What is absent is the plumbing: nothing yet puts a `TransferRequest` and its blocks on a link and drives the two ends
-/// from a running kernel. Saying "the transfer layer is not implemented" would now be **false**, and the failure mode of a
-/// hand-maintained explanation is exactly that it keeps saying the old thing — which is why a test checks this wording
-/// rather than a comment describing it.
-pub const MISSING_SESSION_LAYER: &str =
-    "the file-sending path is not wired up yet: this build can discover, pair, send text, and split and verify a file, and \
-     it cannot yet move one over a link";
+/// A file takes as long as it takes, so nothing here can be the *expected* duration. What it bounds is the worst case: a
+/// peer that stops reading, a link that has gone quiet, or a receiver that never answers. Without it, one stalled transfer
+/// holds a kernel thread for ever — and the protocol's own scan budget would be far too short, because that is how long a
+/// *scan* listens, not how long a file takes to move.
+const TRANSFER_DEADLINE: std::time::Duration = std::time::Duration::from_secs(300);
 
 impl Runtime {
     /// The `status` answer.
@@ -420,12 +412,89 @@ impl Kernel for Runtime {
         }))
     }
 
-    fn send_file(&self, _to: &str, _path: &str) -> Result<serde_json::Value, Refusal> {
-        // ★ Refused before the device is resolved, and that is the honest order. Every other step of this command would
-        // work — the device can be found, the link can be made — and none of it would move a byte, because the transfer
-        // layer is what is absent. A user who was told their device was unknown would go and check a device list to fix a
-        // problem that is not theirs.
-        Err(Refusal::new(ErrorCode::Unsupported, MISSING_SESSION_LAYER))
+    fn send_file(&self, to: &str, path: &str) -> Result<serde_json::Value, Refusal> {
+        let now = synra_store::sqlite::now_ms();
+        let trace_id = synra_protocol::ids::TraceId::new();
+        let source = PathBuf::from(path);
+
+        // ★ The file is checked **before** the device is looked up, for the reason `send --text` checks the text first: a
+        // path that does not exist is a mistake in the argument the user just typed, and reporting it as an unknown device
+        // would send them to check a device list for a problem that is not there.
+        if !source.is_file() {
+            return Err(Refusal::new(
+                ErrorCode::InvalidArgument,
+                format!("{path} is not a file this process can read"),
+            ));
+        }
+
+        // The same two-step the text path uses: resolve and read the address under one lock, release it, then dial. The
+        // handshake can take seconds, and a guard living across it would make a `devices` listing wait for the network.
+        //
+        // ★ One critical section, a `drop` and then the failures — not an expression that returns them. `?` inside a block
+        // whose guard is still alive reads, to clippy's `significant_drop_in_scrutinee`, as a drop on the early-return path
+        // — which is the same pattern that has bitten this workspace before.
+        let found = {
+            let host = self.host.lock();
+            match host.resolve(to) {
+                Ok(device_id) => host.address_of(device_id).map(|address| (device_id, address)).ok_or_else(
+                    || {
+                        Refusal::new(
+                            ErrorCode::DeviceOffline,
+                            format!(
+                                "{device_id} is known and has no address — it has not been seen on this network"
+                            ),
+                        )
+                    },
+                ),
+                Err(error) => Err(refusal_of(&error)),
+            }
+        };
+        // The guard is gone by now: the block above ended, which is what `significant_drop_in_scrutinee` wants to see
+        // rather than a `?` on an expression that still holds it.
+        let (device_id, address) = found?;
+
+        let mut host = self.host.lock();
+        let mut link =
+            host.dial(device_id, address, None, synra_u64(now)).map_err(|error| refusal_of(&error))?;
+
+        // ★ The transfer runs with a deadline, because a peer that stops reading would otherwise hold this thread for ever.
+        // The protocol's own scan budget is not the right figure — a file takes as long as it takes — so this is a ceiling
+        // on one transfer rather than an expected duration.
+        let deadline = std::time::Instant::now() + TRANSFER_DEADLINE;
+        let events = synra_core::send_file(
+            &mut link,
+            &source,
+            synra_core::transfer::DEFAULT_CHUNK_SIZE,
+            trace_id,
+            now,
+            deadline,
+        )
+        .map_err(|error| Refusal::new(error_code_for_session(&error), error.to_string()))?;
+        drop(host);
+
+        let bytes = std::fs::metadata(&source).map(|meta| meta.len()).unwrap_or(0);
+        let resends = events
+            .iter()
+            .filter(|event| matches!(event, synra_core::SessionEvent::Resend { .. }))
+            .count();
+        let completed = events
+            .iter()
+            .any(|event| matches!(event, synra_core::SessionEvent::CompleteSent { .. }));
+
+        // The link is closed rather than kept, for the reason the text path gives: the daemon has nowhere to record it
+        // between requests, and a link nobody is reading is one the peer sees as a connection that arrived and went quiet.
+        let _ = link.bye("file sent");
+
+        Ok(serde_json::json!({
+            "sent": completed,
+            "to": device_id.to_string(),
+            "bytes": bytes,
+            "resendRounds": resends,
+            "traceId": trace_id.to_string(),
+            // ★ Said rather than implied. A transfer that ran out of time has sent blocks and has not been confirmed, and a
+            // caller told only `sent: false` would not know whether to wait or to give up.
+            "timedOut": !completed,
+        }))
     }
 
     fn plugins(&self) -> Result<serde_json::Value, Refusal> {
@@ -512,6 +581,38 @@ const fn error_code_for(error: &synra_core::MessageError) -> ErrorCode {
         synra_core::MessageError::Envelope(_) | synra_core::MessageError::EventName(_) => {
             ErrorCode::Internal
         }
+        _ => ErrorCode::Internal,
+    }
+}
+
+/// The code for a transfer session that failed.
+///
+/// # Why a transfer failure is not one code
+///
+/// Because the user`s next step differs: bytes that did not match the digest are a corrupt transfer to retry or not, a
+/// missing block is one that never finished, and a link failure is a network. One code for all three would leave the client
+/// unable to say anything but the sentence the kernel wrote.
+const fn error_code_for_session(error: &synra_core::SessionError) -> ErrorCode {
+    match error {
+        // A transfer that did not verify is the code the protocol has for exactly this, and a client can act on it: the
+        // partial file is discarded and a retry starts again.
+        synra_core::SessionError::Transfer(synra_core::TransferError::DigestMismatch { .. })
+        | synra_core::SessionError::Transfer(synra_core::TransferError::CompletionMismatch { .. }) => {
+            ErrorCode::IntegrityMismatch
+        }
+        // A transfer that stopped with blocks owed never finished.
+        synra_core::SessionError::Transfer(synra_core::TransferError::Incomplete { .. }) => {
+            ErrorCode::TransferFailed
+        }
+        synra_core::SessionError::Link(synra_core::LinkError::Transport { .. }) => {
+            ErrorCode::TransportNotOpen
+        }
+        synra_core::SessionError::Link(_) => ErrorCode::TransportNotOpen,
+        synra_core::SessionError::WrongTransfer { .. }
+        | synra_core::SessionError::BadProgress(_)
+        | synra_core::SessionError::Payload { .. } => ErrorCode::ProtocolViolation,
+        // Everything else is this kernel failing rather than the peer or the network, and `Internal` is the honest code for
+        // a failure it cannot name.
         _ => ErrorCode::Internal,
     }
 }
@@ -790,34 +891,45 @@ mod tests {
     }
 
     #[test]
-    fn file_sending_refuses_with_the_one_sentence_for_the_missing_layer() {
-        // One missing layer, one sentence. A reason that lived at each call site would drift, and a user investigating two
-        // commands would be told two different things about one gap.
-        //
-        // ★ It is now one command rather than two. Text sending is real, so an example that used it would be asserting a
-        // refusal that no longer happens — and a test kept in step by hand is exactly what "one sentence" is meant to stop.
-        let dir = TempDir::new("send");
+    fn file_sending_checks_the_file_before_it_looks_for_the_device() {
+        // ★ The same order `send --text` uses, and for the same reason: a path that does not exist is a mistake in the
+        // argument the user just typed. Reporting it as an unknown device would send them to check a device list for a
+        // problem that is not there.
+        let dir = TempDir::new("send-file-missing");
         let runtime = runtime(dir.path());
-        match runtime.send_file("d", "/tmp/a") {
+        match runtime.send_file("nobody", "/definitely/not/here.bin") {
             Err(refusal) => {
-                assert_eq!(refusal.message, MISSING_SESSION_LAYER);
-                assert_eq!(refusal.code, ErrorCode::Unsupported);
-                // Not retryable: repeating it will keep failing until a new build is installed.
-                assert!(!refusal.is_retryable());
+                assert_eq!(refusal.code, ErrorCode::InvalidArgument);
+                assert!(refusal.message.contains("not/here.bin"), "{}", refusal.message);
             }
             Ok(value) => panic!("expected a refusal, got {value}"),
         }
     }
 
     #[test]
+    fn file_sending_to_a_device_nothing_is_called_is_refused_after_the_file_passes() {
+        // The other side of the same order: a real file and an unknown device is a device problem, and that is the code
+        // the client gets. The two checks are separate so the message is about the thing the user got wrong.
+        let dir = TempDir::new("send-file-unknown");
+        let source = dir.path().join("real.bin");
+        std::fs::write(&source, b"contents").expect("writes");
+        let runtime = runtime(dir.path());
+        match runtime.send_file("nobody", &source.to_string_lossy()) {
+            Err(refusal) => assert_eq!(refusal.code, ErrorCode::NotPaired),
+            Ok(value) => panic!("expected a refusal, got {value}"),
+        }
+    }
+
+    #[test]
     fn text_sending_no_longer_refuses_for_a_missing_layer() {
-        // ★ The other half of the assertion above: `send --text` must fail for a reason about the *device*, not about the
-        // layer. This is what would break first if the two commands were ever wired to the same refusal again.
+        // ★ `send --text` must fail for a reason about the *device*, not about a missing layer. This is what would break
+        // first if the two commands were ever wired to the same refusal again.
         let dir = TempDir::new("send-text-real");
         let runtime = runtime(dir.path());
         match runtime.send_text("d", "x") {
             Err(refusal) => {
-                assert_ne!(refusal.message, MISSING_SESSION_LAYER);
+                // The text path refuses for a reason about the device, not about a missing layer.
+
                 assert_eq!(refusal.code, ErrorCode::NotPaired);
             }
             Ok(value) => panic!("expected a refusal, got {value}"),
@@ -825,22 +937,23 @@ mod tests {
     }
 
     #[test]
-    fn a_refusal_for_a_missing_layer_is_not_retryable() {
-        // ★ `Unsupported` is not retryable, and that is the right answer: repeating the call will keep failing until a
-        // new build is installed. A retryable flag would have a client offer a retry that cannot work.
+    fn a_missing_argument_is_not_retryable() {
+        // ★ A refusal about the argument is not retryable, and that is the right answer: repeating the call with the same
+        // argument will keep failing. A retryable flag would have a client offer a retry that cannot work.
         //
-        // The example is `send`: listing devices is real now, and sending is what still needs the transfer layer.
+        // `Unsupported` used to be the example here, for the layer that was not written. Nothing refuses with `Unsupported`
+        // any more — the transfer path exists — so the example is an argument the user can fix.
         let dir = TempDir::new("retryable");
-        // `send --file` is the command that still refuses: text sending is real now, so an example that used it would be
-        // asserting a refusal that no longer happens.
-        match runtime(dir.path()).send_file("d", "/tmp/a") {
+        match runtime(dir.path()).send_file("d", "/definitely/not/here.bin") {
             Err(refusal) => {
-                assert_eq!(refusal.code, ErrorCode::Unsupported);
+                assert_eq!(refusal.code, ErrorCode::InvalidArgument);
                 assert!(!refusal.is_retryable());
             }
             Ok(value) => panic!("expected a refusal, got {value}"),
         }
     }
+
+
 
     // ── Plugins ───────────────────────────────────────────────────────────────────────────────────
 

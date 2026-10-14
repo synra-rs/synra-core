@@ -198,7 +198,8 @@ fn serve(decision: &synra_daemon::Startup) -> ExitCode {
     if runtime.host.lock().listen_nonblocking().is_ok() {
         let peers = Arc::clone(&runtime.host);
         let stop = Arc::clone(&beating);
-        std::thread::spawn(move || synra_daemon::transport::serve(&peers, &stop));
+        let data_dir = runtime.data_dir.clone();
+        std::thread::spawn(move || synra_daemon::transport::serve(&peers, &stop, &data_dir));
     }
 
     // ★ Discovery runs on its own thread and the control loop only reads what it learned. `serve_one` blocks and the

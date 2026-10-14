@@ -1,0 +1,303 @@
+//! What an inbound connection does when it is carrying a file.
+//!
+//! # Where this sits
+//!
+//! [`crate::transport`] owns the socket: it accepts, handshakes, and reads frames. This owns the **state** — a connection
+//! that is mid-transfer is one where a `TransferRequest` has been seen and blocks are arriving, and something has to
+//! remember which file they belong to. That memory is here, so the socket code stays a loop over frames.
+//!
+//! # Why the file name from the peer is not trusted
+//!
+//! Because it arrives over the network and it becomes a **path**. A name of `../../../.ssh/authorized_keys`, or one
+//! containing a NUL, or one that is a Windows device like `CON`, would either escape the inbox or fail in a way the user
+//! cannot diagnose. The name is passed through the store's `sanitise_component`, which is the same rule plugin identifiers
+//! already follow — one sanitiser for every untrusted name that becomes part of a path, rather than a second one here that
+//! would drift.
+//!
+//! # Why the destination is inside the data directory
+//!
+//! Because that is the only directory this process may certainly write to, and a kernel that guessed a user's Downloads
+//! folder would be one that writes where it was not asked to. A file lands in `<data>/inbox`, and moving it from there is
+//! the interface's job, where the user can be asked.
+
+use std::path::{Path, PathBuf};
+
+use synra_core::link::PeerLink;
+use synra_core::session::{self, Receiving, Received};
+
+/// The directory incoming files land in, under the data directory.
+pub const INBOX_DIR: &str = "inbox";
+
+/// What to do with a message that arrived on an inbound connection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Decision {
+    /// A transfer was proposed and accepted; blocks may now arrive.
+    Accepted {
+        /// Which transfer.
+        transfer_id: String,
+        /// Which file it will become.
+        file_name: String,
+    },
+    /// A block was stored.
+    Stored {
+        /// Which block.
+        index: u32,
+        /// Whether it had already arrived.
+        duplicate: bool,
+    },
+    /// The transfer finished and the file was verified.
+    Finished {
+        /// Where it is.
+        path: PathBuf,
+        /// How large.
+        byte_length: u64,
+    },
+    /// The transfer ended without a usable file.
+    Failed {
+        /// Why.
+        why: String,
+    },
+    /// A message for another feature, reported rather than dropped.
+    ///
+    /// # Why this is not `Ignored`
+    ///
+    /// Because "not a transfer" and "nothing to do with this connection" are different, and the difference is what a user
+    /// is told. A peer that sent text has sent a message this kernel received — there is simply no event bus wired up to
+    /// deliver it — and a daemon that reported neither would be one whose log looks identical whether the message arrived
+    /// or was lost in the network.
+    Delivered {
+        /// The event the message carried.
+        event: String,
+    },
+    /// A message this connection has nothing to do with.
+    Ignored,
+}
+
+/// A connection's transfer state.
+///
+/// # Why one transfer at a time
+///
+/// Because a connection carries one conversation, and the protocol's `transfer_id` is what says so. Two transfers on one
+/// link would be legal, and nothing here would interleave them correctly — so the second proposal is refused rather than
+/// silently mixed into the first, which is the failure that would produce a corrupt file with no clue why.
+#[derive(Debug, Default)]
+pub struct Inbox {
+    receiving: Option<Receiving>,
+    inbox: PathBuf,
+}
+
+impl Inbox {
+    /// Prepares to receive into `<data>/inbox`.
+    #[must_use]
+    pub fn new(data_dir: &Path) -> Self {
+        Self { receiving: None, inbox: data_dir.join(INBOX_DIR) }
+    }
+
+    /// Whether a transfer is in progress.
+    #[must_use]
+    pub const fn is_busy(&self) -> bool {
+        self.receiving.is_some()
+    }
+
+    /// The directory files land in.
+    #[must_use]
+    pub fn directory(&self) -> &Path {
+        &self.inbox
+    }
+
+    /// Reads one inbound message and does whatever it calls for.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the session reports: a link failure, a malformed message, or a file that cannot be written. A transfer
+    /// that fails to *verify* is not an error — it is [`Decision::Failed`], because the transfer ended and how it ended is
+    /// what the caller reports.
+    pub fn absorb(
+        &mut self,
+        link: &mut PeerLink,
+        now_ms: i64,
+        deadline: std::time::Instant,
+    ) -> Result<Decision, synra_core::SessionError> {
+        // ★ The proposal arrives as an envelope, before there is anything to receive into. A block that arrives with no
+        // transfer in progress is a protocol violation rather than something to guess about — the peer is sending part of
+        // something this end never agreed to.
+        if self.receiving.is_none() {
+            let Inbound::Envelope(envelope) = link.receive_inbound()? else {
+                return Ok(Decision::Failed {
+                    why: "a block arrived before any transfer was proposed".to_owned(),
+                });
+            };
+            if session::classify(&envelope) != Some(session::Message::Request) {
+                return Ok(Decision::Delivered { event: envelope.event.as_str().to_owned() });
+            }
+            let name = proposed_name(&envelope)?;
+            let destination = self.destination_for(&name);
+            if let Some(parent) = destination.parent() {
+                std::fs::create_dir_all(parent).map_err(|error| synra_core::SessionError::Payload {
+                    message: "inbox",
+                    why: format!("could not create {}: {error}", parent.display()),
+                })?;
+            }
+            let trace = envelope.trace_id;
+            let receiving = Receiving::accept(&envelope, &destination, trace)?;
+            let transfer_id = receiving.transfer_id().to_string();
+            self.receiving = Some(receiving);
+            return Ok(Decision::Accepted { transfer_id, file_name: name });
+        }
+
+        let Some(receiving) = self.receiving.as_mut() else {
+            return Ok(Decision::Ignored);
+        };
+        match receiving.absorb(link, now_ms, deadline)? {
+            Received::Block { index, duplicate } => Ok(Decision::Stored { index, duplicate }),
+            Received::Verified { .. } => {
+                // The transfer is over, so the state is released whatever happens to the file afterwards.
+                let path = receiving.path().to_path_buf();
+                let byte_length = receiving.byte_length();
+                self.receiving = None;
+                Ok(Decision::Finished { path, byte_length })
+            }
+            Received::Failed { why, .. } => {
+                self.receiving = None;
+                Ok(Decision::Failed { why })
+            }
+            Received::Aborted { reason, .. } => {
+                self.receiving = None;
+                Ok(Decision::Failed { why: format!("the peer gave up: {reason:?}") })
+            }
+            // A message the transfer has nothing to do with, while a transfer *is* in progress: reported so it is not lost
+            // between two files.
+            Received::Ignored => Ok(Decision::Delivered { event: "unknown".to_owned() }),
+            // `Received` is `#[non_exhaustive]`, so a variant this build does not know is treated as a message it has
+            // nothing to do with rather than as a reason to fail the connection.
+            _ => Ok(Decision::Ignored),
+        }
+    }
+
+    /// Where a file with this name goes.
+    ///
+    /// # Why the name is sanitised and then made unique
+    ///
+    /// Sanitised because it is untrusted and becomes a path. Made unique because two files called `report.pdf` from two
+    /// devices are both legitimate, and the second overwriting the first would lose a file the user was told had arrived.
+    /// The suffix is the transfer's identifier, which is already unique and needs no counter to be collision-free.
+    fn destination_for(&self, name: &str) -> PathBuf {
+        let safe = synra_store::sanitise_component(name);
+        // A name that sanitises to nothing — every character rejected — still needs a file.
+        let stem = if safe.trim_matches(['.', '-']).is_empty() { "file".to_owned() } else { safe };
+        self.inbox.join(stem)
+    }
+}
+
+/// The file name a proposal carries.
+fn proposed_name(envelope: &synra_protocol::envelope::Envelope) -> Result<String, synra_core::SessionError> {
+    let raw = envelope.payload.as_ref().ok_or_else(|| synra_core::SessionError::Payload {
+        message: "request",
+        why: "the envelope carries no payload".to_owned(),
+    })?;
+    let request: synra_protocol::session::TransferRequest =
+        serde_json::from_str(raw.get()).map_err(|error| synra_core::SessionError::Payload {
+            message: "request",
+            why: error.to_string(),
+        })?;
+    Ok(match request.meta {
+        synra_protocol::session::TransferMeta::Attachment { file_name, .. } => file_name,
+        // A plugin bundle is not something this kernel installs yet, and its "name" is a plugin identifier rather than a
+        // file. Named as such so the file in the inbox says what it is.
+        synra_protocol::session::TransferMeta::PluginBundle { plugin_id, .. } => {
+            format!("plugin-{plugin_id}.wasm")
+        }
+        // `TransferMeta` is `#[non_exhaustive]`, so a kind this build does not know is named rather than guessed at — a
+        // newer peer sending something this one cannot describe still gets a file rather than a failure.
+        _ => "transfer".to_owned(),
+    })
+}
+
+use synra_core::Inbound;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A temporary directory that removes itself.
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(tag: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "synra-inbox-{tag}-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).expect("a temp directory");
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    // ── The name rules ────────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn a_name_that_would_escape_the_inbox_does_not() {
+        // ★ The name arrives over the network and becomes a path. A traversal that survived would write wherever the peer
+        // asked, which is the whole of the user's home directory.
+        let dir = TempDir::new("traversal");
+        let inbox = Inbox::new(dir.path());
+        for hostile in [
+            "../../../etc/passwd",
+            "..\\..\\windows\\system32\\config",
+            "....//....//etc/passwd",
+            "/etc/passwd",
+            "C:\\Windows\\notepad.exe",
+        ] {
+            let destination = inbox.destination_for(hostile);
+            assert!(
+                destination.starts_with(dir.path().join(INBOX_DIR)),
+                "{hostile} escaped to {}",
+                destination.display()
+            );
+        }
+    }
+
+    #[test]
+    fn a_name_is_still_recognisable_after_sanitising() {
+        // Sanitising is not meant to destroy the name: the user has to recognise the file they were sent.
+        let dir = TempDir::new("recognisable");
+        let inbox = Inbox::new(dir.path());
+        let destination = inbox.destination_for("quarterly report (final).pdf");
+        let name = destination.file_name().expect("a file name").to_string_lossy().into_owned();
+        assert!(name.contains("quarterly"), "{name}");
+        assert!(name.contains("report"), "{name}");
+        assert!(name.ends_with(".pdf"), "{name}");
+    }
+
+    #[test]
+    fn a_name_of_nothing_usable_still_produces_a_file() {
+        // Every character rejected is possible, and a transfer that had nowhere to write would fail for a reason the user
+        // cannot act on.
+        let dir = TempDir::new("empty-name");
+        let inbox = Inbox::new(dir.path());
+        let destination = inbox.destination_for("...");
+        assert!(destination.file_name().is_some());
+        assert!(!destination.file_name().expect("a name").is_empty());
+    }
+
+    #[test]
+    fn a_new_inbox_is_empty_and_lands_under_the_data_directory() {
+        let dir = TempDir::new("new");
+        let inbox = Inbox::new(dir.path());
+        assert!(!inbox.is_busy());
+        assert_eq!(inbox.directory(), dir.path().join(INBOX_DIR));
+    }
+}

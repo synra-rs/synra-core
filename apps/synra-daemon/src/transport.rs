@@ -26,12 +26,15 @@
 //! malformed frame. A listener that exited on any of those would be one any process on the network could stop.
 
 use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use parking_lot::Mutex;
+use crate::dispatch::{Decision, Inbox};
 use synra_core::host::Host;
+use synra_core::SessionError;
 use synra_core::link::{LinkError, PeerLink};
 
 /// How long the accept loop waits between polls when nothing is waiting.
@@ -64,7 +67,9 @@ pub struct Served {
 ///
 /// Because the daemon's shutdown is a flag its `Ctrl-C` handler sets, and a listener that ignored it would keep a socket
 /// bound until the process was killed — so a restart would fail to bind for as long as the old process lingered.
-pub fn serve(host: &Arc<Mutex<Host>>, stop: &Arc<AtomicBool>) {
+pub fn serve(host: &Arc<Mutex<Host>>, stop: &Arc<AtomicBool>, data_dir: &Path) {
+    // Owned, because each connection is handed to its own thread and a thread cannot borrow the caller's stack.
+    let data_dir = data_dir.to_path_buf();
     // ★ Non-blocking, so the loop comes round often enough to notice the stop flag. Set once rather than per iteration:
     // it is a property of the socket, and re-setting it fifty times a second would be a syscall per poll for nothing.
     match host.lock().listen_nonblocking() {
@@ -88,10 +93,12 @@ pub fn serve(host: &Arc<Mutex<Host>>, stop: &Arc<AtomicBool>) {
         match taken {
             Ok(Some(stream)) => {
                 let host = Arc::clone(host);
+                // Each connection gets its own copy of the path, because a thread cannot borrow the loop's.
+                let inbox_root = data_dir.clone();
                 // A thread per connection, because a link's lifetime is a peer's to decide. Nothing joins it: a link that
                 // ended is one whose thread returns, and one that is still open is doing useful work.
                 std::thread::spawn(move || {
-                    let served = handle(&host, stream);
+                    let served = handle(&host, stream, &inbox_root);
                     if let Some(ended) = &served.ended {
                         let who = served
                             .peer
@@ -118,8 +125,8 @@ pub fn serve(host: &Arc<Mutex<Host>>, stop: &Arc<AtomicBool>) {
 /// pairing" — which is the true answer for a build with no pairing table. It is deliberately **not** `Current`, because
 /// claiming a pairing that does not exist would tell a peer its token is still good.
 #[must_use]
-pub fn handle(host: &Arc<Mutex<Host>>, stream: std::net::TcpStream) -> Served {
-    handle_within(host, stream, synra_protocol::limits::HELLO_TIMEOUT)
+pub fn handle(host: &Arc<Mutex<Host>>, stream: std::net::TcpStream, data_dir: &Path) -> Served {
+    handle_within(host, stream, data_dir, synra_protocol::limits::HELLO_TIMEOUT)
 }
 
 /// Handshakes on a connection with a chosen deadline for the exchange.
@@ -135,6 +142,7 @@ pub fn handle(host: &Arc<Mutex<Host>>, stream: std::net::TcpStream) -> Served {
 pub fn handle_within(
     host: &Arc<Mutex<Host>>,
     stream: std::net::TcpStream,
+    data_dir: &Path,
     timeout: Duration,
 ) -> Served {
     // ★ Set on the stream before anything reads from it. A peer that connects and goes silent — a port scan, another
@@ -165,22 +173,44 @@ pub fn handle_within(
 
     let peer = link.peer();
     let mut events = Vec::new();
+    // ★ The connection's transfer state: a proposal is remembered here, and the blocks that follow it are written into the
+    // file it named. Without this the loop below would see a block as an unexpected frame and close the link — which is
+    // what it did before, and why `send --file` could not work.
+    let mut inbox = Inbox::new(data_dir);
     loop {
-        match link.receive() {
-            Ok(envelope) => {
-                events.push(envelope.event.as_str().to_owned());
-                // ★ The message is dropped rather than delivered, and said out loud. There is no event bus wired to this
-                // daemon yet, and a kernel that silently discarded what a peer sent would be one whose user is told a
-                // message arrived when it did not.
-                eprintln!(
-                    "synra-daemon: {} sent {} ({} bytes of payload) — nothing is listening for events yet",
-                    peer,
-                    envelope.event.as_str(),
-                    envelope.payload.as_ref().map_or(0, |payload| payload.get().len()),
-                );
-            }
+        match inbox.absorb(&mut link, synra_store::sqlite::now_ms(), deadline()) {
+            Ok(decision) => match decision {
+                Decision::Delivered { event } => {
+                    // ★ Recorded as well as reported. A message this kernel received has arrived, and a log that looked
+                    // the same whether it arrived or was lost in the network would be one a user cannot investigate with.
+                    events.push(event.clone());
+                    eprintln!(
+                        "synra-daemon: {peer} sent {event} — no event bus is wired up, so it was not delivered",
+                    );
+                }
+                Decision::Ignored => {}
+                Decision::Accepted { transfer_id, file_name } => {
+                    events.push(format!("accepted {transfer_id}"));
+                    println!("receiving {file_name} from {peer}");
+                }
+                Decision::Stored { index, duplicate } => {
+                    // Per-block logging would be enormous for a real file, so only the interesting case is said: a block
+                    // that arrived twice is a resumption working, and one that is logged is one a developer can see.
+                    if duplicate {
+                        eprintln!("synra-daemon: {peer} re-sent block {index}, which was already held");
+                    }
+                }
+                Decision::Finished { path, byte_length } => {
+                    events.push("finished".to_owned());
+                    println!("received {byte_length} bytes into {}", path.display());
+                }
+                Decision::Failed { why } => {
+                    events.push("failed".to_owned());
+                    eprintln!("synra-daemon: a transfer from {peer} failed: {why}");
+                }
+            },
             // A `Bye` is the ordinary end, and so is a peer that hung up. Neither is a fault, and both end the loop.
-            Err(LinkError::Closed) => {
+            Err(SessionError::Link(LinkError::Closed)) => {
                 return Served { peer: Some(peer), events, ended: None };
             }
             Err(error) => {
@@ -188,6 +218,14 @@ pub fn handle_within(
             }
         }
     }
+}
+
+/// The deadline one inbound message is read under.
+///
+/// A peer that says nothing must not hold a thread for ever, and the protocol's own handshake timeout is the figure every
+/// other part of the kernel uses for "how long may a peer take to speak".
+fn deadline() -> std::time::Instant {
+    std::time::Instant::now() + synra_protocol::limits::HELLO_TIMEOUT
 }
 
 /// Binds the transport port for inbound connections.
@@ -288,6 +326,32 @@ mod tests {
         }
     }
 
+    /// A temporary directory that removes itself, for the inbox an inbound transfer needs.
+    struct TempDir(std::path::PathBuf);
+
+    impl TempDir {
+        fn new(tag: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "synra-transport-{tag}-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).expect("a temp directory");
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     /// Two connected streams, as an established link would have.
     fn connected_pair() -> (std::net::TcpStream, std::net::TcpStream) {        let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).expect("binds");
         let address = listener.local_addr().expect("an address");
@@ -368,6 +432,7 @@ mod tests {
 
     #[test]
     fn an_inbound_connection_is_handshaked_and_its_message_is_read() {
+        let inbox = TempDir::new("inbox");
         // ★ The thing this module exists for: a device that can only dial is a device nobody can send to.
         //
         // ★ Both sides are on **production flags**, and that is not incidental — it is what makes this the daemon's
@@ -396,7 +461,7 @@ mod tests {
                 let taken = host.lock().try_accept();
                 match taken {
                     Ok(Some(stream)) => {
-                        return handle_within(&Arc::clone(&host), stream, Duration::from_secs(5));
+                        return handle_within(&Arc::clone(&host), stream, inbox.path(), Duration::from_secs(5));
                     }
                     Ok(None) => {}
                     Err(error) => panic!("the listener could not accept: {error}"),
@@ -432,6 +497,7 @@ mod tests {
 
     #[test]
     fn a_connection_that_is_not_a_synra_peer_is_reported_rather_than_hanging() {
+        let inbox = TempDir::new("inbox");
         // ★ A port scan, another product's client, and a peer that changed its mind all look like this. The first version of
         // this test connected and said *nothing*, which proved the hazard rather than the fix — the reading half waited for
         // ever because nothing bounded it. What bounds it now is the deadline `handle_within` sets on the stream.
@@ -448,7 +514,7 @@ mod tests {
         // live to the end of the statement, and a pending connection is not always visible to `accept` the instant
         // `connect` returns — which made this test flake under load.
         let taken = accept_within(&host, Duration::from_secs(5)).expect("a connection");
-        let served = handle_within(&Arc::clone(&host), taken, Duration::from_millis(500));
+        let served = handle_within(&Arc::clone(&host), taken, inbox.path(), Duration::from_millis(500));
 
         assert!(served.ended.is_some(), "a non-peer should be reported: {served:?}");
         // And the peer is absent, because the handshake is what would have established it — which is exactly what a
@@ -459,6 +525,7 @@ mod tests {
 
     #[test]
     fn a_peer_that_connects_and_says_nothing_is_bounded_by_the_deadline() {
+        let inbox = TempDir::new("inbox");
         // ★ The case that made the first version hang. Nothing on the network can be trusted to say something, so the
         // reading half has to be bounded by a clock rather than by the peer's manners.
         let (host, address) = listening(A, "Laptop");
@@ -475,7 +542,7 @@ mod tests {
         // of the suite.
         let taken = accept_within(&host, Duration::from_secs(5)).expect("a connection");
         let started = std::time::Instant::now();
-        let served = handle_within(&Arc::clone(&host), taken, Duration::from_millis(300));
+        let served = handle_within(&Arc::clone(&host), taken, inbox.path(), Duration::from_millis(300));
         let elapsed = started.elapsed();
 
         assert!(served.ended.is_some(), "{served:?}");

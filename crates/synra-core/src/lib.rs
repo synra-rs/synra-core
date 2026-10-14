@@ -65,9 +65,13 @@ pub mod worker;
 pub use admission::{
     AdmissionContext, AdmissionRefusal, AdmissionStep, PluginKey, admit, check, host_requirement,
 };
+pub use session::{
+    Message, Receiving, Received, SessionError, SessionEvent, abort, classify, complete, propose,
+    report_progress, send_blocks, send_file,
+};
 pub use transfer::{
-    Absorbed as BlockAbsorbed, Block, MAX_CHUNK_SIZE, ObjectDigest, TransferError, TransferReceiver,
-    TransferSender, plan_blocks,
+    Absorbed as BlockAbsorbed, Block, DEFAULT_CHUNK_SIZE, MAX_CHUNK_SIZE, ObjectDigest, TransferError,
+    TransferReceiver, TransferSender, plan_blocks,
 };
 pub use worker::{DiscoveryService, QUERY_INTERVAL, Ticked, is_visible, run};
 pub use socket::{
