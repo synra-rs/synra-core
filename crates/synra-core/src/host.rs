@@ -254,7 +254,6 @@ impl Host {
     /// agreement and the agreement is unusable.
     pub fn dial(
         &mut self,
-        device_id: DeviceId,
         address: SocketAddr,
         token: Option<LinkToken>,
         now_ms: u64,
@@ -299,7 +298,7 @@ impl Host {
         self.discovery
             .handshaked(negotiated.device_id, address, Some(&negotiated.display_name), millis_reading(now_ms));
 
-        let _ = device_id;
+        let _ = &address;
         Ok(PeerLink::new(
             stream,
             self.identity.device_id,
@@ -792,7 +791,7 @@ mod tests {
             server.accept(1_000, |_, _| PairingState::Unknown).map(|(link, _)| link.peer())
         });
 
-        let dialled = client.dial(device(A), address, None, 1_000).map(|link| link.peer());
+        let dialled = client.dial(address, None, 1_000).map(|link| link.peer());
         let accepted = accepting.join().expect("the acceptor finished");
 
         assert_eq!(dialled.expect("dials"), device(A));
@@ -817,7 +816,7 @@ mod tests {
                 .map(|(link, _)| link.peer())
         });
         let dialled = host_b
-            .dial(device(A), address, None, 1_000)
+            .dial(address, None, 1_000)
             .map(|link| link.peer());
 
         assert_eq!(dialled.expect("dials with a production timeout"), device(A));
@@ -873,7 +872,7 @@ mod tests {
             (link, events, server)
         });
 
-        let link = client.dial(device(A), address, None, 1_000).expect("dials");
+        let link = client.dial(address, None, 1_000).expect("dials");
         let (server_link, events, server) = serving.join().expect("the thread finished");
 
         // Both sides recorded a session for the other.
@@ -913,7 +912,7 @@ mod tests {
         let serving = std::thread::spawn(move || {
             server.accept(1_000, |_, _| PairingState::Unknown).expect("accepts");
         });
-        client.dial(device(A), address, None, 1_000).expect("dials");
+        client.dial(address, None, 1_000).expect("dials");
         serving.join().expect("finished");
 
         let candidate = client.discovery().get(device(A)).expect("a candidate");
@@ -945,7 +944,7 @@ mod tests {
         let serving = std::thread::spawn(move || {
             server.accept(1_000, |_, _| PairingState::Unknown).expect("accepts");
         });
-        client.dial(device(A), address, None, 1_000).expect("dials");
+        client.dial(address, None, 1_000).expect("dials");
         serving.join().expect("finished");
 
         assert_eq!(
@@ -967,7 +966,7 @@ mod tests {
             (envelope, server)
         });
 
-        let mut link = client.dial(device(A), address, None, 1_000).expect("dials");
+        let mut link = client.dial(address, None, 1_000).expect("dials");
         let envelope = Envelope::outbound(
             OutboundSpec {
                 event: EventName::parse("device.ping").expect("a name"),
@@ -1030,7 +1029,7 @@ mod tests {
         )
         .expect("builds");
 
-        let mut link = client.dial(resolved, address, None, 1_000).expect("dials");
+        let mut link = client.dial(address, None, 1_000).expect("dials");
         client.send(&mut link, &envelope).expect("sends");
 
         let (received, payload, _server) = serving.join().expect("finished");
@@ -1139,7 +1138,7 @@ mod tests {
         let serving = std::thread::spawn(move || {
             server.accept(1_000, |_, _| PairingState::Unknown).expect("accepts");
         });
-        let mut link = client.dial(device(A), address, None, 1_000).expect("dials");
+        let mut link = client.dial(address, None, 1_000).expect("dials");
         serving.join().expect("finished");
 
         // `other` has no session with A, so it will not send on a link that belongs to `client`.
@@ -1211,7 +1210,7 @@ mod tests {
         let serving = std::thread::spawn(move || {
             server.accept(1_000, |_, _| PairingState::Unknown).expect("accepts");
         });
-        client.dial(device(A), address, None, 1_000).expect("dials");
+        client.dial(address, None, 1_000).expect("dials");
         serving.join().expect("finished");
 
         // The session was opened at 1_000 with a one-second timeout, so at 5_000 it is long overdue.

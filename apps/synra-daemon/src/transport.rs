@@ -474,7 +474,7 @@ mod tests {
         let (mut client, _db) = client_host(B, "Phone");
         client.set_flags(Flags::production());
         let mut link = client
-            .dial(device(A), dialable(address), None, 1_000)
+            .dial(dialable(address), None, 1_000)
             .expect("dials");
         let envelope = synra_core::text_to(
             device(B),

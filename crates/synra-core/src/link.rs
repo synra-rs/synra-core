@@ -48,6 +48,17 @@ pub enum LinkError {
         why: String,
     },
 
+    /// A read waited longer than the link's timeout and no frame arrived.
+    ///
+    /// # Why this is not `Transport`
+    ///
+    /// Because "nothing has arrived yet" and "the connection is broken" are different facts with different answers, and
+    /// flattening them into one is how a working transfer gets reported as a broken link. An end-to-end run showed exactly
+    /// that: a 300 KB file arrived byte-for-byte while the sender reported `transport_not_open`, because a read had timed
+    /// out while it was waiting for a confirmation that was still in flight.
+    #[error("the link was quiet for longer than the timeout")]
+    TimedOut,
+
     /// The peer closed the link.
     #[error("the peer closed the link")]
     Closed,
@@ -381,6 +392,18 @@ impl PeerLink {
     }
 
     /// Reads one frame.
+    ///
+    /// # Why a read timeout does not abandon a half-read frame
+    ///
+    /// Because a socket read timeout is a deadline on **one `read` call**, not on a frame. A 256 KiB block is far more than
+    /// one buffer, so it arrives over several reads — and treating a timeout between two of them as a transport failure
+    /// threw away the bytes already buffered and reported a broken link. That is what an end-to-end run showed: a 300 KB
+    /// file arrived byte-for-byte while both ends reported `WSAETIMEDOUT`, and the receiver's completion was one of the
+    /// frames lost that way.
+    ///
+    /// So a timeout while a frame is **partly** buffered is retried rather than reported: the peer is mid-frame, which is
+    /// not the same as a peer that has gone quiet. A timeout with nothing buffered is still reported, because that is
+    /// exactly what the handshake needs — a peer that connects and says nothing must be abandoned rather than waited on.
     fn read_frame(&mut self) -> Result<Frame, LinkError> {
         if let Some(timeout) = self.flags.timeout {
             self.stream
@@ -393,10 +416,17 @@ impl PeerLink {
             if let Some(frame) = self.decoder.next_frame()? {
                 return Ok(frame);
             }
+            // Whether anything of the current frame has arrived. Checked before the read, because the read is what
+            // advances it.
+            let partial = self.decoder.buffered() > 0;
             let read = match self.stream.read(&mut buffer) {
                 Ok(0) => return Err(LinkError::Closed),
                 Ok(read) => read,
                 Err(error) if crate::peer::peer_went_away(&error) => return Err(LinkError::Closed),
+                // A timeout with a frame partly buffered is retried, because the peer is mid-frame rather than silent.
+                Err(error) if partial && is_a_timeout(&error) => continue,
+                // A timeout with nothing buffered is reported as what it is — a quiet link — rather than as a broken one.
+                Err(error) if is_a_timeout(&error) => return Err(LinkError::TimedOut),
                 Err(error) => return Err(LinkError::Transport { why: error.to_string() }),
             };
             let chunk = buffer
@@ -409,6 +439,17 @@ impl PeerLink {
             self.decoder.push_slice(chunk)?;
         }
     }
+}
+
+/// Whether an error is a read that ran out of time rather than a broken connection.
+///
+/// # Why the kinds are matched rather than the message
+///
+/// Because a message is translated: on a Chinese Windows the timeout says so in Chinese, and a check on the text would
+/// silently stop working. `WouldBlock` is what a non-blocking socket reports and `TimedOut` is what a timed-out one does;
+/// both are the same situation from here.
+fn is_a_timeout(error: &std::io::Error) -> bool {
+    matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut)
 }
 
 #[cfg(test)]
@@ -664,6 +705,45 @@ mod tests {
         }
         // Exactly the two blocks were counted; the heartbeat is not a message.
         assert_eq!(receiver.received(), 2);
+    }
+
+    #[test]
+    fn a_full_size_block_survives_the_round_trip() {
+        // ★ The size a real transfer uses, which is the size that found a bug: a 256 KiB block is far more than one socket
+        // read, so it arrives in pieces. An earlier `read_frame` treated a socket timeout **between** two of those pieces
+        // as a broken link and threw the buffered bytes away — so a 300 KB file arrived byte-for-byte while both ends
+        // reported a timeout.
+        // ★ `production()` rather than `no_timeout()`, because the timeout is the thing under test: a block larger than one
+        // socket read sits in the buffer across several reads, and a timeout between two of them must not abandon it.
+        let (a, b) = connected();
+        let mut sender = PeerLink::new(a, device(LOCAL), device(PEER), agreed(), Flags::production());
+        let mut receiver = PeerLink::new(b, device(PEER), device(LOCAL), agreed(), Flags::production());
+
+        let first = vec![7u8; synra_protocol::limits::MAX_CHUNK_LEN];
+        let second = vec![9u8; 37_856];
+
+        let writer = std::thread::spawn(move || {
+            sender.send_chunk(0, &first).expect("sends the first");
+            sender.send_chunk(1, &second).expect("sends the second");
+            sender
+        });
+
+        let mut seen = Vec::new();
+        for _ in 0..2 {
+            match receiver.receive_inbound().expect("receives a block") {
+                Inbound::Block { chunk_id, data } => seen.push((chunk_id, data)),
+                other => panic!("expected a block, got {other:?}"),
+            }
+        }
+        let sender = writer.join().expect("the writer finished");
+
+        assert_eq!(seen[0].0, 0);
+        assert_eq!(seen[0].1.len(), synra_protocol::limits::MAX_CHUNK_LEN);
+        assert!(seen[0].1.iter().all(|byte| *byte == 7));
+        assert_eq!(seen[1].0, 1);
+        assert_eq!(seen[1].1.len(), 37_856);
+        assert!(seen[1].1.iter().all(|byte| *byte == 9));
+        assert_eq!(sender.sent(), 2);
     }
 
     #[test]

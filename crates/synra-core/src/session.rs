@@ -48,9 +48,18 @@ use crate::transfer::{
 
 /// How many blocks may be in flight before the sender waits for a report.
 ///
-/// The protocol's own figure. A window exists so throughput is not one round trip per block, and it is finite so a receiver
-/// that stops reading cannot be made to buffer an unbounded amount.
-pub const WINDOW_BLOCKS: usize = 32;
+/// # Why this is small enough to fit in a socket buffer
+///
+/// Because the sender writes the whole window **before** it reads anything, and the receiver answers each block with a
+/// report. If the window is large enough to fill the socket's send buffer, the sender blocks in a write while the receiver
+/// blocks in a write of its own — a deadlock that moves no bytes and that no timeout ends, because both sockets have their
+/// data and neither peer is reading. A window of 32 blocks of 4 KiB is 128 KiB, which is larger than the default window, and
+/// that is exactly the hang a round-trip test found.
+///
+/// So the figure is chosen to be safely under a socket buffer rather than to be as large as possible. The protocol's own
+/// 32 is a *ceiling* on how many blocks may be unacknowledged; a sender is free to keep fewer in flight, and the cost of
+/// doing so is one extra round trip per four blocks — which is far cheaper than a transfer that stops.
+pub const WINDOW_BLOCKS: usize = 4;
 
 /// What one side of a transfer is doing.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -358,11 +367,15 @@ pub fn send_blocks(
                     transfer_id: sender.transfer_id(),
                     missing: missing.clone(),
                 });
-                // ★ The receiver's report is the authority, so the sender's own record is **replaced** by it rather than
-                // merged with it. A sender that kept its own `sent` bits would believe a block was delivered when the far
-                // end never got it, and would never send it again — which is a transfer that hangs rather than one that
-                // fails.
-                sender.adopt_acknowledged(&wanted);
+                // ★ The report says which blocks the receiver **lacks**, and that is what gets queued next. It does **not**
+                // replace what this side believes it has written, and an earlier version did replace it — which is a
+                // livelock, not a fix. A report is sent the moment a block is absorbed, so it names as "missing" every block
+                // still in flight; adopting it cleared the sender's `sent` bits for blocks already on the wire, and the same
+                // blocks went out again for ever. A round trip measured **246 resend rounds and not one acknowledgement**.
+                //
+                // So the two facts stay separate: `sent` is what this side wrote, `missing` is what the far end has not read
+                // yet. A block is written again only because it appears in `missing`, which is what a genuine loss looks
+                // like — and a block already written is not written twice.
                 acknowledged = acknowledged.saturating_add(1);
                 next = missing;
             }
@@ -481,9 +494,18 @@ enum Control {
 /// receiving end of, and there is nothing to do with it. Absorbing it keeps the stream moving instead of stopping the
 /// transfer at the first stray frame.
 fn read_control(link: &mut PeerLink) -> Result<Option<Control>, SessionError> {
-    match link.receive_inbound()? {
-        Inbound::Block { .. } => Ok(Some(Control::Unexpected("a block at the sending end".to_owned()))),
-        Inbound::Envelope(envelope) => match classify(&envelope) {
+    match link.receive_inbound() {
+        // ★ A quiet link is "no message arrived", not a broken one. An earlier version propagated the timeout as
+        // `LinkError::Transport`, so a transfer that had already moved every byte was reported as a link failure — which is
+        // exactly what an end-to-end run showed. The caller's loop re-checks its own deadline, so the wait ends because the
+        // caller said so.
+        Err(LinkError::TimedOut) => Ok(None),
+        Err(error) => Err(SessionError::Link(error)),
+        Ok(Inbound::Block { .. }) => {
+            Ok(Some(Control::Unexpected("a block at the sending end".to_owned())))
+        }
+        Ok(Inbound::Envelope(envelope)) => {
+            match classify(&envelope) {
             Some(Message::Progress) => {
                 let progress: TransferProgress = payload_of(&envelope, "progress")?;
                 Ok(Some(Control::Progress(progress)))
@@ -497,6 +519,7 @@ fn read_control(link: &mut PeerLink) -> Result<Option<Control>, SessionError> {
                 })
             }
             _ => Ok(None),
+        }
         },
     }
 }
@@ -613,6 +636,17 @@ impl Receiving {
         self.receiver.byte_length()
     }
 
+    /// The receiver underneath, for a caller that needs to report progress or check a bitmap.
+    ///
+    /// # Why this is exposed rather than wrapped
+    ///
+    /// Because [`report_progress`] takes it, and a caller driving its own loop needs to call that. Wrapping every method of
+    /// the inner type would be a second interface to keep in step with the first, for no gain.
+    #[must_use]
+    pub const fn receiver(&self) -> &TransferReceiver {
+        &self.receiver
+    }
+
     /// Takes one inbound message.
     ///
     /// # Errors
@@ -724,7 +758,94 @@ impl Receiving {
     }
 }
 
-/// The one-shot send: propose, move every block, and complete.
+/// Waits for the receiver's confirmation that the object verified.
+///
+/// # Why the sender must wait, and what happened when it did not
+///
+/// Because the flow is `complete → complete`, and the second one is the **only** thing that says the file arrived. A sender
+/// that sent its completion and returned would report success on its own say-so — and an end-to-end test caught exactly
+/// that: the file landed byte-for-byte, the receiver confirmed it, and the sender had already stopped listening and timed
+/// out. The transfer *was* complete; the sender simply never heard so.
+///
+/// Everything read on the way is skipped rather than refused: a receiver sends progress reports throughout, and the last
+/// of them may be in flight when the completion goes out.
+///
+/// # Errors
+///
+/// [`SessionError::Link`] for a link failure, and [`SessionError::Payload`] for a malformed message. A peer that says
+/// nothing before `deadline` returns `Ok(false)` — the transfer is not confirmed, which is not the same as failed.
+pub fn await_confirmation(
+    link: &mut PeerLink,
+    transfer_id: TransferId,
+    deadline: std::time::Instant,
+) -> Result<bool, SessionError> {
+    loop {
+        if std::time::Instant::now() >= deadline {
+            return Ok(false);
+        }
+        // ★ Read here rather than through `read_control`, because that helper's `PeerFinished` means "some completion
+        // arrived" — and the receiver sends a `progress` report after **every** block, right up to the end. An earlier
+        // version treated the last of those as the confirmation and returned before the real one arrived, so the sender
+        // reported a broken link while the file had landed byte-for-byte. Only a completion counts here.
+        //
+        // A timeout is "nothing yet" rather than a failure, so the wait ends on the caller's deadline and not on a socket
+        // judgement about the link.
+        let inbound = match link.receive_inbound() {
+            Ok(inbound) => inbound,
+            Err(LinkError::TimedOut) => {
+                if std::time::Instant::now() >= deadline {
+                    return Ok(false);
+                }
+                continue;
+            }
+            Err(error) => return Err(SessionError::Link(error)),
+        };
+        match inbound {
+            // A block at the sending end belongs to a transfer this kernel is not running the receiving half of.
+            Inbound::Block { .. } => {
+                return Err(SessionError::Payload {
+                    message: "control",
+                    why: "a block arrived at the sending end".to_owned(),
+                });
+            }
+            Inbound::Envelope(envelope) => {
+                match classify(&envelope) {
+                Some(Message::Complete) => {
+                    let confirmation: TransferComplete = payload_of(&envelope, "complete")?;
+                    if confirmation.transfer_id != transfer_id {
+                        return Err(SessionError::WrongTransfer {
+                            found: confirmation.transfer_id.to_string(),
+                            expected: transfer_id.to_string(),
+                        });
+                    }
+                    return Ok(true);
+                }
+                // The receiver still talking about blocks. Skipped, because the confirmation comes after the last of them.
+                Some(Message::Progress) => {
+                    let progress: TransferProgress = payload_of(&envelope, "progress")?;
+                    if progress.transfer_id != transfer_id {
+                        return Err(SessionError::WrongTransfer {
+                            found: progress.transfer_id.to_string(),
+                            expected: transfer_id.to_string(),
+                        });
+                    }
+                }
+                Some(Message::Abort) => {
+                    let abort: TransferAbort = payload_of(&envelope, "abort")?;
+                    return Err(SessionError::Payload {
+                        message: "abort",
+                        why: format!("the receiver refused the file: {:?}", abort.reason),
+                    });
+                }
+                // Another feature's message, which a transfer must not swallow.
+                _ => return Ok(false),
+            }
+            },
+        }
+    }
+}
+
+/// The one-shot send: propose, move every block, complete, and wait for the confirmation.
 ///
 /// # Errors
 ///
@@ -743,6 +864,14 @@ pub fn send_file(
     events.extend(send_blocks(link, &mut sender, deadline)?);
     if sender.is_complete() {
         events.push(complete(link, &sender, trace_id, now_ms)?);
+        // ★ And now the wait the protocol asks for. `events` gains a `Verified` only when the receiver has actually said so,
+        // which is what makes a caller's report of success mean something.
+        if await_confirmation(link, sender.transfer_id(), deadline)? {
+            events.push(SessionEvent::Verified {
+                transfer_id: sender.transfer_id(),
+                digest: sender.digest().encoded().to_owned(),
+            });
+        }
     }
     Ok(events)
 }
@@ -1018,6 +1147,86 @@ mod tests {
     }
 
 
+
+    // ── The whole round trip, both ends at once ───────────────────────────────────────────────────
+
+    /// Two connected links under given flags.
+    fn connected_with(flags: Flags) -> (PeerLink, PeerLink) {
+        let listener =
+            std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).expect("binds");
+        let address = listener.local_addr().expect("an address");
+        let dialer = std::net::TcpStream::connect(address).expect("connects");
+        let (accepted, _) = listener.accept().expect("accepts");
+        let agreed = synra_protocol::handshake::Agreed {
+            common: Vec::new(),
+            missing_required: Vec::new(),
+        };
+        (
+            PeerLink::new(dialer, device(A), device(B), agreed.clone(), flags),
+            PeerLink::new(accepted, device(B), device(A), agreed, flags),
+        )
+    }
+
+    #[test]
+    fn a_file_moves_and_the_sender_is_told_it_arrived() {
+        // ★ This is the flow a daemon runs, and it is the one that was broken: `send_file` on one thread, a receiver
+        // answering on the other, **production flags** so the socket has the real six-second read timeout, and a report
+        // after every block exactly as the daemon sends. An earlier version moved the file byte-for-byte and then reported
+        // a broken link, and nothing smaller than this test could tell the two apart.
+        let dir = TempDir::new("round-trip");
+        // ★ The daemon's own figures, which is the point: an earlier version of this test used a small chunk size and it
+        // passed, while the daemon — which uses `DEFAULT_CHUNK_SIZE` — moved the file and then reported a broken link. A
+        // test that does not use the sender's real block size cannot see a block-size problem.
+        let content: Vec<u8> = (0..=255u8).cycle().take(600_000).collect();
+        let source = file(&dir, "source.bin", &content);
+        let destination = dir.path().join("copy.bin");
+        let target = destination.clone();
+
+        let (mut side_a, side_b) = connected_with(Flags::production());
+        let trace = TraceId::new();
+
+        // The receiver, exactly as the daemon drives it: read the proposal, absorb, report, and answer the completion.
+        let reports = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let reports_in = std::sync::Arc::clone(&reports);
+        let receiver = std::thread::spawn(move || {
+            let mut side_b = side_b;
+            let proposal = side_b.receive_inbound().expect("receives the proposal");
+            let Inbound::Envelope(envelope) = proposal else {
+                panic!("expected a proposal");
+            };
+            let mut receiving = Receiving::accept(&envelope, &target, trace).expect("accepts");
+            let generous = || std::time::Instant::now() + std::time::Duration::from_secs(60);
+            loop {
+                match receiving.absorb(&mut side_b, 0, generous()).expect("absorbs") {
+                    Received::Block { .. } => {
+                        report_progress(&mut side_b, receiving.receiver(), trace, 0)
+                            .expect("reports");
+                        reports_in.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    Received::Verified { digest, .. } => return digest,
+                    other => panic!("the receiver stopped early: {other:?}"),
+                }
+            }
+        });
+
+        let events = send_file(
+            &mut side_a,
+            &source,
+            crate::transfer::DEFAULT_CHUNK_SIZE,
+            trace,
+            0,
+            std::time::Instant::now() + std::time::Duration::from_secs(60),
+        )
+        .expect("sends");
+
+        let digest = receiver.join().expect("the receiver finished");
+        assert!(
+            events.iter().any(|event| matches!(event, SessionEvent::Verified { .. })),
+            "the sender was never told the file arrived: {events:?}"
+        );
+        assert_eq!(std::fs::read(&destination).expect("reads back"), content);
+        assert!(!digest.is_empty());
+    }
 
     // ── Receiving ─────────────────────────────────────────────────────────────────────────────────
 

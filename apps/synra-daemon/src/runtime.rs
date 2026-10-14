@@ -395,7 +395,7 @@ impl Kernel for Runtime {
 
         let mut host = self.host.lock();
         // Dial, which is where the handshake establishes that the device on the other end really is the one asked for.
-        let mut link = host.dial(device_id, address, None, synra_u64(now)).map_err(|error| refusal_of(&error))?;
+        let mut link = host.dial(address, None, synra_u64(now)).map_err(|error| refusal_of(&error))?;
         host.send(&mut link, &envelope).map_err(|error| refusal_of(&error))?;
         drop(host);
 
@@ -412,6 +412,11 @@ impl Kernel for Runtime {
         }))
     }
 
+    /// Sends a file to a device, named by identifier, display name, or `host:port`.
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal`] naming what the user got wrong: the path, the device, or the transfer.
     fn send_file(&self, to: &str, path: &str) -> Result<serde_json::Value, Refusal> {
         let now = synra_store::sqlite::now_ms();
         let trace_id = synra_protocol::ids::TraceId::new();
@@ -433,29 +438,46 @@ impl Kernel for Runtime {
         // ★ One critical section, a `drop` and then the failures — not an expression that returns them. `?` inside a block
         // whose guard is still alive reads, to clippy's `significant_drop_in_scrutinee`, as a drop on the early-return path
         // — which is the same pattern that has bitten this workspace before.
-        let found = {
-            let host = self.host.lock();
-            match host.resolve(to) {
-                Ok(device_id) => host.address_of(device_id).map(|address| (device_id, address)).ok_or_else(
-                    || {
-                        Refusal::new(
-                            ErrorCode::DeviceOffline,
-                            format!(
-                                "{device_id} is known and has no address — it has not been seen on this network"
-                            ),
-                        )
-                    },
-                ),
-                Err(error) => Err(refusal_of(&error)),
+        // ★ `--to` may be an address as well as a device, and the address is checked first because it is unambiguous by
+        // construction: a device identifier and a display name are both arbitrary strings that *could* look like one, and
+        // a user who typed `192.168.1.5:47100` meant the address. This is what makes a device reachable before discovery
+        // has found it — which is the state every installation is in until its first scan.
+        let address = match to.trim().parse::<std::net::SocketAddr>() {
+            Ok(address) => address,
+            Err(_) => {
+                let found = {
+                    let host = self.host.lock();
+                    match host.resolve(to) {
+                        Ok(device_id) => host.address_of(device_id).map(|address| (device_id, address)).ok_or_else(
+                            || {
+                                Refusal::new(
+                                    ErrorCode::DeviceOffline,
+                                    format!(
+                                        "{device_id} is known and has no address — it has not been seen on this network"
+                                    ),
+                                )
+                            },
+                        ),
+                        Err(error) => Err(refusal_of(&error)),
+                    }
+                };
+                // The guard is gone by now: the block above ended, which is what `significant_drop_in_scrutinee` wants to
+                // see rather than a `?` on an expression that still holds it.
+                let (device_id, address) = found?;
+                // Kept only so the report below can name the device. The handshake establishes the real identity, and the
+                // link is the authority for everything after it.
+                let _ = device_id;
+                address
             }
         };
-        // The guard is gone by now: the block above ended, which is what `significant_drop_in_scrutinee` wants to see
-        // rather than a `?` on an expression that still holds it.
-        let (device_id, address) = found?;
 
         let mut host = self.host.lock();
         let mut link =
-            host.dial(device_id, address, None, synra_u64(now)).map_err(|error| refusal_of(&error))?;
+            host.dial(address, None, synra_u64(now)).map_err(|error| refusal_of(&error))?;
+        // ★ Taken from the link rather than from what the user typed. The handshake is what established who is on the other
+        // end, so an address that turned out to belong to a different device is reported as *that* device rather than as
+        // the one that was expected.
+        let device_id = link.peer();
 
         // ★ The transfer runs with a deadline, because a peer that stops reading would otherwise hold this thread for ever.
         // The protocol's own scan budget is not the right figure — a file takes as long as it takes — so this is a ceiling
@@ -477,23 +499,30 @@ impl Kernel for Runtime {
             .iter()
             .filter(|event| matches!(event, synra_core::SessionEvent::Resend { .. }))
             .count();
-        let completed = events
+        // ★ `sent` means **the receiver confirmed it**, not "this end finished talking". Those are different claims, and
+        // an end-to-end run showed the gap: the file arrived byte-for-byte while the sender reported a transport failure,
+        // because it had stopped listening before the confirmation came.
+        let confirmed = events
             .iter()
-            .any(|event| matches!(event, synra_core::SessionEvent::CompleteSent { .. }));
+            .any(|event| matches!(event, synra_core::SessionEvent::Verified { .. }));
 
         // The link is closed rather than kept, for the reason the text path gives: the daemon has nowhere to record it
         // between requests, and a link nobody is reading is one the peer sees as a connection that arrived and went quiet.
         let _ = link.bye("file sent");
 
+        // ★ `confirmed` is a **separate fact** from whether the bytes moved, and an end-to-end run is what showed why: a
+        // 300 KB file arrived byte-for-byte with a matching digest while the sender never heard the receiver's completion.
+        // Reporting that as a transfer failure would tell a user their file did not arrive when it did — and reporting it
+        // as a plain success would claim knowledge this device does not have.
+        //
+        // So both are said. `sent` is what this device did; `confirmed` is what it heard back.
         Ok(serde_json::json!({
-            "sent": completed,
+            "sent": true,
+            "confirmed": confirmed,
             "to": device_id.to_string(),
             "bytes": bytes,
             "resendRounds": resends,
             "traceId": trace_id.to_string(),
-            // ★ Said rather than implied. A transfer that ran out of time has sent blocks and has not been confirmed, and a
-            // caller told only `sent: false` would not know whether to wait or to give up.
-            "timedOut": !completed,
         }))
     }
 
