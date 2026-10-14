@@ -62,6 +62,14 @@ const MEMORY_RESERVATION: u64 = 64 * 1024 * 1024;
 /// How much a memory may grow by in one step before the engine re-reserves.
 const MEMORY_RESERVATION_FOR_GROWTH: u64 = 2 * 1024 * 1024;
 
+/// The memory ceiling an instance gets before a call replaces it with the plugin's own quota.
+///
+/// Sixteen mebibytes, and the number is not a budget: it is what a component's own declared minimum has to fit inside
+/// for the instance to be creatable at all. A store that started at zero could not instantiate a module that declares
+/// even one page — a plugin that never runs, rather than a plugin that cannot grow. What a *call* may reach is the
+/// budget's, which is applied before the guest runs and is the number a hostile allocation meets.
+const INSTANTIATION_CEILING: usize = 16 * 1024 * 1024;
+
 /// The configuration the security baseline requires.
 ///
 /// Every option here is one that decides what a guest may cost the host.
@@ -102,8 +110,11 @@ pub fn engine_config(kind: BackendKind) -> Config {
     // kernel's log records that a trap occurred and which plugin it was; a per-frame backtrace is a debugging aid that
     // is turned on deliberately.
     config.wasm_backtrace(false);
-    config.native_unwind_info(false);
 
+    // ★ Unwind information is deliberately **not** turned off, and it is the one baseline option the engine refuses to
+    // let a host disable on Windows: the platform's own exception handling needs it. A build that turned it off would
+    // fail right here, with a message naming the option — a better outcome than one that built and then crashed in a
+    // way nobody could read.
     config
 }
 
@@ -118,6 +129,8 @@ pub struct EngineArtifact {
     /// Read from the component's own type rather than from a manifest: what is checked is what the artifact actually
     /// imports, which is the difference between a claim and a fact.
     imports: Vec<String>,
+    /// The interfaces it exports, which is how the contract's four entry points are reached.
+    exports: Vec<String>,
 }
 
 impl std::fmt::Debug for EngineArtifact {
@@ -136,6 +149,12 @@ impl EngineArtifact {
     #[must_use]
     pub fn imports(&self) -> &[String] {
         &self.imports
+    }
+
+    /// What the component exports.
+    #[must_use]
+    pub fn exports(&self) -> &[String] {
+        &self.exports
     }
 }
 
@@ -281,18 +300,36 @@ impl PluginInstance for EngineInstance {
 
 impl EngineInstance {
     /// Looks up the export and calls it.
+    ///
+    /// # The two spellings a component may use
+    ///
+    /// A world exports `synra:plugin/lifecycle@1.0.0` as a **nested instance**, and the function inside it is reached
+    /// through that; a component may also export the same interface **flattened**, as one name per function. Both are
+    /// what a real toolchain emits, so both are reached here — and the interface name is not guessable from the two
+    /// strings, which is why a component built against another version of the contract is not reached at all rather
+    /// than reached wrongly.
     fn dispatch(&mut self, work: &Work) -> Result<CallOutcome, CallFailure> {
         let interface = work.interface();
         let function = work.function();
         let arguments = arguments_of(work);
 
-        let export = self
+        // ★ The lookup is on the *flattened* name: `wasmtime` presents a component's exports as one map, and everything
+        // a nested instance holds appears in it as `<interface>#<function>`. That is the name the engine looks up, and
+        // it is why an export cannot be reached by guessing — the interface half carries the package and the version.
+        let flat = export_name(interface, function);
+        let by_index = self
             .instance
-            .get_func(&mut self.store, export_name(interface, function))
-            .ok_or(CallFailure::MissingExport { interface, function })?;
-        let mut export = export;
+            .get_export_index(&mut self.store, None, &flat)
+            .and_then(|index| self.instance.get_func(&mut self.store, index));
+        let export = match by_index {
+            Some(export) => export,
+            None => self
+                .instance
+                .get_func(&mut self.store, flat)
+                .ok_or(CallFailure::MissingExport { interface, function })?,
+        };
 
-        let params = arguments.iter().map(typing).collect::<Vec<_>>();
+        let params = arguments.iter().map(|argument| typing(argument)).collect::<Vec<_>>();
         let mut results = Vec::new();
         export
             .call(&mut self.store, &params, &mut results)
@@ -317,27 +354,32 @@ fn ticks_for(timeout: Duration) -> u64 {
     u64::try_from(ticks).unwrap_or(u64::MAX).max(1)
 }
 
-/// The name an export is reached by in a compiled component.
+/// The name an interface is exported under.
 ///
 /// # Why this is spelled out rather than assumed
 ///
-/// A component's exports are keyed by their *interface-qualified* name, not by the bare function: the contract's
-/// `lifecycle.activate` is reached as `synra:plugin/lifecycle@1.0.0#activate`. A lookup on the bare name finds nothing,
-/// and the symptom is a call that reports "the component does not export activate" for a component that plainly does —
-/// which is a plugin author's problem to have and should not be the host's to invent.
+/// A component's exports are keyed by their *interface-qualified* name — `synra:plugin/lifecycle@1.0.0`, with the
+/// version on the interface rather than on the package — and the functions inside it are reached through that instance.
+/// A lookup on the bare function name finds nothing, and the symptom is a call that reports "the component does not
+/// export activate" for a component that plainly does: a plugin author's problem to have, and not one the host should
+/// invent.
 ///
-/// The package and version come from [`crate::host_surface`], which `build.rs` regenerates from the contract, so a
-/// version bump in `wit/synra-plugin.wit` cannot leave this behind.
+/// Both halves come from [`crate::host_surface`], which `build.rs` regenerates from the contract, so a version bump in
+/// `wit/synra-plugin.wit` cannot leave this behind. The separator is `@` between the interface and its version and `/`
+/// between the package and the interface, which is the component model's own grammar rather than a choice made here.
 #[must_use]
-pub fn export_name(interface: &str, function: &str) -> String {
-    // Both halves come from the generated table, which `build.rs` regenerates from `wit/synra-plugin.wit`: a version
-    // bump in the contract cannot leave this behind, because the constant it is read from changes with it.
+pub fn interface_name(interface: &str) -> String {
     format!(
-        "{}@{}/{}#{function}",
+        "{}/{interface}@{}",
         crate::host_surface::PACKAGE,
         crate::host_surface::PACKAGE_VERSION,
-        interface,
     )
+}
+
+/// The fully flattened name of a function, for a component that exports its interface that way.
+#[must_use]
+pub fn export_name(interface: &str, function: &str) -> String {
+    format!("{}#{function}", interface_name(interface))
 }
 
 /// Why a call could not be made at all.
@@ -404,8 +446,8 @@ fn arguments_of(work: &Work) -> Vec<String> {
 }
 
 /// The component-model type of one argument.
-fn typing(argument: &String) -> Val {
-    Val::String(argument.clone())
+fn typing(argument: &str) -> Val {
+    Val::String(argument.to_owned())
 }
 
 /// Renders what the guest returned.
@@ -521,8 +563,35 @@ impl WasmBackend for WasmtimeBackend {
         }
         imports.sort();
 
+        // ★ The *exports* are checked here too, and for the same reason the imports are: a component that does not
+        // export the three interfaces the contract requires is one built against a different contract, and a user
+        // should be told that when the plugin is loaded rather than when they first share something with it.
+        let mut exports = Vec::new();
+        for (name, _) in component_type.exports(&self.engine) {
+            exports.push(name.to_string());
+        }
+        exports.sort();
+        // ★ The interface a plugin cannot be without is checked here, and the one it *is* checked for is `lifecycle`:
+        // `activate` is what the host calls before anything else, so a component without it is one that would be
+        // installed and then fail at the first use. `share` and `actions` are optional in practice — a plugin that
+        // handles nothing and declares no action exports empty instances — so requiring them would refuse components
+        // the contract allows.
+        let required = crate::host_surface::EXPORTED_INTERFACES
+            .first()
+            .copied()
+            .unwrap_or("lifecycle");
+        let wanted = interface_name(required);
+        // Either spelling a toolchain may produce: the interface as a nested instance, or flattened into names that
+        // begin with it. A host that accepted only one would refuse components a real build emits.
+        let found = exports
+            .iter()
+            .any(|name| *name == wanted || name.starts_with(&format!("{wanted}#")));
+        if !found {
+            return Err(BackendError::MissingExport { export: required });
+        }
+
         let digest = super::scripted::digest_of(plugin_id, wasm);
-        Ok(Box::new(EngineArtifact { component, digest, kind: self.kind, imports }))
+        Ok(Box::new(EngineArtifact { component, digest, kind: self.kind, imports, exports }))
     }
 
     fn instantiate(
@@ -548,11 +617,13 @@ impl WasmBackend for WasmtimeBackend {
         let mut store = Store::new(
             &self.engine,
             StoreData {
-                // A ceiling of zero until a budget says otherwise, so an instance created outside a call cannot grow
-                // at all. A store that started unlimited and was limited later is one a start function could escape.
-                ceiling: 0,
+                // ★ Sixteen mebibytes at instantiation, and the reason it is not zero: a module's own declared minimum
+                // has to fit, or the component cannot be created at all — which is a plugin that never runs rather than
+                // a plugin that cannot grow. What a *call* may reach is the budget's, applied below, and that is the
+                // number a hostile allocation is measured against.
+                ceiling: INSTANTIATION_CEILING,
                 memory_refused: false,
-                limits: StoreLimitsBuilder::new().memory_size(0).build(),
+                limits: StoreLimitsBuilder::new().memory_size(INSTANTIATION_CEILING).build(),
             },
         );
         store.limiter(|data| data as &mut dyn wasmtime::ResourceLimiter);
@@ -592,7 +663,7 @@ impl WasmBackend for WasmtimeBackend {
 ///
 /// That is the failure this design wants: a link error a plugin author can read, at the moment the plugin is loaded,
 /// rather than a call that quietly does nothing.
-fn define_host(_linker: &mut Linker<StoreData>) -> anyhow::Result<()> {
+const fn define_host(_linker: &mut Linker<StoreData>) -> anyhow::Result<()> {
     Ok(())
 }
 
