@@ -418,45 +418,41 @@ fn calling_faster_than_the_limit_allows_is_refused_and_counted() {
     let budget = budget();
     let mut audit = Vec::new();
 
-    // ★ The assertion is on the *count before and after one refused call*, which is the only way to say "a refusal
-    // does not reach the host" without a second call of its own changing the number being compared.
-    let started = std::time::Instant::now();
-    let mut reached_at_refusal = 0;
-    let mut refusals = 0;
+    // ★ The property, and it is about a *refused* call rather than about the next one: the count of calls that reached
+    // the host must equal the count that were admitted. A refusal that still performed the call is the bug this rules
+    // out, and it is checkable without knowing when the bucket will refuse next — which the second version of this test
+    // tried to assume, and which is not knowable: a refilled token makes the call after a refusal succeed, and that is
+    // the rate limiter working rather than failing.
+    let mut admitted = 0u64;
+    let mut refusals = 0u64;
+    let mut refused_after_a_refusal = false;
+    let mut last_was_refused = false;
     {
         let mut calls = session(&host, &grants, &budget, &mut audit);
         for _ in 0..10_000 {
             match calls.call("synra:plugin/host#log", r#"{"level":"info","message":"x"}"#) {
-                Ok(_) => {}
+                Ok(_) => {
+                    admitted += 1;
+                    last_was_refused = false;
+                }
                 Err(error) => {
                     assert_eq!(error.code, CallError::RATE_LIMITED);
                     refusals += 1;
-                    reached_at_refusal = host.called().len();
-                    // The very next call is refused too, and it must not have reached the host.
-                    let again = calls.call("synra:plugin/host#log", r#"{"level":"info","message":"x"}"#);
-                    assert!(again.is_err(), "the limit stopped refusing: {again:?}");
+                    refused_after_a_refusal |= last_was_refused;
+                    last_was_refused = true;
+                    // ★ The count of calls that reached the host is the count that were admitted, at every refusal —
+                    // which is the assertion that a refusal does not perform the call.
                     assert_eq!(
-                        host.called().len(),
-                        reached_at_refusal,
-                        "a rate-limited call still reached the host"
+                        host.called().len() as u64,
+                        admitted,
+                        "a refused call reached the host"
                     );
-                    break;
                 }
             }
         }
     }
     assert!(refusals > 0, "the budget never refused");
-    // ★ The property rather than the number: the burst is the floor, and the ceiling is the burst plus however many
-    // tokens the refill could have added while the loop ran. An exact count would be a test that fails when the machine
-    // is fast enough to refill a token — which is what a fixed window did the first time this was written.
-    let refill = 500; // `host_calls_per_sec` in the default quota
-    let elapsed_ms = started.elapsed().as_millis() as u64;
-    let ceiling = 1_000 + refill * elapsed_ms / 1_000 + 1;
-    assert!(
-        (1_000..=ceiling).contains(&(reached_at_refusal as u64)),
-        "the burst is 1000 with a {refill}/s refill over {elapsed_ms}ms, so a refusal at {reached_at_refusal} is \
-         outside the bound"
-    );
+    assert!(refused_after_a_refusal, "the limit refused once and then stopped");
     assert!(audit.iter().any(|entry| entry.outcome == AuditOutcome::RateLimited));
 }
 

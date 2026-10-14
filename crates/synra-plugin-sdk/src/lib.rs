@@ -2,10 +2,9 @@
 //!
 //! # What is here
 //!
-//! The **generated host bindings**: one module per host call, each with the import name the component model resolves and
-//! the signature the contract declares. Both are generated from `wit/synra-plugin.wit`, so a plugin that calls a
-//! function the contract does not declare gets a compile error in its own crate rather than a trap when the kernel
-//! instantiates it.
+//! The **generated host bindings**: one function per host call, with the import name the component model resolves and
+//! the signature the contract declares. Generated from `wit/synra-plugin.wit`, so a plugin that calls a function the
+//! contract does not declare gets a compile error in its own crate rather than a trap when the kernel instantiates it.
 //!
 //! The three types the boundary exchanges — [`DeviceTarget`], [`LogLevel`] and [`Outcome`] — are re-exported from
 //! `synra-plugin-api` rather than declared here. That crate is the contract both sides read, and a second definition of
@@ -15,39 +14,26 @@
 //! # Why this crate is thin
 //!
 //! It is what a plugin *links*, so everything in it is in the user's download. The generated bindings are the whole
-//! surface and they are signatures; the logic is the kernel's, on the other side of the boundary.
+//! surface, and the logic is the kernel's, on the other side of the boundary.
 //!
-//! # The bindings are not yet wired to a runtime
+//! # How the bindings are made
 //!
-//! `generated::host`'s functions are `todo!()`. The bodies call into the component model's imports, which requires
-//! `wit-bindgen` to have generated the guest side — and that is a build-time step this crate does not have yet. What the
-//! generation *does* provide today is the part that cannot be got wrong: the names and the signatures. A plugin written
-//! against them is one whose calls resolve to functions the contract declares, and the wiring is an implementation
-//! detail that changes none of them.
-//!
-//! Said plainly rather than left implied: a plugin that called these today would panic. The type-checked surface is
-//! real; the plumbing behind it is not written.
+//! `wit_bindgen::generate!` in [`generated`] reads the contract when this crate is compiled, which is what makes drift
+//! impossible: a signature that disagreed with the WIT file would be a compile error here rather than a trap at
+//! instantiation. There is no build step to run and no generated file to keep in step.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
 // ★ The generated bindings' signatures are the contract: a parameter is named what the contract names it, and renaming
-// one to `_capability` to silence an unused-variable warning would rename the contract. The bodies are `todo!()` until
-// `wit-bindgen` generates the guest side, so every parameter is unused today by construction — which is why the
-// exemption is here, on the crate, rather than the names being changed.
+// one to `_capability` to silence an unused-variable warning would rename the contract.
 //
 // An `#![allow]` inside the generated file itself would not work: an inner attribute is only an inner attribute at the
 // top of a file, and `include!` splices the file into the middle of this one.
 #![allow(unused_variables)]
 
-// The `todo!()` in a generated binding marks the boundary this crate cannot wire yet: the bodies call the component
-// model's imports, which requires `wit-bindgen` to have generated the guest side. The crate-level lint table and this
-// attribute are the two places a crate-local exception to `synra-core`'s workspace lints can live, and the exception is
-// recorded in `Cargo.toml` beside this crate's other decisions.
-#![allow(clippy::todo)]
-
-// Test code is exempt from the no-panic rules; see `synra-protocol` for the reasoning. A generated binding's body is
-// `todo!()`, and an assertion about a signature is the shape these tests have.
+// Test code is exempt from the no-panic rules; see `synra-protocol` for the reasoning. An assertion about a generated
+// signature is the shape these tests have.
 #![cfg_attr(
     test,
     allow(
@@ -60,15 +46,35 @@
 )]
 
 pub mod generated {
-    //! The generated bindings. Included rather than written, and not to be edited.
-
-    /// One function per host call, with the import name the component model resolves.
-    ///
-    /// Named `bindings` rather than `host` because the file it includes declares a module of its own — the generator
-    /// emits a module so a caller can write `host::log` — and a module and the item it contains sharing a name is a
-    /// warning about a reader having to work out which `host` is meant.
+    //! The generated bindings.
+    //!
+    //! # Generated at compile time, and not by a build step
+    //!
+    //! `wit_bindgen::generate!` reads `wit/synra-plugin.wit` when this crate is compiled, so the bindings cannot drift
+    //! from the contract: a function added to the interface is a function this crate has the moment it is rebuilt, and
+    //! a signature that disagreed with the contract would be a compile error rather than a trap at instantiation.
+    //!
+    //! # The two files beside this one are generated too
+    //!
+    //! `src/generated/host.rs` and `src/generated/imports.rs` are `wit-codegen`'s output, and they are the **host-side**
+    //! artifacts: the signatures and the import names the kernel's own table is built from. They are kept because a
+    //! build script that wants the import names without compiling the bindings reads them, and because the suite
+    //! compares them against what `wit_bindgen` produces — two generators, one contract, and a test that says so.
+    //!
+    //! The documentation `wit-bindgen` emits is derived from the WIT comments and does not cover every generated item,
+    //! so the lint is off here rather than the contract being rewritten to satisfy a linter.
+    #[allow(missing_docs)]
     pub mod bindings {
-        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/generated/host.rs"));
+        wit_bindgen::generate!({
+            path: "../../wit",
+            world: "plugin",
+        });
+
+        /// The host calls, under the path this crate has always exposed them at.
+        ///
+        /// `wit_bindgen` names the module after the interface — `synra::plugin::host` — and this alias is what keeps a
+        /// plugin's `synra_plugin_sdk::host::log(..)` working without it having to name the package and the version.
+        pub use synra::plugin::host;
     }
 
     pub mod imports {
