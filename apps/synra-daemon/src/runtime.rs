@@ -117,6 +117,10 @@ impl Runtime {
     /// `status` is the one command a user runs to find out what is going on, so it is where "the kernel is up and this
     /// part is not built" belongs. A status that reported a healthy daemon and nothing else would leave a user
     /// wondering why the next command refuses.
+    ///
+    /// The note is empty today, which is a statement and not an omission: it emptied as `database`, `discovery` and
+    /// `session` became real, and each removal was made because the feature worked rather than because the list was
+    /// inconvenient. Adding a name back means a command genuinely refuses for a missing layer.
     fn status_value(&self, now_ms: u64) -> serde_json::Value {
         // ★ The schema version and the row counts are read rather than described. A status that said "database: ok"
         // without asking would be a status that cannot be wrong — and therefore one that cannot tell a user anything.
@@ -141,10 +145,14 @@ impl Runtime {
             "schemaKnown": synra_store::SynraDb::known_version(),
             "tables": counts,
             // ★ Present rather than omitted, so a client can print it. An absent field would be indistinguishable from
-            // an older kernel that does not have the concept. `database` is gone from this list because it is now real.
-            // ★ `discovery` is gone from this list because it is real: a device. The session layer is what remains, and
-            // it is what `send` still refuses on.
-            "notImplemented": ["session"],
+            // an older kernel that does not have the concept.
+            //
+            // It is empty, and that is the honest answer: nothing the daemon offers refuses because a layer is missing.
+            // `database`, `discovery` and `session` were each listed here while they were unbuilt — and by the time
+            // `send --text` and `send --file` both moved real bytes, this list still named `session`, telling a user that a
+            // working feature was absent. That is the failure mode of a hand-maintained list, and the reason the test below
+            // asserts the **exact** contents rather than a superset.
+            "notImplemented": [],
         })
     }
 
@@ -742,12 +750,16 @@ mod tests {
         let value = runtime(dir.path()).status().expect("status");
         let missing = value["notImplemented"].as_array().expect("a list");
         let names: Vec<&str> = missing.iter().filter_map(serde_json::Value::as_str).collect();
-        assert_eq!(names, vec!["session"], "{names:?}");
-        // ★ And the layers that are real are **not** in it. `database` and `discovery` were both listed here while they
-        // were unbuilt, and a list that kept them would tell a user a working feature is missing — which is the failure
-        // mode of a hand-maintained list, and why this asserts the exact contents rather than a superset.
-        assert!(!names.contains(&"database"), "{names:?}");
-        assert!(!names.contains(&"discovery"), "{names:?}");
+
+        // ★ The exact contents, and today that is nothing. The list held `session` long after `send --text` and
+        // `send --file` both moved real bytes — so it was telling a user that a working feature was missing, which is
+        // precisely the failure this assertion exists to catch. An assertion of a *superset* would have passed.
+        assert!(names.is_empty(), "a layer that is not missing is named: {names:?}");
+
+        // And the layers that are real are certainly not in it, each having been removed when it started working.
+        for built in ["database", "discovery", "session"] {
+            assert!(!names.contains(&built), "{built} is listed and is real: {names:?}");
+        }
     }
 
     #[test]
