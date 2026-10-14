@@ -1093,6 +1093,7 @@ dependencies = [
  "rstest",
  "serde",
  "serde_json",
+ "synra-control",
  "synra-ipc",
  "synra-observe",
  "synra-protocol",

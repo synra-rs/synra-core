@@ -119,6 +119,24 @@ pub enum SocketError {
     },
 }
 
+impl SocketError {
+    /// Whether repeating the request could succeed.
+    ///
+    /// # Why the classification lives here
+    ///
+    /// A client that decided for itself would be a second opinion that can contradict the kernel's: `TransportNotOpen`
+    /// and `Timeout` are retryable because a kernel that is still starting or briefly wedged is the ordinary case, and a
+    /// missing socket, a refused version and a framing error are not — repeating them gives the same answer until
+    /// something changes that the client cannot change.
+    #[must_use]
+    pub const fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            Self::Transport { .. } | Self::TimedOut { .. } | Self::Channel(_)
+        )
+    }
+}
+
 /// Whether an address is one this build will try to bind.
 ///
 /// # Why the length matters

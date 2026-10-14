@@ -12,6 +12,7 @@ authors.workspace = true
 synra-protocol = { path = "../../crates/synra-protocol" }
 synra-store = { path = "../../crates/synra-store" }
 synra-observe = { path = "../../crates/synra-observe" }
+synra-control = { path = "../../crates/synra-control" }
 synra-ipc = { path = "../../crates/synra-ipc" }
 
 clap = { workspace = true }
