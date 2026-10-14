@@ -273,16 +273,27 @@ pub fn check(source: &Source, tier: Tier) -> Vec<Violation> {
         }
 
         if let Some(item) = public_fn_or_field(trimmed) {
-            for container in FORBIDDEN_CONTAINERS {
-                // The bare name, not `std::collections::HashMap`: the signature may import it, and `use` is where the
-                // short name comes from either way.
-                if names_container(trimmed, container) {
-                    violations.push(Violation::ConcreteContainer {
-                        file: source.path.clone(),
-                        line,
-                        item: item.clone(),
-                        container: (*container).to_owned(),
-                    });
+            // ★ A *tuple* struct is the one place a container in a public item is not a violation, and it is the fix
+            // rather than the problem: `pub struct Digests(BTreeMap<String, String>);` is how a crate stops naming a
+            // standard container in the API it promises. Reporting it would mean the rule's own remedy failed the rule.
+            //
+            // The field is private by construction — a tuple struct's fields have the struct's visibility, and there is
+            // no `pub` on the field — so what a consumer sees is `Digests`, which is the point. A *braced* struct with a
+            // container field is a different thing and is still reported: `pub struct Wrapper { pub inner: BTreeMap<..> }`
+            // hands the container out by name.
+            let tuple_struct = trimmed.starts_with("pub struct ") && trimmed.contains('(');
+            if !tuple_struct {
+                for container in FORBIDDEN_CONTAINERS {
+                    // The bare name, not `std::collections::HashMap`: the signature may import it, and `use` is where
+                    // the short name comes from either way.
+                    if names_container(trimmed, container) {
+                        violations.push(Violation::ConcreteContainer {
+                            file: source.path.clone(),
+                            line,
+                            item: item.clone(),
+                            container: (*container).to_owned(),
+                        });
+                    }
                 }
             }
         }

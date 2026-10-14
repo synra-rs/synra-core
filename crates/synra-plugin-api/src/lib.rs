@@ -40,5 +40,5 @@ pub use manifest::{
 };
 pub use publisher::{
     ALGORITHM, Fingerprint, PluginTrust, PublisherTrustStore, SIGNATURE_FILE, SIGNATURE_VERSION, SignatureCheck,
-    SignatureError, SignatureFile, SigningSubject, Untrusted, VerifyOutcome, check,
+    Digests, SignatureError, SignatureFile, SigningSubject, Untrusted, VerifyOutcome, check,
 };

@@ -96,8 +96,8 @@ fn base64_of(bytes: &[u8]) -> String {
 }
 
 fn subject() -> SigningSubject {
-    let mut artifacts = BTreeMap::new();
-    let _ = artifacts.insert("plugin.wasm".to_owned(), "sha256-abc".to_owned());
+    let mut artifacts = synra_plugin_api::publisher::Digests::new();
+    artifacts.insert("plugin.wasm", "sha256-abc");
     SigningSubject { manifest: "sha256-manifest".to_owned(), artifacts }
 }
 

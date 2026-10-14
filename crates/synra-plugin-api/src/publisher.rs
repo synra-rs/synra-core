@@ -93,6 +93,101 @@ pub enum SignatureError {
     },
 }
 
+/// A set of artifact digests, by file name.
+///
+/// # Why this is a type and not a `BTreeMap`
+///
+/// Two reasons, and the second is the one that decided it.
+///
+/// A `BTreeMap` in a public signature is a promise about **the container**: `synra-plugin-api` is a *stable* crate, so
+/// naming `std::collections::BTreeMap` makes "this crate changed no line" compatible with "a consumer's build broke"
+/// — a standard-library change would do it. The stability rules this workspace states say a signature should name a
+/// type whose meaning is this crate's, and this is that type.
+///
+/// And the ordering is not incidental: [`SigningSubject::canonical_bytes`] builds the bytes a signature is over, and
+/// it relies on the iteration order being the key order. A `Digests` is ordered by name *because that is what it
+/// means*, not because of which map happened to back it — so a future change to the representation cannot quietly
+/// reorder the bytes two implementations compare.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Digests(BTreeMap<String, String>);
+
+impl Digests {
+    /// An empty set.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The digest for a file name, when it is one of them.
+    #[must_use]
+    pub fn get(&self, name: &str) -> Option<&str> {
+        self.0.get(name).map(String::as_str)
+    }
+
+    /// Whether a file name has a digest.
+    #[must_use]
+    pub fn contains(&self, name: &str) -> bool {
+        self.0.contains_key(name)
+    }
+
+    /// Adds or replaces a digest.
+    pub fn insert(&mut self, name: impl Into<String>, digest: impl Into<String>) {
+        let _ = self.0.insert(name.into(), digest.into());
+    }
+
+    /// Removes a digest, returning what it was.
+    pub fn remove(&mut self, name: &str) -> Option<String> {
+        self.0.remove(name)
+    }
+
+    /// Forgets every digest.
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
+
+    /// Every `(name, digest)` pair, **in name order**.
+    ///
+    /// The order is the type's promise rather than the container's, which is what lets [`SigningSubject::canonical_bytes`]
+    /// depend on it.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.0.iter().map(|(name, digest)| (name.as_str(), digest.as_str()))
+    }
+
+    /// Every file name, in order.
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.0.keys().map(String::as_str)
+    }
+
+    /// How many digests there are.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Whether there are none.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl std::fmt::Display for Digests {
+    /// A comma-separated list of names, for a message.
+    ///
+    /// Names only: a digest is not a secret, but a message that carried thirty-two bytes of base64 per file would be
+    /// one nobody reads.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let names: Vec<&str> = self.names().collect();
+        formatter.write_str(&names.join(", "))
+    }
+}
+
+impl FromIterator<(String, String)> for Digests {
+    fn from_iter<T: IntoIterator<Item = (String, String)>>(iter: T) -> Self {
+        Self(iter.into_iter().collect())
+    }
+}
 /// What a publisher signed.
 ///
 /// # Why the artifacts are a map and not a list
@@ -107,7 +202,7 @@ pub struct SigningSubject {
     /// The digest of the manifest, as an SRI string.
     pub manifest: String,
     /// Each artifact's digest, by file name.
-    pub artifacts: BTreeMap<String, String>,
+    pub artifacts: Digests,
 }
 
 impl SigningSubject {
@@ -150,12 +245,12 @@ impl SigningSubject {
     pub fn covers(&self, manifest: &Manifest) -> Vec<String> {
         let mut missing = Vec::new();
         if let Some(headless) = &manifest.runtime.headless
-            && !self.artifacts.contains_key(&headless.artifact)
+            && !self.artifacts.contains(&headless.artifact)
         {
             missing.push(headless.artifact.clone());
         }
         if let Some(ui) = &manifest.runtime.ui
-            && !self.artifacts.contains_key(&ui.artifact)
+            && !self.artifacts.contains(&ui.artifact)
         {
             missing.push(ui.artifact.clone());
         }

@@ -30,7 +30,7 @@ fn signed(subject: &SigningSubject, publisher_id: &str, seed: u8) -> String {
         "pubkey": BASE64.encode(public.as_bytes()),
         "subject": {
             "manifest": subject.manifest.clone(),
-            "artifacts": subject.artifacts.clone(),
+            "artifacts": subject.artifacts.iter().map(|(name, digest)| (name.to_owned(), digest.to_owned())).collect::<std::collections::BTreeMap<String, String>>(),
         },
         "signature": BASE64.encode(signature.to_bytes()),
     });
@@ -38,8 +38,8 @@ fn signed(subject: &SigningSubject, publisher_id: &str, seed: u8) -> String {
 }
 
 fn subject() -> SigningSubject {
-    let mut artifacts = BTreeMap::new();
-    let _ = artifacts.insert("plugin.wasm".to_owned(), "sha256-aaa".to_owned());
+    let mut artifacts = Digests::new();
+    artifacts.insert("plugin.wasm", "sha256-aaa");
     SigningSubject { manifest: "sha256-bbb".to_owned(), artifacts }
 }
 
@@ -81,13 +81,13 @@ fn the_canonical_bytes_have_no_whitespace_and_a_fixed_key_order() {
 fn the_artifact_order_is_the_maps_and_not_the_insertion_order() {
     // A list would make two packages with the same files in a different order have different signed bytes, so a
     // repackaging that changed nothing would invalidate a signature.
-    let mut first = BTreeMap::new();
-    let _ = first.insert("z.wasm".to_owned(), "sha256-z".to_owned());
-    let _ = first.insert("a.wasm".to_owned(), "sha256-a".to_owned());
+    let mut first = Digests::new();
+    first.insert("z.wasm".to_owned(), "sha256-z".to_owned());
+    first.insert("a.wasm", "sha256-a");
 
-    let mut second = BTreeMap::new();
-    let _ = second.insert("a.wasm".to_owned(), "sha256-a".to_owned());
-    let _ = second.insert("z.wasm".to_owned(), "sha256-z".to_owned());
+    let mut second = Digests::new();
+    second.insert("a.wasm".to_owned(), "sha256-a".to_owned());
+    second.insert("z.wasm".to_owned(), "sha256-z".to_owned());
 
     let one = SigningSubject { manifest: "m".to_owned(), artifacts: first };
     let two = SigningSubject { manifest: "m".to_owned(), artifacts: second };
@@ -98,8 +98,8 @@ fn the_artifact_order_is_the_maps_and_not_the_insertion_order() {
 fn a_name_with_a_quote_in_it_is_escaped_by_the_json_rules() {
     // Otherwise two implementations read the same bytes as different payloads, and one of them verifies a signature
     // over something other than what it checked.
-    let mut artifacts = BTreeMap::new();
-    let _ = artifacts.insert("a\"b\\c\n.wasm".to_owned(), "sha256-1".to_owned());
+    let mut artifacts = Digests::new();
+    artifacts.insert("a\"b\\c\n.wasm", "sha256-1");
     let canonical = String::from_utf8(SigningSubject { manifest: "m".to_owned(), artifacts }.canonical_bytes())
         .expect("utf-8");
     assert!(canonical.contains(r#"a\"b\\c\n.wasm"#), "{canonical}");
@@ -111,7 +111,7 @@ fn a_name_with_a_quote_in_it_is_escaped_by_the_json_rules() {
 #[test]
 fn an_empty_artifact_map_is_still_valid_json() {
     let canonical = String::from_utf8(
-        SigningSubject { manifest: "m".to_owned(), artifacts: BTreeMap::new() }.canonical_bytes(),
+        SigningSubject { manifest: "m".to_owned(), artifacts: Digests::new() }.canonical_bytes(),
     )
     .expect("utf-8");
     assert_eq!(canonical, r#"{"manifest":"m","artifacts":{}}"#);
@@ -143,7 +143,7 @@ fn a_tampered_subject_does_not_verify() {
     // something else, and there is no third explanation.
     let text = signed(&subject(), "acme", 7);
     let mut document = SignatureFile::parse(&text).expect("a document");
-    let _ = document.subject.artifacts.insert("plugin.wasm".to_owned(), "sha256-tampered".to_owned());
+    document.subject.artifacts.insert("plugin.wasm", "sha256-tampered");
 
     assert_eq!(document.verify().expect("a verdict"), VerifyOutcome::BadSignature);
 }

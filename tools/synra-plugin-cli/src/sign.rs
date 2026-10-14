@@ -24,7 +24,6 @@
 //! and hid it would be a tool whose keys the author cannot back up — which is how a publisher loses the ability to
 //! ship an update to a plugin users already trust.
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use ed25519_dalek::{Signer as _, SigningKey, VerifyingKey};
@@ -166,15 +165,15 @@ fn read_manifest(root: &Path) -> Result<(Manifest, String), SignError> {
 }
 
 /// Every artifact the manifest names, by file name, with its digest.
-fn collect_artifacts(root: &Path, manifest: &Manifest) -> Result<BTreeMap<String, String>, SignError> {
-    let mut artifacts = BTreeMap::new();
+fn collect_artifacts(root: &Path, manifest: &Manifest) -> Result<publisher::Digests, SignError> {
+    let mut artifacts = publisher::Digests::new();
     for name in artifact_names(manifest) {
         let path = root.join(&name);
         if !path.exists() {
             return Err(SignError::NoArtifact { path: path.display().to_string() });
         }
         let bytes = read_artifact(&path)?;
-        let _ = artifacts.insert(name, sri_digest(&bytes));
+        artifacts.insert(name, sri_digest(&bytes));
     }
     Ok(artifacts)
 }
@@ -611,7 +610,7 @@ mod tests {
         assert_eq!(content.plugin_id, "@acme/hello");
         assert_eq!(content.publisher_id, "acme");
         assert_eq!(content.subject.artifacts.len(), 1);
-        assert!(content.subject.artifacts.contains_key("plugin.wasm"));
+        assert!(content.subject.artifacts.contains("plugin.wasm"));
         assert!(content.subject.manifest.starts_with("sha256-"), "an SRI digest");
 
         let signing = key(7);
