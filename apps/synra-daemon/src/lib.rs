@@ -47,6 +47,7 @@ pub mod dispatch;
 pub mod lock;
 pub mod plan;
 pub mod runtime;
+pub mod serve;
 pub mod startup;
 pub mod transport;
 
@@ -60,6 +61,7 @@ pub use startup::{
     startup,
 };
 pub use runtime::{Runtime, now_ms as runtime_now_ms};
+pub use serve::serve;
 pub use plan::{
     DATA_DIR_VAR, DEFAULT_DISCOVERY_PORT, DEFAULT_LISTEN_PORT, DaemonOptions, DaemonPlan,
     LOCK_FILE_NAME, PlanError, checked_component, data_root_from, default_data_root,
