@@ -41,6 +41,9 @@ use synra_protocol::ids::DeviceId;
 use synra_store::records::{DeviceRow, PluginRow};
 use synra_store::sqlite::SynraDb;
 
+use synra_observe::audit::AuditRing;
+use synra_observe::crash::StartupVerdict;
+
 use crate::bus::{Delivery, EventBus, SubscriberId};
 use crate::config::Config;
 use crate::host::{Host, HostError};
@@ -105,19 +108,28 @@ pub struct KernelConfig {
     /// already knows. It is carried on the kernel rather than on the host because what it decides is whether a
     /// *task* is registered, and the host is built before any task exists.
     pub discovery: bool,
+    /// Where the crash reports of previous runs are kept, when the caller wants them read.
+    ///
+    /// # Why this is the first thing the bootstrap does
+    ///
+    /// Because a kernel that crashed last time should say so before it does anything else, and because a report of what
+    /// went wrong is the one thing that has to be recorded by the layer which is already working. `None` is a kernel
+    /// with no log directory — a test, or a first run before the data directory exists — and it is not an error: the
+    /// verdict is then [`StartupVerdict::FirstRun`](crate::observe_verdict) rather than a guess.
+    pub crash_log: Option<std::path::PathBuf>,
 }
 
 impl KernelConfig {
     /// A desktop kernel, which is what an application starts.
     #[must_use]
     pub fn desktop() -> Self {
-        Self { role: NodeRole::Desktop, platform: std::env::consts::OS.to_owned(), discovery: true }
+        Self { role: NodeRole::Desktop, platform: std::env::consts::OS.to_owned(), discovery: true, crash_log: None }
     }
 
     /// A kernel with no sockets, for a test.
     #[must_use]
     pub fn headless() -> Self {
-        Self { role: NodeRole::Daemon, platform: std::env::consts::OS.to_owned(), discovery: false }
+        Self { role: NodeRole::Daemon, platform: std::env::consts::OS.to_owned(), discovery: false, crash_log: None }
     }
 
     /// The same configuration for another role.
@@ -299,6 +311,9 @@ pub struct Kernel {
     supervisor: Arc<Supervisor>,
     role: NodeRole,
     started: std::sync::atomic::AtomicBool,
+    audit: Mutex<AuditRing>,
+    /// What the last run left behind, read before anything else happened.
+    verdict: StartupVerdict,
     created_at_ms: i64,
 }
 
@@ -336,7 +351,14 @@ impl Kernel {
         let now_ms = synra_store::sqlite::now_ms();
         let to_store = |detail: String| KernelError::Store { detail };
 
-        // 1 · This device.
+        // 1 · What the last run left behind, read before anything else — because a report of what went wrong has to be
+        // recorded by the layer that is already working, and because a kernel that crashed last time should say so
+        // before it does anything a user could see.
+        let verdict = config.crash_log.as_ref().map_or(StartupVerdict::Clean, |directory| {
+            synra_observe::crash::CrashStore::new(directory).verdict(now_ms)
+        });
+
+        // 2 · This device.
         let identity = Identity::load(&store, &config.platform, now_ms)
             .map_err(|error| to_store(error.to_string()))?;
 
@@ -394,6 +416,8 @@ impl Kernel {
             supervisor,
             role: config.role,
             started: std::sync::atomic::AtomicBool::new(false),
+            audit: Mutex::new(AuditRing::new()),
+            verdict,
             created_at_ms: now_ms,
         })
     }
@@ -629,6 +653,40 @@ impl Kernel {
     pub fn with_store<T>(&self, work: impl FnOnce(&SynraDb) -> T) -> T {
         let store = self.store.lock();
         work(&store)
+    }
+
+    /// What the last run left behind.
+    ///
+    /// Read during the bootstrap, and it stays as it was read: the question a startup screen asks is "did the *previous*
+    /// run end badly", and a value that changed while the kernel ran would be answering about this one.
+    ///
+    /// Cloned rather than borrowed because a `Crashed` verdict carries its report, and a caller that has to hold the
+    /// kernel's lock to read it would be one that cannot show it and do anything else at the same time.
+    #[must_use]
+    pub fn startup_verdict(&self) -> StartupVerdict {
+        self.verdict.clone()
+    }
+
+    /// Records what a plugin did, for the audit a user can read.
+    ///
+    /// # Why this is on the kernel and not on the plugin host
+    ///
+    /// Because the ring outlives any one plugin: a plugin that was removed still has the actions it took, and a
+    /// per-plugin ring would have been dropped with it. The kernel is the thing that is still there.
+    pub fn record_action(&self, entry: synra_observe::audit::AuditEntry) {
+        self.audit.lock().record(entry);
+    }
+
+    /// Everything the audit ring holds, oldest first.
+    #[must_use]
+    pub fn audit(&self) -> Vec<synra_observe::audit::AuditEntry> {
+        self.audit.lock().all()
+    }
+
+    /// What one plugin did.
+    #[must_use]
+    pub fn audit_for(&self, plugin: &synra_protocol::ids::PluginId) -> Vec<synra_observe::audit::AuditEntry> {
+        self.audit.lock().for_plugin(plugin)
     }
 
     /// The milliseconds since the epoch this kernel reads the clock at.

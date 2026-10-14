@@ -4,6 +4,8 @@
 //! without making a second identity, that a snapshot and the events describe the same state, and that a subscriber
 //! which fell behind is told rather than left with a gap.
 
+use synra_observe::crash::StartupVerdict;
+
 use super::*;
 use crate::supervisor::TaskSpec;
 
@@ -351,6 +353,42 @@ fn the_debug_form_names_the_device_and_the_role() {
     // log line uses.
     assert!(text.contains("Daemon"), "{text}");
     assert!(text.contains(&kernel.identity().device_id.to_string()), "{text}");
+}
+
+#[test]
+fn a_kernel_with_no_crash_log_reads_a_clean_verdict() {
+    // A first run, or a test: there is nothing to read, and the answer is "start normally" rather than a guess about a
+    // crash that did not happen.
+    let kernel = kernel();
+    assert_eq!(kernel.startup_verdict(), StartupVerdict::Clean);
+    assert!(!kernel.startup_verdict().needs_attention());
+    assert!(kernel.startup_verdict().allows_plugins());
+}
+
+#[test]
+fn a_directory_with_no_reports_is_a_clean_verdict_and_a_plugin_that_acted_is_in_the_audit() {
+    // ★ Why the audit ring is on the kernel rather than on a plugin host: the ring outlives any one plugin, so a plugin
+    // that was removed still has the actions it took.
+    let path = temp_path("observe");
+    let crashes = path.join("crashes");
+    let config = KernelConfig { crash_log: Some(crashes), ..KernelConfig::headless() };
+    let kernel = Kernel::open(&path, &config).expect("a kernel");
+    assert_eq!(kernel.startup_verdict(), StartupVerdict::Clean);
+
+    let plugin = synra_protocol::ids::PluginId::parse("@acme/chat").expect("a plugin id");
+    let capability = synra_capability::Capability::parse("storage:local:write").expect("a capability");
+    kernel.record_action(synra_observe::audit::AuditEntry::new(
+        1_700,
+        plugin.clone(),
+        capability,
+        synra_observe::audit::AuditOutcome::Allowed,
+        Some(3),
+    ));
+    assert_eq!(kernel.audit().len(), 1);
+    assert_eq!(kernel.audit_for(&plugin).len(), 1);
+    let other = synra_protocol::ids::PluginId::parse("@acme/other").expect("a plugin id");
+    assert!(kernel.audit_for(&other).is_empty(), "the ring is per plugin");
+    let _ = std::fs::remove_dir_all(&path);
 }
 
 #[test]
