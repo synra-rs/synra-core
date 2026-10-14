@@ -491,7 +491,7 @@ mod tests {
     #[test]
     fn a_readable_pairing_request_waits_for_a_user_rather_than_being_answered() {
         let inbox = Inbox::new(std::env::temp_dir().as_path());
-        let mut pairing = synra_core::pairing::InboundPairing::new();
+        let mut pairing = synra_core::pairing::InboundPairing::new(local());
 
         let decision = inbox.pairing_request(&pair_envelope(&request_json("Laptop")), &mut pairing);
         let Decision::Pairing { answer, request } = decision else {
@@ -510,7 +510,7 @@ mod tests {
     fn a_second_request_while_one_waits_is_refused_without_ending_the_link() {
         // Rule 2 of the pairing section, and rule 6: a refusal is an answer, not a reason to disconnect.
         let inbox = Inbox::new(std::env::temp_dir().as_path());
-        let mut pairing = synra_core::pairing::InboundPairing::new();
+        let mut pairing = synra_core::pairing::InboundPairing::new(local());
         let _ = inbox.pairing_request(&pair_envelope(&request_json("First")), &mut pairing);
 
         let decision = inbox.pairing_request(&pair_envelope(&request_json("Second")), &mut pairing);
@@ -527,7 +527,7 @@ mod tests {
         // A peer that sends a mistake in one message has not broken the connection, and closing it would take any
         // transfer on that link down for a reason the user cannot act on.
         let inbox = Inbox::new(std::env::temp_dir().as_path());
-        let mut pairing = synra_core::pairing::InboundPairing::new();
+        let mut pairing = synra_core::pairing::InboundPairing::new(local());
 
         for payload in [r#""a string, not an object""#, r#"{"profile":{}}"#] {
             let decision = inbox.pairing_request(&pair_envelope(payload), &mut pairing);
@@ -544,7 +544,7 @@ mod tests {
     #[test]
     fn a_pairing_request_with_no_payload_is_refused() {
         let inbox = Inbox::new(std::env::temp_dir().as_path());
-        let mut pairing = synra_core::pairing::InboundPairing::new();
+        let mut pairing = synra_core::pairing::InboundPairing::new(local());
 
         let spec = synra_protocol::envelope::OutboundSpec {
             event: synra_protocol::event::EventName::parse(synra_protocol::event::events::PAIR_REQUEST)

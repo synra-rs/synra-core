@@ -50,19 +50,98 @@ pub struct PendingPairing {
     /// Chosen when the request arrives rather than when it is answered, so the value a user is shown and the value
     /// written are decided once. A token minted at acceptance would be a second place to get it wrong.
     pub token: LinkToken,
+    /// The short code the user compares against the one the other device shows.
+    ///
+    /// See [`verification_code`] for why this is derived rather than random, and what it does and does not prove.
+    pub verification_code: String,
+}
+
+/// The code two devices both display, for a user to compare before pairing.
+///
+/// # Why this is derived from the two device identifiers
+///
+/// Because both ends must arrive at the same string without exchanging anything further, and both already know both
+/// identifiers: the dialer knows who it is and who it dialled, and the acceptor learns the dialer's identity from the
+/// `Hello` that carried the request. Deriving it means there is no extra message to lose, no version of the protocol
+/// where one side shows a code and the other shows nothing.
+///
+/// # Why the two identifiers are ordered before hashing
+///
+/// Because the derivation must not know which of the two is asking. The dialer computes this with `(peer, self)` and the
+/// acceptor with `(self, peer)`, so a derivation that labelled the arguments by role produced two different codes for the
+/// same honest pair. A check that always disagrees is one users learn to ignore, which is the same as having no check —
+/// and the test comparing both ends caught exactly that mistake in the first version of this function.
+///
+/// # What it proves, and what it does not
+///
+/// It proves that **the device asking is the device the user thinks it is**. A device on the same network that asks to
+/// pair while claiming somebody else's identifier produces a code that does not match the one on the other screen, and
+/// the user sees it. That is the threat the prompt exists for: a request arriving from an address the user cannot
+/// interpret, answered by a name the requester chose.
+///
+/// It does **not** prove possession of a secret, because it is not one: anyone who knows both identifiers can compute it.
+/// It is a check a person performs, not a signature, and it is deliberately not a substitute for the token — the token is
+/// what a later link is trusted by, and it never leaves the two devices.
+///
+/// # Why it is six characters
+///
+/// Long enough that a wrong device is unlikely to collide by accident, short enough to read aloud and compare at a
+/// glance. The first character is forced to be a letter, because a code made only of digits can be misread as a quantity
+/// and a leading `0` is the case people drop.
+#[must_use]
+pub fn verification_code(first: DeviceId, second: DeviceId) -> String {
+    use sha2::{Digest, Sha256};
+
+    // Ordered, so the answer does not depend on which device is asking. The dialer computes this with `(peer, self)` and
+    // the acceptor with `(self, peer)`, so a derivation that labelled the arguments by role produced two different codes
+    // for the same honest pair — which the test comparing both ends caught.
+    let (low, high) = {
+        let low = first.to_string();
+        let high = second.to_string();
+        if low <= high { (low, high) } else { (high, low) }
+    };
+
+    let mut hasher = Sha256::new();
+    // A separator between them, because two identifiers joined bare would let one pair's input equal another's.
+    hasher.update(low.as_bytes());
+    hasher.update(b":");
+    hasher.update(high.as_bytes());
+    let digest = hasher.finalize();
+
+    // Three bytes of the digest, as six hex characters. Taken from the front rather than spread out: a display code has
+    // no need to resist analysis, and a simple derivation is one a reader can check.
+    let mut digits = String::with_capacity(6);
+    for byte in digest.iter().take(3) {
+        let _ = std::fmt::Write::write_fmt(&mut digits, format_args!("{byte:02x}"));
+    }
+
+    // The first character is forced into `a`..=`f`, so a code never reads as a quantity and never begins with a zero —
+    // the digit people drop when they repeat one back.
+    let mut characters = digits.chars();
+    let first = characters.next().and_then(|c| c.to_digit(16)).unwrap_or(0);
+    let mut out = String::with_capacity(6);
+    out.push(char::from(b'a' + u8::try_from(first % 6).unwrap_or(0)));
+    out.extend(characters);
+    out
 }
 
 /// The receiving side of one pairing at a time.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct InboundPairing {
+    /// This device, which the verification code is derived from along with the dialer.
+    local: DeviceId,
     pending: Option<PendingPairing>,
 }
 
 impl InboundPairing {
-    /// A pairing state with nothing on screen.
+    /// A pairing state for this device, with nothing on screen.
+    ///
+    /// The local identifier is held rather than passed to each call, because the code a user is shown has to be derived
+    /// from it and a call that forgot to pass it would produce a code the other screen does not match — which reads to a
+    /// user as an attacker rather than as a missing argument.
     #[must_use]
-    pub const fn new() -> Self {
-        Self { pending: None }
+    pub const fn new(local: DeviceId) -> Self {
+        Self { local, pending: None }
     }
 
     /// The request waiting for a user, if there is one.
@@ -91,8 +170,10 @@ impl InboundPairing {
         }
 
         // Minted here rather than at acceptance, so the value shown to a user and the value written are one decision
-        // made once.
-        self.pending = Some(PendingPairing { request, token: LinkToken::random() });
+        // made once. The verification code is derived rather than minted, because both ends must arrive at it without
+        // exchanging anything further.
+        let code = verification_code(request.profile.device_id, self.local);
+        self.pending = Some(PendingPairing { request, token: LinkToken::random(), verification_code: code });
         None
     }
 
@@ -156,6 +237,11 @@ mod tests {
 
     use super::{InboundPairing, PairingRecord};
 
+    /// This device, for the verification code.
+    fn local() -> DeviceId {
+        device("01a139a9-8f3c-72ce-9c96-2b2c81f14550")
+    }
+
     fn device(text: &str) -> DeviceId {
         text.parse().expect("a valid device id")
     }
@@ -182,7 +268,7 @@ mod tests {
 
     #[test]
     fn a_request_waits_for_a_user_rather_than_being_answered() {
-        let mut pairing = InboundPairing::new();
+        let mut pairing = InboundPairing::new(local());
         assert!(pairing.offer(request("Laptop")).is_none(), "nothing to send back yet");
         assert_eq!(pairing.pending().map(|p| p.request.profile.display_name.as_str()), Some("Laptop"));
     }
@@ -191,7 +277,7 @@ mod tests {
     fn a_second_request_while_one_waits_is_refused_as_busy() {
         // Not queued: a prompt is a decision somebody is in the middle of, and the second would be answered minutes later
         // by a user who has forgotten what they agreed to.
-        let mut pairing = InboundPairing::new();
+        let mut pairing = InboundPairing::new(local());
         assert!(pairing.offer(request("First")).is_none());
 
         let answer = pairing.offer(request("Second")).expect("a busy answer");
@@ -207,7 +293,7 @@ mod tests {
         // `accepted` stores its side and presents its token next time, while this side has nothing to compare it with —
         // so the user is told they paired and then refused by the device they just paired with.
         let log = RefCell::new(Vec::new());
-        let mut pairing = InboundPairing::new();
+        let mut pairing = InboundPairing::new(local());
         pairing.offer(request("Laptop"));
 
         let answer = pairing.answer(true, writer(&log, false)).expect("an answer");
@@ -223,7 +309,7 @@ mod tests {
     #[test]
     fn a_write_that_fails_refuses_rather_than_claiming_success() {
         let log = RefCell::new(Vec::new());
-        let mut pairing = InboundPairing::new();
+        let mut pairing = InboundPairing::new(local());
         pairing.offer(request("Laptop"));
 
         let answer = pairing.answer(true, writer(&log, true)).expect("an answer");
@@ -237,7 +323,7 @@ mod tests {
         // The user's answer was not carried out, so it is still theirs to retry. Dropping it would leave them believing
         // they had decided something.
         let log = RefCell::new(Vec::new());
-        let mut pairing = InboundPairing::new();
+        let mut pairing = InboundPairing::new(local());
         pairing.offer(request("Laptop"));
 
         let _ = pairing.answer(true, writer(&log, true));
@@ -254,7 +340,7 @@ mod tests {
         // The token was minted when the request arrived, so a retry writes the value the user was already shown rather
         // than a second one. A token minted at acceptance would make the shown value and the written value two decisions.
         let log = RefCell::new(Vec::new());
-        let mut pairing = InboundPairing::new();
+        let mut pairing = InboundPairing::new(local());
         pairing.offer(request("Laptop"));
         let first_shown = pairing.pending().expect("pending").token.to_hex();
 
@@ -270,7 +356,7 @@ mod tests {
     fn declining_writes_nothing_and_refuses() {
         // Rule 6: the link survives a refusal, so the dialer may ask again over the same connection.
         let log = RefCell::new(Vec::new());
-        let mut pairing = InboundPairing::new();
+        let mut pairing = InboundPairing::new(local());
         pairing.offer(request("Laptop"));
 
         let answer = pairing.answer(false, writer(&log, false)).expect("an answer");
@@ -283,7 +369,7 @@ mod tests {
     #[test]
     fn a_refusal_frees_the_slot_for_the_next_request() {
         let log = RefCell::new(Vec::new());
-        let mut pairing = InboundPairing::new();
+        let mut pairing = InboundPairing::new(local());
         pairing.offer(request("First"));
         let _ = pairing.answer(false, writer(&log, false));
 
@@ -295,7 +381,7 @@ mod tests {
     fn answering_a_prompt_twice_answers_once() {
         // An interface that fires the answer twice — a double click, a re-render — must not produce two pairings.
         let log = RefCell::new(Vec::new());
-        let mut pairing = InboundPairing::new();
+        let mut pairing = InboundPairing::new(local());
         pairing.offer(request("Laptop"));
 
         assert!(pairing.answer(true, writer(&log, false)).is_some());
@@ -306,7 +392,7 @@ mod tests {
     #[test]
     fn answering_with_nothing_pending_is_not_an_error() {
         let log = RefCell::new(Vec::new());
-        let mut pairing = InboundPairing::new();
+        let mut pairing = InboundPairing::new(local());
         assert!(pairing.answer(true, writer(&log, false)).is_none());
         assert!(log.borrow().is_empty());
     }
@@ -315,7 +401,7 @@ mod tests {
     fn an_expired_request_frees_the_slot_and_says_whether_it_did() {
         // Rule 3: the pending request has a timeout. The dialer is never told, because a request nobody answered is
         // indistinguishable from one nobody looked at — and rule 4 makes the dialer give up on its own clock.
-        let mut pairing = InboundPairing::new();
+        let mut pairing = InboundPairing::new(local());
         assert!(!pairing.expire(), "there was nothing to expire");
 
         pairing.offer(request("Laptop"));
@@ -330,7 +416,7 @@ mod tests {
     #[test]
     fn an_expired_request_cannot_then_be_accepted() {
         let log = RefCell::new(Vec::new());
-        let mut pairing = InboundPairing::new();
+        let mut pairing = InboundPairing::new(local());
         pairing.offer(request("Laptop"));
         assert!(pairing.expire());
 

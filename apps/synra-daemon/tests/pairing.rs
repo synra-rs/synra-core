@@ -101,7 +101,7 @@ fn a_pairing_accepted_through_the_session_is_recognised_on_the_next_link() {
     db.migrate().expect("migrates");
 
     // The dialer asks.
-    let mut pairing = InboundPairing::new();
+    let mut pairing = InboundPairing::new(device(DEVICE_B));
     let request = PairRequest {
         profile: PeerProfile {
             device_id: device(DEVICE_A),
@@ -146,4 +146,71 @@ fn a_pairing_accepted_through_the_session_is_recognised_on_the_next_link() {
 
     // And a device that took part in none of this is still asked to pair.
     assert_eq!(state_for(&db, device(DEVICE_B), Some(&dialer_holds)), PairingState::Stale);
+}
+
+/// The code the two devices show is the same code.
+///
+/// # Why this is the test that matters for the prompt
+///
+/// The prompt exists so a user can tell that the device asking is the device they meant. That works only if the two
+/// screens agree: a derivation that read the identifiers in a different order on each side would produce two different
+/// codes for the same honest pair, and every user would be trained to ignore the difference — which is the same as having
+/// no check at all.
+#[test]
+fn both_ends_of_a_pairing_derive_the_same_verification_code() {
+    // The dialer computes it as (peer, self); the acceptor as (self, peer). Both must land on one string.
+    let dialers_view = synra_core::pairing::verification_code(device(DEVICE_B), device(DEVICE_A));
+    let acceptors_view = synra_core::pairing::verification_code(device(DEVICE_A), device(DEVICE_B));
+    assert_eq!(dialers_view, acceptors_view, "the two screens must show one code");
+}
+
+/// A different device produces a different code.
+///
+/// This is what the code is *for*: a device on the same network that asks while claiming to be somebody else must not
+/// produce the code the other screen shows.
+#[test]
+fn a_different_device_produces_a_different_verification_code() {
+    let third = "01a139a9-8f3c-72ce-9c96-2b2c81f14553".parse::<DeviceId>().expect("a valid device id");
+
+    let honest = synra_core::pairing::verification_code(device(DEVICE_A), device(DEVICE_B));
+    let impostor = synra_core::pairing::verification_code(third, device(DEVICE_B));
+    assert_ne!(honest, impostor);
+}
+
+/// The code is always six characters, lowercase, and never reads as a number.
+#[test]
+fn a_verification_code_is_six_characters_and_not_all_digits() {
+    let code = synra_core::pairing::verification_code(device(DEVICE_A), device(DEVICE_B));
+    assert_eq!(code.chars().count(), 6, "{code}");
+    assert!(code.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()), "{code}");
+    assert!(
+        code.chars().next().is_some_and(|c| c.is_ascii_alphabetic()),
+        "a code that begins with a digit is one people drop: {code}"
+    );
+}
+
+/// The prompt a pairing produces carries the code, so the interface has something to show.
+#[test]
+fn the_pending_request_carries_the_verification_code() {
+    use synra_protocol::session::{PairRequest, PeerProfile, PlatformKind};
+
+    let mut pairing = synra_core::pairing::InboundPairing::new(device(DEVICE_B));
+    let request = PairRequest {
+        profile: PeerProfile {
+            device_id: device(DEVICE_A),
+            display_name: "Laptop".to_owned(),
+            platform: PlatformKind::Desktop,
+            app_version: "0.1.0".to_owned(),
+        },
+        user_hint: None,
+    };
+    assert!(pairing.offer(request).is_none());
+
+    let pending = pairing.pending().expect("the request is waiting");
+    assert_eq!(
+        pending.verification_code,
+        synra_core::pairing::verification_code(device(DEVICE_A), device(DEVICE_B)),
+        "the code on the prompt is the code the other screen derives"
+    );
+    assert_eq!(pending.verification_code.chars().count(), 6);
 }

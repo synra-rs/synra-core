@@ -183,6 +183,11 @@ pub fn handle_within(
     };
 
     let peer = link.peer();
+    // This device, which the pairing verification code is derived from along with the dialer's identity. Read from the
+    // link rather than from a plan field, because the link is what the handshake agreed on: a second source could
+    // disagree with it, and a code derived from a different identifier is one the other screen does not match — which
+    // reads to a user as an attacker rather than as a bug.
+    let local_id = link.local();
     let mut events = Vec::new();
     // ★ The connection's transfer state: a proposal is remembered here, and the blocks that follow it are written into the
     // file it named. Without this the loop below would see a block as an unexpected frame and close the link — which is
@@ -191,7 +196,7 @@ pub fn handle_within(
     // ★ The pairing prompt for this connection. Per-connection rather than shared, because the protocol's rule is one
     // request at a time *per device* and a connection is one device's conversation — two peers dialling at once each get
     // their own prompt rather than one being refused as `busy` for the other's benefit.
-    let mut pairing = synra_core::pairing::InboundPairing::new();
+    let mut pairing = synra_core::pairing::InboundPairing::new(local_id);
     loop {
         match inbox.absorb(&mut link, synra_store::sqlite::now_ms(), PATIENCE, &mut pairing) {
             Ok(decision) => match decision {
