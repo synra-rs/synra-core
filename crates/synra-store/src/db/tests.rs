@@ -6,7 +6,10 @@ fn the_migration_list_is_a_sequence_from_one() {
     // A gap would mean a version whose shape nobody defined, and an engine applying steps in order would
     // silently skip from one shape to a different one.
     assert_eq!(check_migration_list(MIGRATIONS), Ok(()));
-    assert_eq!(latest_version(), 5);
+    // That the list reaches *some* version, and that the version it reaches is the last entry's. A literal here would
+    // have to be edited every time a migration is appended, which is the change this test is supposed to be silent about.
+    assert_eq!(latest_version(), MIGRATIONS.last().map_or(0, |migration| migration.version));
+    assert!(latest_version() > 0, "a schema with no migrations cannot open anything");
 }
 
 #[test]
@@ -105,7 +108,9 @@ fn schema_state_recognises_a_database_at_the_latest_version() {
 fn schema_state_lists_only_the_steps_that_are_pending() {
     let state = schema_state(Some(2));
     let pending: Vec<u32> = state.pending().iter().map(|migration| migration.version).collect();
-    assert_eq!(pending, vec![3, 4, 5]);
+    let after_two: Vec<u32> =
+        MIGRATIONS.iter().map(|migration| migration.version).filter(|version| *version > 2).collect();
+    assert_eq!(pending, after_two);
 }
 
 #[test]
@@ -133,10 +138,18 @@ fn applying_to_an_empty_database_runs_every_step() {
     })
     .expect("applies");
 
-    assert_eq!(outcome.applied, vec![1, 2, 3, 4, 5]);
+    // Derived from the list rather than written out. A migration is appended far more often than the list is
+    // rearranged, and a literal here turns appending one — a routine change — into a failure that says nothing about
+    // whether the new migration is right.
+    let every_version: Vec<u32> = MIGRATIONS.iter().map(|migration| migration.version).collect();
+    assert_eq!(outcome.applied, every_version);
     assert_eq!(outcome.version, latest_version());
     assert!(outcome.changed_anything());
-    assert!(outcome.describe().contains("5 migration"));
+    assert!(
+        outcome.describe().contains(&format!("{} migration", MIGRATIONS.len())),
+        "the report names how many steps ran: {}",
+        outcome.describe()
+    );
 
     let total: usize = MIGRATIONS.iter().map(|migration| migration.statements.len()).sum();
     assert_eq!(executed.len(), total, "every statement ran exactly once");
@@ -167,7 +180,10 @@ fn applying_resumes_from_the_recorded_version() {
     })
     .expect("applies");
 
-    assert_eq!(outcome.applied, vec![3, 4, 5]);
+    // Everything after the recorded version, derived from the list so appending a migration does not edit this test.
+    let from_three: Vec<u32> =
+        MIGRATIONS.iter().map(|migration| migration.version).filter(|version| *version > 2).collect();
+    assert_eq!(outcome.applied, from_three);
     // And none of the earlier steps' statements appear.
     let earlier: Vec<String> = MIGRATIONS[..2]
         .iter()

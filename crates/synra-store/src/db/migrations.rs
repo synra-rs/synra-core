@@ -183,6 +183,17 @@ pub const MIGRATIONS: &[Migration] = &[
             "CREATE INDEX plugin_audit_by_age ON plugin_audit (at_ms)",
         ],
     },
+    Migration {
+        version: 6,
+        name: "pairing-tokens",
+        statements: &[
+            // The secret a paired peer presents on the next link, so a handshake can answer "is this the device I paired
+            // with" rather than "someone is dialling". It is 32 bytes, stored as lowercase hex because that is how it
+            // travels on the wire, and nullable because a row written before this migration has no token: such a device
+            // is paired but must pair again, which the handshake reports as `Stale` rather than as a refusal.
+            "ALTER TABLE paired_devices ADD COLUMN link_token TEXT",
+        ],
+    },
 ];
 
 /// The schema version this build expects.

@@ -386,3 +386,79 @@ fn every_error_explains_itself() {
     let text = errors[2].to_string();
     assert!(text.contains('9') && text.contains('3'), "{text}");
 }
+
+
+// ── Pairing ───────────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn pairing_a_device_stores_the_token_a_later_link_must_present() {
+    let db = migrated();
+
+    assert_eq!(db.link_token_for("dev-1").expect("queries"), None, "nothing is paired to begin with");
+    assert!(!db.is_paired_with("dev-1").expect("queries"));
+
+    let paired = db
+        .pair_device("dev-1", "Laptop", "windows", r#"["TransferResume"]"#, "aa11", 1_700)
+        .expect("pairs");
+
+    assert_eq!(paired.device_id, "dev-1");
+    assert_eq!(paired.display_name, "Laptop");
+    assert_eq!(paired.paired_at_ms, 1_700);
+    assert_eq!(db.link_token_for("dev-1").expect("queries").as_deref(), Some("aa11"));
+    assert!(db.is_paired_with("dev-1").expect("queries"));
+}
+
+#[test]
+fn pairing_the_same_device_again_replaces_its_token() {
+    // The ordinary case, not an exception: a device is reset, its token is refused as stale, and the user pairs it
+    // again. An insert that failed the second time would turn a routine action into an error.
+    let db = migrated();
+    db.pair_device("dev-1", "Laptop", "windows", "[]", "first", 1_000).expect("pairs");
+    db.pair_device("dev-1", "Laptop renamed", "windows", "[]", "second", 2_000).expect("pairs again");
+
+    assert_eq!(db.link_token_for("dev-1").expect("queries").as_deref(), Some("second"));
+    assert_eq!(db.paired_devices().expect("lists").len(), 1, "pairing again must not add a second row");
+    assert_eq!(db.paired_devices().expect("lists")[0].display_name, "Laptop renamed");
+}
+
+#[test]
+fn pairing_again_clears_a_block() {
+    // A device the user blocked and then deliberately paired again is a decision the user has reversed. Leaving the
+    // block in place would make the second pairing appear to succeed and then refuse every link.
+    //
+    // The block is set with SQL rather than through a method because no method exists: nothing in the kernel blocks a
+    // device yet, so a `set_device_blocked` would be unused public API written only to make this test read nicely.
+    let db = migrated();
+    db.pair_device("dev-1", "Laptop", "windows", "[]", "tok", 1_000).expect("pairs");
+    db.connection
+        .execute("UPDATE paired_devices SET blocked = 1 WHERE device_id = 'dev-1'", [])
+        .expect("blocks");
+    assert!(!db.is_paired_with("dev-1").expect("queries"), "a blocked device is not usable");
+
+    db.pair_device("dev-1", "Laptop", "windows", "[]", "tok2", 2_000).expect("pairs again");
+    assert!(db.is_paired_with("dev-1").expect("queries"));
+}
+
+#[test]
+fn unpairing_removes_the_token_with_the_pairing() {
+    let db = migrated();
+    db.pair_device("dev-1", "Laptop", "windows", "[]", "tok", 1_000).expect("pairs");
+
+    assert!(db.unpair_device("dev-1").expect("unpairs"));
+    assert_eq!(db.link_token_for("dev-1").expect("queries"), None);
+    assert!(!db.unpair_device("dev-1").expect("unpairs again"), "the second removal removes nothing");
+}
+
+#[test]
+fn a_pairing_from_before_tokens_reports_no_token_rather_than_failing() {
+    // Migration 6 added the column as nullable, so a row written before it exists with a null token. Reading that must
+    // be an answer — "paired, but must pair again" — not an error, because an error would refuse a link the user made.
+    let db = migrated();
+    db.pair_device("dev-1", "Laptop", "windows", "[]", "tok", 1_000).expect("pairs");
+    db.connection
+        .execute("UPDATE paired_devices SET link_token = NULL WHERE device_id = 'dev-1'", [])
+        .expect("clears the token");
+
+    assert_eq!(db.link_token_for("dev-1").expect("queries"), None);
+    assert!(db.is_paired_with("dev-1").expect("queries"), "the pairing still exists");
+}
