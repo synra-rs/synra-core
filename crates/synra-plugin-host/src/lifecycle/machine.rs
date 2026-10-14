@@ -3,7 +3,10 @@
 use super::state::State;
 use super::transition::{Transition, TransitionError};
 /// A plugin's lifecycle, as a value that only moves through the transitions it permits.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Serializable because the pipeline that drives it crosses the IPC boundary: a settings screen shows where a plugin
+/// is, and the state it shows should be the state that was decided rather than a rendering of it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Lifecycle {
     state: State,
     /// The digest of the manifest currently loaded, which grants are recorded against.

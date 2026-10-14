@@ -25,6 +25,8 @@
 //! nothing downstream distinguishes them: what a caller does about a cancelled download and a timed-out one is the
 //! same, and the sentence in [`Failed::detail`] is what tells a user which happened.
 
+use serde::{Deserialize, Serialize};
+
 use super::machine::Lifecycle;
 use super::state::State;
 use super::transition::{Transition, TransitionError};
@@ -40,8 +42,9 @@ use super::transition::{Transition, TransitionError};
 /// It is refused outside development by [`InstallSource::refuses_outside_development`], which the resolver's caller
 /// checks. That refusal is not politeness: a local path is a directory the user can change under a running plugin, and
 /// "install whatever is at this path" in a shipped build is a way to run unsigned code.
-#[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
 pub enum InstallSource {
     /// A package in a registry.
     Registry {
@@ -121,8 +124,9 @@ impl InstallSource {
 /// Because "which stage" decides "can this work if I try again", and a string makes that a comparison somebody has to
 /// remember to write. [`FailStage::is_retryable`] is the rule in one place, and a new stage cannot be added without
 /// answering it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum FailStage {
     /// Finding the artifact: a registry that does not answer, a package that does not exist.
     Resolve,
@@ -172,7 +176,8 @@ impl FailStage {
 }
 
 /// An installation that stopped, with everything needed to retry or to explain.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Failed {
     /// What was being installed.
     pub source: InstallSource,
@@ -238,7 +243,8 @@ impl Failed {
 pub const WEAR_OUT_AFTER: u32 = 3;
 
 /// What resolving produced, which is what downloading needs.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Resolved {
     /// The version the source resolved to.
     pub version: String,
@@ -251,7 +257,8 @@ pub struct Resolved {
 }
 
 /// How far a download has got.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Progress {
     /// Bytes received.
     pub received: u64,
@@ -283,7 +290,8 @@ impl Progress {
 }
 
 /// What verification concluded.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Verified {
     /// The version.
     pub version: String,
@@ -301,7 +309,8 @@ pub struct Verified {
 }
 
 /// The user's decision about a plugin's capabilities.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Consent {
     /// The capabilities the user allowed.
     pub granted: Vec<String>,
@@ -330,8 +339,9 @@ impl Consent {
 ///
 /// The thirteen states of the design document's §1.1, in the order they are reached, with two exceptions that are
 /// reachable from anywhere: [`Self::Faulted`] and [`Self::Failed`].
-#[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", tag = "state")]
 pub enum PluginSlot {
     /// In a registry, not on this device.
     Available,
@@ -1407,5 +1417,75 @@ mod tests {
         assert_eq!(Progress { received: 10, total: None }.fraction(), None);
         assert_eq!(Progress { received: 0, total: Some(0) }.fraction(), Some(1.0));
         assert!(Progress { received: 1_000, total: Some(1_000) }.is_complete());
+    }
+
+    #[test]
+    fn every_state_survives_a_trip_through_json() {
+        // ★ The reason these types are serialisable at all: a settings screen shows where a plugin is, and the state it
+        // shows should be the state that was decided rather than a rendering of it. A round trip that lost a field
+        // would be a screen describing a plugin that is not the one the kernel has.
+        let states = [
+            PluginSlot::Available,
+            PluginSlot::Resolving { source: registry_source() },
+            PluginSlot::Downloading {
+                source: registry_source(),
+                resolved: resolved(),
+                progress: Progress { received: 900, total: Some(1_000) },
+            },
+            PluginSlot::Verifying {
+                source: registry_source(),
+                resolved: resolved(),
+                artifact_digest: "bbb".to_owned(),
+            },
+            PluginSlot::AwaitingConsent { source: registry_source(), verified: verified() },
+            PluginSlot::Installing {
+                source: registry_source(),
+                verified: verified(),
+                consent: consented(),
+            },
+            installed(),
+            PluginSlot::Failed(Failed::at(registry_source(), FailStage::Download, "the connection dropped", NOW)),
+            PluginSlot::Failed(Failed::at(registry_source(), FailStage::Verify, "the digest does not match", NOW)),
+            PluginSlot::Failed(Failed::at(registry_source(), FailStage::Activate, "it trapped", NOW)),
+            PluginSlot::Failed(Failed::at(registry_source(), FailStage::Consent, "declined", NOW)),
+            PluginSlot::Failed(Failed::at(registry_source(), FailStage::Install, "the disk is full", NOW)),
+            PluginSlot::Failed(Failed::at(registry_source(), FailStage::Remove, "the file is locked", NOW)),
+            PluginSlot::Failed(Failed::at(registry_source(), FailStage::Resolve, "no such package", NOW)),
+        ];
+
+        for state in &states {
+            let json = serde_json::to_string(state).unwrap_or_else(|error| panic!("{state:?}: {error}"));
+            let back: PluginSlot = serde_json::from_str(&json).unwrap_or_else(|error| panic!("{json}: {error}"));
+            assert_eq!(&back, state, "{json}");
+            // And the tag a screen matches on is the same word the kernel calls the state, which is what stops the two
+            // from drifting.
+            assert!(json.contains(state.as_str()), "{json}");
+        }
+    }
+
+    #[test]
+    fn an_install_source_says_what_kind_it_is_in_json() {
+        // A tagged union, so a reader does not have to guess which fields are present — and the tag is the same word
+        // `kind` returns.
+        let source = InstallSource::Git { url: "https://example".to_owned(), reference: Some("main".to_owned()) };
+        let json = serde_json::to_string(&source).expect("serialises");
+        assert!(json.contains("\"kind\":\"git\""), "{json}");
+        assert!(json.contains("https://example"), "{json}");
+        let back: InstallSource = serde_json::from_str(&json).expect("deserialises");
+        assert_eq!(back, source);
+        assert_eq!(source.kind(), "git");
+    }
+
+    #[test]
+    fn a_failure_that_went_through_json_still_knows_whether_a_retry_could_work() {
+        // The field a button is drawn from, so a round trip that lost it would be a screen offering a retry for a
+        // digest that will never match.
+        let hopeless = Failed::at(registry_source(), FailStage::Verify, "the digest does not match", NOW);
+        let json = serde_json::to_string(&hopeless).expect("serialises");
+        let back: Failed = serde_json::from_str(&json).expect("deserialises");
+        assert!(!back.retryable);
+        assert_eq!(back.stage, FailStage::Verify);
+        assert_eq!(back.stage.as_str(), "verify");
+        assert_eq!(back.failed_at_ms, NOW);
     }
 }
