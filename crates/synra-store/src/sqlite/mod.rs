@@ -1,0 +1,207 @@
+//! The SQLite binding.
+//!
+//! # Why this exists now, when `db` deliberately does not carry a binding
+//!
+//! [`crate::db`] holds the migration *logic* — the ordering, the versioning, the failure behaviour — and says in its own
+//! docs that it is not a binding, so that a crate holding the persistence contract can be checked without a C
+//! dependency. That reasoning still holds, and this module is the other half: the part that *does* need an engine, in a
+//! file of its own so the contract above it stays checkable.
+//!
+//! The split also means there is one place where SQLite's behaviour is compared against the contract:
+//! [`SynraDb::migrate`] applies [`crate::db::MIGRATIONS`] through `rusqlite` and records the version the way
+//! [`crate::db::apply`] says to. A second implementation of the ordering would be a second set of rules.
+//!
+//! # Why `bundled`
+//!
+//! Because a kernel that used whatever SQLite the machine happened to have would behave differently on machines with
+//! different versions — and the feature that matters here, `ON DELETE CASCADE` with `foreign_keys = ON`, is a pragma the
+//! operating system's copy may or may not honour. The bundle is compiled once and is the same everywhere.
+//!
+//! # What is deliberate about the pragmas
+//!
+//! [`crate::db::PRAGMAS`] is applied on every open, not only on creation. `foreign_keys` is **per connection** in SQLite
+//! and defaults to off, so a connection opened without it silently accepts orphaned rows — and the failure surfaces as
+//! data that cannot be joined rather than as an error. The migration module says why the checks run here rather than in
+//! the caller; this is where they run.
+
+use std::path::Path;
+
+use rusqlite::{Connection, OpenFlags};
+
+use crate::db::{Health, PRAGMAS, latest_version};
+use crate::records::RowError;
+
+mod devices;
+mod identities;
+mod migrations;
+mod plugins;
+mod settings;
+
+pub use migrations::migration_versions;
+
+#[cfg(test)]
+mod tests;
+
+/// Why a database operation failed.
+///
+/// # Why the SQLite error is kept as text rather than as a variant
+///
+/// A public error holding `rusqlite::Error` is a promise about *that* crate's version: a minor release would change this
+/// crate's error type, and a caller matching on a variant would stop compiling. The design document's rule for the stable
+/// crates is that errors carry the kernel's own vocabulary and the third-party detail goes in a string, where it is
+/// useful and not a promise.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum DbError {
+    /// The file could not be opened.
+    #[error("could not open {}: {why}", path.display())]
+    Open {
+        /// The path.
+        path: std::path::PathBuf,
+        /// What SQLite said.
+        why: String,
+    },
+
+    /// A statement failed.
+    #[error("the database refused a statement: {why}")]
+    Statement {
+        /// What SQLite said.
+        why: String,
+    },
+
+    /// The database's schema is newer than this build understands.
+    ///
+    /// # Why this is refused rather than opened
+    ///
+    /// A newer schema is a database written by a newer kernel. Opening it would run this build's migrations against a
+    /// shape they were not written for — and the damage is a schema that is neither version, which no later build can
+    /// repair because it cannot tell what it started from.
+    #[error("the database is at schema {found} and this build understands up to {known}")]
+    FromTheFuture {
+        /// The version recorded.
+        found: u32,
+        /// What this build knows.
+        known: u32,
+    },
+
+    /// A row could not be turned into a type.
+    #[error(transparent)]
+    Row(#[from] RowError),
+}
+
+/// The kernel's database.
+///
+/// # Why one connection rather than a pool
+///
+/// The kernel is one process, and its writes are ordered by the work that produces them. A pool exists to let many
+/// callers proceed at once, and here that would mean two writers racing on the same rows — with SQLite's own locking as
+/// the only thing between them. A single connection makes the ordering a property of the code rather than of a lock.
+pub struct SynraDb {
+    connection: Connection,
+}
+
+impl std::fmt::Debug for SynraDb {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The connection is not printable, and printing a database handle would leak its path into a log line.
+        f.write_str("SynraDb")
+    }
+}
+
+impl SynraDb {
+    /// Opens a database file, creating it if it is absent.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::Open`] when the file cannot be opened, and [`DbError::FromTheFuture`] when its schema is newer than
+    /// this build understands.
+    pub fn open(path: &Path) -> Result<Self, DbError> {
+        // The flags are explicit rather than left to the default, because `create` and `read_write` together are what
+        // "the kernel owns this file" means — and a connection opened read-only would fail every write with a message
+        // about a locked database.
+        let connection = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+                | OpenFlags::SQLITE_OPEN_CREATE
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(|error| DbError::Open { path: path.to_path_buf(), why: error.to_string() })?;
+
+        let db = Self { connection };
+        db.apply_pragmas()?;
+        db.refuse_a_future_schema()?;
+        Ok(db)
+    }
+
+    /// Opens a database with no file, for a test or a diagnostic that must not touch the disk.
+    ///
+    /// # Errors
+    ///
+    /// As [`SynraDb::open`], minus the file.
+    pub fn open_in_memory() -> Result<Self, DbError> {
+        let connection = Connection::open_in_memory().map_err(|error| DbError::Open {
+            path: std::path::PathBuf::from(":memory:"),
+            why: error.to_string(),
+        })?;
+        let db = Self { connection };
+        db.apply_pragmas()?;
+        Ok(db)
+    }
+
+    /// Whether the database is usable.
+    ///
+    /// The `integrity_check` the design document asks for at start-up, reduced to the question a caller asks.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::Statement`] when the check itself cannot run, which is a different answer from "the database is
+    /// damaged" and must not be reported as one.
+    pub fn health(&self) -> Result<Health, DbError> {
+        let mut statement = self
+            .connection
+            .prepare("PRAGMA integrity_check")
+            .map_err(|error| DbError::Statement { why: error.to_string() })?;
+        let rows: Vec<String> = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|error| DbError::Statement { why: error.to_string() })?
+            .collect::<Result<Vec<String>, _>>()
+            .map_err(|error| DbError::Statement { why: error.to_string() })?;
+        Ok(crate::db::interpret_integrity(&rows))
+    }
+
+    /// Applies the pragmas the rest of the system assumes.
+    fn apply_pragmas(&self) -> Result<(), DbError> {
+        for (name, value) in PRAGMAS {
+            self.connection
+                .execute_batch(&format!("PRAGMA {name} = {value}"))
+                .map_err(|error| DbError::Statement {
+                    why: format!("PRAGMA {name} = {value}: {error}"),
+                })?;
+        }
+        Ok(())
+    }
+
+    /// Refuses a database written by a newer kernel.
+    fn refuse_a_future_schema(&self) -> Result<(), DbError> {
+        let Some(recorded) = self.recorded_version()? else {
+            return Ok(());
+        };
+        if recorded > latest_version() {
+            return Err(DbError::FromTheFuture { found: recorded, known: latest_version() });
+        }
+        Ok(())
+    }
+}
+
+/// The wall clock, in milliseconds since the epoch.
+///
+/// # Why the wall clock and not a monotonic reading
+///
+/// Every `*_ms` column is read by a process that did not write it — a `doctor` run, a later kernel — and a monotonic
+/// reading is only comparable within one process. The same reading that made the daemon's claim file work: a value
+/// crossing a process boundary has to be a wall-clock one.
+#[must_use]
+pub fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| i64::try_from(since.as_millis()).unwrap_or(i64::MAX))
+}
