@@ -66,6 +66,8 @@ pub enum OutputFormat {
 pub enum Command {
     /// List the devices this kernel has seen.
     Devices(DevicesArgs),
+    /// Ask a device to pair with this one.
+    Pair(PairArgs),
     /// Show the kernel's state and its links.
     Status,
     /// Send text or a file to a device.
@@ -97,6 +99,20 @@ pub struct DevicesArgs {
     /// List only what the kernel already knows, without scanning.
     #[arg(long)]
     pub cached: bool,
+}
+
+/// Options for `pair`.
+#[derive(Debug, Args)]
+pub struct PairArgs {
+    /// The device to ask. A device id, a display name if it is unambiguous, or `host:port`.
+    ///
+    /// # Why this blocks
+    ///
+    /// Because the answer is a person on the other device deciding, and there is nothing to print until they have. The
+    /// wait is bounded by the kernel's pairing window — the same one the other side shows a countdown for — so this
+    /// cannot hang for ever, and the kernel clears its own waiting state when the window closes.
+    #[arg(value_name = "DEVICE")]
+    pub device: String,
 }
 
 /// Options for `send`.
@@ -301,6 +317,7 @@ mod tests {
         for args in [
             vec!["synra", "devices"],
             vec!["synra", "status"],
+            vec!["synra", "pair", "dev_a"],
             vec!["synra", "send", "--to", "dev_a", "--text", "hi"],
             vec!["synra", "send", "--to", "dev_a", "--file", "a.txt"],
             vec!["synra", "plugin", "list"],
@@ -319,7 +336,10 @@ mod tests {
     #[test]
     fn an_unknown_command_is_refused() {
         assert!(parse(&["synra", "devices_"]).is_err());
-        assert!(parse(&["synra", "pair"]).is_err());
+        // `pair` is a real command now, so it is refused for a different reason: it needs a device to ask. The two are
+        // distinct failures and both belong here, because a user who types a bare `pair` should be told what is missing
+        // rather than that the command does not exist.
+        assert!(parse(&["synra", "pair"]).is_err(), "pairing needs a device");
         assert!(parse(&["synra"]).is_err(), "a bare invocation needs a subcommand");
     }
 
@@ -644,6 +664,9 @@ mod tests {
         // the count. This asserts the half that can be asserted from inside: that the whole command surface is
         // reachable without `main`.
         assert!(Cli::command().get_name() == "synra");
-        assert_eq!(Cli::command().get_subcommands().count(), 7);
+        // Counted rather than named, so adding a command without adding it here is a failure — and the count is what
+        // makes the list above (`every_documented_command_exists`) meaningful: a command that parses but is not on the
+        // command surface would be one clap never dispatches to.
+        assert_eq!(Cli::command().get_subcommands().count(), 8);
     }
 }

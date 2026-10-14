@@ -49,8 +49,8 @@ pub mod doctor;
 pub mod session;
 
 pub use args::{
-    Cli, Command, DbAction, DbArgs, DevicesArgs, DoctorArgs, LogsArgs, OutputFormat, Payload,
-    PayloadError, PluginAction, PluginArgs, SendArgs,
+    Cli, Command, DbAction, DbArgs, DevicesArgs, DoctorArgs, LogsArgs, OutputFormat, PairArgs,
+    Payload, PayloadError, PluginAction, PluginArgs, SendArgs,
 };
 pub use channel::{Question, Shape, ask, outcome_of, question_for, transport_failure};
 pub use doctor::{DoctorReport, HostSummary, ProbeLine};

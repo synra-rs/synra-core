@@ -67,6 +67,12 @@ pub fn question_for(
         // reasoning that its summary is derived from the same value — and the effect was that a user asking for text got
         // a JSON document, which is the wrong answer to the question they asked.
         Command::Status => Some(Question { request: Request::Status, shape }),
+        // ★ The command that names the missing producer: until this existed, pairing could be answered but never
+        // asked for, so a device could only be paired by the other side starting the exchange.
+        Command::Pair(args) => Some(Question {
+            request: Request::Pair { device: args.device.clone() },
+            shape,
+        }),
         Command::Devices(args) => Some(Question {
             // ★ Both flags are carried, not dropped. A `--all` or a `--scan-ms` that did not arrive is a command whose
             // flag is silently ignored, and the output looks plausible either way — which is the failure mode a
@@ -347,7 +353,7 @@ pub fn transport_failure(error: &synra_control::SocketError) -> crate::session::
 mod tests {
     use super::*;
     use crate::args::{
-        Command, DbAction, DbArgs, DevicesArgs, LogsArgs, OutputFormat, SendArgs,
+        Command, DbAction, DbArgs, DevicesArgs, LogsArgs, OutputFormat, PairArgs, SendArgs,
     };
 
     fn devices_args(all: bool) -> DevicesArgs {
@@ -655,5 +661,33 @@ mod tests {
         // `transport_not_open` is retryable in the kernel, and the client reads that rather than deciding. A kernel that
         // is still starting is the ordinary case.
         assert!(ErrorCode::TransportNotOpen.retryable());
+    }
+
+
+    #[test]
+    fn the_pair_command_names_the_device_it_was_given() {
+        // The command that names the missing producer: pairing could be answered before this existed, but never asked
+        // for. The assertion is on the operand, because a device name that did not reach the request is a command whose
+        // argument is silently ignored — and the output would look plausible either way.
+        let question = question_for(
+            &Command::Pair(PairArgs { device: "Laptop".to_owned() }),
+            None,
+            || None,
+        )
+        .expect("a question");
+        assert_eq!(question.request, Request::Pair { device: "Laptop".to_owned() });
+    }
+
+    #[test]
+    fn the_pair_command_honours_the_output_flag() {
+        // A user asking for JSON gets JSON. Pinned to prose here would be the wrong answer to the question they asked,
+        // which is the mistake `status` made once.
+        let question = question_for(
+            &Command::Pair(PairArgs { device: "Laptop".to_owned() }),
+            Some(OutputFormat::Json),
+            || None,
+        )
+        .expect("a question");
+        assert_eq!(question.shape, Shape::Json);
     }
 }
