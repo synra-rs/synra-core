@@ -54,6 +54,7 @@ pub mod host;
 pub mod identity;
 pub mod link;
 pub mod messaging;
+pub mod pairing;
 pub mod peer;
 pub mod routing;
 pub mod session;
