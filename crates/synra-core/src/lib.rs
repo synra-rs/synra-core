@@ -56,9 +56,13 @@ pub mod link;
 pub mod peer;
 pub mod routing;
 pub mod sessions;
+pub mod socket;
 
 pub use admission::{
     AdmissionContext, AdmissionRefusal, AdmissionStep, PluginKey, admit, check, host_requirement,
+};
+pub use socket::{
+    DiscoverySocket, SocketError, absorb, broadcast_addresses, is_about,
 };
 pub use host::{Attached, Host, HostError, SharedHost, shared};
 pub use discovery::{

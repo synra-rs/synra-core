@@ -368,6 +368,16 @@ impl Host {
         self.sessions.record_frame_in(key, token, now_ms)
     }
 
+    /// Records that a device said goodbye.
+    ///
+    /// # Why this is on the host rather than reached through the table
+    ///
+    /// Because a goodbye is a datagram, and a datagram's handling belongs where the socket can reach it. The table's own
+    /// rule — that a goodbye ages the entry out rather than refreshing it — is unchanged; this is the way in.
+    pub fn went_offline(&mut self, device_id: DeviceId, now_ms: i64) -> Absorbed {
+        self.discovery.went_offline(device_id, now_ms)
+    }
+
     /// Drops the candidates that have stopped being current, reporting what went.
     pub fn expire(&mut self, now_ms: i64) -> Vec<Candidate> {
         self.discovery.expire(now_ms)
