@@ -488,6 +488,9 @@ mod tests {
         fn logs(&self, _lines: usize, _verbose: bool) -> Result<serde_json::Value, Refusal> {
             self.answer("logs")
         }
+        fn pair(&self, _device: &str) -> Result<serde_json::Value, Refusal> {
+            self.answer("pair")
+        }
         fn pair_answer(&self, _request_id: &str, _accepted: bool) -> Result<serde_json::Value, Refusal> {
             self.answer("pairAnswer")
         }

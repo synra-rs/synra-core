@@ -133,6 +133,21 @@ pub trait Kernel {
     /// As [`Kernel::status`].
     fn logs(&self, lines: usize, verbose: bool) -> Result<serde_json::Value, Refusal>;
 
+    /// Asks a device to pair, and waits for the other user's answer.
+    ///
+    /// # Why this returns rather than starting something
+    ///
+    /// Because the caller's next step depends on the outcome: a user who was accepted has a device to list, and one who
+    /// was refused has a reason to read. The wait is bounded by the session's pairing window — the same clock the
+    /// receiving side uses — so this cannot hold a caller for ever, and the kernel clears its waiting state when the
+    /// window closes rather than hanging.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::DeviceOffline`] and friends from resolving and dialling the device, plus
+    /// [`ErrorCode::InvalidArgument`] for a device that cannot be found at all.
+    fn pair(&self, device: &str) -> Result<serde_json::Value, Refusal>;
+
     /// Answers a pairing request a device is waiting on.
     ///
     /// # Errors
@@ -285,6 +300,7 @@ impl Server {
             Request::SendFile { to, path } => kernel.send_file(to, path),
             Request::Plugins => kernel.plugins(),
             Request::Logs { lines, verbose } => kernel.logs(*lines, *verbose),
+            Request::Pair { device } => kernel.pair(device),
             Request::PairAnswer { request_id, accepted } => kernel.pair_answer(request_id, *accepted),
             // Answered above, and unreachable here. Written as a refusal rather than a `panic!` because a handler that
             // can panic on a request is one a hostile client can take down — and this channel is reachable by anything
@@ -369,6 +385,10 @@ mod tests {
         fn logs(&self, lines: usize, verbose: bool) -> Result<serde_json::Value, Refusal> {
             self.asked.borrow_mut().push((false, lines, verbose));
             self.logs.clone()
+        }
+        fn pair(&self, _device: &str) -> Result<serde_json::Value, Refusal> {
+            self.asked.borrow_mut().push((false, 0, false));
+            Ok(serde_json::json!({ "paired": true }))
         }
         fn pair_answer(&self, request_id: &str, accepted: bool) -> Result<serde_json::Value, Refusal> {
             self.asked.borrow_mut().push((accepted, request_id.len(), false));

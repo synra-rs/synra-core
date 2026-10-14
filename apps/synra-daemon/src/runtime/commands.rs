@@ -280,6 +280,172 @@ impl Kernel for Runtime {
         self.logs_value(lines, verbose)
     }
 
+    /// Asks a device to pair, and waits for its user.
+    ///
+    /// # Why the host lock is released before the request is sent
+    ///
+    /// Because the wait is a person. `dial` blocks for a connection and the answer blocks for a decision, and a `host`
+    /// guard living across either would make a `devices` listing wait for somebody else's user to make up their mind —
+    /// which is exactly the command a user runs while wondering why pairing is taking so long.
+    ///
+    /// # Why the peer's details come from this side's own record
+    ///
+    /// Because nothing on the wire carries them in this direction: a `PairRequest` carries **this** device's profile, so
+    /// the other user sees a name. What the asked device calls itself is what discovery heard, which is the only place
+    /// either side learns it.
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal`] naming what went wrong: the device, the connection, the request, or the other user's refusal.
+    fn pair(&self, device: &str) -> Result<serde_json::Value, Refusal> {
+        let now = synra_store::sqlite::now_ms();
+        let trace_id = synra_protocol::ids::TraceId::new();
+
+        // Read everything the exchange needs under one lock, then release it. Scoped rather than held, because `dial`
+        // below is a network round trip.
+        let (device_id, address, ours) = {
+            let host = self.host.lock();
+            let device_id = host.resolve(device).map_err(|error| refusal_of(&error))?;
+            let address = host.address_of(device_id).ok_or_else(|| {
+                Refusal::new(
+                    ErrorCode::DeviceOffline,
+                    format!("{device_id} is known and has no address — it has not been seen on this network"),
+                )
+            })?;
+            let identity = host.identity();
+            let profile = synra_protocol::session::PeerProfile {
+                device_id: identity.device_id,
+                display_name: identity.display_name.clone(),
+                // The identity stores the operating system, because that is what it was created from; the profile the
+                // protocol carries wants the coarser kind, so the conversion is the same one the host announces with.
+                platform: synra_core::platform_of_os(&identity.platform),
+                app_version: self.version.clone(),
+            };
+            // Released here rather than at the end of the block: the values above are owned, and holding the host while
+            // the tuple is built would be a lock held for no reason.
+            drop(host);
+            (device_id, address, profile)
+        };
+
+        // What the peer calls itself, from what discovery heard. Absent means it was never announced, which is a device
+        // this kernel can dial but cannot name — and a prompt that cannot name the device asking is one a user should not
+        // be shown, so it is refused rather than shown as an identifier.
+        let (display_name, platform) = {
+            let host = self.host.lock();
+            let found = host.discovery().get(device_id).map(|candidate| {
+                (
+                    candidate.display_name.clone(),
+                    candidate.platform.unwrap_or(synra_protocol::session::PlatformKind::Desktop),
+                )
+            });
+            drop(host);
+            found.ok_or_else(|| {
+                Refusal::new(
+                    ErrorCode::DeviceOffline,
+                    format!("{device_id} has never announced itself, so pairing with it cannot be shown to a user"),
+                )
+            })?
+        };
+
+        let (pairing_state, request) = synra_core::pairing::OutboundPairing::ask(
+            synra_core::pairing::PairingTarget { device_id, display_name: display_name.clone(), platform },
+            ours.clone(),
+            synra_protocol::session::SessionTimeouts::default().pairing,
+            now,
+        );
+        // ★ The envelope carries **this** device's profile, not the peer's: the request's whole purpose is that the other
+        // user sees a name rather than an identifier. Sending theirs would ask them to pair with themselves, and the
+        // record on this side would then name this device as its own peer.
+        let envelope =
+            synra_core::pair_request(self.identity.device_id, device_id, &ours, trace_id, now)
+                .map_err(|error| Refusal::new(ErrorCode::InvalidArgument, error.to_string()))?;
+        let _ = request;
+
+        let mut host = self.host.lock();
+        let mut link = host
+            .dial(address, None, synra_core::reading_millis(now))
+            .map_err(|error| refusal_of(&error))?;
+        // The window a person answers within, which is longer than a handshake's. Set on the socket rather than left at
+        // the handshake's deadline: a prompt answered just inside the session's window must not fail because the read
+        // gave up at `HELLO_TIMEOUT`.
+        link.set_read_timeout(Some(synra_protocol::session::SessionTimeouts::default().pairing));
+        host.send(&mut link, &envelope).map_err(|error| refusal_of(&error))?;
+
+        // A read that times out is the window closing, which the protocol makes this side's own responsibility to
+        // notice: the requesting device clears its waiting state rather than hanging for ever.
+        let received = match link.receive() {
+            Ok(answer) => answer,
+            Err(synra_core::LinkError::TimedOut) => {
+                let _ = link.bye("pairing timed out");
+                drop(host);
+                return Err(Refusal::new(
+                    ErrorCode::DeviceOffline,
+                    format!("{display_name} did not answer the pairing request in time"),
+                ));
+            }
+            Err(synra_core::LinkError::Closed) => {
+                drop(host);
+                return Err(Refusal::new(
+                    ErrorCode::DeviceOffline,
+                    format!("{display_name} closed the link without answering"),
+                ));
+            }
+            // Any other link failure is the connection's, not the pairing's, so it is reported as itself. Folding it into
+            // "did not answer" would make a broken network read as an unanswered prompt, and the user's next step is
+            // different: check the network, not the other person.
+            Err(other) => {
+                drop(host);
+                let code = error_code_for_session(&synra_core::SessionError::Link(other.clone()));
+                return Err(Refusal::new(code, other.to_string()));
+            }
+        };
+        let _ = link.bye("pairing answered");
+        drop(host);
+
+        let response: synra_protocol::session::PairResponse =
+            serde_json::from_str(received.payload_str().unwrap_or("{}")).map_err(|error| {
+                Refusal::new(
+                    ErrorCode::Internal,
+                    format!("the pairing answer could not be read: {error}"),
+                )
+            })?;
+
+        let answered = pairing_state
+            .accept_answer(&response, received.request_id)
+            .map_err(|error| Refusal::new(ErrorCode::Internal, error.to_string()))?;
+
+        match answered {
+            synra_core::pairing::Answered::Accepted { device_id, display_name, platform, link_token } => {
+                self.db
+                    .pair_device(
+                        &device_id.to_string(),
+                        &display_name,
+                        &platform.to_string(),
+                        "[]",
+                        &link_token,
+                        now,
+                    )
+                    .map_err(|error| {
+                        Refusal::new(ErrorCode::Internal, format!("the pairing could not be recorded: {error}"))
+                    })?;
+                Ok(serde_json::json!({
+                    "paired": true,
+                    "deviceId": device_id.to_string(),
+                    "displayName": display_name,
+                    "traceId": trace_id.to_string(),
+                }))
+            }
+            synra_core::pairing::Answered::Refused { reason } => Err(Refusal::new(
+                ErrorCode::InvalidArgument,
+                format!("{display_name} refused to pair: {reason}"),
+            )),
+            synra_core::pairing::Answered::TimedOut => Err(Refusal::new(
+                ErrorCode::DeviceOffline,
+                format!("{display_name} did not answer the pairing request in time"),
+            )),
+        }
+    }
+
     /// Answers the prompt a device is waiting on.
     ///
     /// # Why a request that is not there is an error rather than a quiet success

@@ -82,7 +82,9 @@ pub use host::{Attached, Host, HostError, SharedHost, millis_reading, reading_mi
 pub use discovery::{
     Absorbed, CANDIDATE_TTL, Candidate, DiscoveryTable, UNUSABLE_NAME, announced_address,
 };
-pub use messaging::{ClipboardText, MessageError, TEXT_MIME, text_to};
+pub use messaging::{
+    ClipboardText, MessageError, TEXT_MIME, pair_request, pair_response, text_to,
+};
 pub use link::{Inbound, LinkError, PeerLink};
 pub use peer::{
     Flags, HandshakeError, LocalPeer, Negotiated, accept, agree, dial,

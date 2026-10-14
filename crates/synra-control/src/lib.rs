@@ -184,6 +184,24 @@ pub enum Request {
         verbose: bool,
     },
 
+    /// Asks a device to pair.
+    ///
+    /// # Why this is separate from [`Request::PairAnswer`]
+    ///
+    /// Because they are two different people's actions. Answering is the device that was asked, deciding; this is the
+    /// device that wants to pair, asking. A single "pair" command with a flag would make the two indistinguishable in a
+    /// log line, and the two produce completely different states: one waits for someone else, one decides.
+    ///
+    /// # Why this blocks
+    ///
+    /// Because the answer is a person on another device, and the caller's next step depends on it. The kernel waits no
+    /// longer than the session's pairing window, so a caller is bounded by the same clock both ends agreed — see
+    /// [`Kernel::pair`].
+    Pair {
+        /// The device to ask, by identifier, display name, or `host:port`.
+        device: String,
+    },
+
     /// Answers a pairing request a device is waiting on.
     ///
     /// # Why this is a command rather than something the transport decides
@@ -218,6 +236,7 @@ impl Request {
             Self::SendFile { .. } => "sendFile",
             Self::Plugins => "plugins",
             Self::Logs { .. } => "logs",
+            Self::Pair { .. } => "pair",
             Self::PairAnswer { .. } => "pairAnswer",
         }
     }
