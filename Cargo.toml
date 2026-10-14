@@ -32,9 +32,6 @@ repository = "https://github.com/synra-rs/synra-core"
 authors = ["imba97 <mail@imba97.cn>"]
 
 [workspace.dependencies]
-# ── 内部 ──
-# （随实现推进逐个加入；未加入前不写占位，否则 cargo 会警告 unused）
-
 # ── 外部：序列化与文本 ──
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["raw_value", "preserve_order"] }

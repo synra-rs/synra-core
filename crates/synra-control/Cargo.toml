@@ -13,6 +13,9 @@ authors.workspace = true
 # with. The protocol crate is pure data and pure rules, so this adds no weight.
 synra-protocol = { path = "../synra-protocol" }
 
+# A unix domain socket on Linux and macOS, a named pipe on Windows, behind one API. The alternative was two
+# platform-specific implementations of framing, timeouts and half-close — and one of them would be the one nobody ran.
+interprocess = "2.4"
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
