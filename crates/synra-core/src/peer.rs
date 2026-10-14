@@ -102,6 +102,32 @@ impl LocalPeer {
         }
     }
 
+    /// What this device announces to the network.
+    ///
+    /// # Why the port is an argument
+    ///
+    /// Because it is the **connection** port — where a peer opens a TCP link — and this type does not hold it: the
+    /// listener is bound by the daemon, after the local peer is built. A `LocalPeer` that guessed would announce a port
+    /// nothing is listening on, which is a device that appears in every list and cannot be connected to.
+    ///
+    /// # Why not every feature is announced
+    ///
+    /// `DeviceAnnouncement`'s feature list is a *hint*, and the protocol says so: discovery is unauthenticated, and the
+    /// handshake is where ability is established. Announcing them anyway is what lets a peer skip an obviously
+    /// incompatible candidate without a connection attempt.
+    #[must_use]
+    pub fn announcement(&self, port: u16) -> synra_protocol::discovery::DeviceAnnouncement {
+        synra_protocol::discovery::DeviceAnnouncement {
+            device_id: self.device_id,
+            display_name: self.display_name.clone(),
+            protocol: PROTOCOL_VERSION,
+            port,
+            platform: Some(self.platform),
+            app_version: Some(self.app_version.clone()),
+            features: self.features.clone(),
+        }
+    }
+
     /// The `Hello` this device sends.
     #[must_use]
     pub fn hello(&self, nonce: SessionNonce, sequence: u64) -> Hello {
@@ -943,6 +969,27 @@ mod tests {
         };
         let agreed = agree(&ours, &[Feature::EventStream], &[Feature::PluginMirroring]);
         assert_eq!(agreed.missing_required, vec![Feature::PluginMirroring]);
+    }
+
+    #[test]
+    fn an_announcement_carries_the_port_it_was_given() {
+        // ★ The port is the **connection** port, and this type does not hold it. A `LocalPeer` that guessed would
+        // announce a port nothing is listening on — a device that appears in every list and cannot be connected to.
+        let ours = peer(ACCEPTOR, "Laptop", PlatformKind::Desktop);
+        let announcement = ours.announcement(47_100);
+        assert_eq!(announcement.port, 47_100);
+        assert_eq!(announcement.device_id, device(ACCEPTOR));
+        assert_eq!(announcement.display_name, "Laptop");
+        assert_eq!(announcement.platform, Some(PlatformKind::Desktop));
+        assert_eq!(announcement.protocol, PROTOCOL_VERSION);
+    }
+
+    #[test]
+    fn an_announcement_passes_the_protocols_own_validation() {
+        // The announcement is encoded and broadcast, and the receiving end validates it. One this build produces that
+        // its own parser refuses would be a device that can never be found.
+        let ours = peer(ACCEPTOR, "Laptop", PlatformKind::Desktop);
+        assert!(ours.announcement(47_100).validate().is_ok());
     }
 
     #[test]

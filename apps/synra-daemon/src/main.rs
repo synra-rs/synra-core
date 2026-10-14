@@ -107,6 +107,17 @@ fn serve(decision: &synra_daemon::Startup) -> ExitCode {
     };
     println!("device {} ({})", identity.device_id, identity.display_name);
 
+    // ★ The peer registry is built after the transport port is known, because the announcement carries the port a peer
+    // would *connect* to — and an announcement that named a port nothing is listening on would be a device that appears
+    // in every list and cannot be reached.
+    let local_peer = synra_core::LocalPeer::new(
+        identity.device_id,
+        identity.display_name.clone(),
+        synra_core::platform_of_os(std::env::consts::OS),
+        env!("CARGO_PKG_VERSION"),
+    );
+    let host = synra_core::Host::new(identity.clone(), local_peer);
+
     let runtime = Runtime {
         version: env!("CARGO_PKG_VERSION").to_owned(),
         data_dir: std::path::PathBuf::from(&plan.data_dir),
@@ -115,6 +126,7 @@ fn serve(decision: &synra_daemon::Startup) -> ExitCode {
         discovery_port: plan.discovery_port,
         started_at_ms: now_ms(),
         identity,
+        host: parking_lot::Mutex::new(host),
         db,
     };
 

@@ -22,7 +22,7 @@
 use std::path::{Path, PathBuf};
 
 use synra_control::{Kernel, Refusal};
-use synra_core::Identity;
+use synra_core::{Host, Identity};
 use synra_protocol::error::ErrorCode;
 
 /// What the daemon knows about itself.
@@ -50,6 +50,14 @@ pub struct Runtime {
     /// absent, so a caller that read it per request would be creating one per request if the write ever failed. The
     /// daemon reads it once at start-up, after the claim, and everything after that uses that value.
     pub identity: Identity,
+    /// The kernel's view of its peers: who it is, who it heard of, who it is talking to.
+    ///
+    /// # Why this is behind its own lock rather than the runtime's
+    ///
+    /// Because `Kernel`'s methods take `&self` while the accept loop holds the runtime for the duration of a connection.
+    /// One lock over both would mean a device listing waits for a socket read, which is exactly the case that must not
+    /// happen: a report is what a user runs *while* something is wrong.
+    pub host: parking_lot::Mutex<Host>,
     /// The kernel's database.
     ///
     /// # Why the runtime holds it rather than the caller
@@ -120,7 +128,9 @@ impl Runtime {
             "tables": counts,
             // ★ Present rather than omitted, so a client can print it. An absent field would be indistinguishable from
             // an older kernel that does not have the concept. `database` is gone from this list because it is now real.
-            "notImplemented": ["session", "discovery"],
+            // ★ `discovery` is gone from this list because it is real: a device. The session layer is what remains, and
+            // it is what `send` still refuses on.
+            "notImplemented": ["session"],
         })
     }
 
@@ -258,18 +268,74 @@ impl Kernel for Runtime {
         Ok(self.status_value(now_ms()))
     }
 
-    fn devices(&self, _include_unpaired: bool) -> Result<serde_json::Value, Refusal> {
-        // ★ Still a refusal, and the reason is unchanged: the kernel cannot yet *reach* a device, so a list would be a
-        // description of a pairing rather than of anything usable. "No devices" and "I cannot tell you about devices"
-        // remain different answers.
-        //
-        // What is new is that the refusal carries this device's own identity. A user who runs `devices` because nothing
-        // works needs to know which device they are running it *on* — that identifier is what the other end has recorded
-        // against them, and reading it out is how a pairing problem is diagnosed.
-        Err(Refusal::new(
-            ErrorCode::Unsupported,
-            format!("{} (this device is {} — {MISSING_SESSION_LAYER})", self.identity.device_id, self.identity.display_name),
-        ))
+    fn devices(&self, include_unpaired: bool) -> Result<serde_json::Value, Refusal> {
+        // ★ Three sources, reported separately rather than merged. A paired device, a device merely heard on the network,
+        // and this device are three different things to a user — and a list that put them together would present an
+        // unauthenticated datagram as something the user had approved.
+        let host = self.host.lock();
+        let now = now_ms();
+
+        // The paired devices come from the database, which is the recorded decision.
+        let paired = self.db.paired_devices().map_err(|error| {
+            Refusal::new(ErrorCode::Internal, format!("could not read the paired devices: {error}"))
+        })?;
+        let mut paired_list: Vec<serde_json::Value> = Vec::new();
+        for row in &paired {
+            // The session is the proof the device is reachable *now*, as opposed to recorded once. A user asking for
+            // devices is asking what they can act on, so the two are reported together.
+            let device_id: synra_protocol::ids::DeviceId = row.device_id.parse().map_err(|error| {
+                Refusal::new(
+                    ErrorCode::Internal,
+                    format!("the stored device id {} is not a UUID: {error}", row.device_id),
+                )
+            })?;
+            let session = host.state_of(device_id);
+            paired_list.push(serde_json::json!({
+                "deviceId": row.device_id,
+                "displayName": row.display_name,
+                "platform": row.platform,
+                "blocked": row.blocked,
+                "pairedAtMs": row.paired_at_ms,
+                "lastSeenMs": row.last_seen_ms,
+                // `null` when there is no session, which is different from a session that is closed — and the difference
+                // is what tells a user whether the device is offline or was never reached.
+                "linkState": session.map(|state| format!("{state:?}")),
+            }));
+        }
+
+        // The candidates are what discovery heard, which is unauthenticated and therefore reported as its own list.
+        let candidates: Vec<serde_json::Value> = if include_unpaired {
+            host.discovery()
+                .displayable(synra_core::millis_reading(now))
+                .map(|candidate| {
+                    serde_json::json!({
+                        "deviceId": candidate.device_id.to_string(),
+                        "displayName": candidate.display_name,
+                        "address": candidate.address.to_string(),
+                        "trust": format!("{:?}", candidate.trust),
+                        "lastSeenMs": candidate.last_seen_ms,
+                    })
+                })
+                .collect()
+        }
+        else {
+            Vec::new()
+        };
+
+        Ok(serde_json::json!({
+            // ★ Reported rather than omitted, so a client prints it. A user who runs `devices` because nothing works
+            // needs to know which device they are running it *on* — that identifier is what the other end has recorded
+            // against them.
+            "self": {
+                "deviceId": self.identity.device_id.to_string(),
+                "displayName": self.identity.display_name,
+                "platform": self.identity.platform,
+            },
+            "paired": paired_list,
+            "found": candidates,
+            "includeUnpaired": include_unpaired,
+            "count": paired_list.len() + candidates.len(),
+        }))
     }
 
     fn send_text(&self, _to: &str, _text: &str) -> Result<serde_json::Value, Refusal> {
@@ -333,6 +399,13 @@ mod tests {
         let mut db = synra_store::SynraDb::open_in_memory().expect("opens");
         db.migrate().expect("migrates");
         let identity = Identity::load(&db, "windows", 1_000).expect("an identity");
+        let local_peer = synra_core::LocalPeer::new(
+            identity.device_id,
+            identity.display_name.clone(),
+            synra_core::platform_of_os("windows"),
+            "0.1.0-test",
+        );
+        let host = Host::new(identity.clone(), local_peer);
         Runtime {
             version: "0.1.0-test".to_owned(),
             data_dir: dir.to_path_buf(),
@@ -341,6 +414,7 @@ mod tests {
             discovery_port: 47101,
             started_at_ms: 1_000,
             identity,
+            host: parking_lot::Mutex::new(host),
             db,
         }
     }
@@ -368,8 +442,12 @@ mod tests {
         let value = runtime(dir.path()).status().expect("status");
         let missing = value["notImplemented"].as_array().expect("a list");
         let names: Vec<&str> = missing.iter().filter_map(serde_json::Value::as_str).collect();
-        assert!(names.contains(&"session"), "{names:?}");
-        assert!(names.contains(&"discovery"), "{names:?}");
+        assert_eq!(names, vec!["session"], "{names:?}");
+        // ★ And the layers that are real are **not** in it. `database` and `discovery` were both listed here while they
+        // were unbuilt, and a list that kept them would tell a user a working feature is missing — which is the failure
+        // mode of a hand-maintained list, and why this asserts the exact contents rather than a superset.
+        assert!(!names.contains(&"database"), "{names:?}");
+        assert!(!names.contains(&"discovery"), "{names:?}");
     }
 
     #[test]
@@ -384,17 +462,78 @@ mod tests {
     // ── The missing layer ─────────────────────────────────────────────────────────────────────────
 
     #[test]
-    fn asking_for_devices_is_refused_rather_than_answered_with_nothing() {
-        // ★ "No devices" and "I cannot tell you about devices" are different answers, and only one is true. An empty
-        // list would send the user looking for a pairing problem in an installation where the code is not written.
+    fn asking_for_devices_reports_where_each_part_came_from() {
+        // ★ The report has three sources, and each is under its own key rather than merged. A paired device, a device
+        // merely heard on the network, and this device are three different things to a user — and a list that put them
+        // together would present an unauthenticated datagram as something the user had approved.
         let dir = TempDir::new("devices");
-        match runtime(dir.path()).devices(true) {
-            Err(refusal) => {
-                assert_eq!(refusal.code, ErrorCode::Unsupported);
-                assert!(refusal.message.contains("session layer"), "{}", refusal.message);
-            }
-            Ok(value) => panic!("expected a refusal, got {value}"),
-        }
+        let value = runtime(dir.path()).devices(true).expect("devices");
+
+        // This device, from the stored identity.
+        assert_eq!(value["self"]["displayName"], "This device");
+        assert_eq!(value["self"]["platform"], "windows");
+        assert!(value["self"]["deviceId"].as_str().is_some_and(|id| !id.is_empty()));
+        // And two empty lists, each from a real source: an empty `paired_devices` table and an empty discovery table.
+        assert_eq!(value["paired"].as_array().map(Vec::len), Some(0));
+        assert_eq!(value["found"].as_array().map(Vec::len), Some(0));
+        assert_eq!(value["count"], 0);
+        assert_eq!(value["includeUnpaired"], true);
+    }
+
+    #[test]
+    fn asking_without_the_unpaired_ones_omits_them_rather_than_listing_nothing() {
+        // The flag is what a client uses for a compact view, and it is echoed back so a report says which question it
+        // answered.
+        let dir = TempDir::new("devices-compact");
+        let value = runtime(dir.path()).devices(false).expect("devices");
+        assert_eq!(value["includeUnpaired"], false);
+        assert_eq!(value["found"].as_array().map(Vec::len), Some(0));
+        // The paired ones are still reported: they are the recorded decisions, not candidates.
+        assert!(value["paired"].is_array());
+    }
+
+    #[test]
+    fn a_device_the_kernel_heard_on_the_network_appears_under_its_own_key() {
+        // ★ The two lists are separate for a reason, and this is what makes it visible: a device heard over UDP has not
+        // been approved by anyone, so it must not appear among the paired ones.
+        let dir = TempDir::new("devices-found");
+        let runtime = runtime(dir.path());
+        let announcement = synra_protocol::discovery::DeviceAnnouncement {
+            device_id: "33333333-3333-4333-8333-333333333333".parse().expect("a device id"),
+            display_name: "Phone".to_owned(),
+            protocol: synra_protocol::handshake::PROTOCOL_VERSION,
+            port: 47100,
+            platform: Some(synra_protocol::session::PlatformKind::Android),
+            app_version: Some("0.1.0".to_owned()),
+            features: Vec::new(),
+        };
+        // The clock is taken from the daemon rather than passed as a literal: `displayable` compares against *now*, so a
+        // candidate recorded at a fixed early timestamp is already expired by the time the report runs. That is exactly
+        // how the first version of this test failed — it asserted a device was listed and the lifetime said otherwise.
+        let now = synra_core::millis_reading(now_ms());
+
+        // Heard once as an announcement, then again as a completed handshake — which is what makes it displayable,
+        // because the protocol's own rule is that an announced device is a candidate and not a peer.
+        runtime.host.lock().heard(
+            &announcement,
+            std::net::SocketAddr::from(([10, 0, 0, 5], 5_4321)),
+            now,
+        );
+        runtime.host.lock().handshaked(
+            announcement.device_id,
+            std::net::SocketAddr::from(([10, 0, 0, 5], 47_100)),
+            Some("Phone"),
+            now,
+        );
+
+        let value = runtime.devices(true).expect("devices");
+        assert_eq!(value["paired"].as_array().map(Vec::len), Some(0), "nothing is paired");
+        let found = value["found"].as_array().expect("a list");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0]["displayName"], "Phone");
+        assert_eq!(found[0]["trust"], "Handshaked");
+        // And the port is the one it listens on for connections, not the ephemeral one it sent from.
+        assert!(found[0]["address"].as_str().is_some_and(|a| a.ends_with(":47100")), "{found:?}");
     }
 
     #[test]
@@ -406,6 +545,7 @@ mod tests {
         for refusal in [runtime.send_text("d", "x"), runtime.send_file("d", "/tmp/a")] {
             match refusal {
                 Err(refusal) => assert_eq!(refusal.message, MISSING_SESSION_LAYER),
+        // The refusal above is `send`'s; the `devices` list is real. Asserted here so the two are not confused.
                 Ok(value) => panic!("expected a refusal, got {value}"),
             }
         }
@@ -415,10 +555,15 @@ mod tests {
     fn a_refusal_for_a_missing_layer_is_not_retryable() {
         // ★ `Unsupported` is not retryable, and that is the right answer: repeating the call will keep failing until a
         // new build is installed. A retryable flag would have a client offer a retry that cannot work.
+        //
+        // The example is `send`: listing devices is real now, and sending is what still needs the transfer layer.
         let dir = TempDir::new("retryable");
-        match runtime(dir.path()).devices(false) {
-            Err(refusal) => assert!(!refusal.is_retryable()),
-            Ok(_) => panic!("expected a refusal"),
+        match runtime(dir.path()).send_text("d", "x") {
+            Err(refusal) => {
+                assert_eq!(refusal.code, ErrorCode::Unsupported);
+                assert!(!refusal.is_retryable());
+            }
+            Ok(value) => panic!("expected a refusal, got {value}"),
         }
     }
 

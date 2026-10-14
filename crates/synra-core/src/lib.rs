@@ -64,7 +64,7 @@ pub use admission::{
 pub use socket::{
     DiscoverySocket, SocketError, absorb, broadcast_addresses, is_about,
 };
-pub use host::{Attached, Host, HostError, SharedHost, shared};
+pub use host::{Attached, Host, HostError, SharedHost, millis_reading, shared};
 pub use discovery::{
     Absorbed, CANDIDATE_TTL, Candidate, DiscoveryTable, UNUSABLE_NAME, announced_address,
 };
@@ -74,6 +74,7 @@ pub use peer::{
 };
 pub use identity::{
     DEFAULT_DISPLAY_NAME, Identity, MAX_DISPLAY_NAME_LEN, NameError, RenameError, check_display_name,
+    platform_of_os,
 };
 pub use config::{
     Catalog, Config, ConfigError, ConfigSnapshot, Setting, SettingKey, SettingKind,

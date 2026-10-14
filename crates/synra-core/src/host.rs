@@ -256,7 +256,7 @@ impl Host {
         // The trust level rises here, with the address the connection actually worked at rather than the one that was
         // announced — which is what makes the next attempt succeed if the peer moved.
         self.discovery
-            .handshaked(negotiated.device_id, address, Some(&negotiated.display_name), i64_from(now_ms));
+            .handshaked(negotiated.device_id, address, Some(&negotiated.display_name), millis_reading(now_ms));
 
         let _ = device_id;
         Ok(PeerLink::new(
@@ -316,7 +316,7 @@ impl Host {
             negotiated.device_id,
             address,
             Some(&negotiated.display_name),
-            i64_from(now_ms),
+            millis_reading(now_ms),
         );
 
         Ok((
@@ -368,6 +368,27 @@ impl Host {
         self.sessions.record_frame_in(key, token, now_ms)
     }
 
+    /// Records that a device completed a handshake.
+    ///
+    /// # Why this is public when `dial` and `accept` already record it
+    ///
+    /// Because they own the sockets, and a caller that drives a handshake through a path of its own — the daemon's
+    /// accept loop, a test with two threads — has the identifier and the address but not the record. Reaching through
+    /// [`Host::discovery`] would need a mutable borrow the caller may not hold, so the one call it needs is here, with
+    /// the same rule `dial` and `accept` follow: the level rises, and the address recorded is the one the connection
+    /// actually worked at.
+    ///
+    /// Returns whether the device was already known.
+    pub fn handshaked(
+        &mut self,
+        device_id: DeviceId,
+        address: SocketAddr,
+        name: Option<&str>,
+        now_ms: i64,
+    ) -> bool {
+        self.discovery.handshaked(device_id, address, name, now_ms)
+    }
+
     /// Records that a device said goodbye.
     ///
     /// # Why this is on the host rather than reached through the table
@@ -401,14 +422,20 @@ impl Host {
     }
 }
 
-/// A `u64` reading as the `i64` the database and the discovery table use.
+/// A `u64` clock reading as the `i64` the database and the discovery table use.
 ///
 /// # Why a conversion rather than one type everywhere
 ///
 /// The session registry's deadlines are `u64` because they are durations from a monotonic-ish start, and the discovery
 /// table's times are `i64` because they go into SQLite, whose integers are signed. Saturation rather than a cast,
-/// because a `u64` beyond `i64::MAX` is a reading from a clock nobody has.
-const fn i64_from(value: u64) -> i64 {
+/// because a `u64` beyond `i64::MAX` is a reading from a clock nobody has — and a cast would produce a *negative* time,
+/// which the discovery table would read as "seen in the future".
+///
+/// # Why this is public
+///
+/// Because every caller that holds one kind of reading and needs the other has to convert, and a caller that reached for
+/// `as i64` would be one that wraps at the year 292 million. The daemon converts on every request.
+pub const fn millis_reading(value: u64) -> i64 {
     if value > i64::MAX as u64 {
         i64::MAX
     }
@@ -784,9 +811,9 @@ mod tests {
     fn the_clock_conversion_saturates_rather_than_wrapping() {
         // A `u64` beyond `i64::MAX` is a reading from a clock nobody has, and a cast would produce a negative time —
         // which the discovery table would read as "seen in the future".
-        assert_eq!(i64_from(0), 0);
-        assert_eq!(i64_from(1_000), 1_000);
-        assert_eq!(i64_from(u64::MAX), i64::MAX);
+        assert_eq!(millis_reading(0), 0);
+        assert_eq!(millis_reading(1_000), 1_000);
+        assert_eq!(millis_reading(u64::MAX), i64::MAX);
     }
 
     #[test]

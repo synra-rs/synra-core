@@ -182,6 +182,35 @@ pub enum RenameError {
     Db(#[from] DbError),
 }
 
+/// Which platform kind a `std::env::consts::OS` string names.
+///
+/// # Why this lives here and not in the protocol
+///
+/// Because it is a fact about *this* build's view of the operating system, and the protocol's `PlatformKind` is three
+/// variants rather than the dozen names `std::env::consts::OS` can produce. Putting the mapping in the protocol would
+/// make the wire format depend on Rust's spelling of an operating system name — so a change there would be a change to
+/// the protocol.
+///
+/// # Why the fallback is `Desktop`
+///
+/// Because the two other variants are phones, and calling a machine a phone is a worse default than calling a phone a
+/// desktop: an interface that hides a desktop feature from a phone is a *missing* feature, and one that offers a phone a
+/// desktop-only one is a broken control. The kernel's own `probe`-style reporting is where an unexpected name would be
+/// noticed; the wire field has to be one of three.
+#[must_use]
+pub fn platform_of_os(os: &str) -> synra_protocol::session::PlatformKind {
+    use synra_protocol::session::PlatformKind;
+    match os {
+        "android" => PlatformKind::Android,
+        "ios" => PlatformKind::Ios,
+        // Every desktop operating system Rust names, listed rather than matched by a catch-all so that adding a phone
+        // platform above cannot be silently shadowed by a fallback that was never meant to see it.
+        "windows" | "macos" | "linux" | "freebsd" | "netbsd" | "openbsd" | "dragonfly" | "solaris" | "illumos"
+        | "aix" | "hurd" | "redox" | "fuchsia" | "haiku" | "vxworks" => PlatformKind::Desktop,
+        _ => PlatformKind::Desktop,
+    }
+}
+
 /// Checks a display name, returning it unchanged.
 ///
 /// # Why a peer's name goes through this too
@@ -397,6 +426,40 @@ mod tests {
         }
         // And the length error names the limit, because a user who typed something too long needs to know how long.
         assert!(errors[1].to_string().contains('6'), "{}", errors[1]);
+    }
+
+    #[test]
+    fn the_current_operating_system_maps_to_a_platform_kind() {
+        // ★ `std::env::consts::OS` is what the daemon passes, so the mapping has to cover the machine this is built on
+        // — asserted against the real value rather than a list of strings, because a list would be a second spelling of
+        // what the compiler already knows.
+        let kind = platform_of_os(std::env::consts::OS);
+        assert!(matches!(
+            kind,
+            synra_protocol::session::PlatformKind::Desktop
+                | synra_protocol::session::PlatformKind::Android
+                | synra_protocol::session::PlatformKind::Ios
+        ));
+    }
+
+    #[test]
+    fn the_two_phone_platforms_are_named_exactly() {
+        assert_eq!(platform_of_os("android"), synra_protocol::session::PlatformKind::Android);
+        assert_eq!(platform_of_os("ios"), synra_protocol::session::PlatformKind::Ios);
+    }
+
+    #[test]
+    fn an_unexpected_operating_system_name_is_a_desktop_rather_than_a_phone() {
+        // ★ Calling a machine a phone is a worse default than calling a phone a desktop: an interface that hides a
+        // desktop feature from a phone is a *missing* feature, and one that offers a phone a desktop-only one is a
+        // broken control.
+        for os in ["windows", "macos", "linux", "freebsd", "solaris", "plan9", "", "somewhere-new"] {
+            assert_eq!(
+                platform_of_os(os),
+                synra_protocol::session::PlatformKind::Desktop,
+                "{os}"
+            );
+        }
     }
 
     #[test]
