@@ -93,15 +93,19 @@ fn a_token_issued_to_another_device_does_not_open_this_one() {
 fn a_pairing_accepted_through_the_session_is_recognised_on_the_next_link() {
     use std::cell::RefCell;
 
-    use synra_core::pairing::InboundPairing;
+    use synra_core::pairing::{Offer, PairingDesk};
     use synra_protocol::session::{PairRequest, PairResponse, PeerProfile, PlatformKind};
     use synra_store::SynraDb;
 
     let mut db = SynraDb::open_in_memory().expect("opens");
     db.migrate().expect("migrates");
 
-    // The dialer asks.
-    let mut pairing = InboundPairing::new(device(DEVICE_B));
+    // The dialer asks the shared desk, which is the path a real connection takes.
+    let desk = PairingDesk::new(
+        device(DEVICE_B),
+        synra_protocol::session::SessionTimeouts::default().pairing,
+    );
+    let request_id = synra_protocol::ids::RequestId::new();
     let request = PairRequest {
         profile: PeerProfile {
             device_id: device(DEVICE_A),
@@ -111,13 +115,15 @@ fn a_pairing_accepted_through_the_session_is_recognised_on_the_next_link() {
         },
         user_hint: None,
     };
-    assert!(pairing.offer(synra_protocol::ids::RequestId::new(), request).is_none(), "it waits for a user");
+    let Offer::Waiting(waiter) = desk.offer(request_id, request, 1_000) else {
+        panic!("it waits for a user");
+    };
 
     // The user accepts, and the record is written where a later handshake will look for it. This is the same call the
     // transport will make, so the chain under test is the chain that runs.
     let written = RefCell::new(Vec::new());
-    let answer = pairing
-        .answer(true, |record| {
+    let answer = desk
+        .answer(request_id, true, |record| {
             db.pair_device(
                 &record.device_id.to_string(),
                 &record.display_name,
@@ -132,6 +138,8 @@ fn a_pairing_accepted_through_the_session_is_recognised_on_the_next_link() {
         })
         .expect("an answer");
 
+    // The connection blocked on the socket is released by the same decision, not by a second one.
+    assert!(waiter.wait(std::time::Duration::from_millis(50)).accepted);
     assert!(answer.accepted, "the pairing was recorded, so it may be answered as accepted");
     let PairResponse { link_token, .. } = &answer;
     let issued = link_token.as_deref().expect("an acceptance issues a token");
@@ -192,9 +200,14 @@ fn a_verification_code_is_six_characters_and_not_all_digits() {
 /// The prompt a pairing produces carries the code, so the interface has something to show.
 #[test]
 fn the_pending_request_carries_the_verification_code() {
+    use synra_core::pairing::{Offer, PairingDesk};
     use synra_protocol::session::{PairRequest, PeerProfile, PlatformKind};
 
-    let mut pairing = synra_core::pairing::InboundPairing::new(device(DEVICE_B));
+    let desk = PairingDesk::new(
+        device(DEVICE_B),
+        synra_protocol::session::SessionTimeouts::default().pairing,
+    );
+    let request_id = synra_protocol::ids::RequestId::new();
     let request = PairRequest {
         profile: PeerProfile {
             device_id: device(DEVICE_A),
@@ -204,9 +217,9 @@ fn the_pending_request_carries_the_verification_code() {
         },
         user_hint: None,
     };
-    assert!(pairing.offer(synra_protocol::ids::RequestId::new(), request).is_none());
+    assert!(matches!(desk.offer(request_id, request, 1_000), Offer::Waiting(_)));
 
-    let pending = pairing.pending().expect("the request is waiting");
+    let pending = desk.request_of(request_id).expect("the request is waiting");
     assert_eq!(
         pending.verification_code,
         synra_core::pairing::verification_code(device(DEVICE_A), device(DEVICE_B)),
