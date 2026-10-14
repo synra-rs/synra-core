@@ -21,7 +21,11 @@
 //! one is pending is refused with [`PairRefusal::Busy`], and the dialer may ask again.
 
 use synra_protocol::handshake::LinkToken;
-use synra_protocol::ids::DeviceId;
+use synra_protocol::ids::{DeviceId, RequestId};
+
+pub mod desk;
+
+pub use desk::{Offer, PairingDesk, Waiter};
 use synra_protocol::session::{PairRefusal, PairRequest, PairResponse};
 
 /// What the kernel needs written down when a pairing is accepted.
@@ -43,6 +47,11 @@ pub struct PairingRecord {
 /// A request waiting for the user, with what it will be recorded as.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingPairing {
+    /// The envelope's request id, which is what a dialer correlates the answer with.
+    ///
+    /// Held beside the payload rather than in it, because a `PairRequest` carries none of its own: the id belongs to the
+    /// envelope that delivered it.
+    pub request_id: RequestId,
     /// The request as it arrived.
     pub request: PairRequest,
     /// The token this side will expect if the user accepts.
@@ -162,7 +171,7 @@ impl InboundPairing {
     /// Because a `PairRequest` carries no target: the envelope does, and the envelope is checked before a request reaches
     /// this type at all. Taking a `local` id as a parameter would make this look as though it verified the addressing
     /// while only repeating a check that has already happened where the information actually exists.
-    pub fn offer(&mut self, request: PairRequest) -> Option<PairResponse> {
+    pub fn offer(&mut self, request_id: RequestId, request: PairRequest) -> Option<PairResponse> {
         // One prompt at a time. Queueing a second behind the first means it is answered minutes later by a user who has
         // forgotten what they were agreeing to, which is not consent.
         if self.pending.is_some() {
@@ -173,7 +182,7 @@ impl InboundPairing {
         // made once. The verification code is derived rather than minted, because both ends must arrive at it without
         // exchanging anything further.
         let code = verification_code(request.profile.device_id, self.local);
-        self.pending = Some(PendingPairing { request, token: LinkToken::random(), verification_code: code });
+        self.pending = Some(PendingPairing { request_id, request, token: LinkToken::random(), verification_code: code });
         None
     }
 
@@ -232,7 +241,8 @@ impl InboundPairing {
 mod tests {
     use std::cell::RefCell;
 
-    use synra_protocol::ids::DeviceId;
+    use synra_protocol::ids::{DeviceId, RequestId};
+
     use synra_protocol::session::{PairRequest, PeerProfile, PlatformKind};
 
     use super::{InboundPairing, PairingRecord};
@@ -269,7 +279,7 @@ mod tests {
     #[test]
     fn a_request_waits_for_a_user_rather_than_being_answered() {
         let mut pairing = InboundPairing::new(local());
-        assert!(pairing.offer(request("Laptop")).is_none(), "nothing to send back yet");
+        assert!(pairing.offer(RequestId::new(), request("Laptop")).is_none(), "nothing to send back yet");
         assert_eq!(pairing.pending().map(|p| p.request.profile.display_name.as_str()), Some("Laptop"));
     }
 
@@ -278,9 +288,9 @@ mod tests {
         // Not queued: a prompt is a decision somebody is in the middle of, and the second would be answered minutes later
         // by a user who has forgotten what they agreed to.
         let mut pairing = InboundPairing::new(local());
-        assert!(pairing.offer(request("First")).is_none());
+        assert!(pairing.offer(RequestId::new(), request("First")).is_none());
 
-        let answer = pairing.offer(request("Second")).expect("a busy answer");
+        let answer = pairing.offer(RequestId::new(), request("Second")).expect("a busy answer");
         assert!(!answer.accepted);
         assert_eq!(answer.reason.as_deref(), Some("busy"));
         assert_eq!(pairing.pending().map(|p| p.request.profile.display_name.as_str()), Some("First"),
@@ -294,7 +304,7 @@ mod tests {
         // so the user is told they paired and then refused by the device they just paired with.
         let log = RefCell::new(Vec::new());
         let mut pairing = InboundPairing::new(local());
-        pairing.offer(request("Laptop"));
+        pairing.offer(RequestId::new(), request("Laptop"));
 
         let answer = pairing.answer(true, writer(&log, false)).expect("an answer");
         assert!(answer.accepted);
@@ -310,7 +320,7 @@ mod tests {
     fn a_write_that_fails_refuses_rather_than_claiming_success() {
         let log = RefCell::new(Vec::new());
         let mut pairing = InboundPairing::new(local());
-        pairing.offer(request("Laptop"));
+        pairing.offer(RequestId::new(), request("Laptop"));
 
         let answer = pairing.answer(true, writer(&log, true)).expect("an answer");
         assert!(!answer.accepted, "a pairing that was not recorded must not be answered as accepted");
@@ -324,7 +334,7 @@ mod tests {
         // they had decided something.
         let log = RefCell::new(Vec::new());
         let mut pairing = InboundPairing::new(local());
-        pairing.offer(request("Laptop"));
+        pairing.offer(RequestId::new(), request("Laptop"));
 
         let _ = pairing.answer(true, writer(&log, true));
         assert!(pairing.pending().is_some(), "the request must still be answerable");
@@ -341,7 +351,7 @@ mod tests {
         // than a second one. A token minted at acceptance would make the shown value and the written value two decisions.
         let log = RefCell::new(Vec::new());
         let mut pairing = InboundPairing::new(local());
-        pairing.offer(request("Laptop"));
+        pairing.offer(RequestId::new(), request("Laptop"));
         let first_shown = pairing.pending().expect("pending").token.to_hex();
 
         let told = pairing.answer(true, writer(&log, true)).expect("an answer");
@@ -357,7 +367,7 @@ mod tests {
         // Rule 6: the link survives a refusal, so the dialer may ask again over the same connection.
         let log = RefCell::new(Vec::new());
         let mut pairing = InboundPairing::new(local());
-        pairing.offer(request("Laptop"));
+        pairing.offer(RequestId::new(), request("Laptop"));
 
         let answer = pairing.answer(false, writer(&log, false)).expect("an answer");
         assert!(!answer.accepted);
@@ -370,10 +380,10 @@ mod tests {
     fn a_refusal_frees_the_slot_for_the_next_request() {
         let log = RefCell::new(Vec::new());
         let mut pairing = InboundPairing::new(local());
-        pairing.offer(request("First"));
+        pairing.offer(RequestId::new(), request("First"));
         let _ = pairing.answer(false, writer(&log, false));
 
-        assert!(pairing.offer(request("Second")).is_none(), "the next request may be shown");
+        assert!(pairing.offer(RequestId::new(), request("Second")).is_none(), "the next request may be shown");
         assert_eq!(pairing.pending().map(|p| p.request.profile.display_name.as_str()), Some("Second"));
     }
 
@@ -382,7 +392,7 @@ mod tests {
         // An interface that fires the answer twice — a double click, a re-render — must not produce two pairings.
         let log = RefCell::new(Vec::new());
         let mut pairing = InboundPairing::new(local());
-        pairing.offer(request("Laptop"));
+        pairing.offer(RequestId::new(), request("Laptop"));
 
         assert!(pairing.answer(true, writer(&log, false)).is_some());
         assert!(pairing.answer(true, writer(&log, false)).is_none(), "there is nothing left to answer");
@@ -404,20 +414,20 @@ mod tests {
         let mut pairing = InboundPairing::new(local());
         assert!(!pairing.expire(), "there was nothing to expire");
 
-        pairing.offer(request("Laptop"));
+        pairing.offer(RequestId::new(), request("Laptop"));
         assert!(pairing.expire());
         assert_eq!(pairing.pending(), None);
         assert!(!pairing.expire(), "and expiring twice reports nothing the second time");
 
         // The slot is free, so the device that timed out may ask again.
-        assert!(pairing.offer(request("Laptop")).is_none());
+        assert!(pairing.offer(RequestId::new(), request("Laptop")).is_none());
     }
 
     #[test]
     fn an_expired_request_cannot_then_be_accepted() {
         let log = RefCell::new(Vec::new());
         let mut pairing = InboundPairing::new(local());
-        pairing.offer(request("Laptop"));
+        pairing.offer(RequestId::new(), request("Laptop"));
         assert!(pairing.expire());
 
         assert!(pairing.answer(true, writer(&log, false)).is_none(), "a request that expired is gone");

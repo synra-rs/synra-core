@@ -111,7 +111,7 @@ fn a_pairing_accepted_through_the_session_is_recognised_on_the_next_link() {
         },
         user_hint: None,
     };
-    assert!(pairing.offer(request).is_none(), "it waits for a user");
+    assert!(pairing.offer(synra_protocol::ids::RequestId::new(), request).is_none(), "it waits for a user");
 
     // The user accepts, and the record is written where a later handshake will look for it. This is the same call the
     // transport will make, so the chain under test is the chain that runs.
@@ -204,7 +204,7 @@ fn the_pending_request_carries_the_verification_code() {
         },
         user_hint: None,
     };
-    assert!(pairing.offer(request).is_none());
+    assert!(pairing.offer(synra_protocol::ids::RequestId::new(), request).is_none());
 
     let pending = pairing.pending().expect("the request is waiting");
     assert_eq!(

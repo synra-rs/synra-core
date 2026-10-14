@@ -274,7 +274,7 @@ impl Inbox {
         let answer = match request {
             // A request that is now waiting for a user has nothing to send yet: the answer comes from whoever answers the
             // prompt, through a path that does not exist until the interface is wired up.
-            Ok(request) => pairing.offer(request),
+            Ok(request) => pairing.offer(envelope.request_id, request),
             Err(why) => Some(synra_protocol::session::PairResponse::refused(why)),
         };
 
