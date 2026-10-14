@@ -59,6 +59,7 @@
 )]
 
 pub mod engine;
+pub mod host_calls;
 pub mod host_surface;
 pub mod lifecycle;
 pub mod pool;
@@ -66,6 +67,9 @@ pub mod quota;
 pub mod registry;
 pub mod verify;
 
+pub use host_calls::{
+    CallError, CallResult, Host, HostCalls, PlatformAction, implemented as implemented_calls,
+};
 pub use registry::{
     DEFAULT_REGISTRY, Dist, FetchFailure, Integrity, MAX_PACKUMENT_BYTES, MAX_VERSIONS, PackagePattern, Packument,
     RegistryConfig, RegistryMirror, SizeBlock, SynraBlock, VersionEntry, check_integrity, compare_versions,

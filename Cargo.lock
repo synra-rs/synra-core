@@ -1773,6 +1773,7 @@ dependencies = [
  "synra-observe",
  "synra-plugin-api",
  "synra-protocol",
+ "synra-store",
  "thiserror",
  "wasmtime",
  "wit-codegen",

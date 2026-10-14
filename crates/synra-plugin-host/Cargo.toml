@@ -57,6 +57,7 @@ wasm-text = ["wasm-runtime", "wasmtime/wat"]
 proptest.workspace = true
 rstest.workspace = true
 # The verify pipeline's tests sign a package, which needs a key and the same base64 a signature document carries.
+synra-store = { path = "../synra-store" }
 ed25519-dalek.workspace = true
 base64.workspace = true
 

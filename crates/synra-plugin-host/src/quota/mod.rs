@@ -14,7 +14,7 @@
 
 mod limits;
 mod ledger;
-mod budget;
+pub mod budget;
 
 #[cfg(test)]
 mod tests;
