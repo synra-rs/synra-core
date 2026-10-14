@@ -30,11 +30,13 @@ fn workspace_root() -> PathBuf {
 }
 
 #[test]
-#[ignore = "five violations remain: two `BTreeMap`s in `synra-plugin-host::verify`, and three foreign `std::io::Error`s in \
-            functions this tool cannot yet tell are private — two really are private, and three are `pub(crate)` or \
-            `pub(super)`. The test would enforce the promise the moment they are fixed. `cargo run -p api-guard -- .` \
-            lists them."]
 fn no_crate_that_makes_a_promise_breaks_it() {
+    // ★ The promise is checked, and the three deviations that remain are named here rather than being suppressed.
+    //
+    // Suppressing them — an `#[ignore]` on this test — would mean a *new* violation also went unnoticed, which is the
+    // failure mode a check like this has: it stops being a check and becomes a comment. Naming them means the check
+    // still fires for everything else, and that fixing one of them fires too — because a deviation that has been fixed
+    // is a list that is out of date, and a list nobody re-reads is how the next one gets added.
     let root = workspace_root();
     let output = Command::new(env!("CARGO_BIN_EXE_api-guard"))
         .arg(&root)
@@ -43,18 +45,45 @@ fn no_crate_that_makes_a_promise_breaks_it() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
+    let reported: Vec<&str> = stdout
+        .lines()
+        .filter(|line| line.contains("holds io::Error") || line.contains("exposes BTreeMap"))
+        .collect();
+
+    // Each of the three is one line in a file, and each is a deviation: the rule is about a *public* signature, and
+    // none of these is one. They are the tool's documented false-positive surface — telling a `pub(crate) fn` at the
+    // root of a module from a `pub fn` inside a private module needs the module tree, and this tool reads lines.
+    let expected = [
+        // A private helper: `fn` with no visibility at all is not public API.
+        "crates\\synra-core\\src\\link.rs:467",
+        // `pub(crate)`: reachable inside the crate, not by a consumer.
+        "crates\\synra-core\\src\\peer\\wire.rs:138",
+        // `pub(super)`: reachable by the parent module, not by a consumer.
+        "crates\\synra-core\\src\\peer\\wire.rs:160",
+    ];
+    let mut unexpected: Vec<&str> = reported
+        .iter()
+        .copied()
+        .filter(|line| !expected.iter().any(|known| line.contains(known)))
+        .collect();
+    unexpected.sort_unstable();
     assert!(
-        output.status.success(),
-        "api-guard found violations in {}:\n{stdout}\n{stderr}",
-        root.display()
+        unexpected.is_empty(),
+        "api-guard found violations beyond the three deviations this test records:\n{}\n{stderr}",
+        unexpected.join("\n")
     );
-    // And it checked something: a tool that read no files would also report success, and the promise would be
-    // unenforced in exactly the way this test exists to prevent.
+
+    let mut missing: Vec<&str> = expected
+        .iter()
+        .copied()
+        .filter(|known| !reported.iter().any(|line| line.contains(known)))
+        .collect();
+    missing.sort_unstable();
     assert!(
-        stdout.contains("file(s) checked, no violations"),
-        "api-guard did not report what it read:\n{stdout}"
+        missing.is_empty(),
+        "these deviations are gone, so this list is out of date and should be shortened:\n{}",
+        missing.join("\n")
     );
-    assert!(stdout.contains("no violations"), "{stdout}");
 }
 
 #[test]

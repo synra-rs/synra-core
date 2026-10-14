@@ -75,7 +75,7 @@ pub use registry::{
     RegistryConfig, RegistryMirror, SizeBlock, SynraBlock, VersionEntry, check_integrity, compare_versions,
 };
 pub use verify::{
-    Candidate, HostFacts, Report as VerifyReport, Stage, Step, Verdict as VerifyVerdict, VerifyError, find_cycle,
+    Candidate, DependencyGraph, HostFacts, Report as VerifyReport, Stage, Step, Verdict as VerifyVerdict, VerifyError,
     host_world, verify as verify_package,
 };
 

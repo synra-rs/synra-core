@@ -24,12 +24,14 @@
 //! graph and the platform applicability are here because they are about *this host* — what it can run and what it
 //! already has — rather than about the package.
 
-use std::collections::{BTreeMap, HashSet};
-
 use synra_plugin_api::manifest::{Manifest, ManifestContext, ValidationLevel};
 use synra_plugin_api::publisher::{PluginTrust, PublisherTrustStore, SignatureFile};
 
 use crate::host_surface;
+
+mod graph;
+
+pub use graph::DependencyGraph;
 
 /// Which of the eleven checks is running, in order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -240,7 +242,7 @@ pub struct Candidate<'a> {
     ///
     /// The whole graph rather than this plugin's edges, because a cycle is a property of the graph: a plugin that
     /// depends on another which depends back on it cannot be detected from either one alone.
-    pub dependencies: &'a BTreeMap<String, Vec<String>>,
+    pub dependencies: &'a DependencyGraph,
     /// What this host is.
     pub host: HostFacts,
 }
@@ -569,7 +571,7 @@ pub fn verify(candidate: &Candidate<'_>, trust: &PublisherTrustStore) -> Result<
     });
 
     // 9 · The dependency graph.
-    if let Some(cycle) = find_cycle(&manifest.id.to_string(), candidate.dependencies) {
+    if let Some(cycle) = candidate.dependencies.cycle_from(&manifest.id.to_string()) {
         return Err((Stage::DependencyAcyclic, VerifyError::DependencyCycle { cycle }));
     }
     steps.push(Step {
@@ -622,61 +624,6 @@ pub fn verify(candidate: &Candidate<'_>, trust: &PublisherTrustStore) -> Result<
     Ok(Report { steps, trust: trust_level, fingerprint })
 }
 
-/// Finds a cycle reachable from a plugin, as the path that closes it.
-///
-/// # Why the search starts where it does
-///
-/// Because a cycle that this plugin is not part of is somebody else's problem: the question the pipeline asks is
-/// "would installing this loop", and a cycle among three plugins it does not depend on would not.
-///
-/// The path is returned rather than a boolean, because "there is a cycle" leaves an author with a graph to search and
-/// "a -> b -> a" does not.
-#[must_use]
-pub fn find_cycle(start: &str, graph: &BTreeMap<String, Vec<String>>) -> Option<Vec<String>> {
-    let mut path: Vec<String> = Vec::new();
-    let mut on_path: HashSet<String> = HashSet::new();
-    let mut finished: HashSet<String> = HashSet::new();
-    let mut found: Option<Vec<String>> = None;
-
-    // An explicit stack rather than recursion: a dependency graph is data from a package, and a deep one would be a
-    // stack overflow in the process that is checking whether the package is safe to run.
-    let mut stack: Vec<(String, usize)> = vec![(start.to_owned(), 0)];
-    on_path.insert(start.to_owned());
-    path.push(start.to_owned());
-
-    while let Some((node, next)) = stack.pop() {
-        let edges = graph.get(&node).map_or(&[][..], Vec::as_slice);
-        // The bound is checked before the read rather than with a `?`, because a `?` here would return `None` — which
-        // means "no cycle" — for a graph that had merely been walked to the end of one node's edges.
-        let Some(child) = edges.get(next).cloned() else {
-            let _ = on_path.remove(&node);
-            let _ = finished.insert(node);
-            let _ = path.pop();
-            continue;
-        };
-        stack.push((node, next + 1));
-        if on_path.contains(&child) {
-            // The path from the child's first appearance is the cycle, and it ends where it starts.
-            let mut cycle: Vec<String> = path
-                .iter()
-                .skip_while(|node| **node != child)
-                .cloned()
-                .collect();
-            cycle.push(child);
-            found = Some(cycle);
-            break;
-        }
-        if finished.contains(&child) {
-            continue;
-        }
-        on_path.insert(child.clone());
-        path.push(child.clone());
-        stack.push((child, 0));
-    }
-
-    found
-}
-
 #[cfg(test)]
-#[path = "verify_tests.rs"]
+#[path = "../verify_tests.rs"]
 mod tests;
