@@ -191,16 +191,18 @@ impl DaemonPlan {
             return Err(PlanError::PortsCollide { port: options.listen_port });
         }
 
-        // ★ `Paths::new`, not `Paths::under`.
+        // `Paths::new` with an explicit cache directory, rather than `Paths::under`.
         //
-        // `Paths::under(root)` is `Paths::new(root.join("data"), root.join("cache"))` — it takes the *parent* and
-        // appends a level. But `--data-dir` names the data directory itself, and `synra doctor` passes the store's own
-        // `paths.data_dir()` here, which is already that level. Using `under` appended it twice: the daemon wrote its
-        // database and its claim to `<data-dir>/data/` while reporting `<data-dir>`, so the claim it checked was never
-        // the claim it wrote, and two daemons could each take the same directory.
+        // `under(root)` is `new(root, root)` — one directory for both — which is what a test or a platform that does not
+        // separate them wants. Here they *are* separate, and the cache goes **beside** the data rather than inside it so
+        // that a user who empties the cache does not have to reason about which of the two directories holds the
+        // database.
         //
-        // The cache goes beside the data rather than inside it, so a user who empties the cache does not have to
-        // reason about which of the two directories holds the database.
+        // An earlier version of this comment said `under` appended a `data` level and that using it wrote the claim and
+        // the database one directory below where they were reported. That was true of an earlier `under` and is not true
+        // of this one: `crates/synra-store/src/paths.rs` now has `Self::new(root.clone(), root)`, and its own test
+        // asserts `data_dir() == cache_dir()`. The comment survived the change it described, which is the ordinary way a
+        // comment becomes wrong — it is the one kind of documentation the compiler cannot check.
         let root = options.data_dir.clone();
         let paths = Paths::new(root.clone(), root.join("cache"));
         let data_dir = paths.data_dir().to_path_buf();
@@ -555,5 +557,29 @@ mod tests {
         assert_eq!(json["listenPort"], DEFAULT_LISTEN_PORT);
         assert_eq!(json["canPromptTheUser"], false);
         assert!(json["dbPath"].is_string());
+    }
+
+    #[test]
+    fn the_data_directory_is_the_one_a_client_would_look_in() {
+        // ★ The daemon and the client are **separate binaries** that compute the same directory from the same input, so
+        // the two computations can drift — and the failure is invisible to both: the daemon serves a socket nobody
+        // connects to, and every command says no kernel is running while one is.
+        //
+        // The client computes it as `Paths::under(data_root()).data_dir()`, and the daemon as
+        // `Paths::new(root, root.join("cache")).data_dir()`. This asserts they agree, which is the property that makes
+        // `synra status` reach a daemon rather than a socket that is not there.
+        let named = PathBuf::from("/tmp/synra-agreement");
+        let options = DaemonOptions { data_dir: named.clone(), ..DaemonOptions::default() };
+        let plan = DaemonPlan::resolve(&options).expect("resolves");
+
+        // What the client computes, spelled the way the client spells it.
+        let client_side = Paths::under(named).data_dir().to_path_buf();
+
+        assert_eq!(Path::new(&plan.data_dir), client_side);
+        // And the socket the daemon binds is the one the client connects to, because both derive it from that directory.
+        assert_eq!(
+            synra_control::socket_path(Path::new(&plan.data_dir)),
+            synra_control::socket_path(&client_side)
+        );
     }
 }
