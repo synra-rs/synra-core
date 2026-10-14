@@ -18,6 +18,7 @@ use super::errors::HandshakeError;
 use super::host::LocalPeer;
 use super::link::{accept, dial};
 use super::negotiate::{Negotiated, agree};
+use super::pairing::pairing_state;
 use super::wire::{hello_ack_frame, hello_frame, json_payload, read_frame, write_frame};
 
 
@@ -478,4 +479,71 @@ fn a_negotiated_link_knows_whether_it_is_usable() {
         ..usable
     };
     assert!(!unusable.is_usable());
+}
+
+
+// ── Which pairing state a token produces ──────────────────────────────────────────────────────
+
+/// A token built from a repeated byte, so two distinct tokens are obviously distinct.
+fn token(byte: u8) -> LinkToken {
+    LinkToken::from_bytes([byte; LinkToken::LEN])
+}
+
+#[test]
+fn a_token_that_matches_the_record_is_current() {
+    let stored = token(0x11).to_hex();
+    assert_eq!(pairing_state(Some(&stored), Some(&token(0x11))), PairingState::Current);
+    assert!(pairing_state(Some(&stored), Some(&token(0x11))).is_trusted());
+}
+
+#[test]
+fn a_token_that_does_not_match_the_record_is_stale_rather_than_refused() {
+    // The distinction matters to a user: "pair again" is an action, "refused" is not.
+    let stored = token(0x11).to_hex();
+    let state = pairing_state(Some(&stored), Some(&token(0x22)));
+    assert_eq!(state, PairingState::Stale);
+    assert!(state.needs_pairing());
+    assert!(!state.is_trusted(), "a token this device did not issue must never open a link");
+}
+
+#[test]
+fn a_token_with_no_record_at_all_is_stale() {
+    // One device was reset or reinstalled while the other still believed the pair existed. Reporting it lets the dialer
+    // re-pair, which is the only thing the user can act on.
+    let state = pairing_state(None, Some(&token(0x11)));
+    assert_eq!(state, PairingState::Stale);
+    assert!(!state.is_trusted());
+}
+
+#[test]
+fn a_link_with_no_token_is_a_first_time_pairing() {
+    assert_eq!(pairing_state(None, None), PairingState::Unknown);
+    // And a record this device holds does not make a tokenless dialler trusted: it presented nothing to compare.
+    let stored = token(0x11).to_hex();
+    assert_eq!(pairing_state(Some(&stored), None), PairingState::Unknown);
+    assert!(!pairing_state(Some(&stored), None).is_trusted());
+}
+
+#[test]
+fn the_stored_token_is_compared_without_regard_to_case() {
+    // The column holds lowercase hex and `to_hex` produces lowercase, so the case only matters for a record written by
+    // hand. Accepting either is cheaper than a rule about which is correct.
+    let upper = token(0xab).to_hex().to_uppercase();
+    assert_eq!(pairing_state(Some(&upper), Some(&token(0xab))), PairingState::Current);
+}
+
+#[test]
+fn an_empty_stored_token_never_matches() {
+    // The shape a half-written row would have. `Stale` is the safe answer: it asks the user to pair again rather than
+    // trusting a record that says nothing.
+    assert_eq!(pairing_state(Some(""), Some(&token(0x11))), PairingState::Stale);
+}
+
+#[test]
+fn a_token_round_trips_through_hex() {
+    // The comparison above is text-based, so the text has to survive the round trip that puts a token in the database.
+    let original = token(0x5a);
+    let parsed = LinkToken::from_hex(&original.to_hex()).expect("a hex token parses back");
+    assert_eq!(parsed, original);
+    assert_eq!(pairing_state(Some(&original.to_hex()), Some(&parsed)), PairingState::Current);
 }

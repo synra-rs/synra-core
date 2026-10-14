@@ -38,6 +38,7 @@ mod errors;
 mod host;
 mod link;
 mod negotiate;
+mod pairing;
 mod wire;
 
 pub use config::Flags;
@@ -45,6 +46,7 @@ pub use errors::HandshakeError;
 pub use host::LocalPeer;
 pub use link::{accept, accept_stream, dial};
 pub use negotiate::{Negotiated, agree};
+pub use pairing::pairing_state;
 // `link` reaches for this one, and it was reachable at `crate::peer::peer_went_away` before the split, so the path
 // stays the same.
 pub(crate) use wire::peer_went_away;
