@@ -150,7 +150,7 @@ pub fn handle_within(
     if let Err(error) = stream.set_read_timeout(Some(timeout)) {
         return Served { peer: None, events: Vec::new(), ended: Some(error.to_string()) };
     }
-    let now = synra_u64(synra_store::sqlite::now_ms());
+    let now = synra_core::reading_millis(synra_store::sqlite::now_ms());
 
     // ★ One critical section for the handshake, and the link is taken **out** of the host with it. The read loop below
     // runs with no lock held at all: a peer that says nothing for an hour would otherwise hold the host for an hour, and
@@ -240,14 +240,6 @@ const PATIENCE: Duration = synra_protocol::limits::HELLO_TIMEOUT;
 /// the sense that it is quieter.
 pub fn bind(host: &mut Host, port: u16) -> Result<SocketAddr, synra_core::HostError> {
     host.listen_on(SocketAddr::from((std::net::Ipv4Addr::UNSPECIFIED, port)))
-}
-
-/// A reading as the `u64` the session registry counts in.
-///
-/// Saturating, because a negative reading is a clock before the epoch and a wrap would put a deadline in the distant
-/// future — a session that never expires.
-const fn synra_u64(value: i64) -> u64 {
-    if value < 0 { 0 } else { value as u64 }
 }
 
 /// What a link reported, for a test that drives one without a daemon.

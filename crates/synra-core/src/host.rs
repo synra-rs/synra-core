@@ -664,6 +664,30 @@ pub const fn millis_reading(value: u64) -> i64 {
     }
 }
 
+/// The same reading, the other way: the `u64` a caller that counts in unsigned milliseconds needs.
+///
+/// # Why this belongs beside its pair rather than in each caller
+///
+/// Because the two directions are one subject. [`millis_reading`] exists because the discovery table and the database use
+/// signed milliseconds while the session registry uses unsigned ones — so a caller holding the *signed* kind needs this
+/// direction too, and without it here every such caller writes its own. That is exactly what happened: the daemon grew two
+/// byte-identical copies of this function, in modules that could not see each other, each with its own near-identical
+/// comment.
+///
+/// Two copies of a saturation rule are two places to get it wrong, and the failure is silent. A negative reading that wraps
+/// instead of clamping becomes a deadline in the far future, which is a session that never expires.
+///
+/// Saturating at zero rather than casting, for the same reason: a clock before the epoch is not a reading anyone measured,
+/// and a wrap would turn it into one.
+pub const fn reading_millis(value: i64) -> u64 {
+    if value < 0 {
+        0
+    }
+    else {
+        value as u64
+    }
+}
+
 /// A handle two threads can share, for the accept loop and the caller that drives it.
 pub type SharedHost = Arc<Mutex<Host>>;
 
@@ -1248,6 +1272,25 @@ mod tests {
         assert_eq!(millis_reading(0), 0);
         assert_eq!(millis_reading(1_000), 1_000);
         assert_eq!(millis_reading(u64::MAX), i64::MAX);
+    }
+
+    #[test]
+    fn the_other_direction_saturates_too() {
+        // The pair to the test above, and the reason it exists: a negative reading is a clock before the epoch, and a cast
+        // would turn it into a deadline in the far future — a session that never expires.
+        assert_eq!(reading_millis(0), 0);
+        assert_eq!(reading_millis(1_000), 1_000);
+        assert_eq!(reading_millis(-1), 0);
+        assert_eq!(reading_millis(i64::MIN), 0);
+    }
+
+    #[test]
+    fn the_two_directions_agree_on_every_reading_they_can_both_hold() {
+        // A round trip is the property that matters, and it is the one a duplicated saturation rule breaks silently: two
+        // copies can each look right and disagree only in the case neither was written for.
+        for value in [0u64, 1, 1_000, 1_700_000_000_000, i64::MAX as u64] {
+            assert_eq!(reading_millis(millis_reading(value)), value, "round trip of {value}");
+        }
     }
 
     #[test]

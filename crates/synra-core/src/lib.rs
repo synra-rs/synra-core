@@ -77,7 +77,7 @@ pub use worker::{DiscoveryService, QUERY_INTERVAL, Ticked, is_visible, run};
 pub use socket::{
     DiscoverySocket, SocketError, absorb, broadcast_addresses, is_about,
 };
-pub use host::{Attached, Host, HostError, SharedHost, millis_reading, shared};
+pub use host::{Attached, Host, HostError, SharedHost, millis_reading, reading_millis, shared};
 pub use discovery::{
     Absorbed, CANDIDATE_TTL, Candidate, DiscoveryTable, UNUSABLE_NAME, announced_address,
 };

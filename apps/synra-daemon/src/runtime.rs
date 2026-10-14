@@ -395,7 +395,9 @@ impl Kernel for Runtime {
 
         let mut host = self.host.lock();
         // Dial, which is where the handshake establishes that the device on the other end really is the one asked for.
-        let mut link = host.dial(address, None, synra_u64(now)).map_err(|error| refusal_of(&error))?;
+        let mut link = host
+            .dial(address, None, synra_core::reading_millis(now))
+            .map_err(|error| refusal_of(&error))?;
         host.send(&mut link, &envelope).map_err(|error| refusal_of(&error))?;
         drop(host);
 
@@ -472,8 +474,9 @@ impl Kernel for Runtime {
         };
 
         let mut host = self.host.lock();
-        let mut link =
-            host.dial(address, None, synra_u64(now)).map_err(|error| refusal_of(&error))?;
+        let mut link = host
+            .dial(address, None, synra_core::reading_millis(now))
+            .map_err(|error| refusal_of(&error))?;
         // ★ Taken from the link rather than from what the user typed. The handshake is what established who is on the other
         // end, so an address that turned out to belong to a different device is reported as *that* device rather than as
         // the one that was expected.
@@ -554,7 +557,8 @@ impl Runtime {
         // scan is allowed to run, because the request is unauthenticated input from a local process.
         let budget = scan_ms.min(u64::try_from(synra_protocol::limits::SCAN_TOTAL.as_millis()).unwrap_or(u64::MAX));
         let deadline = now_ms().saturating_add(budget);
-        self.scan_until_ms.store(millis_reading_i64(deadline), std::sync::atomic::Ordering::Relaxed);
+        self.scan_until_ms
+            .store(synra_core::millis_reading(deadline), std::sync::atomic::Ordering::Relaxed);
 
         // The wait is on the clock rather than on the table, because a table that stopped changing is not the signal —
         // the signal is the budget running out. Discovery's own scan window is what the protocol specifies.
@@ -644,19 +648,6 @@ const fn error_code_for_session(error: &synra_core::SessionError) -> ErrorCode {
         // a failure it cannot name.
         _ => ErrorCode::Internal,
     }
-}
-
-/// A wall-clock reading as the `u64` the session registry counts in.
-///
-/// Saturating, because a negative reading is a clock before the epoch and the registry's deadlines are unsigned — and a
-/// wrap would put the deadline in the distant future, which is a session that never expires.
-const fn synra_u64(value: i64) -> u64 {
-    if value < 0 { 0 } else { value as u64 }
-}
-
-/// A wall-clock reading as the signed value an atomic can hold.
-const fn millis_reading_i64(value: u64) -> i64 {
-    if value > i64::MAX as u64 { i64::MAX } else { value as i64 }
 }
 
 /// The wall clock, in milliseconds since the epoch.
