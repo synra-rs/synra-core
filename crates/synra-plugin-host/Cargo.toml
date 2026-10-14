@@ -53,6 +53,9 @@ wasm-text = ["wasm-runtime", "wasmtime/wat"]
 [dev-dependencies]
 proptest.workspace = true
 rstest.workspace = true
+# The verify pipeline's tests sign a package, which needs a key and the same base64 a signature document carries.
+ed25519-dalek.workspace = true
+base64.workspace = true
 
 [build-dependencies]
 # The generator, as a library. The table is regenerated before every build, so a contract change that is not

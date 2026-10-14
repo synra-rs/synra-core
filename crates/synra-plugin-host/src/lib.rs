@@ -63,6 +63,12 @@ pub mod host_surface;
 pub mod lifecycle;
 pub mod pool;
 pub mod quota;
+pub mod verify;
+
+pub use verify::{
+    Candidate, HostFacts, Report as VerifyReport, Stage, Step, Verdict as VerifyVerdict, VerifyError, find_cycle,
+    host_world, verify as verify_package,
+};
 
 pub use engine::{
     Backend, BackendError, BackendKind, CallBudget, CallOutcome, CompiledArtifact, CompileCache, Enforcement, Epoch,
