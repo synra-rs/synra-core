@@ -249,7 +249,7 @@ impl PairingDesk {
             link_token: pending.token.to_hex(),
             // Carried from the prompt rather than re-observed here: the connection that saw the address has already
             // gone, and what a user agreed to is what was on screen.
-            address: pending.address.clone(),
+            address: pending.address,
         };
 
         match write(&record) {

@@ -157,8 +157,8 @@ impl Board {
             // putting it through a matching phase would mean asking a plugin that was already told what to do.
             Some(planned) => IntentState::Dispatching {
                 candidate: candidate_of(&planned),
-                target: source.named_target().unwrap_or_else(DeviceId::new),
-                request_id: request_id.unwrap_or_else(RequestId::new),
+                target: source.named_target().unwrap_or_default(),
+                request_id: request_id.unwrap_or_default(),
             },
             None => IntentState::Matching { deadline_ms: deadline, candidates: Vec::new() },
         };

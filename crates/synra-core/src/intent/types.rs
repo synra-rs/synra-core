@@ -133,7 +133,7 @@ impl IntentSource {
     /// candidate list has one entry and the matching phase has no questions to ask. Answering `None` here is what makes
     /// a share go through matching.
     #[must_use]
-    pub fn named_plugin(&self) -> Option<&PluginId> {
+    pub const fn named_plugin(&self) -> Option<&PluginId> {
         match self {
             Self::PluginUi { plugin_id, .. } | Self::Direct { plugin_id, .. } => Some(plugin_id),
             Self::Share { .. } | Self::Clipboard { .. } => None,
@@ -142,7 +142,7 @@ impl IntentSource {
 
     /// The device the source already chose, when it did.
     #[must_use]
-    pub fn named_target(&self) -> Option<DeviceId> {
+    pub const fn named_target(&self) -> Option<DeviceId> {
         match self {
             Self::Clipboard { target } => *target,
             Self::Direct { target, .. } => Some(*target),

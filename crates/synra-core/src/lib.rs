@@ -64,6 +64,7 @@ pub mod routing;
 pub mod session;
 pub mod sessions;
 pub mod socket;
+pub mod supervisor;
 pub mod transfer;
 pub mod worker;
 
@@ -106,4 +107,8 @@ pub use bus::{
 };
 pub use routing::{EventId, EventRegistry, RouteOutcome, RouterError};pub use sessions::{
     ClosureReason, LinkState, PeerSession, RegistryError, RegistryEvent, SessionKey, SessionRegistry,
+};
+pub use supervisor::{
+    Cancellation, Criticality, Decision, RestartPolicy, ShutdownReport, StopReason, Supervisor, SupervisorError,
+    TaskId, TaskRecord, TaskSpec, WhyNot, run_task,
 };
