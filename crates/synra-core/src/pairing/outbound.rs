@@ -58,6 +58,7 @@ pub struct OutboundPairing {
 
 /// What an arriving answer means for a pairing that is waiting.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Answered {
     /// The peer agreed, and this is the token to present on later links.
     Accepted {
@@ -81,6 +82,7 @@ pub enum Answered {
 
 /// Why an answer could not be matched to the request that is waiting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum NotAnAnswer {
     /// The answer named a different request.
     ///

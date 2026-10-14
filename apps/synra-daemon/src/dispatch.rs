@@ -347,6 +347,12 @@ impl Inbox {
                 std::sync::Arc::new(parking_lot::Mutex::new(Some(waiter))),
             )),
             synra_core::pairing::Offer::Refused(answer) => Some(PairingAnswer::Now(answer)),
+            // ★ The arm exists because `Offer` is `#[non_exhaustive]`: a variant added to it is a change a consumer has
+            // to be told about, and a wildcard is how this side says it has nothing better to do with one than refuse
+            // the request. Not reached today, and the refusal is the same shape the other two refusals above use.
+            _ => Some(PairingAnswer::Now(synra_protocol::session::PairResponse::refused(
+                "this device does not know how to answer that pairing offer".to_owned(),
+            ))),
         };
 
         Decision::Pairing { answer, request: Box::new(envelope.clone()) }

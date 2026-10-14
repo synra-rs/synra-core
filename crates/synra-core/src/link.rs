@@ -103,6 +103,7 @@ impl From<HandshakeError> for LinkError {
 /// block's four-byte header — and an enum sized for the larger variant makes every block, which is the common case during
 /// a transfer, pay for the rare one.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum Inbound {
     /// A control-plane message.
     Envelope(Box<Envelope>),

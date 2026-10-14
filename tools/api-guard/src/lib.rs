@@ -226,13 +226,30 @@ pub fn check(source: &Source, tier: Tier) -> Vec<Violation> {
         }
 
         if let Some(item) = public_enum(trimmed) {
-            // `#[non_exhaustive]` is on the line above, which is where an attribute goes.
-            // `get` rather than `[index - 1]`: the workspace denies `indexing_slicing` because it may panic, and the
-            // attribute is on the line above — which the first line of a file does not have.
-            let annotated = index
-                .checked_sub(1)
-                .and_then(|previous| lines.get(previous))
-                .is_some_and(|line| line.contains("non_exhaustive"));
+            // ★ `#[non_exhaustive]` need not be the line directly above, and the first version of this check assumed it
+            // was. An attribute block can be in any order, and `#[non_exhaustive]` conventionally comes *first* — before
+            // the derives — so looking one line up reported three enums that already had it. The consequence was the
+            // shape this tool exists to prevent: a violation nobody could see, because the fix was already made and the
+            // check kept asking for it.
+            //
+            // The scan walks up over the item's whole attribute block and stops at the first line that is not an
+            // attribute — a comment or a blank line ends it, which is what keeps an `#[non_exhaustive]` from a
+            // *previous* item counting.
+            let mut annotated = false;
+            let mut previous = index;
+            while let Some(before) = previous.checked_sub(1) {
+                let Some(line) = lines.get(before) else { break };
+                let trimmed = line.trim();
+                if trimmed.starts_with("#[") {
+                    if trimmed.contains("non_exhaustive") {
+                        annotated = true;
+                        break;
+                    }
+                    previous = before;
+                    continue;
+                }
+                break;
+            }
 
             // ★ Only a crate that makes a promise is checked, and only in the direction that protects a consumer.
             //
@@ -299,17 +316,31 @@ fn public_enum(line: &str) -> Option<String> {
 }
 
 /// The name of a public function or struct field declared on a line, if one is.
+///
+/// # What "public" means here, and the two ways to get it wrong
+///
+/// This reports items a **consumer of the crate** can name. `std::io::Error` in a `pub(crate) fn` is not a promise to
+/// anybody outside the crate, and neither is one in a `pub(super) fn` — so a rule about foreign types in a public
+/// signature has nothing to say about either. The first version of this matched a bare `pub ` prefix, which reported
+/// two crate-private functions in `synra-core`; the fix is to require the `pub` to be followed by the item kind rather
+/// than by a parenthesis.
+///
+/// The second way is the opposite one and is not this function's job: a `pub fn` inside a private module is not
+/// reachable either, and telling that from a line of text needs the module tree rather than the line. What keeps that
+/// from mattering is the direction of the rule — a false positive here is a request to look, and a false negative would
+/// be a promise nobody checked.
 fn public_fn_or_field(line: &str) -> Option<String> {
-    if let Some(rest) = line.strip_prefix("pub fn ").or_else(|| line.strip_prefix("pub const fn "))
-        .or_else(|| line.strip_prefix("pub async fn "))
-    {
-        // Up to the generic list or the argument list, which is where the name ends.
-        return Some(rest.split(['(', '<']).next().unwrap_or_default().trim().to_owned());
+    for prefix in ["pub fn ", "pub const fn ", "pub async fn ", "pub unsafe fn "] {
+        if let Some(rest) = line.strip_prefix(prefix) {
+            // Up to the generic list or the argument list, which is where the name ends.
+            return Some(rest.split(['(', '<']).next().unwrap_or_default().trim().to_owned());
+        }
     }
     if let Some(rest) = line.strip_prefix("pub struct ") {
         return Some(rest.split([' ', '{', '(', '<']).next().unwrap_or_default().to_owned());
     }
-    // A public field in a struct whose fields are public, which this rule also applies to.
+    // A public field in a struct whose fields are public, which this rule also applies to. The `pub` must be followed
+    // by the field's name, so `pub(crate)` — which the parenthesis rules out — is not one.
     if line.starts_with("pub ") && line.contains(':') {
         return Some(line.split(':').next().unwrap_or_default().trim().to_owned());
     }

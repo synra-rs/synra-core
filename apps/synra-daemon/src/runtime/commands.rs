@@ -448,6 +448,13 @@ impl Kernel for Runtime {
                 ErrorCode::DeviceOffline,
                 format!("{display_name} did not answer the pairing request in time"),
             )),
+            // ★ `Answered` is `#[non_exhaustive]`: a variant added to it is a change a consumer has to be told about, and
+            // a wildcard is how this side says it has no answer to give. Not reached today, and the refusal is the same
+            // shape the two above use — this is a caller-side failure rather than a device that went quiet.
+            _ => Err(Refusal::new(
+                ErrorCode::Unsupported,
+                format!("this device has no answer for the response {display_name} sent"),
+            )),
         }
     }
 

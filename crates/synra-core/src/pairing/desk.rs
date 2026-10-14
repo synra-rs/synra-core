@@ -41,6 +41,7 @@ use crate::pairing::{PendingPairing, verification_code};
 
 /// What a shared desk hands back when a request is offered.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum Offer {
     /// Nothing to send: the request is on screen, and this connection waits for the answer.
     Waiting(Waiter),

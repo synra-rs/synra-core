@@ -21,6 +21,7 @@ use super::types::SessionError;
 ///
 /// Public because [`classify`] returns it: a caller dispatching a link's messages needs to name what it got.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Message {
     /// The sender proposes a transfer.
     Request,
