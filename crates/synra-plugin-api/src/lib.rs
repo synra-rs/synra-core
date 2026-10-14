@@ -7,7 +7,8 @@
 //!
 //! * [`manifest`] — what an author declares, and the checks that hold them to it.
 //! * The host call surface a plugin sees, so a plugin and the kernel agree on the shape.
-//! * The events a plugin receives, in the strongly typed form the host guarantees.
+//! * [`publisher`] — the signature on a published package, and the two facts a user's trust decision needs: which key
+//!   signed this, and whether this device has seen that key before for that name.
 //!
 //! What does **not** live here: the Wasm host, the loader and the instance pool. Those are the kernel's, and
 //! keeping them out means a plugin author's dependency tree contains the contract and nothing else.
@@ -29,10 +30,15 @@
 
 pub mod boundary;
 pub mod manifest;
+pub mod publisher;
 
 pub use boundary::{DeviceTarget, LogLevel, Outcome};
 pub use manifest::{
     ActionDeclaration, CapabilityDeclaration, ComposeDependency, EventDeclaration, HandleDeclaration,
     HeadlessRuntime, Implementation, Manifest, ManifestContext, ManifestError, Publisher,
     ResourceHints, Runtime, SdkRequirement, UiRuntime, ValidationLevel, to_wire_slug,
+};
+pub use publisher::{
+    ALGORITHM, Fingerprint, PluginTrust, PublisherTrustStore, SIGNATURE_FILE, SIGNATURE_VERSION, SignatureCheck,
+    SignatureError, SignatureFile, SigningSubject, Untrusted, VerifyOutcome, check,
 };

@@ -1726,10 +1726,13 @@ dependencies = [
 name = "synra-plugin-api"
 version = "0.1.0"
 dependencies = [
+ "base64",
+ "ed25519-dalek",
  "proptest",
  "rstest",
  "serde",
  "serde_json",
+ "sha2",
  "synra-capability",
  "synra-protocol",
  "thiserror",
