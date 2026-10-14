@@ -1407,6 +1407,7 @@ dependencies = [
  "bytes",
  "compact_str",
  "proptest",
+ "rand_core 0.6.4",
  "rstest",
  "serde",
  "serde_json",

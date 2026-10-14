@@ -70,6 +70,29 @@ impl LinkToken {
         Self(bytes)
     }
 
+    /// A fresh token, from the operating system's cryptographic random source.
+    ///
+    /// # Why this is not built the way [`SessionNonce::random`] is
+    ///
+    /// A nonce only has to be unique, so a UUID is the right tool and its timestamp is a feature: it sorts. A token is a
+    /// **credential** — whoever holds it can open a link — so it has to be unpredictable, and a UUID's version and
+    /// timestamp bits are neither random nor secret. `SessionNonce` is a `u128` of which roughly half the bits are
+    /// structured; reusing that here would leave a secret with a guessable shape.
+    ///
+    /// # Why a failure to read randomness is not handled here
+    ///
+    /// Because there is no safe alternative: a token derived from anything else is worse than no token, and returning
+    /// `Result` would push a decision onto every caller that has only one right answer. `OsRng` comes from the operating
+    /// system, and a system that cannot supply it cannot run this kernel at all.
+    #[must_use]
+    pub fn random() -> Self {
+        use rand_core::RngCore;
+
+        let mut bytes = [0u8; Self::LEN];
+        rand_core::OsRng.fill_bytes(&mut bytes);
+        Self(bytes)
+    }
+
     /// The raw bytes, for comparison against a stored token.
     #[must_use]
     pub const fn as_bytes(&self) -> &[u8; Self::LEN] {
@@ -1322,3 +1345,19 @@ mod proptests {
         }
     }
 }
+
+    #[test]
+    fn a_fresh_link_token_is_unpredictable_and_not_the_zero_value() {
+        // Two tokens in a row must differ: a token that repeated would let one paired device's credential open another's
+        // link, and a token of zero is what an absent one decays to on the wire, so the real thing must never be it.
+        let first = LinkToken::random();
+        let second = LinkToken::random();
+        assert_ne!(first, second);
+        assert_ne!(first.as_bytes(), &[0u8; LinkToken::LEN]);
+        assert_ne!(second.as_bytes(), &[0u8; LinkToken::LEN]);
+
+        // And it survives the text form that carries it through a pairing answer into the database.
+        let text = first.to_hex();
+        assert_eq!(text.len(), LinkToken::LEN * 2);
+        assert_eq!(LinkToken::from_hex(&text).expect("a fresh token parses back"), first);
+    }
