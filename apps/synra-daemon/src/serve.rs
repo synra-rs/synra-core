@@ -73,6 +73,10 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // ★ Read out before the identity is moved into the host, because the pairing desk needs it: the verification code a
+    // user compares is derived from this device's identifier, so a desk built with a stale or defaulted one would show a
+    // code the other screen does not match — which reads to a user as an attacker rather than as a bug.
+    let local_id = identity.device_id;
     println!("device {} ({})", identity.device_id, identity.display_name);
 
     // ★ The peer registry is built after the transport port is known, because the announcement carries the port a peer
@@ -166,7 +170,14 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
         let peers = Arc::clone(&runtime.host);
         let stop = Arc::clone(&beating);
         let data_dir = runtime.data_dir.clone();
-        std::thread::spawn(move || crate::transport::serve(&peers, &stop, &data_dir));
+        // ★ One desk for the whole daemon, built here rather than per connection. A prompt is raised by the connection a
+        // peer dialled and answered by a user who is on no connection at all, so the structure holding the prompt has to
+        // outlive the connection that made it and be reachable from wherever the answer comes from.
+        let desk = Arc::new(synra_core::pairing::PairingDesk::new(
+            local_id,
+            synra_protocol::session::SessionTimeouts::default().pairing,
+        ));
+        std::thread::spawn(move || crate::transport::serve(&peers, &stop, &data_dir, &desk));
     }
 
     // ★ Discovery runs on its own thread and the control loop only reads what it learned. `serve_one` blocks and the

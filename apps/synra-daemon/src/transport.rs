@@ -32,7 +32,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use parking_lot::Mutex;
-use crate::dispatch::{Decision, Inbox};
+use crate::dispatch::{Decision, Inbox, PairingAnswer};
 use synra_core::host::Host;
 use synra_core::SessionError;
 use synra_core::link::{LinkError, PeerLink};
@@ -67,9 +67,17 @@ pub struct Served {
 ///
 /// Because the daemon's shutdown is a flag its `Ctrl-C` handler sets, and a listener that ignored it would keep a socket
 /// bound until the process was killed — so a restart would fail to bind for as long as the old process lingered.
-pub fn serve(host: &Arc<Mutex<Host>>, stop: &Arc<AtomicBool>, data_dir: &Path) {
+pub fn serve(
+    host: &Arc<Mutex<Host>>,
+    stop: &Arc<AtomicBool>,
+    data_dir: &Path,
+    desk: &Arc<synra_core::pairing::PairingDesk>,
+) {
     // Owned, because each connection is handed to its own thread and a thread cannot borrow the caller's stack.
     let data_dir = data_dir.to_path_buf();
+    // Cloned per connection below, because the desk is shared: a prompt raised on one connection is answered by a user
+    // who is not on that connection at all.
+    let shared_desk = Arc::clone(desk);
     // ★ Non-blocking, so the loop comes round often enough to notice the stop flag. Set once rather than per iteration:
     // it is a property of the socket, and re-setting it fifty times a second would be a syscall per poll for nothing.
     match host.lock().listen_nonblocking() {
@@ -95,10 +103,11 @@ pub fn serve(host: &Arc<Mutex<Host>>, stop: &Arc<AtomicBool>, data_dir: &Path) {
                 let host = Arc::clone(host);
                 // Each connection gets its own copy of the path, because a thread cannot borrow the loop's.
                 let inbox_root = data_dir.clone();
+                let desk = Arc::clone(&shared_desk);
                 // A thread per connection, because a link's lifetime is a peer's to decide. Nothing joins it: a link that
                 // ended is one whose thread returns, and one that is still open is doing useful work.
                 std::thread::spawn(move || {
-                    let served = handle(&host, stream, &inbox_root);
+                    let served = handle(&host, stream, &inbox_root, &desk);
                     if let Some(ended) = &served.ended {
                         let who = served
                             .peer
@@ -125,8 +134,13 @@ pub fn serve(host: &Arc<Mutex<Host>>, stop: &Arc<AtomicBool>, data_dir: &Path) {
 /// pairing" — which is the true answer for a build with no pairing table. It is deliberately **not** `Current`, because
 /// claiming a pairing that does not exist would tell a peer its token is still good.
 #[must_use]
-pub fn handle(host: &Arc<Mutex<Host>>, stream: std::net::TcpStream, data_dir: &Path) -> Served {
-    handle_within(host, stream, data_dir, synra_protocol::limits::HELLO_TIMEOUT)
+pub fn handle(
+    host: &Arc<Mutex<Host>>,
+    stream: std::net::TcpStream,
+    data_dir: &Path,
+    desk: &Arc<synra_core::pairing::PairingDesk>,
+) -> Served {
+    handle_within(host, stream, data_dir, synra_protocol::limits::HELLO_TIMEOUT, desk)
 }
 
 /// Handshakes on a connection with a chosen deadline for the exchange.
@@ -144,6 +158,7 @@ pub fn handle_within(
     stream: std::net::TcpStream,
     data_dir: &Path,
     timeout: Duration,
+    desk: &Arc<synra_core::pairing::PairingDesk>,
 ) -> Served {
     // ★ Set on the stream before anything reads from it. A peer that connects and goes silent — a port scan, another
     // product's client — is bounded by this rather than by the process's lifetime.
@@ -183,22 +198,16 @@ pub fn handle_within(
     };
 
     let peer = link.peer();
-    // This device, which the pairing verification code is derived from along with the dialer's identity. Read from the
-    // link rather than from a plan field, because the link is what the handshake agreed on: a second source could
-    // disagree with it, and a code derived from a different identifier is one the other screen does not match — which
-    // reads to a user as an attacker rather than as a bug.
-    let local_id = link.local();
     let mut events = Vec::new();
     // ★ The connection's transfer state: a proposal is remembered here, and the blocks that follow it are written into the
     // file it named. Without this the loop below would see a block as an unexpected frame and close the link — which is
     // what it did before, and why `send --file` could not work.
     let mut inbox = Inbox::new(data_dir);
-    // ★ The pairing prompt for this connection. Per-connection rather than shared, because the protocol's rule is one
-    // request at a time *per device* and a connection is one device's conversation — two peers dialling at once each get
-    // their own prompt rather than one being refused as `busy` for the other's benefit.
-    let mut pairing = synra_core::pairing::InboundPairing::new(local_id);
+    // ★ The shared desk, not a per-connection state. A prompt raised on this connection is answered by a user who is not
+    // on it at all, and a per-connection state would make that answer invisible here — the dialer would wait out its own
+    // thirty-second window for a decision the user had already made.
     loop {
-        match inbox.absorb(&mut link, synra_store::sqlite::now_ms(), PATIENCE, &mut pairing) {
+        match inbox.absorb(&mut link, synra_store::sqlite::now_ms(), PATIENCE, desk) {
             Ok(decision) => match decision {
                 Decision::Delivered { event } => {
                     // ★ Recorded as well as reported. A message this kernel received has arrived, and a log that looked
@@ -211,10 +220,25 @@ pub fn handle_within(
                 Decision::Ignored => {}
                 Decision::Pairing { answer, request } => {
                     events.push("pairing request".to_owned());
-                    // ★ A request that is waiting for a user sends nothing back. The prompt exists, and the answer will be
-                    // sent by whoever answers it — until then the dialer waits, which is what the protocol's pairing
-                    // timeout is for and why the dialer is required to give up on its own clock.
-                    if let Some(answer) = answer {
+                    // ★ One of two things, and the difference is the whole reason the desk is shared. A refusal the desk
+                    // produced itself — a second request from the same device, or one that could not be read — goes back
+                    // immediately. A request that is on the desk blocks *this* thread on the channel until a user decides,
+                    // wherever that user is: the answer arrives through the desk, not through this connection.
+                    let answered = match answer {
+                        Some(PairingAnswer::Now(response)) => Some(response),
+                        Some(PairingAnswer::Waiting(_)) => {
+                            println!("{peer} is asking to pair");
+                            answer
+                                .as_ref()
+                                .and_then(PairingAnswer::take_waiter)
+                                .map(|waiter| {
+                                    waiter.wait(synra_protocol::session::SessionTimeouts::default().pairing)
+                                })
+                        }
+                        None => None,
+                    };
+
+                    if let Some(answered) = answered {
                         // ★ A failure to answer is reported and does not end the link. The peer asked a question this
                         // kernel could not reply to; closing the connection would take any transfer on it down for a
                         // reason the user cannot see, and the dialer's own timeout already covers giving up.
@@ -227,7 +251,7 @@ pub fn handle_within(
                                     event,
                                     link.local(),
                                     synra_store::sqlite::now_ms(),
-                                    Some(&answer),
+                                    Some(&answered),
                                 ) {
                                     Ok(reply) => {
                                         if let Err(error) = link.send(&reply) {
@@ -250,9 +274,6 @@ pub fn handle_within(
                                 eprintln!("synra-daemon: the pairing event name is invalid: {error}");
                             }
                         }
-                    }
-                    else {
-                        println!("{peer} is asking to pair");
                     }
                 }
                 // Nothing arrived and the wait is over. The connection ends quietly: a peer that has gone silent has not
@@ -318,6 +339,16 @@ pub const fn is_open(link: &PeerLink) -> bool {
 mod tests {
     use super::*;
     use synra_core::identity::Identity;
+
+    /// A desk for a test connection, with the protocol's own pairing window.
+    ///
+    /// Fresh per call, so one test's prompt cannot appear in another's.
+    fn test_desk() -> Arc<synra_core::pairing::PairingDesk> {
+        Arc::new(synra_core::pairing::PairingDesk::new(
+            DeviceId::new(),
+            synra_protocol::session::SessionTimeouts::default().pairing,
+        ))
+    }
     use synra_core::peer::{Flags, LocalPeer};
     use synra_protocol::ids::DeviceId;
     use synra_protocol::session::PlatformKind;
@@ -522,7 +553,13 @@ mod tests {
                 let taken = host.lock().try_accept();
                 match taken {
                     Ok(Some(stream)) => {
-                        return handle_within(&Arc::clone(&host), stream, inbox.path(), Duration::from_secs(5));
+                        return handle_within(
+                &Arc::clone(&host),
+                stream,
+                inbox.path(),
+                Duration::from_secs(5),
+                &test_desk(),
+            );
                     }
                     Ok(None) => {}
                     Err(error) => panic!("the listener could not accept: {error}"),
@@ -575,7 +612,13 @@ mod tests {
         // live to the end of the statement, and a pending connection is not always visible to `accept` the instant
         // `connect` returns — which made this test flake under load.
         let taken = accept_within(&host, Duration::from_secs(5)).expect("a connection");
-        let served = handle_within(&Arc::clone(&host), taken, inbox.path(), Duration::from_millis(500));
+        let served = handle_within(
+                &Arc::clone(&host),
+                taken,
+                inbox.path(),
+                Duration::from_millis(500),
+                &test_desk(),
+            );
 
         assert!(served.ended.is_some(), "a non-peer should be reported: {served:?}");
         // And the peer is absent, because the handshake is what would have established it — which is exactly what a
@@ -603,7 +646,13 @@ mod tests {
         // of the suite.
         let taken = accept_within(&host, Duration::from_secs(5)).expect("a connection");
         let started = std::time::Instant::now();
-        let served = handle_within(&Arc::clone(&host), taken, inbox.path(), Duration::from_millis(300));
+        let served = handle_within(
+                &Arc::clone(&host),
+                taken,
+                inbox.path(),
+                Duration::from_millis(300),
+                &test_desk(),
+            );
         let elapsed = started.elapsed();
 
         assert!(served.ended.is_some(), "{served:?}");

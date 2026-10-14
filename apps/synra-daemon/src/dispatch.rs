@@ -88,8 +88,8 @@ pub enum Decision {
     /// device that asked. All three come from the envelope that arrived, which is here and is not available to whoever
     /// would otherwise construct the reply from `Delivered`'s single string.
     Pairing {
-        /// What to tell the dialer, or `None` when the request is now waiting for a user.
-        answer: Option<synra_protocol::session::PairResponse>,
+        /// What to tell the dialer, or `None` when the request was refused before it reached the desk.
+        answer: Option<PairingAnswer>,
         /// The message that arrived, so the reply can be addressed and correlated.
         request: Box<synra_protocol::envelope::Envelope>,
     },
@@ -104,6 +104,68 @@ pub enum Decision {
     /// report every idle connection as a fault, and treating it as `Ignored` would make the caller loop for ever.
     Idle,
 }
+
+/// What to do about a pairing request, as the dispatch layer sees it.
+///
+/// # Why this is two cases rather than one `Option`
+///
+/// Because "answer now" and "wait for a user" are different instructions to the connection, and an `Option<PairResponse>`
+/// collapses them: `None` could only mean "send nothing", which for a request on the desk would be right and for a request
+/// that failed to parse would leave the dialer waiting for an answer nobody will ever give it.
+///
+/// # Why the waiter is behind a lock and an [`Arc`]
+///
+/// Because a `Waiter` holds a channel receiver, which can be neither cloned nor compared — and [`Decision`] is both, so
+/// a caller may keep one and a test may compare two. The alternative was to drop those from [`Decision`], a public type
+/// whose other variants a reader compares for the ordinary reason: to say which case a decision was.
+///
+/// The lock is honest about what a waiter is: **something taken once**. A caller gets it by taking it out, and a second
+/// caller finds nothing rather than blocking for ever on a receiver that has already been consumed.
+#[derive(Debug)]
+pub enum PairingAnswer {
+    /// Send this to the dialer now. The link stays up, so it may ask again.
+    Now(synra_protocol::session::PairResponse),
+    /// The request is on the desk. Block on this until a user decides, then send what it produces.
+    Waiting(std::sync::Arc<parking_lot::Mutex<Option<synra_core::pairing::Waiter>>>),
+}
+
+impl PairingAnswer {
+    /// Takes the waiter out, once.
+    #[must_use]
+    pub fn take_waiter(&self) -> Option<synra_core::pairing::Waiter> {
+        match self {
+            Self::Now(_) => None,
+            Self::Waiting(slot) => slot.lock().take(),
+        }
+    }
+}
+
+impl Clone for PairingAnswer {
+    /// Clones the immediately-available answer, and shares the waiter.
+    ///
+    /// A waiter is not duplicable: two callers blocking on one channel would each receive the same answer, which for a
+    /// pairing means two responses written to two connections for one request.
+    fn clone(&self) -> Self {
+        match self {
+            Self::Now(answer) => Self::Now(answer.clone()),
+            Self::Waiting(slot) => Self::Waiting(std::sync::Arc::clone(slot)),
+        }
+    }
+}
+
+impl PartialEq for PairingAnswer {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Now(mine), Self::Now(theirs)) => mine == theirs,
+            // Two waiters are the same when they are the same waiter. Comparing what they will deliver would mean
+            // blocking on both, which is not something a comparison may do.
+            (Self::Waiting(mine), Self::Waiting(theirs)) => std::sync::Arc::ptr_eq(mine, theirs),
+            _ => false,
+        }
+    }
+}
+
+impl Eq for PairingAnswer {}
 
 /// A connection's transfer state.
 ///
@@ -154,7 +216,7 @@ impl Inbox {
         link: &mut PeerLink,
         now_ms: i64,
         patience: std::time::Duration,
-        pairing: &mut synra_core::pairing::InboundPairing,
+        pairing: &synra_core::pairing::PairingDesk,
     ) -> Result<Decision, synra_core::SessionError> {
         // * The patience is re-armed on **every** call, and it is what bounds a *quiet* peer rather than a slow one. An
         // earlier version computed the deadline once from the connection's start, so a receiver that was still working
@@ -261,21 +323,28 @@ impl Inbox {
     fn pairing_request(
         &self,
         envelope: &synra_protocol::envelope::Envelope,
-        pairing: &mut synra_core::pairing::InboundPairing,
+        pairing: &synra_core::pairing::PairingDesk,
     ) -> Decision {
-        let request = envelope
-            .payload_str()
-            .ok_or("the pairing request carried no payload")
-            .and_then(|json| {
-                serde_json::from_str::<synra_protocol::session::PairRequest>(json)
-                    .map_err(|_| "the pairing request was not readable")
-            });
+        let refused = |why: String| Decision::Pairing {
+            answer: Some(PairingAnswer::Now(synra_protocol::session::PairResponse::refused(why))),
+            request: Box::new(envelope.clone()),
+        };
 
-        let answer = match request {
-            // A request that is now waiting for a user has nothing to send yet: the answer comes from whoever answers the
-            // prompt, through a path that does not exist until the interface is wired up.
-            Ok(request) => pairing.offer(envelope.request_id, request),
-            Err(why) => Some(synra_protocol::session::PairResponse::refused(why)),
+        let Some(json) = envelope.payload_str() else {
+            return refused("the pairing request carried no payload".to_owned());
+        };
+        let Ok(request) = serde_json::from_str::<synra_protocol::session::PairRequest>(json) else {
+            return refused("the pairing request was not readable".to_owned());
+        };
+
+        // Registered on the shared desk, which hands back the waiter this connection blocks on. The answer arrives from
+        // whoever decides, through the channel the desk holds — so it does not matter that the user is not on this
+        // connection, which is the whole reason the desk is shared.
+        let answer = match pairing.offer(envelope.request_id, request, synra_store::sqlite::now_ms()) {
+            synra_core::pairing::Offer::Waiting(waiter) => Some(PairingAnswer::Waiting(
+                std::sync::Arc::new(parking_lot::Mutex::new(Some(waiter))),
+            )),
+            synra_core::pairing::Offer::Refused(answer) => Some(PairingAnswer::Now(answer)),
         };
 
         Decision::Pairing { answer, request: Box::new(envelope.clone()) }
@@ -450,6 +519,11 @@ mod tests {
 
     // ── The pairing request path ──────────────────────────────────────────────────────────────
 
+    /// A desk for this device, with the protocol's own pairing window.
+    fn desk() -> synra_core::pairing::PairingDesk {
+        synra_core::pairing::PairingDesk::new(local(), synra_protocol::session::SessionTimeouts::default().pairing)
+    }
+
     /// A local device id for a request addressed to us.
     fn local() -> synra_protocol::ids::DeviceId {
         "01a139a9-8f3c-72ce-9c96-2b2c81f14551".parse().expect("a valid device id")
@@ -491,33 +565,38 @@ mod tests {
     #[test]
     fn a_readable_pairing_request_waits_for_a_user_rather_than_being_answered() {
         let inbox = Inbox::new(std::env::temp_dir().as_path());
-        let mut pairing = synra_core::pairing::InboundPairing::new(local());
+        let pairing = desk();
 
-        let decision = inbox.pairing_request(&pair_envelope(&request_json("Laptop")), &mut pairing);
+        let decision = inbox.pairing_request(&pair_envelope(&request_json("Laptop")), &pairing);
         let Decision::Pairing { answer, request } = decision else {
             panic!("a pairing request must produce a pairing decision");
         };
-        assert!(answer.is_none(), "nothing is sent while the request waits for a user");
+        assert!(
+                matches!(answer, Some(PairingAnswer::Waiting(_))),
+                "the request is on the desk and this connection waits for a user"
+            );
         assert_eq!(
             request.event.as_str(),
             synra_protocol::event::events::PAIR_REQUEST,
             "the request travels with the decision so the answer can be addressed from it"
         );
-        assert!(pairing.pending().is_some(), "and the request is now on screen");
+        assert_eq!(pairing.pending().len(), 1, "and the request is now on the desk");
     }
 
     #[test]
     fn a_second_request_while_one_waits_is_refused_without_ending_the_link() {
         // Rule 2 of the pairing section, and rule 6: a refusal is an answer, not a reason to disconnect.
         let inbox = Inbox::new(std::env::temp_dir().as_path());
-        let mut pairing = synra_core::pairing::InboundPairing::new(local());
-        let _ = inbox.pairing_request(&pair_envelope(&request_json("First")), &mut pairing);
+        let pairing = desk();
+        let _ = inbox.pairing_request(&pair_envelope(&request_json("First")), &pairing);
 
-        let decision = inbox.pairing_request(&pair_envelope(&request_json("Second")), &mut pairing);
+        let decision = inbox.pairing_request(&pair_envelope(&request_json("Second")), &pairing);
         let Decision::Pairing { answer, .. } = decision else {
             panic!("a pairing request must produce a pairing decision");
         };
-        let answer = answer.expect("the second request is answered immediately");
+        let PairingAnswer::Now(answer) = answer.expect("the second request is answered immediately") else {
+                panic!("a busy refusal is sent now, not waited on");
+            };
         assert!(!answer.accepted);
         assert_eq!(answer.reason.as_deref(), Some("busy"));
     }
@@ -527,24 +606,26 @@ mod tests {
         // A peer that sends a mistake in one message has not broken the connection, and closing it would take any
         // transfer on that link down for a reason the user cannot act on.
         let inbox = Inbox::new(std::env::temp_dir().as_path());
-        let mut pairing = synra_core::pairing::InboundPairing::new(local());
+        let pairing = desk();
 
         for payload in [r#""a string, not an object""#, r#"{"profile":{}}"#] {
-            let decision = inbox.pairing_request(&pair_envelope(payload), &mut pairing);
+            let decision = inbox.pairing_request(&pair_envelope(payload), &pairing);
             let Decision::Pairing { answer, .. } = decision else {
                 panic!("a pairing request must produce a pairing decision");
             };
-            let answer = answer.expect("an unreadable request is answered immediately");
+            let PairingAnswer::Now(answer) = answer.expect("an unreadable request is answered immediately") else {
+                    panic!("an unreadable request is refused now, not waited on");
+                };
             assert!(!answer.accepted, "payload {payload} must be refused");
             assert_eq!(answer.issued_token(), None, "a refusal issues no token");
         }
-        assert!(pairing.pending().is_none(), "an unreadable request must not reach the prompt");
+        assert!(pairing.pending().is_empty(), "an unreadable request must not reach the prompt");
     }
 
     #[test]
     fn a_pairing_request_with_no_payload_is_refused() {
         let inbox = Inbox::new(std::env::temp_dir().as_path());
-        let mut pairing = synra_core::pairing::InboundPairing::new(local());
+        let pairing = desk();
 
         let spec = synra_protocol::envelope::OutboundSpec {
             event: synra_protocol::event::EventName::parse(synra_protocol::event::events::PAIR_REQUEST)
@@ -558,9 +639,12 @@ mod tests {
         let bare = synra_protocol::envelope::Envelope::outbound::<()>(spec, None)
             .expect("a payload-less envelope is valid");
 
-        let Decision::Pairing { answer, .. } = inbox.pairing_request(&bare, &mut pairing) else {
+        let Decision::Pairing { answer, .. } = inbox.pairing_request(&bare, &pairing) else {
             panic!("a pairing request must produce a pairing decision");
         };
-        assert!(!answer.expect("answered immediately").accepted);
+        let PairingAnswer::Now(answer) = answer.expect("answered immediately") else {
+                panic!("a payload-less request is refused now, not waited on");
+            };
+            assert!(!answer.accepted);
     }
 }
