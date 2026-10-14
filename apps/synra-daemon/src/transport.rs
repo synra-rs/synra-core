@@ -155,10 +155,21 @@ pub fn handle_within(
     // ★ One critical section for the handshake, and the link is taken **out** of the host with it. The read loop below
     // runs with no lock held at all: a peer that says nothing for an hour would otherwise hold the host for an hour, and
     // every `devices` and `send` in that time would wait behind it.
+    //
+    // The pairing question is answered from the database, which is opened here rather than held: a connection is
+    // handshaked once, and the alternative is threading a handle through the serve loop so that every connection shares
+    // one. SQLite opens a file cheaply, and this keeps the answer next to the question.
+    let pairing = synra_store::SynraDb::open(&data_dir.join(synra_store::DB_FILE_NAME));
     let handshake = {
         let mut host = host.lock();
-        host.complete_handshake(stream, now, |_, _| {
-            synra_protocol::handshake::PairingState::Unknown
+        host.complete_handshake(stream, now, |presented, device_id| match &pairing {
+            Ok(db) => crate::pairing::state_for(db, device_id, presented),
+            Err(error) => {
+                // Named rather than silent. A daemon that cannot open its own database would otherwise refuse every peer
+                // with no way for a user to tell that apart from "nobody has paired with us".
+                eprintln!("synra-daemon: the pairing record could not be opened: {error}");
+                synra_protocol::handshake::PairingState::Stale
+            }
         })
     };
 

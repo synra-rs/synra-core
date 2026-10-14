@@ -46,7 +46,7 @@ pub use records::{
     ConfigRow, DeviceRow, IdentityRow, PluginRow, RowError, SeenDeviceRow, columns,
 };
 pub use sqlite::{DbError, SynraDb, migration_versions};
-pub use paths::{PathError, Paths, is_within, sanitise_component};
+pub use paths::{DB_FILE_NAME, PathError, Paths, is_within, sanitise_component};
 pub use sandbox::{CACHE, FILES, PluginDataRoot, SandboxMeta, SUBDIRECTORIES};
 pub use secrets::{
     MemoryBackend, SecretBackend, SecretBackendKind, SecretBytes, SecretError, SecretKey,

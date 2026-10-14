@@ -19,6 +19,14 @@
 
 use std::path::{Path, PathBuf};
 
+/// The database's file name inside the data directory.
+///
+/// Public so that a caller which has a data directory but no [`Paths`] — the daemon's transport loop, which must answer a
+/// handshake's pairing question — can find the same file without spelling the name a second time. Two spellings of a file
+/// name is two chances to look in the wrong place, and the failure would be a device that cannot recognise a peer it had
+/// paired with.
+pub const DB_FILE_NAME: &str = "kernel.db";
+
 /// The kernel's directory layout.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Paths {
@@ -70,7 +78,7 @@ impl Paths {
     /// The database file.
     #[must_use]
     pub fn db_path(&self) -> PathBuf {
-        self.data_dir.join("kernel.db")
+        self.data_dir.join(DB_FILE_NAME)
     }
 
     /// The bootstrap configuration file, read before the database is open.
