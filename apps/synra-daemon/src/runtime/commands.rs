@@ -279,4 +279,53 @@ impl Kernel for Runtime {
     fn logs(&self, lines: usize, verbose: bool) -> Result<serde_json::Value, Refusal> {
         self.logs_value(lines, verbose)
     }
+
+    /// Answers the prompt a device is waiting on.
+    ///
+    /// # Why a request that is not there is an error rather than a quiet success
+    ///
+    /// Because both ways it happens are things a caller wants to know: the prompt expired while the user was deciding, or
+    /// something answered it twice. Reporting "answered" for either would tell a script its decision was carried out when
+    /// the device it was about had already been released — and the user would believe they had paired.
+    fn pair_answer(&self, request_id: &str, accepted: bool) -> Result<serde_json::Value, Refusal> {
+        let request = request_id.parse::<synra_protocol::ids::RequestId>().map_err(|error| {
+            Refusal::new(
+                ErrorCode::InvalidArgument,
+                format!("{request_id} is not a request id: {error}"),
+            )
+        })?;
+
+        // The desk records the pairing before it builds the response, so "durable, then answered" is a property of the
+        // desk rather than a hope about the order of two calls here. The record goes to the database this runtime claimed.
+        let db = &self.db;
+        // The store's clock, which is the signed milliseconds the column holds. `Runtime::now_ms` is unsigned for the
+        // uptime arithmetic it exists for, and using it here would need a cast that could wrap after the epoch.
+        let now = synra_store::sqlite::now_ms();
+        let written = self
+            .pairing
+            .answer(request, accepted, |record| {
+                db.pair_device(
+                    &record.device_id.to_string(),
+                    &record.display_name,
+                    &record.platform.to_string(),
+                    "[]",
+                    &record.link_token,
+                    now,
+                )
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+            })
+            .ok_or_else(|| {
+                Refusal::new(
+                    ErrorCode::InvalidArgument,
+                    format!("no pairing request is waiting under {request_id}"),
+                )
+            })?;
+
+        Ok(serde_json::json!({
+            "requestId": request_id,
+            "accepted": written.accepted,
+            "reason": written.reason,
+        }))
+    }
 }

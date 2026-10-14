@@ -183,6 +183,27 @@ pub enum Request {
         /// Whether to include debug-level lines.
         verbose: bool,
     },
+
+    /// Answers a pairing request a device is waiting on.
+    ///
+    /// # Why this is a command rather than something the transport decides
+    ///
+    /// Because pairing is a decision only a person can make, and the person is not on the connection that asked. The
+    /// transport holds the socket; this channel holds the user. Without a request like this the prompt exists and the
+    /// dialer waits out its own window for an answer nothing in the kernel can give.
+    ///
+    /// # Why the request id and not the device id
+    ///
+    /// Because a client answers the prompt it was shown, and the prompt identifies itself by the request. A device
+    /// identifier would also work and would let a client answer a request it never saw — including one that had already
+    /// expired and been replaced.
+    PairAnswer {
+        /// Which request, as the prompt reported it.
+        request_id: String,
+        /// Whether the user accepted. A refusal is an answer, not an error, and it does not end the requesting device's
+        /// link, so it may ask again.
+        accepted: bool,
+    },
 }
 
 impl Request {
@@ -197,6 +218,7 @@ impl Request {
             Self::SendFile { .. } => "sendFile",
             Self::Plugins => "plugins",
             Self::Logs { .. } => "logs",
+            Self::PairAnswer { .. } => "pairAnswer",
         }
     }
 

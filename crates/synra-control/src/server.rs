@@ -132,6 +132,15 @@ pub trait Kernel {
     ///
     /// As [`Kernel::status`].
     fn logs(&self, lines: usize, verbose: bool) -> Result<serde_json::Value, Refusal>;
+
+    /// Answers a pairing request a device is waiting on.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::InvalidArgument`] when nothing is waiting under that request — answered twice, or expired before the
+    /// user decided. The distinction matters to a caller: "there is nothing to answer" is a prompt that has gone, not a
+    /// failure of the answer.
+    fn pair_answer(&self, request_id: &str, accepted: bool) -> Result<serde_json::Value, Refusal>;
 }
 
 /// What the handler decided about a connection.
@@ -276,6 +285,7 @@ impl Server {
             Request::SendFile { to, path } => kernel.send_file(to, path),
             Request::Plugins => kernel.plugins(),
             Request::Logs { lines, verbose } => kernel.logs(*lines, *verbose),
+            Request::PairAnswer { request_id, accepted } => kernel.pair_answer(request_id, *accepted),
             // Answered above, and unreachable here. Written as a refusal rather than a `panic!` because a handler that
             // can panic on a request is one a hostile client can take down — and this channel is reachable by anything
             // that can open the socket.
@@ -359,6 +369,10 @@ mod tests {
         fn logs(&self, lines: usize, verbose: bool) -> Result<serde_json::Value, Refusal> {
             self.asked.borrow_mut().push((false, lines, verbose));
             self.logs.clone()
+        }
+        fn pair_answer(&self, request_id: &str, accepted: bool) -> Result<serde_json::Value, Refusal> {
+            self.asked.borrow_mut().push((accepted, request_id.len(), false));
+            Ok(serde_json::json!({ "requestId": request_id, "accepted": accepted }))
         }
     }
 
@@ -731,5 +745,77 @@ mod tests {
         let text = Refusal::new(ErrorCode::DeviceOffline, "the device is not reachable").to_string();
         assert!(text.contains("not reachable"), "{text}");
         assert!(!text.contains('{'), "{text}");
+    }
+
+
+    // ── Answering a pairing prompt ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn a_pair_answer_reaches_the_kernel_with_the_request_and_the_decision() {
+        // The whole point of the command: the decision is made by a user on this channel and carried out on the desk,
+        // which the connection that asked is blocked on.
+        let kernel = Fake::ok();
+        let (responses, _) = run(
+            &kernel,
+            &[
+                hello(),
+                Request::PairAnswer { request_id: "01a139a9-8f3c-72ce-9c96-2b2c81f14551".to_owned(), accepted: true },
+            ],
+        );
+        assert_eq!(
+            responses[1],
+            Response::ok(serde_json::json!({
+                "requestId": "01a139a9-8f3c-72ce-9c96-2b2c81f14551",
+                "accepted": true
+            }))
+        );
+    }
+
+    #[test]
+    fn a_pair_answer_carries_a_refusal_too() {
+        // A refusal is an answer, not an error: declining is a decision a user made, and the requesting device's link is
+        // not ended by it.
+        let kernel = Fake::ok();
+        let (responses, _) = run(
+            &kernel,
+            &[hello(), Request::PairAnswer { request_id: "01a139a9-8f3c-72ce-9c96-2b2c81f14551".to_owned(), accepted: false }],
+        );
+        assert_eq!(
+            responses[1],
+            Response::ok(serde_json::json!({
+                "requestId": "01a139a9-8f3c-72ce-9c96-2b2c81f14551",
+                "accepted": false
+            }))
+        );
+    }
+
+    #[test]
+    fn a_pair_answer_before_the_handshake_is_refused() {
+        let (responses, _) = run(
+            &Fake::ok(),
+            &[Request::PairAnswer { request_id: "01a139a9-8f3c-72ce-9c96-2b2c81f14551".to_owned(), accepted: true }],
+        );
+        assert!(matches!(responses[0], Response::Failed { .. }), "{:?}", responses[0]);
+    }
+
+    #[test]
+    fn a_pair_answer_names_itself_in_a_log_line() {
+        assert_eq!(
+            Request::PairAnswer { request_id: String::new(), accepted: true }.kind(),
+            "pairAnswer"
+        );
+    }
+
+    #[test]
+    fn a_pair_answer_round_trips_through_the_wire() {
+        let request = Request::PairAnswer {
+            request_id: "01a139a9-8f3c-72ce-9c96-2b2c81f14551".to_owned(),
+            accepted: true,
+        };
+        let bytes = crate::encode(&request).expect("encodes");
+        let mut decoder = Decoder::new();
+        decoder.push(&bytes);
+        let back: Request = decoder.next_message().expect("no error").expect("one message");
+        assert_eq!(back, request);
     }
 }

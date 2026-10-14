@@ -58,6 +58,15 @@ pub struct Runtime {
     /// pass a different database from the one the daemon claimed. The claim is about the *data directory*, and the
     /// database is derived from it — so holding both here is what keeps them from being able to disagree.
     pub db: synra_store::SynraDb,
+
+    /// The pairing prompts waiting for a user, shared with the transport threads.
+    ///
+    /// # Why the runtime holds it
+    ///
+    /// Because two things need it and neither can reach the other: the transport thread that raised a prompt is blocked
+    /// on the socket, and the command that answers one arrives on the control channel. The desk is what they share, so it
+    /// lives in the process's state rather than inside the loop that happens to create it.
+    pub pairing: std::sync::Arc<synra_core::pairing::PairingDesk>,
 }
 
 impl std::fmt::Debug for Runtime {

@@ -40,6 +40,9 @@ fn runtime(dir: &Path) -> Runtime {
         "0.1.0-test",
     );
     let host = Host::new(identity.clone(), local_peer);
+    // Read before the identity is moved into the host: the desk derives the verification code from it, and the fixture is
+    // the only place a test's device identity comes from.
+    let local_id = identity.device_id;
     Runtime {
         version: "0.1.0-test".to_owned(),
         data_dir: dir.to_path_buf(),
@@ -55,6 +58,10 @@ fn runtime(dir: &Path) -> Runtime {
         discovery: None,
         scan_until_ms: std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0)),
         db,
+        pairing: std::sync::Arc::new(synra_core::pairing::PairingDesk::new(
+            local_id,
+            synra_protocol::session::SessionTimeouts::default().pairing,
+        )),
     }
 }
 

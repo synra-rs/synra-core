@@ -135,6 +135,13 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
         }
     };
 
+    // ★ The pairing desk, built before the runtime that holds it and shared with the transport threads. A prompt is
+    // raised by the connection a peer dialled and answered by a user on no connection at all, so the structure that
+    // holds it has to outlive the connection that made it.
+    let pairing = Arc::new(synra_core::pairing::PairingDesk::new(
+        local_id,
+        synra_protocol::session::SessionTimeouts::default().pairing,
+    ));
     let runtime = Runtime {
         version: env!("CARGO_PKG_VERSION").to_owned(),
         data_dir: std::path::PathBuf::from(&plan.data_dir),
@@ -147,6 +154,7 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
         discovery: discovery.clone(),
         scan_until_ms: Arc::clone(&scan_until_ms),
         db,
+        pairing,
     };
 
     let listener = match Listener::bind(&runtime.data_dir) {
@@ -170,13 +178,9 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
         let peers = Arc::clone(&runtime.host);
         let stop = Arc::clone(&beating);
         let data_dir = runtime.data_dir.clone();
-        // ★ One desk for the whole daemon, built here rather than per connection. A prompt is raised by the connection a
-        // peer dialled and answered by a user who is on no connection at all, so the structure holding the prompt has to
-        // outlive the connection that made it and be reachable from wherever the answer comes from.
-        let desk = Arc::new(synra_core::pairing::PairingDesk::new(
-            local_id,
-            synra_protocol::session::SessionTimeouts::default().pairing,
-        ));
+        // The runtime's own desk, not a second one: a prompt raised by the transport must be the prompt a control command
+        // answers, and two desks would mean a user answering a request the waiting connection never hears about.
+        let desk = Arc::clone(&runtime.pairing);
         std::thread::spawn(move || crate::transport::serve(&peers, &stop, &data_dir, &desk));
     }
 
