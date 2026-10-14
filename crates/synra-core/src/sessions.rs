@@ -187,6 +187,15 @@ impl ClosureReason {
 pub struct SessionKey(u64);
 
 impl SessionKey {
+    /// A key the registry never issued, for an error that has no session to name.
+    ///
+    /// # Why this exists rather than a `SessionKey(0)` at the call site
+    ///
+    /// The field is private so that a caller cannot name a session the registry did not issue — which is the property
+    /// that makes a stale key an error rather than a lookup into somebody else's state. A named constant keeps that
+    /// property while giving the "there is no session" case something to carry.
+    pub const UNISSUED: Self = Self(0);
+
     /// The number, for a log line or a report.
     #[must_use]
     pub const fn get(self) -> u64 {
