@@ -173,19 +173,41 @@ pub struct PairResponse {
     /// Why, when it was refused. For the user, not for branching.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub reason: Option<String>,
+    /// The token the accepting side will expect on later links, as lowercase hex.
+    ///
+    /// # Why the answer carries the token rather than each side deriving one
+    ///
+    /// The accepting side is the one that decides whether a later link is trusted, so the token has to be something it
+    /// can recognise — and a value the dialer chose would be a value the dialer could choose again for a different
+    /// device. Issuing it here also puts it in the same message as the acceptance, so a dialer that receives `accepted`
+    /// cannot be in the state of "paired but holding no token".
+    ///
+    /// # Why it is optional
+    ///
+    /// A refusal has no token, and neither would an older build that answers a pairing request without issuing one.
+    /// Absent means the pairing was recorded without a token, which later links report as needing to pair again rather
+    /// than as trusted.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub link_token: Option<String>,
 }
 
 impl PairResponse {
-    /// An accepted answer.
+    /// An accepted answer, with the token later links must present.
     #[must_use]
-    pub const fn accepted() -> Self {
-        Self { accepted: true, reason: None }
+    pub fn accepted(link_token: impl Into<String>) -> Self {
+        Self { accepted: true, reason: None, link_token: Some(link_token.into()) }
     }
 
     /// A refusal with a reason.
     #[must_use]
     pub fn refused(reason: impl Into<String>) -> Self {
-        Self { accepted: false, reason: Some(reason.into()) }
+        Self { accepted: false, reason: Some(reason.into()), link_token: None }
+    }
+
+    /// The token a dialer should store, when the request was accepted and one was issued.
+    #[must_use]
+    pub fn issued_token(&self) -> Option<&str> {
+        if self.accepted { self.link_token.as_deref() } else { None }
     }
 }
 
@@ -972,10 +994,31 @@ mod tests {
         let back: PairRequest = serde_json::from_str(&json).expect("deserialises");
         assert_eq!(back, request);
 
+        use crate::handshake::LinkToken;
+
         let response = PairResponse::refused(PairRefusal::Busy.as_str());
         let json = serde_json::to_string(&response).expect("serialises");
         assert!(!json.contains("null"), "an absent reason must be omitted: {json}");
-        assert_eq!(PairResponse::accepted().reason, None);
+        assert!(
+            !json.contains("linkToken"),
+            "a refusal issues no token, and an absent token must be omitted: {json}"
+        );
+
+        // An acceptance carries the token later links present, in the same message as the acceptance. That pairing is
+        // what stops a dialer reaching the state of "paired but holding nothing to present".
+        let accepted = PairResponse::accepted("aa".repeat(LinkToken::LEN));
+        let json = serde_json::to_string(&accepted).expect("serialises");
+        assert!(json.contains("linkToken"), "{json}");
+        let back: PairResponse = serde_json::from_str(&json).expect("deserialises");
+        assert_eq!(back.issued_token(), accepted.issued_token());
+
+        // And a refusal never hands one out, even if a field somehow carried one.
+        let with_token = PairResponse {
+            accepted: false,
+            reason: None,
+            link_token: Some("aa".repeat(LinkToken::LEN)),
+        };
+        assert_eq!(with_token.issued_token(), None, "a refusal must not issue a token");
     }
 
     #[test]
@@ -1347,3 +1390,22 @@ mod proptests {
         }
     }
 }
+
+    #[test]
+    fn a_pairing_response_without_a_token_still_decodes() {
+        // A build that answers a pairing request without issuing a token — an older one, or a refusal — must remain
+        // readable. `deny_unknown_fields` rejects fields this build does not know, so the field being `default` is what
+        // keeps the two directions apart: a missing field is fine, an unknown one is not.
+        let older = r#"{"accepted":true}"#;
+        let response: PairResponse = serde_json::from_str(older).expect("an absent token decodes");
+        assert!(response.accepted);
+        assert_eq!(response.link_token, None);
+        assert_eq!(response.issued_token(), None, "nothing was issued, so nothing may be presented");
+
+        // And a response that carries one round trips.
+        use crate::handshake::LinkToken;
+        let token = LinkToken::from_bytes([0x7f; LinkToken::LEN]).to_hex();
+        let json = format!(r#"{{"accepted":true,"linkToken":"{token}"}}"#);
+        let response: PairResponse = serde_json::from_str(&json).expect("decodes");
+        assert_eq!(response.issued_token(), Some(token.as_str()));
+    }
