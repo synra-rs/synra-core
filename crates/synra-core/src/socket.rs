@@ -39,7 +39,7 @@
 //! came from. The tests bind port zero rather than the discovery port, so they do not collide with a kernel that happens
 //! to be running on the machine.
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
+use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 
 use synra_protocol::discovery::{
     DeviceAnnouncement, DiscoveryDatagram, OfflineAnnouncement, encode_offline, encode_query,
@@ -374,60 +374,27 @@ fn bind_reusable(address: SocketAddr) -> Result<UdpSocket, SocketError> {
 
 /// Every address a query should be broadcast to.
 ///
-/// # Why the limited broadcast address is always included
+/// # Why this is the limited broadcast address and nothing else
 ///
-/// Because it is the one address that needs no knowledge of the machine's interfaces, and a device on a network this
-/// code cannot enumerate — a virtual adapter, a VPN, a container bridge — is reachable through it and not through any
-/// computed address. It is sent as well as, never instead of, the per-interface addresses: some networks drop the
-/// limited broadcast, which is why the computed ones matter.
+/// The design document describes per-interface broadcast addresses as well, and the first version of this computed one:
+/// it asked the operating system which source address the default route would use, took the `/24` of that address, and
+/// sent there too.
+///
+/// **That was wrong, and a test caught it.** `connect` on a UDP socket reports the source address the *routing table*
+/// would choose, while this socket is bound to the unspecified address and may be bound to a different interface
+/// entirely — so on a machine with more than one network the computed address can be one this socket cannot reach.
+/// Windows says `WSAENETUNREACH`, and the first version reported that as a failure on every broadcast: a kernel that
+/// logged a network error every twenty seconds for an address it should never have tried.
+///
+/// Enumerating the machine's interfaces properly needs the interface list, which `std` does not expose and which is not
+/// worth a dependency here — the socket is created before any of that could be consulted, and the limited broadcast
+/// address reaches every interface by definition. So there is one address, it is the one that always works, and the
+/// reasoning is recorded rather than the broken generalisation.
 #[must_use]
 pub fn broadcast_addresses() -> Vec<SocketAddr> {
-    let mut addresses = vec![SocketAddr::from((Ipv4Addr::BROADCAST, limits::DISCOVERY_PORT))];
-
-    // A best effort at the per-interface addresses. `get_if_addrs` is not a dependency of this crate, so the interfaces
-    // are enumerated through the address the operating system reports for a connected socket — which gives the local
-    // address of the interface the default route uses, and therefore the most likely broadcast address.
-    if let Some(broadcast) = default_local_address().and_then(subnet_broadcast)
-        && !addresses.contains(&broadcast)
-    {
-        addresses.push(broadcast);
-    }
-    addresses
-}
-
-/// The local address of the interface the default route uses.
-///
-/// # Why a connected UDP socket
-///
-/// Because it makes the operating system choose the interface without sending anything: `connect` on a datagram socket
-/// only records the peer, and `local_addr` then reports which source address the kernel would use. It is the standard
-/// way to ask "which interface would reach the internet" without opening a route to a host that may not exist.
-fn default_local_address() -> Option<IpAddr> {
-    // A documentation-range address that is never actually contacted: `connect` records it and stops.
-    let probe = SocketAddr::from((Ipv4Addr::new(192, 0, 2, 1), 9));
-    let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).ok()?;
-    socket.connect(probe).ok()?;
-    let local = socket.local_addr().ok()?;
-    match local {
-        SocketAddr::V4(v4) if !v4.ip().is_unspecified() => Some(IpAddr::V4(*v4.ip())),
-        _ => None,
-    }
-}
-
-/// The broadcast address of the `/24` a local address is on.
-///
-/// # Why `/24` and not the real prefix length
-///
-/// Because the prefix length needs the interface configuration, which is not available through `std`. A `/24` is the
-/// assumption a home network satisfies and a corporate one often does not — which is exactly why the limited broadcast
-/// address is sent as well rather than instead. Being wrong here costs one extra datagram to an address that ignores it.
-const fn subnet_broadcast(local: IpAddr) -> Option<SocketAddr> {
-    let IpAddr::V4(v4) = local else {
-        return None;
-    };
-    let octets = v4.octets();
-    let broadcast = Ipv4Addr::new(octets[0], octets[1], octets[2], 255);
-    Some(SocketAddr::V4(SocketAddrV4::new(broadcast, limits::DISCOVERY_PORT)))
+    // `Ipv4Addr::BROADCAST` is 255.255.255.255, which the operating system sends out of every interface it has. It needs
+    // no knowledge of the routing table, of the subnet, or of which interface this socket was bound to.
+    vec![SocketAddr::from((Ipv4Addr::BROADCAST, limits::DISCOVERY_PORT))]
 }
 
 #[cfg(test)]
@@ -440,6 +407,7 @@ mod tests {
     use synra_protocol::handshake::PROTOCOL_VERSION;
     use synra_protocol::ids::DeviceId;
     use synra_protocol::session::PlatformKind;
+    use std::net::IpAddr;
     use std::time::{Duration, Instant};
 
     const A: &str = "11111111-1111-4111-8111-111111111111";
@@ -789,26 +757,15 @@ mod tests {
     }
 
     #[test]
-    fn a_subnet_broadcast_is_the_slash_24_of_the_local_address() {
+    fn there_is_exactly_one_broadcast_address() {
+        // ★ One, and it is the limited broadcast address. The first version computed a per-interface address as well, and
+        // a test caught that it can be one this socket cannot reach — so a kernel logged a network error every twenty
+        // seconds for an address it should never have tried. The list is asserted exactly, because a second entry
+        // reappearing is that bug returning.
         assert_eq!(
-            subnet_broadcast(IpAddr::from([192, 168, 1, 37])),
-            Some(SocketAddr::from(([192, 168, 1, 255], limits::DISCOVERY_PORT)))
+            broadcast_addresses(),
+            vec![SocketAddr::from((Ipv4Addr::BROADCAST, limits::DISCOVERY_PORT))]
         );
-        assert_eq!(
-            subnet_broadcast(IpAddr::from([10, 0, 0, 2])),
-            Some(SocketAddr::from(([10, 0, 0, 255], limits::DISCOVERY_PORT)))
-        );
-    }
-
-    #[test]
-    fn a_broadcast_address_is_never_listed_twice() {
-        // A datagram to the same address twice is one wasted send, and a caller counting what it reached would report
-        // two interfaces where there is one.
-        let addresses = broadcast_addresses();
-        let mut unique = addresses.clone();
-        unique.sort_unstable();
-        unique.dedup();
-        assert_eq!(addresses.len(), unique.len(), "{addresses:?}");
     }
 
     #[test]

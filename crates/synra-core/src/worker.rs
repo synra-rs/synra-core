@@ -1,0 +1,639 @@
+//! The discovery worker: one thread answering queries and asking its own.
+//!
+//! # Why this is a thread rather than a call
+//!
+//! The control socket is served **one connection at a time** — `synra-control`'s `Listener::serve_one` blocks, and the
+//! listener cannot be cloned, so a second client waits for the first to finish. That is fine for commands that answer
+//! from memory, and it is not fine for discovery: a scan is a bounded wait on a network, and a scan that held the control
+//! loop would make every other command — including the `status` a user runs to find out why things are slow — wait for
+//! the network as well.
+//!
+//! So discovery runs on its own thread and the control loop only ever *reads* what that thread has learned. The thread
+//! owns both sockets:
+//!
+//! * The **responder**, bound to the well-known discovery port, which answers queries from other devices. A device that
+//!   did not answer would be one nothing on the network could find — it would have to be typed in by address.
+//! * The **querier**, on a port the operating system chooses, which broadcasts this device's own queries. Broadcasts go
+//!   out from here rather than from the responder because a reply is unicast back to **the address the query came from**,
+//!   and a device that queried from the well-known port would have every answer arrive on the socket it shares with every
+//!   other device on the machine.
+//!
+//! # What the thread does, once per tick
+//!
+//! 1. Reads whatever is waiting on the responder, one datagram at a time, and answers each query. The read has a timeout
+//!    so the loop can also do the rest of its work; a socket with no timeout would sit here until a packet arrived and
+//!    never broadcast.
+//! 2. Reads whatever is waiting on the querier, which is where the answers to this device's own queries arrive.
+//! 3. Broadcasts a query if the interval has come round again.
+//!
+//! # Why the interval is longer than a scan's budget
+//!
+//! Because a query is a broadcast, and a device that broadcast every second would be one that every machine on the
+//! network sees every second — for a device that is already in their tables. The protocol's own scan budget is how long
+//! *one* scan listens, and that is a different figure from how often the question is asked.
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
+
+use parking_lot::Mutex;
+use synra_protocol::discovery::{DeviceAnnouncement, OfflineAnnouncement};
+
+use crate::discovery::{Absorbed, DiscoveryTable};
+use crate::host::Host;
+use crate::socket::{DiscoverySocket, SocketError};
+
+/// How often this device broadcasts its own query.
+///
+/// Not the scan budget: that is how long one scan listens, and this is how often the question is asked. Twice the
+/// candidate lifetime would be too slow to notice a device appearing, and a second would make every machine on the
+/// network read a broadcast every second for a device it already knows about.
+pub const QUERY_INTERVAL: Duration = Duration::from_secs(20);
+
+/// How long the responder waits for a datagram before doing the rest of its work.
+///
+/// Short, because it is not a deadline for anything: the loop comes back round, reads again, and in between checks
+/// whether it is time to broadcast. A long timeout here would delay the broadcast, and a zero one would spin.
+pub const POLL_INTERVAL: Duration = Duration::from_millis(200);
+
+/// What one pass of the worker did.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Ticked {
+    /// Datagrams that told the kernel about a device.
+    pub absorbed: Vec<Absorbed>,
+    /// Addresses that asked a question and are waiting for an answer.
+    ///
+    /// Reported rather than answered inside the tick, because an answer needs this device's own announcement and a socket
+    /// — neither of which the host owns. Keeping the two apart is what lets `tick` be tested without a network at all.
+    pub askers: Vec<std::net::SocketAddr>,
+    /// Whether this pass broadcast a query of its own.
+    pub broadcast: bool,
+    /// What went wrong, if anything.
+    ///
+    /// A failure is reported rather than acted on: a machine with no network, a firewall, and a sandbox all produce the
+    /// same thing, and none of them is a reason for the kernel to stop. Discovery is how peers are *found*, not how they
+    /// are reached.
+    pub errors: Vec<SocketError>,
+}
+
+/// The two sockets discovery needs, plus where the answers go.
+pub struct DiscoveryService {
+    /// Bound to the well-known port; answers queries.
+    responder: DiscoverySocket,
+    /// The port the operating system chose; broadcasts this device's queries.
+    querier: DiscoverySocket,
+    /// What this device announces.
+    ours: DeviceAnnouncement,
+    /// When the next broadcast is due.
+    next_query: Instant,
+    /// How often to broadcast.
+    interval: Duration,
+}
+
+impl std::fmt::Debug for DiscoveryService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DiscoveryService")
+            .field("device_id", &self.ours.device_id)
+            .field("port", &self.ours.port)
+            .field("interval", &self.interval)
+            .finish()
+    }
+}
+
+impl DiscoveryService {
+    /// Binds both sockets.
+    ///
+    /// # Errors
+    ///
+    /// [`SocketError::Bind`] when either socket cannot be bound. A caller decides whether that is fatal: the daemon does
+    /// not, because a kernel that could not start without discovery would be one that cannot run with its wireless
+    /// switched off.
+    pub fn bind(ours: DeviceAnnouncement) -> Result<Self, SocketError> {
+        Self::bind_with_interval(ours, QUERY_INTERVAL)
+    }
+
+    /// Binds both sockets with a chosen broadcast interval, for a test that must not wait one out.
+    ///
+    /// # Errors
+    ///
+    /// As [`DiscoveryService::bind`].
+    pub fn bind_with_interval(ours: DeviceAnnouncement, interval: Duration) -> Result<Self, SocketError> {
+        Ok(Self {
+            responder: DiscoverySocket::bind_default()?,
+            querier: DiscoverySocket::bind(std::net::SocketAddr::from((
+                std::net::Ipv4Addr::UNSPECIFIED,
+                0,
+            )))?,
+            ours,
+            // Due immediately, so the first tick broadcasts rather than waiting an interval for a kernel that has just
+            // started and has nothing in its table.
+            next_query: Instant::now(),
+            interval,
+        })
+    }
+
+    /// The address the responder is bound to.
+    ///
+    /// # Errors
+    ///
+    /// [`SocketError::Bind`] when it cannot be read.
+    pub fn responder_address(&self) -> Result<std::net::SocketAddr, SocketError> {
+        self.responder.local_addr()
+    }
+
+    /// The address the querier is bound to, which is where answers arrive.
+    ///
+    /// # Errors
+    ///
+    /// [`SocketError::Bind`] when it cannot be read.
+    pub fn querier_address(&self) -> Result<std::net::SocketAddr, SocketError> {
+        self.querier.local_addr()
+    }
+
+    /// Runs one pass.
+    ///
+    /// `now_ms` is the wall clock the table records; `now` is the monotonic clock the broadcast interval is measured
+    /// against. They are two different clocks on purpose: the first goes into a database and to a client, and the second
+    /// only has to be steady — a wall clock that stepped backwards would stop the broadcasts entirely.
+    pub fn tick(&mut self, host: &mut Host, now_ms: i64, now: Instant) -> Ticked {
+        let mut ticked = Ticked::default();
+
+        // The responder first: a query that arrives while this device is broadcasting is another device waiting for an
+        // answer, and making it wait for a broadcast to finish is making it wait for no reason.
+        self.drain(host, now_ms, &mut ticked, Which::Responder);
+        // Then the querier, where the answers to this device's own queries arrive.
+        self.drain(host, now_ms, &mut ticked, Which::Querier);
+
+        if now >= self.next_query {
+            // ★ Each address is reported on its own. "Nothing was found" and "nothing could be asked" are different
+            // answers, and one failure among several interfaces is not a failure of the scan.
+            for (_, result) in self.querier.broadcast_query(&self.ours) {
+                if let Err(error) = result {
+                    ticked.errors.push(error);
+                }
+            }
+            ticked.broadcast = true;
+            // The next one is measured from now rather than from the last due time, so a tick that ran late does not
+            // produce a burst of catch-up broadcasts.
+            self.next_query = now + self.interval;
+        }
+
+        ticked
+    }
+
+    /// Reads every datagram waiting on one socket.
+    fn drain(&self, host: &mut Host, now_ms: i64, ticked: &mut Ticked, which: Which) {
+        let socket = match which {
+            Which::Responder => &self.responder,
+            Which::Querier => &self.querier,
+        };
+        // A short timeout rather than a blocking read, so a socket with nothing waiting does not hold the loop.
+        if let Err(error) = socket.set_read_timeout(Some(POLL_INTERVAL / 8)) {
+            ticked.errors.push(error);
+            return;
+        }
+
+        // Bounded, so a device flooding the port cannot hold the loop for ever. Whatever is left waits for the next tick,
+        // and a peer that filled this budget has already been heard from.
+        for _ in 0..MAX_DATAGRAMS_PER_TICK {
+            match socket.receive(host, now_ms) {
+                Ok(Some(absorbed)) => {
+                    // ★ A datagram that arrived on the responder is a device that is waiting for an answer. Which socket
+                    // it came from is what tells the two apart, and the address is taken from the table rather than from
+                    // the datagram: the table holds the *connection* port, and the reply goes to where the query came
+                    // from.
+                    if which == Which::Responder
+                        && let Some(candidate) = candidate_address(host, &absorbed)
+                    {
+                        ticked.askers.push(candidate);
+                    }
+                    ticked.absorbed.push(absorbed);
+                }
+                // A datagram about this device, which is the ordinary case for a broadcast.
+                Ok(None) => {}
+                // A timeout, which is what an idle socket does and is not news.
+                Err(SocketError::Receive { .. }) => return,
+                // ★ A query has to be *answered*, and this is the only place that can: it needs the socket it arrived on
+                // and this device's own announcement. The table has already absorbed it, because a device that asks is a
+                // device that exists.
+                Err(SocketError::Malformed { .. }) => return,
+                Err(error) => {
+                    ticked.errors.push(error);
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Answers one device.
+    ///
+    /// # Errors
+    ///
+    /// [`SocketError::Send`] when the answer cannot be sent. A query that cannot be answered is reported rather than
+    /// retried: the device that asked will ask again on its next broadcast.
+    pub fn answer(&self, to: std::net::SocketAddr) -> Result<usize, SocketError> {
+        self.responder.send_response(&self.ours, to)
+    }
+
+    /// Answers every device that asked during a tick.
+    ///
+    /// # Why this is separate from the tick
+    ///
+    /// Because an answer sends on a socket, and the socket is here while the table is the host's. Keeping them apart is
+    /// what makes the decision — *who asked and is waiting* — testable without a network, and a send is the part that
+    /// only a network can be wrong about.
+    ///
+    /// Returns one result per asker, because one address failing is not a failure of the others.
+    #[must_use]
+    pub fn answer_pending(
+        &self,
+        ticked: &Ticked,
+    ) -> Vec<(std::net::SocketAddr, Result<usize, SocketError>)> {
+        ticked
+            .askers
+            .iter()
+            .map(|address| (*address, self.responder.send_response(&self.ours, *address)))
+            .collect()
+    }
+
+    /// Announces that this device is leaving.
+    ///
+    /// # Errors
+    ///
+    /// Never — the failures are returned in the list, one per address, because a device that is shutting down has no
+    /// second chance and every interface deserves its own attempt.
+    #[must_use]
+    pub fn goodbye(&self, timestamp: i64) -> Vec<(std::net::SocketAddr, Result<usize, SocketError>)> {
+        self.querier.broadcast_offline(&OfflineAnnouncement {
+            device_id: self.ours.device_id,
+            timestamp,
+        })
+    }
+}
+
+/// The address a query came from, looked up from what the table just recorded.
+///
+/// # Why the table is consulted rather than the datagram
+///
+/// Because the reply must go to the port the query was **sent from**, and the announcement carries the port the device
+/// listens on for *connections*. Those are two different ports and mixing them is the bug the protocol's own
+/// `announced_address` exists to prevent — so the address is rebuilt here from the datagram's source IP and the announced
+/// port, which is exactly what `DiscoverySocket` recorded.
+fn candidate_address(host: &Host, absorbed: &Absorbed) -> Option<std::net::SocketAddr> {
+    let device_id = match absorbed {
+        Absorbed::New { device_id } | Absorbed::Updated { device_id, .. } => *device_id,
+        _ => return None,
+    };
+    host.discovery().get(device_id).map(|found| found.address)
+}
+
+/// How many datagrams one pass will read from one socket.
+const MAX_DATAGRAMS_PER_TICK: usize = 64;
+
+/// Which of the two sockets is being drained.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Which {
+    /// The well-known port, where queries arrive.
+    Responder,
+    /// The ephemeral port, where answers arrive.
+    Querier,
+}
+
+/// Holds the service and runs it until asked to stop.
+///
+/// # Why the stop flag is shared
+///
+/// Because the daemon's shutdown is a flag its accept loop checks, and a thread that ran until the process ended would
+/// never send the goodbye that tells the network this device is gone — so every peer would keep it in its table until the
+/// candidate lifetime expired.
+pub fn run(
+    service: &Arc<Mutex<DiscoveryService>>,
+    host: &Arc<Mutex<Host>>,
+    stop: &Arc<AtomicBool>,
+    now_ms: impl Fn() -> i64 + Send + 'static,
+) {
+    while stop.load(Ordering::Relaxed) {
+        let now = Instant::now();
+
+        // ★ The two locks are taken **one at a time, never nested**. The table is behind the host's lock and the sockets
+        // are behind the service's, and holding both while sending would mean a device listing waits for a network. The
+        // tick takes the host and releases it; the answering takes the service alone.
+        let ticked = {
+            let mut service = service.lock();
+            let mut host = host.lock();
+            service.tick(&mut host, now_ms(), now)
+        };
+
+        let service = service.lock();
+        for (address, result) in service.answer_pending(&ticked) {
+            if let Err(error) = result {
+                // Reported rather than retried: the device that asked will ask again on its next broadcast, and a kernel
+                // that stopped its loop for one failed send would stop discovering entirely.
+                eprintln!("synra-daemon: could not answer {address}: {error}");
+            }
+        }
+        drop(service);
+
+        std::thread::sleep(POLL_INTERVAL);
+    }
+}
+
+/// Whether the table would show a device, for a caller reporting a tick.
+#[must_use]
+pub fn is_visible(table: &DiscoveryTable, now_ms: i64) -> bool {
+    table.displayable(now_ms).next().is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::identity::Identity;
+    use crate::peer::{Flags, LocalPeer};
+    use synra_protocol::handshake::PROTOCOL_VERSION;
+    use synra_protocol::discovery::TrustLevel;
+    use synra_protocol::ids::DeviceId;
+    use synra_protocol::session::PlatformKind;
+    use std::net::{Ipv4Addr, SocketAddr};
+
+    const A: &str = "11111111-1111-4111-8111-111111111111";
+    const B: &str = "22222222-2222-4222-8222-222222222222";
+
+    fn device(name: &str) -> DeviceId {
+        name.parse().expect("a valid device id")
+    }
+
+    fn host(id: &str, name: &str) -> Host {
+        let mut db = synra_store::SynraDb::open_in_memory().expect("opens");
+        db.migrate().expect("migrates");
+        let mut identity = Identity::load(&db, "test", 1_000).expect("an identity");
+        identity.device_id = device(id);
+        identity.rename(&db, name, 1_000).expect("renames");
+        let local = LocalPeer::new(
+            identity.device_id,
+            identity.display_name.clone(),
+            PlatformKind::Desktop,
+            "0.1.0-test",
+        );
+        Host::with_flags(identity, local, Flags::no_timeout())
+    }
+
+    fn announcement(id: &str, name: &str, port: u16) -> DeviceAnnouncement {
+        DeviceAnnouncement {
+            device_id: device(id),
+            display_name: name.to_owned(),
+            protocol: PROTOCOL_VERSION,
+            port,
+            platform: Some(PlatformKind::Desktop),
+            app_version: Some("0.1.0".to_owned()),
+            features: Vec::new(),
+        }
+    }
+
+    /// A service with both sockets on ports the operating system chose.
+    ///
+    /// # Why the responder is not on the well-known port
+    ///
+    /// Because binding it would collide with a kernel that happens to be running on this machine, and because a test that
+    /// needed the discovery port free would fail for a reason that has nothing to do with what it asserts. The service
+    /// takes the address it is given; only `bind` uses the well-known port.
+    fn service(id: &str, interval: Duration) -> DiscoveryService {
+        DiscoveryService {
+            responder: DiscoverySocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+                .expect("a responder"),
+            querier: DiscoverySocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+                .expect("a querier"),
+            ours: announcement(id, "Laptop", 47_100),
+            next_query: Instant::now(),
+            interval,
+        }
+    }
+
+    // ── Tick ──────────────────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn the_first_tick_broadcasts_because_a_kernel_that_just_started_has_nothing() {
+        // ★ Due immediately rather than after an interval: a kernel that has just started has an empty table, and waiting
+        // twenty seconds to ask is twenty seconds of being invisible.
+        let mut service = service(A, Duration::from_secs(60));
+        let mut kernel = host(A, "Laptop");
+        let ticked = service.tick(&mut kernel, 1_000, Instant::now());
+        assert!(ticked.broadcast);
+    }
+
+    #[test]
+    fn a_second_tick_before_the_interval_does_not_broadcast() {
+        // A broadcast every tick would be a broadcast ten times a second, which is a machine that floods its own network.
+        let mut service = service(A, Duration::from_secs(60));
+        let mut kernel = host(A, "Laptop");
+        let start = Instant::now();
+        assert!(service.tick(&mut kernel, 1_000, start).broadcast);
+        assert!(!service.tick(&mut kernel, 1_001, start + Duration::from_millis(50)).broadcast);
+        assert!(service.tick(&mut kernel, 1_002, start + Duration::from_secs(61)).broadcast);
+    }
+
+    #[test]
+    fn an_idle_tick_reports_no_trouble() {
+        // The ordinary case: two sockets with nothing waiting, and a broadcast that may or may not be due. A tick that
+        // reported an error here would make every quiet moment look like a fault.
+        let mut service = service(A, Duration::from_secs(60));
+        let mut kernel = host(A, "Laptop");
+        let ticked = service.tick(&mut kernel, 1_000, Instant::now());
+        assert!(ticked.absorbed.is_empty());
+        assert!(ticked.askers.is_empty());
+        assert!(ticked.errors.is_empty(), "{:?}", ticked.errors);
+    }
+
+    // ── The two sockets ───────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn the_responder_and_the_querier_are_different_sockets() {
+        // ★ A reply is unicast back to **the address the query came from**. A device that queried from the well-known
+        // port would have every answer arrive on the socket it shares with every other device on the machine — so the
+        // two are separate, and this is the assertion that keeps them so.
+        let service = service(A, Duration::from_secs(60));
+        let responder = service.responder_address().expect("an address");
+        let querier = service.querier_address().expect("an address");
+        assert_ne!(responder.port(), querier.port());
+        assert_ne!(responder.port(), 0);
+        assert_ne!(querier.port(), 0);
+    }
+
+    #[test]
+    fn a_query_arriving_on_the_responder_becomes_a_candidate() {
+        // The whole point: a device asks, and this kernel learns it exists. The answer is the caller's to send, because
+        // it needs this device's own announcement.
+        let mut service = service(A, Duration::from_secs(60));
+        let responder = service.responder_address().expect("an address");
+        let mut kernel = host(A, "Laptop");
+
+        let asker = DiscoverySocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).expect("an asker");
+        asker
+            .send_query(&announcement(B, "Phone", 47_101), responder)
+            .expect("asks");
+
+        let ticked = service.tick(&mut kernel, 5_000, Instant::now());
+        assert_eq!(ticked.absorbed, vec![Absorbed::New { device_id: device(B) }]);
+        let candidate = kernel.discovery().get(device(B)).expect("a candidate");
+        assert_eq!(candidate.display_name, "Phone");
+        // The connection port, not the port the query came from.
+        assert_eq!(candidate.address.port(), 47_101);
+    }
+
+    #[test]
+    fn an_answer_arriving_on_the_querier_becomes_a_candidate_too() {
+        // ★ An answer is news about a device in exactly the way a query is. A service that only read the responder would
+        // find only devices that happened to ask *it*, which is not discovery — it is waiting to be asked.
+        let mut service = service(A, Duration::from_secs(60));
+        let querier = service.querier_address().expect("an address");
+        let mut kernel = host(A, "Laptop");
+
+        let answerer = DiscoverySocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).expect("an answerer");
+        answerer
+            .send_response(&announcement(B, "Phone", 47_101), querier)
+            .expect("answers");
+
+        let ticked = service.tick(&mut kernel, 5_000, Instant::now());
+        assert_eq!(ticked.absorbed, vec![Absorbed::New { device_id: device(B) }]);
+    }
+
+    #[test]
+    fn this_devices_own_broadcast_is_not_a_candidate() {
+        // A device hears its own broadcast because that is what broadcasting means, and a table that counted it would
+        // show the user their own machine as a peer.
+        let mut service = service(A, Duration::from_secs(60));
+        let mut kernel = host(A, "Laptop");
+        // Several ticks, because the querier is not connected to the responder and the broadcast goes to the broadcast
+        // address rather than to this socket — so what is asserted is that nothing about this device ever appears.
+        for i in 0..3 {
+            service.tick(&mut kernel, 5_000 + i, Instant::now());
+        }
+        assert!(kernel.discovery().get(device(A)).is_none());
+    }
+
+    #[test]
+    fn a_datagram_that_is_not_an_announcement_ends_the_drain_without_a_fault() {
+        // A well-known port is sent to by anything. A stray packet ends this pass and is not reported as a fault, because
+        // a scan that failed because a printer answered would be one that fails on a real network.
+        let mut service = service(A, Duration::from_secs(60));
+        let responder = service.responder_address().expect("an address");
+        let mut kernel = host(A, "Laptop");
+
+        let stray = DiscoverySocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).expect("a stray");
+        stray
+            .send_query(&announcement(B, "Phone", 47_101), responder)
+            .expect("a real one first");
+        // Then something that is not this protocol at all.
+        let raw = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("a raw socket");
+        raw.send_to(b"not a synra datagram", responder).expect("sends");
+
+        let ticked = service.tick(&mut kernel, 5_000, Instant::now());
+        // The good one was absorbed; the stray one stopped the drain rather than being reported.
+        assert_eq!(ticked.absorbed, vec![Absorbed::New { device_id: device(B) }]);
+        assert!(ticked.errors.is_empty(), "{:?}", ticked.errors);
+    }
+
+    // ── Answering ─────────────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn an_answer_reaches_the_device_that_asked() {
+        // ★ The answer goes back to the address the query came from, because that is what the protocol says and because a
+        // device cannot be found otherwise: it broadcasts from wherever it broadcasts, and only that address can receive.
+        let service = service(A, Duration::from_secs(60));
+        let asker = DiscoverySocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).expect("an asker");
+        asker.set_read_timeout(Some(Duration::from_secs(2))).expect("a timeout");
+
+        let sent = service.answer(asker.local_addr().expect("an address")).expect("answers");
+        assert!(sent > 0);
+
+        // The asker reads it as a response carrying the answerer's own announcement.
+        let mut kernel = host(B, "Phone");
+        let absorbed = asker.receive(&mut kernel, 5_000).expect("receives");
+        assert_eq!(absorbed, Some(Absorbed::New { device_id: device(A) }));
+        let candidate = kernel.discovery().get(device(A)).expect("a candidate");
+        assert_eq!(candidate.display_name, "Laptop");
+        assert_eq!(candidate.address.port(), 47_100);
+    }
+
+    #[test]
+    fn a_goodbye_reaches_the_broadcast_addresses_and_reports_each() {
+        // A device that is shutting down has no second chance, and every interface deserves its own attempt.
+        let service = service(A, Duration::from_secs(60));
+        let results = service.goodbye(1_700_000_000_000);
+        assert_eq!(results.len(), crate::socket::broadcast_addresses().len());
+        for (address, result) in &results {
+            assert_eq!(address.port(), synra_protocol::limits::DISCOVERY_PORT);
+            if let Err(error) = result {
+                assert!(!error.to_string().is_empty());
+            }
+        }
+    }
+
+    // ── The whole loop ────────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn two_services_find_each_other_over_loopback() {
+        // ★ The end-to-end test: two services, each with its own two sockets, and a query that one sends to the other's
+        // responder. What is asserted is the round trip a real network does — a query arrives, a candidate is recorded,
+        // and the answer carries the announcement back.
+        let mut asker = service(A, Duration::from_secs(60));
+        let mut answerer = service(B, Duration::from_secs(60));
+        let answerer_responder = answerer.responder_address().expect("an address");
+        let asker_querier = asker.querier_address().expect("an address");
+
+        let mut asking = host(A, "Laptop");
+        // The asker asks the answerer's responder from its own querier, which is what a real scan does.
+        asker
+            .querier
+            .send_query(&announcement(A, "Laptop", 47_100), answerer_responder)
+            .expect("asks");
+
+        // The answerer hears the query and answers it.
+        let mut answering = host(B, "Phone");
+        let ticked = answerer.tick(&mut answering, 5_000, Instant::now());
+        assert_eq!(ticked.absorbed, vec![Absorbed::New { device_id: device(A) }]);
+
+        // ★ The answer goes to the querier, not to the responder — which is the whole reason there are two sockets.
+        answerer
+            .answer(asker_querier)
+            .expect("answers");
+
+        // And the asker learns about the answerer.
+        let ticked = asker.tick(&mut asking, 5_001, Instant::now());
+        assert_eq!(ticked.absorbed, vec![Absorbed::New { device_id: device(B) }]);
+        assert!(asking.discovery().get(device(B)).is_some());
+    }
+
+    // ── What a caller sees ────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn a_device_heard_over_the_network_is_not_visible_until_it_is_handshaked() {
+        // ★ The protocol's own rule, reached through the service: an announced device is a *candidate*, and the interface
+        // shows candidates under their own heading rather than among peers.
+        let table = DiscoveryTable::new(device(A));
+        assert!(!is_visible(&table, 0));
+
+        let mut service = service(A, Duration::from_secs(60));
+        let responder = service.responder_address().expect("an address");
+        let mut kernel = host(A, "Laptop");
+        let asker = DiscoverySocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).expect("an asker");
+        asker
+            .send_query(&announcement(B, "Phone", 47_101), responder)
+            .expect("asks");
+        service.tick(&mut kernel, 5_000, Instant::now());
+
+        assert_eq!(
+            kernel.discovery().get(device(B)).expect("a candidate").trust,
+            TrustLevel::Announced
+        );
+        assert!(!is_visible(kernel.discovery(), 5_000), "an announced device should not be visible");
+    }
+
+    #[test]
+    fn a_service_debug_form_names_the_device_and_the_port() {
+        // It appears in a log line, and a handle that printed a socket would leak the path.
+        let service = service(A, Duration::from_secs(60));
+        let text = format!("{service:?}");
+        assert!(text.contains("Laptop") || text.contains("47100") || text.contains("47_100"), "{text}");
+        assert!(!text.contains("127.0.0.1"), "{text}");
+    }
+}

@@ -57,10 +57,12 @@ pub mod peer;
 pub mod routing;
 pub mod sessions;
 pub mod socket;
+pub mod worker;
 
 pub use admission::{
     AdmissionContext, AdmissionRefusal, AdmissionStep, PluginKey, admit, check, host_requirement,
 };
+pub use worker::{DiscoveryService, QUERY_INTERVAL, Ticked, is_visible, run};
 pub use socket::{
     DiscoverySocket, SocketError, absorb, broadcast_addresses, is_about,
 };
