@@ -178,7 +178,7 @@ pub fn handle_within(
     // what it did before, and why `send --file` could not work.
     let mut inbox = Inbox::new(data_dir);
     loop {
-        match inbox.absorb(&mut link, synra_store::sqlite::now_ms(), deadline()) {
+        match inbox.absorb(&mut link, synra_store::sqlite::now_ms(), PATIENCE) {
             Ok(decision) => match decision {
                 Decision::Delivered { event } => {
                     // ★ Recorded as well as reported. A message this kernel received has arrived, and a log that looked
@@ -189,6 +189,11 @@ pub fn handle_within(
                     );
                 }
                 Decision::Ignored => {}
+                // Nothing arrived and the wait is over. The connection ends quietly: a peer that has gone silent has not
+                // done anything wrong, and `Served::ended` is for faults.
+                Decision::Idle => {
+                    return Served { peer: Some(peer), events, ended: None };
+                }
                 Decision::Accepted { transfer_id, file_name } => {
                     events.push(format!("accepted {transfer_id}"));
                     println!("receiving {file_name} from {peer}");
@@ -224,9 +229,7 @@ pub fn handle_within(
 ///
 /// A peer that says nothing must not hold a thread for ever, and the protocol's own handshake timeout is the figure every
 /// other part of the kernel uses for "how long may a peer take to speak".
-fn deadline() -> std::time::Instant {
-    std::time::Instant::now() + synra_protocol::limits::HELLO_TIMEOUT
-}
+const PATIENCE: Duration = synra_protocol::limits::HELLO_TIMEOUT;
 
 /// Binds the transport port for inbound connections.
 ///

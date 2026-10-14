@@ -134,6 +134,8 @@ pub struct PeerLink {
     agreed: synra_protocol::handshake::Agreed,
     /// Flags a read runs under.
     flags: Flags,
+    /// A per-call read timeout, for a caller whose own deadline is sooner than the link's.
+    read_timeout_override: Option<std::time::Duration>,
     /// Envelopes sent, for a report.
     sent: u64,
     /// Envelopes received and accepted, for a report.
@@ -162,6 +164,7 @@ impl PeerLink {
             peer,
             agreed,
             flags,
+            read_timeout_override: None,
             sent: 0,
             received: 0,
         }
@@ -391,6 +394,18 @@ impl PeerLink {
         Ok(envelope)
     }
 
+    /// Sets how long the next read may wait, overriding the link's own timeout.
+    ///
+    /// # Why a caller needs this
+    ///
+    /// Because a link's timeout is a poor deadline for a caller that has its own. A loop that reads until a deadline — a
+    /// daemon waiting for a peer's message — would otherwise wait the link's whole timeout even when its deadline is
+    /// sooner, so "give up at five seconds" took eleven. Passing `None` restores the link's own timeout, which is what
+    /// every other caller wants.
+    pub const fn set_read_timeout(&mut self, timeout: Option<std::time::Duration>) {
+        self.read_timeout_override = timeout;
+    }
+
     /// Reads one frame.
     ///
     /// # Why a read timeout does not abandon a half-read frame
@@ -402,10 +417,10 @@ impl PeerLink {
     /// frames lost that way.
     ///
     /// So a timeout while a frame is **partly** buffered is retried rather than reported: the peer is mid-frame, which is
-    /// not the same as a peer that has gone quiet. A timeout with nothing buffered is still reported, because that is
-    /// exactly what the handshake needs — a peer that connects and says nothing must be abandoned rather than waited on.
+    /// not the same as a peer that has gone quiet. A timeout with nothing buffered is reported as [`LinkError::TimedOut`],
+    /// which is a quiet link rather than a broken one.
     fn read_frame(&mut self) -> Result<Frame, LinkError> {
-        if let Some(timeout) = self.flags.timeout {
+        if let Some(timeout) = self.read_timeout_override.or(self.flags.timeout) {
             self.stream
                 .set_read_timeout(Some(timeout))
                 .map_err(|error| LinkError::Transport { why: error.to_string() })?;

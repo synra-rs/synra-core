@@ -72,6 +72,14 @@ pub enum Decision {
     },
     /// A message this connection has nothing to do with.
     Ignored,
+    /// Nothing arrived and the wait is over, so the connection has nothing more to say.
+    ///
+    /// # Why this is not `Failed`
+    ///
+    /// Because a peer that has gone quiet has not done anything wrong, and a transfer that is mid-flight has a
+    /// `receiving` in progress — so this is only reached when there is **no** transfer. Treating it as a failure would
+    /// report every idle connection as a fault, and treating it as `Ignored` would make the caller loop for ever.
+    Idle,
 }
 
 /// A connection's transfer state.
@@ -117,13 +125,24 @@ impl Inbox {
         &mut self,
         link: &mut PeerLink,
         now_ms: i64,
-        deadline: std::time::Instant,
+        patience: std::time::Duration,
     ) -> Result<Decision, synra_core::SessionError> {
+        let deadline = std::time::Instant::now() + patience;
         // ★ The proposal arrives as an envelope, before there is anything to receive into. A block that arrives with no
         // transfer in progress is a protocol violation rather than something to guess about — the peer is sending part of
         // something this end never agreed to.
         if self.receiving.is_none() {
-            let Inbound::Envelope(envelope) = link.receive_inbound()? else {
+            // * A quiet link is not a closed one. `LinkError::TimedOut` means the socket waited out its own shorter
+            // timeout, which for a link that is idle between messages is ordinary -- and treating it as a fault closed the
+            // connection while the peer's completion was still on its way. That is what an end-to-end run showed: the
+            // sender sent its completion and the receiver closed the link before reading it.
+            let inbound = match read_patiently(link, deadline) {
+                Ok(inbound) => inbound,
+                // Quiet past the deadline with nothing in flight: the connection has nothing more to say.
+                Err(synra_core::LinkError::TimedOut) => return Ok(Decision::Idle),
+                Err(error) => return Err(synra_core::SessionError::Link(error)),
+            };
+            let Inbound::Envelope(envelope) = inbound else {
                 return Ok(Decision::Failed {
                     why: "a block arrived before any transfer was proposed".to_owned(),
                 });
@@ -187,6 +206,47 @@ impl Inbox {
         // A name that sanitises to nothing — every character rejected — still needs a file.
         let stem = if safe.trim_matches(['.', '-']).is_empty() { "file".to_owned() } else { safe };
         self.inbox.join(stem)
+    }
+}
+
+/// Reads until a frame arrives or the deadline passes.
+///
+/// # Why a timeout is not reported
+///
+/// Because a link between two devices is idle most of the time, and the socket timeout is a short one — a read that waits
+/// it out says nothing about whether the peer is still there. The deadline the caller owns is what bounds the wait, so a
+/// message that arrives late is still read. Returning `Err` only for a link that has genuinely failed keeps "the peer went
+/// away" meaning what it says.
+///
+/// # Errors
+///
+/// [`synra_core::LinkError`] for a link that failed rather than one that was quiet, and the same for a malformed frame.
+fn read_patiently(
+    link: &mut PeerLink,
+    deadline: std::time::Instant,
+) -> Result<Inbound, synra_core::LinkError> {
+    loop {
+        // ★ The link's own timeout is capped by what is left of the caller's deadline, so "give up at five seconds" gives
+        // up at five seconds rather than at the link's six. Without the cap this loop waited the link's whole timeout even
+        // when the deadline had already passed, which is what made a bounded test hang.
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        link.set_read_timeout(Some(remaining));
+        match link.receive_inbound() {
+            Ok(inbound) => {
+                link.set_read_timeout(None);
+                return Ok(inbound);
+            }
+            Err(synra_core::LinkError::TimedOut) => {
+                if std::time::Instant::now() >= deadline {
+                    link.set_read_timeout(None);
+                    return Err(synra_core::LinkError::TimedOut);
+                }
+            }
+            Err(error) => {
+                link.set_read_timeout(None);
+                return Err(error);
+            }
+        }
     }
 }
 

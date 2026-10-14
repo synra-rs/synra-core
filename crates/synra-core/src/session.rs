@@ -338,11 +338,15 @@ pub fn send_blocks(
             sender.mark_sent(*index);
         }
 
-        // ★ "I have written every block" is **not** "the transfer is done", and an earlier version of this returned here
-        // — which meant a sender stopped as soon as it had finished talking, without ever hearing whether the far end got
-        // anything. A transfer is complete when the receiver says so **and** this side has nothing left to write, so both
-        // conditions are required.
-        if batch.is_empty() && sender.is_complete() && acknowledged > 0 {
+        // ★ Every block this side has to write has been written, so this loop is done. Waiting here for a report would be
+        // waiting for something this side does not need: what matters is the confirmation that the object verified, and
+        // that is `await_confirmation`'s job — it reads for it with the **caller's** deadline, retrying a quiet link rather
+        // than giving up on the socket's shorter timeout.
+        //
+        // An earlier version kept looping here for a report, and that is where this went wrong twice: the socket's
+        // six-second read timeout became the transfer's deadline, and a receiver that already held every block was
+        // reported as a broken link while its confirmation sat unread.
+        if sender.is_complete() && batch.is_empty() {
             return Ok(events);
         }
 
@@ -353,6 +357,11 @@ pub fn send_blocks(
         }
 
         match read_control(link)? {
+            // * A quiet link is not the end of the transfer. ead_control reports a socket timeout this way, and an
+            // earlier version treated it as 'no message ever' and abandoned the loop -- so the socket's six-second read
+            // timeout became the deadline for the whole transfer, and a slow receiver was reported as a broken link. The
+            // caller's deadline is the deadline, and it is checked at the top of the loop; this just reads again.
+            None => continue,
             Some(Control::Progress(progress)) => {
                 if progress.transfer_id != sender.transfer_id() {
                     return Err(SessionError::WrongTransfer {
@@ -384,8 +393,6 @@ pub fn send_blocks(
             Some(Control::Unexpected(what)) => {
                 return Err(SessionError::Payload { message: "control", why: what });
             }
-            // Any other message on the link is not this session's business, and a transfer must not swallow it.
-            None => return Ok(events),
             Some(Control::PeerFinished) => return Ok(events),
         }
     }
@@ -499,7 +506,9 @@ fn read_control(link: &mut PeerLink) -> Result<Option<Control>, SessionError> {
         // `LinkError::Transport`, so a transfer that had already moved every byte was reported as a link failure — which is
         // exactly what an end-to-end run showed. The caller's loop re-checks its own deadline, so the wait ends because the
         // caller said so.
-        Err(LinkError::TimedOut) => Ok(None),
+        Err(LinkError::TimedOut) => {
+            Ok(None)
+        }
         Err(error) => Err(SessionError::Link(error)),
         Ok(Inbound::Block { .. }) => {
             Ok(Some(Control::Unexpected("a block at the sending end".to_owned())))
@@ -866,7 +875,8 @@ pub fn send_file(
         events.push(complete(link, &sender, trace_id, now_ms)?);
         // ★ And now the wait the protocol asks for. `events` gains a `Verified` only when the receiver has actually said so,
         // which is what makes a caller's report of success mean something.
-        if await_confirmation(link, sender.transfer_id(), deadline)? {
+        let confirmed = await_confirmation(link, sender.transfer_id(), deadline)?;
+        if confirmed {
             events.push(SessionEvent::Verified {
                 transfer_id: sender.transfer_id(),
                 digest: sender.digest().encoded().to_owned(),
