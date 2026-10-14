@@ -18,7 +18,7 @@
 //!
 //! Because a prompt is a decision somebody is in the middle of. Queueing a second behind it means the second is answered
 //! minutes later by a user who has forgotten what they were agreeing to — which is not consent. A second request while
-//! one is pending is refused with [`PairRefusal::Busy`], and the dialer may ask again.
+//! one is pending is refused with [`synra_protocol::session::PairRefusal::Busy`], and the dialer may ask again.
 
 use synra_protocol::handshake::LinkToken;
 use synra_protocol::ids::{DeviceId, RequestId};

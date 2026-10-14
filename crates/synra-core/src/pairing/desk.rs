@@ -2,10 +2,13 @@
 //!
 //! # Why this type exists at all
 //!
-//! The pairing state machine ([`InboundPairing`]) is one conversation's worth of state, and that is right for deciding
-//! *what a request means*. It is wrong for deciding *whether a prompt exists*, because the user answers on one screen
-//! while the connection that asked is a different thread holding a socket. Two per-connection states never see each
-//! other, so an answer given on one would never reach the other — and the dialer would sit until its own timeout.
+//! A per-connection pairing state is one conversation's worth of state, and that is right for deciding *what a request
+//! means*. It is wrong for deciding *whether a prompt exists*, because the user answers on one screen while the
+//! connection that asked is a different thread holding a socket. Two per-connection states never see each other, so an
+//! answer given on one would never reach the other — and the dialer would sit until its own timeout.
+//!
+//! This is not a hypothetical: an earlier version of this module held exactly that per-connection state, and it had to be
+//! deleted once the desk existed, because a type nobody calls is one the next reader mistakes for a live path.
 //!
 //! So the desk is shared, and it is indexed by **device** rather than by request. That index is the whole design: the
 //! protocol's rule is one pending request per device, and a structure keyed by device makes the second request from the
