@@ -22,6 +22,8 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 parking_lot.workspace = true
+# The frame body is the protocol's own `Bytes`, so the peer layer names it rather than copying into a `Vec`.
+bytes.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
@@ -31,7 +33,6 @@ rstest.workspace = true
 # dependencies to host one test file.
 synra-plugin-host = { path = "../synra-plugin-host" }
 synra-testkit-alloc = { path = "../synra-testkit-alloc" }
-bytes.workspace = true
 
 [lints]
 workspace = true

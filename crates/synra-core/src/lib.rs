@@ -50,11 +50,15 @@ pub mod admission;
 pub mod bus;
 pub mod config;
 pub mod identity;
+pub mod peer;
 pub mod routing;
 pub mod sessions;
 
 pub use admission::{
     AdmissionContext, AdmissionRefusal, AdmissionStep, PluginKey, admit, check, host_requirement,
+};
+pub use peer::{
+    Flags, HandshakeError, LocalPeer, Negotiated, accept, agree, dial,
 };
 pub use identity::{
     DEFAULT_DISPLAY_NAME, Identity, MAX_DISPLAY_NAME_LEN, NameError, RenameError, check_display_name,
