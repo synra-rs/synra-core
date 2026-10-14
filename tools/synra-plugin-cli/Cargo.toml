@@ -21,6 +21,11 @@ ed25519-dalek = { workspace = true }
 # For `OsRng` alone. Reading the system's randomness by hand needs an `unsafe` block on Windows, which this workspace
 # forbids everywhere — and a key from a weak source is one an attacker can forge, silently.
 rand_core = { workspace = true }
+# The artifact and manifest digests a signature covers, and the base64 a signature document carries them in. Both are
+# already in the tree through the contract crate, and named here because a tool that computes a digest should say which
+# implementation it trusts.
+sha2.workspace = true
+base64.workspace = true
 
 [dev-dependencies]
 rstest.workspace = true

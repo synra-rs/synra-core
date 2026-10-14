@@ -1742,12 +1742,14 @@ dependencies = [
 name = "synra-plugin-cli"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "clap",
  "ed25519-dalek",
  "rand_core 0.6.4",
  "rstest",
  "serde",
  "serde_json",
+ "sha2",
  "synra-plugin-api",
  "synra-plugin-host",
  "synra-protocol",

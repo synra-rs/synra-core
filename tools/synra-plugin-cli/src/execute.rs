@@ -400,9 +400,16 @@ mod tests {
 
         let executed = execute(&outcome, false);
         assert_eq!(executed.code, 0, "{executed:?}");
-        assert!(dir.path().join("plugin.sig").exists());
+        assert!(
+            dir.path().join(synra_plugin_api::publisher::SIGNATURE_FILE).exists(),
+            "the document the host reads is what a package carries"
+        );
         assert!(dir.path().join("public-key.txt").exists());
-        assert!(executed.lines[0].contains("plugin.sig"), "{:?}", executed.lines);
+        assert!(
+            executed.lines[0].contains(synra_plugin_api::publisher::SIGNATURE_FILE),
+            "{:?}",
+            executed.lines
+        );
     }
 
     #[test]
@@ -433,14 +440,14 @@ mod tests {
                 dir: dir.path().to_path_buf(),
                 key: None,
                 generate_key: false,
-                verify: Some(dir.path().join("plugin.sig")),
+                verify: Some(dir.path().join(synra_plugin_api::publisher::SIGNATURE_FILE)),
             })
             .expect("checks")
         };
 
         let good = check(&dir);
         assert_eq!(good.exit_code(), 0, "{:?}", good.lines());
-        assert!(good.lines()[0].contains("is signed by that key"), "{:?}", good.lines());
+        assert!(good.lines()[0].contains("is signed by"), "{:?}", good.lines());
 
         // One byte different, and the signature stops meaning anything.
         dir.write("plugin.wasm", b"the modul3");

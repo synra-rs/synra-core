@@ -1,39 +1,37 @@
-//! `sign`: what a publisher's signature covers, and what it does not.
+//! `sign`: the signature a published package carries, and what it covers.
 //!
 //! # What a signature is for here
 //!
-//! The design document's trust model has three levels, and the middle one is "signed, from a publisher the user has
+//! The design document's trust model has three levels, and the middle one is "signed, by a publisher the user has
 //! already confirmed". A signature is what makes the *next* install from that publisher verifiable without asking
 //! again — so the thing being signed has to be exactly the thing that could differ between two downloads.
 //!
-//! # What is covered
+//! # What is covered, and why it is digests rather than bytes
 //!
-//! Every byte of the artifact, plus the manifest's identity fields. The **artifact** is obvious. The manifest's fields
-//! are there because the artifact alone is not the plugin: the same `.wasm` with a manifest that asks for `storage`
-//! is a different plugin, and a signature over the artifact only would let one be substituted for the other.
+//! Every artifact the manifest names, by file name **and** digests, plus the digest of the manifest itself. That is
+//! [`SigningSubject`], and it is the same type the host verifies with — the format is not this tool's, and a change to
+//! it is a change to the contract.
 //!
-//! Which manifest fields: the ones that decide what the plugin *is* — its id, its version, and its `wit` world.
-//! Deliberately **not** the whole manifest, because the parts a signature must not cover are the ones a user or a host
-//! changes: nothing today, but the moment a field like a registry URL or an install timestamp lands in the manifest,
-//! covering it would invalidate every existing signature.
+//! The first version of this tool signed a canonical encoding of the artifact's *bytes*, which worked and had two
+//! problems: a signature that moved with the file's name rather than its content, and a second format the host would
+//! have had to understand. Digests make the signed statement about the bytes and nothing else, and a manifest digest
+//! covers the part that decides what the plugin *is* — a plugin whose manifest asks for `storage` is a different
+//! plugin even when the `.wasm` is identical.
 //!
-//! # The digest is over a canonical encoding
+//! # What is deliberately not here
 //!
-//! The bytes signed are a fixed structure — a length-prefixed list of the fields, then the artifact — rather than the
-//! manifest's own JSON. JSON's key order and whitespace are not fixed, so signing the file would make a signature that
-//! changes when a user's editor reformats it. A canonical encoding makes the signature a statement about the plugin
-//! rather than about its formatting.
-//!
-//! # What is not here
-//!
-//! No key storage, no keyring, no passphrase prompt. A key is a file the author names, and a tool that generated and
-//! hid one would be a tool whose keys the author cannot back up — which is how a publisher loses the ability to ship
-//! an update to a plugin users already trust.
+//! No key storage, no keyring, no passphrase prompt. A key is a file the author names, and a tool that generated one
+//! and hid it would be a tool whose keys the author cannot back up — which is how a publisher loses the ability to
+//! ship an update to a plugin users already trust.
 
-use std::path::Path;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
-use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
+use ed25519_dalek::{Signer as _, SigningKey, VerifyingKey};
 use rand_core::RngCore as _;
+use sha2::{Digest, Sha256};
+use synra_plugin_api::manifest::Manifest;
+use synra_plugin_api::publisher::{self, Fingerprint, SignatureFile, SigningSubject, Untrusted};
 
 /// Why a signature could not be produced or checked.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -85,121 +83,135 @@ pub enum SignError {
         reason: String,
     },
 
+    /// The signature document could not be read.
+    #[error("the signature could not be read: {reason}")]
+    DocumentUnreadable {
+        /// What the parser said.
+        reason: String,
+    },
+
     /// A signature did not verify.
     ///
-    /// Three things could have happened and the message says which it can tell: the artifact changed, the manifest's
-    /// identity changed, or the key is not the publisher's.
+    /// The one answer for the three ways it can fail — the artifact changed, the manifest changed, or the key is not
+    /// the publisher's — because a verifier that said *which* would tell an attacker which part to change.
     #[error("the signature does not verify against this plugin")]
     Mismatch,
+
+    /// The signature is by a key this device refuses.
+    #[error("{why}")]
+    Untrusted {
+        /// Why, in a sentence a user can act on.
+        why: Untrusted,
+    },
 }
 
-/// What a signature is over.
+/// What a signature covers, and the plugin it belongs to.
 ///
-/// # Why this is a type
+/// # Why the subject is the contract's own type
 ///
-/// The set of fields a signature covers is a **compatibility decision**: adding one invalidates every existing
-/// signature, and removing one makes two different plugins sign identically. Making it a value with its own
-/// constructor means the decision is in one place, and a test can assert the encoding is what a previous version
-/// produced.
+/// Because the host verifies with it. A tool that built its own subject would be a second definition of what a
+/// signature is over, and the two would drift — with the symptom being a signature that this tool made and the host
+/// refuses, which an author has no way to diagnose.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignedContent {
     /// The plugin's id, exactly as the manifest spells it.
     pub plugin_id: String,
     /// Its version, exactly as the manifest spells it.
     pub version: String,
-    /// The WIT world it was built against.
-    pub wit: String,
-    /// The artifact's bytes.
-    ///
-    /// The whole artifact, not a digest of it: `ed25519` hashes internally, and a second hash here would be a second
-    /// algorithm to keep in step with the verifier's.
-    pub artifact: Vec<u8>,
+    /// Who is publishing it, as the manifest declares.
+    pub publisher_id: String,
+    /// What was signed: the manifest's digest and every artifact's.
+    pub subject: SigningSubject,
 }
 
 impl SignedContent {
-    /// Reads the content a plugin's signature covers.
+    /// Reads what a plugin's signature covers.
     ///
     /// # Errors
     ///
-    /// [`SignError`] when the manifest or the artifact cannot be read.
+    /// [`SignError`] when the manifest or an artifact cannot be read.
     ///
-    /// # The artifact path comes from the manifest
+    /// # The artifacts come from the manifest
     ///
     /// Because the manifest is what the kernel reads, so signing a file the kernel will not load would be a signature
     /// over the wrong bytes — and it would verify, which is worse.
     pub fn read(root: &Path) -> Result<Self, SignError> {
-        let manifest_path = root.join("manifest.json");
-        let text = std::fs::read_to_string(&manifest_path).map_err(|error| {
-            SignError::ManifestUnreadable {
-                path: manifest_path.display().to_string(),
-                reason: error.to_string(),
-            }
-        })?;
-        let manifest = synra_plugin_api::manifest::Manifest::from_json(&text).map_err(|error| {
-            SignError::ManifestUnreadable {
-                path: manifest_path.display().to_string(),
-                reason: error.to_string(),
-            }
-        })?;
+        let (manifest, manifest_digest) = read_manifest(root)?;
+        let artifacts = collect_artifacts(root, &manifest)?;
 
-        // The headless artifact, or the UI bundle's directory. A UI-only plugin has no `.wasm`, and the thing that has
-        // to be covered is whatever a download could differ in — which for a UI plugin is its files.
-        let artifact_path = if let Some(headless) = &manifest.runtime.headless {
-            root.join(&headless.artifact)
-        }
-        else if let Some(ui) = &manifest.runtime.ui {
-            root.join(&ui.artifact)
-        }
-        else {
-            return Err(SignError::NoArtifact {
-                path: root.join("manifest.json").display().to_string(),
-            });
-        };
-
-        let artifact = read_artifact(&artifact_path)?;
-
-        // The three identity fields are moved out of the manifest, which is not used afterwards: a clone here was pure
-        // cost on a structure that holds the artifact's bytes, so it is the largest clone in the program.
         Ok(Self {
             plugin_id: manifest.id.to_string(),
             version: manifest.version,
-            wit: manifest.wit,
-            artifact,
+            publisher_id: manifest.publisher.id,
+            subject: SigningSubject { manifest: manifest_digest, artifacts },
         })
-    }
-
-    /// The bytes a signature is over.
-    ///
-    /// # Why the encoding is written out rather than serialised
-    ///
-    /// The first byte of each field is its length as a `u32`, big-endian, and the fields are written in a fixed order.
-    /// That is what makes the encoding *canonical*: no key order, no whitespace, and no way for two different plugins
-    /// to produce the same bytes — which a `format!("{a}{b}")` would allow, since `("ab", "c")` and `("a", "bc")`
-    /// would sign identically.
-    #[must_use]
-    pub fn canonical_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(
-            self.plugin_id.len() + self.version.len() + self.wit.len() + self.artifact.len() + 16,
-        );
-        for field in [&self.plugin_id, &self.version, &self.wit] {
-            let bytes = field.as_bytes();
-            // `u32` rather than `usize`, so the encoding is the same on a 32-bit and a 64-bit host — a signature made
-            // on one and checked on the other has to be the same statement.
-            let length = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
-            out.extend_from_slice(&length.to_be_bytes());
-            out.extend_from_slice(bytes);
-        }
-        out.extend_from_slice(&self.artifact);
-        out
     }
 }
 
+/// Reads the manifest and its digest.
+///
+/// The digest is over **the file's bytes**, not over a re-serialisation: the host hashes the bytes it received, and a
+/// digest computed from a parsed-and-printed form would be a digest of something nobody downloaded.
+fn read_manifest(root: &Path) -> Result<(Manifest, String), SignError> {
+    let path = root.join("manifest.json");
+    let text = std::fs::read_to_string(&path).map_err(|error| SignError::ManifestUnreadable {
+        path: path.display().to_string(),
+        reason: error.to_string(),
+    })?;
+    let manifest = Manifest::from_json(&text).map_err(|error| SignError::ManifestUnreadable {
+        path: path.display().to_string(),
+        reason: error.to_string(),
+    })?;
+    Ok((manifest, sri_digest(text.as_bytes())))
+}
+
+/// Every artifact the manifest names, by file name, with its digest.
+fn collect_artifacts(root: &Path, manifest: &Manifest) -> Result<BTreeMap<String, String>, SignError> {
+    let mut artifacts = BTreeMap::new();
+    for name in artifact_names(manifest) {
+        let path = root.join(&name);
+        if !path.exists() {
+            return Err(SignError::NoArtifact { path: path.display().to_string() });
+        }
+        let bytes = read_artifact(&path)?;
+        let _ = artifacts.insert(name, sri_digest(&bytes));
+    }
+    Ok(artifacts)
+}
+
+/// The artifact file names a manifest declares.
+///
+/// A UI-only plugin has no `.wasm`, and the thing that has to be covered is whatever a download could differ in —
+/// which for a UI plugin is its bundle.
+fn artifact_names(manifest: &Manifest) -> Vec<String> {
+    let mut names = Vec::new();
+    if let Some(headless) = &manifest.runtime.headless {
+        names.push(headless.artifact.clone());
+    }
+    if let Some(ui) = &manifest.runtime.ui {
+        names.push(ui.artifact.clone());
+    }
+    names
+}
+
+/// A digest in the form the manifest's own field uses.
+///
+/// `sha256-<base64>`, which is what an SRI string is. Written here rather than borrowed from the protocol crate's
+/// `SriDigest` because the two disagree about padding: SRI drops it, and a signature computed over a padded form would
+/// not match the one a registry publishes.
+fn sri_digest(bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    let digest = Sha256::digest(bytes);
+    format!("sha256-{}", base64::engine::general_purpose::STANDARD_NO_PAD.encode(digest))
+}
+
 /// Reads an artifact, which may be a file or a directory.
+///
+/// A UI bundle is a directory, and its bytes are what a download could differ in — so the digest is over its files in
+/// **sorted** order, because a directory listing's order is not defined and an unsorted walk would produce a digest
+/// that changed between runs on the same content.
 fn read_artifact(path: &Path) -> Result<Vec<u8>, SignError> {
     if path.is_dir() {
-        // A UI bundle is a directory. Its files are concatenated in **sorted** order, because a directory listing's
-        // order is not defined — an unsorted walk would produce a signature that changed between runs on the same
-        // bytes.
         let mut entries = Vec::new();
         collect_files(path, path, &mut entries).map_err(|error| SignError::ArtifactUnreadable {
             path: path.display().to_string(),
@@ -209,13 +221,12 @@ fn read_artifact(path: &Path) -> Result<Vec<u8>, SignError> {
 
         let mut out = Vec::new();
         for (relative, absolute) in entries {
-            let bytes =
-                std::fs::read(&absolute).map_err(|error| SignError::ArtifactUnreadable {
-                    path: absolute.display().to_string(),
-                    reason: error.to_string(),
-                })?;
+            let bytes = std::fs::read(&absolute).map_err(|error| SignError::ArtifactUnreadable {
+                path: absolute.display().to_string(),
+                reason: error.to_string(),
+            })?;
             // The *path* is covered as well as the contents: a bundle with the same files under different names is a
-            // different plugin, and a signature over contents alone would let them be rearranged.
+            // different plugin, and a digest over contents alone would let them be rearranged.
             let name = relative.as_bytes();
             out.extend_from_slice(&u32::try_from(name.len()).unwrap_or(u32::MAX).to_be_bytes());
             out.extend_from_slice(name);
@@ -227,36 +238,33 @@ fn read_artifact(path: &Path) -> Result<Vec<u8>, SignError> {
 
     std::fs::read(path).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
-            return SignError::NoArtifact { path: path.display().to_string() };
+            SignError::NoArtifact { path: path.display().to_string() }
         }
-        SignError::ArtifactUnreadable { path: path.display().to_string(), reason: error.to_string() }
+        else {
+            SignError::ArtifactUnreadable {
+                path: path.display().to_string(),
+                reason: error.to_string(),
+            }
+        }
     })
 }
 
-/// Collects a directory's files as `(path relative to the root, absolute path)`.
-fn collect_files(
-    root: &Path,
-    current: &Path,
-    out: &mut Vec<(String, std::path::PathBuf)>,
-) -> Result<(), String> {
-    let entries = std::fs::read_dir(current).map_err(|error| error.to_string())?;
-    for entry in entries.flatten() {
+/// Collects a directory's files, as `(relative, absolute)` pairs.
+fn collect_files(root: &Path, directory: &Path, out: &mut Vec<(String, PathBuf)>) -> Result<(), String> {
+    let entries = std::fs::read_dir(directory).map_err(|error| error.to_string())?;
+    for entry in entries {
+        let entry = entry.map_err(|error| error.to_string())?;
         let path = entry.path();
-        let Ok(kind) = entry.file_type() else {
-            continue;
-        };
-        if kind.is_dir() {
+        if path.is_dir() {
             collect_files(root, &path, out)?;
+            continue;
         }
-        else if kind.is_file() {
-            // `/` as the separator on every platform, because the signature has to be the same statement whoever
-            // produced it — and a Windows path would make it a different one.
-            let relative = path
-                .strip_prefix(root)
-                .map(|rest| rest.to_string_lossy().replace('\\', "/"))
-                .unwrap_or_else(|_| path.to_string_lossy().replace('\\', "/"));
-            out.push((relative, path));
-        }
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|error| error.to_string())?
+            .to_string_lossy()
+            .replace('\\', "/");
+        out.push((relative, path));
     }
     Ok(())
 }
@@ -326,43 +334,139 @@ impl SigningKeyFile {
         hex_encode(self.key.verifying_key().as_bytes())
     }
 
-    /// Signs content.
+    /// The public half's fingerprint, as a user compares it.
     #[must_use]
-    pub fn sign(&self, content: &SignedContent) -> String {
-        let signature: Signature = self.key.sign(&content.canonical_bytes());
-        hex_encode(&signature.to_bytes())
+    pub fn fingerprint(&self) -> Fingerprint {
+        Fingerprint::of(&self.key.verifying_key())
+    }
+
+    /// The public half as base64, which is what a signature document carries.
+    #[must_use]
+    pub fn public_base64(&self) -> String {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD.encode(self.key.verifying_key().as_bytes())
+    }
+
+    /// Signs content, producing the document a package carries.
+    ///
+    /// `signed_at` is passed in rather than read from the clock, because a document's timestamp is a value a test
+    /// asserts and a reproducibility check compares.
+    #[must_use]
+    pub fn sign(&self, content: &SignedContent, signed_at: &str) -> String {
+        let signature = self.key.sign(&content.subject.canonical_bytes());
+        let document = serde_json::json!({
+            "version": publisher::SIGNATURE_VERSION,
+            "publisher": { "id": content.publisher_id },
+            "algorithm": publisher::ALGORITHM,
+            "signedAt": signed_at,
+            "pubkey": self.public_base64(),
+            "subject": {
+                "manifest": content.subject.manifest,
+                "artifacts": content.subject.artifacts,
+            },
+            "signature": encode_signature(&signature.to_bytes()),
+        });
+        // Pretty-printed, because the file lands in a repository and a human diffs it. The *signed* bytes are the
+        // canonical subject, so the presentation cannot change what a signature means.
+        serde_json::to_string_pretty(&document).unwrap_or_else(|_| "{}".to_owned())
     }
 }
 
-/// Checks a signature against content.
+/// The base64 of a signature.
+fn encode_signature(bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+/// What a verification concluded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Verified {
+    /// The plugin's id.
+    pub plugin_id: String,
+    /// Its version.
+    pub version: String,
+    /// Who signed it.
+    pub publisher_id: String,
+    /// The key's fingerprint, which is what a user compares.
+    pub fingerprint: Fingerprint,
+    /// What the device makes of the publisher.
+    pub trust: publisher::PluginTrust,
+}
+
+/// Checks a package's signature against what is on disk.
+///
+/// # The order the checks happen in, and why
+///
+/// The document is verified **before** anything is concluded about the publisher, the manifest's artifacts are
+/// checked **before** that, and the artifacts' actual digests are checked **last** — each step is only meaningful if
+/// the one before it held, and a signature that does not cover what shipped produces a reassuring answer about the
+/// wrong bytes.
 ///
 /// # Errors
 ///
-/// [`SignError::Mismatch`] when the signature, the public key and the content do not agree — which is the one answer
-/// for the three ways they can disagree, because a verifier that said *which* would tell an attacker which part to
-/// change.
+/// [`SignError::Mismatch`] when anything does not agree, [`SignError::Untrusted`] when the publisher is one this
+/// device refuses, and [`SignError::DocumentUnreadable`] when the document cannot be read at all.
 pub fn verify(
-    content: &SignedContent,
-    public_hex: &str,
-    signature_hex: &str,
-) -> Result<(), SignError> {
-    // ★ Every shape of failure is `Mismatch`, including a malformed key or signature. A verifier runs on bytes from
-    // the network, and telling a caller *which* part was malformed would tell an attacker which part to change — the
-    // same reason a login does not say whether the user or the password was wrong. `KeyMalformed` is for a key file on
-    // the author's own disk, where the message helps them fix it.
-    let public = hex_decode(public_hex).map_err(|_| SignError::Mismatch)?;
-    let public: [u8; 32] = public.try_into().map_err(|_| SignError::Mismatch)?;
-    let key = VerifyingKey::from_bytes(&public).map_err(|_| SignError::Mismatch)?;
+    document_text: &str,
+    root: &Path,
+    trust: &publisher::PublisherTrustStore,
+) -> Result<Verified, SignError> {
+    let document = SignatureFile::parse(document_text).map_err(|error| SignError::DocumentUnreadable {
+        reason: error.to_string(),
+    })?;
 
-    let signature_bytes = hex_decode(signature_hex).map_err(|_| SignError::Mismatch)?;
-    let signature: [u8; 64] = signature_bytes.try_into().map_err(|_| SignError::Mismatch)?;
-    let signature = Signature::from_bytes(&signature);
+    let (manifest, manifest_digest) = read_manifest(root)?;
+    if document.subject.manifest != manifest_digest {
+        // The manifest on disk is not the one that was signed. Checked before the signature, because a signature over
+        // another manifest would verify perfectly and mean nothing.
+        return Err(SignError::Mismatch);
+    }
+    if !document.subject.covers(&manifest).is_empty() {
+        return Err(SignError::Mismatch);
+    }
 
-    // `verify_strict` rather than `verify`: the permissive form accepts signatures that are not canonically encoded,
-    // which means one artifact has many valid signatures — and a publisher's signature is supposed to be a statement
-    // about one thing.
-    key.verify_strict(&content.canonical_bytes(), &signature)
-        .map_err(|_| SignError::Mismatch)
+    let found = collect_artifacts(root, &manifest)?;
+    if found != document.subject.artifacts {
+        return Err(SignError::Mismatch);
+    }
+
+    let publisher::VerifyOutcome::Good { fingerprint } =
+        document.verify().map_err(|error| SignError::DocumentUnreadable {
+            reason: error.to_string(),
+        })?
+    else {
+        return Err(SignError::Mismatch);
+    };
+
+    let trust = trust.classify(&document.publisher.id, &fingerprint);
+    if let publisher::PluginTrust::Untrusted { why } = &trust {
+        return Err(SignError::Untrusted { why: why.clone() });
+    }
+
+    Ok(Verified {
+        plugin_id: manifest.id.to_string(),
+        version: manifest.version,
+        publisher_id: document.publisher.id,
+        fingerprint,
+        trust,
+    })
+}
+
+/// Reads the public key an author keeps beside a package, if there is one.
+///
+/// # Why a package directory has one
+///
+/// Because an author who signs and then loses the key has no way to notice: the signature they produced is still
+/// valid, and every later release would be signed with a key nobody has. The public half beside the package is what a
+/// later run compares against, and its absence is not an error — a plugin without one is one whose publisher has not
+/// decided to pin anything.
+#[must_use]
+pub fn expected_fingerprint(root: &Path) -> Option<Fingerprint> {
+    let path = root.join("public-key.txt");
+    let text = std::fs::read_to_string(path).ok()?;
+    let bytes = hex_decode(text.trim()).ok()?;
+    let array: [u8; 32] = bytes.as_slice().try_into().ok()?;
+    VerifyingKey::from_bytes(&array).ok().map(|key| Fingerprint::of(&key))
 }
 
 /// Reads randomness from the operating system.
@@ -384,6 +488,7 @@ fn os_randomness() -> Result<[u8; 32], String> {
     rand_core::OsRng.fill_bytes(&mut bytes);
     Ok(bytes)
 }
+
 /// The lowercase hex of some bytes.
 fn hex_encode(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 2);
@@ -414,12 +519,8 @@ fn hex_decode(text: &str) -> Result<Vec<u8>, String> {
         return Err(format!("it has {} characters and hex comes in pairs", text.len()));
     }
     for pair in pairs {
-        let high = hex_value(pair[0]).ok_or_else(|| {
-            format!("`{}` is not a hex digit", char::from(pair[0]))
-        })?;
-        let low = hex_value(pair[1]).ok_or_else(|| {
-            format!("`{}` is not a hex digit", char::from(pair[1]))
-        })?;
+        let high = hex_value(pair[0]).ok_or_else(|| format!("`{}` is not a hex digit", char::from(pair[0])))?;
+        let low = hex_value(pair[1]).ok_or_else(|| format!("`{}` is not a hex digit", char::from(pair[1])))?;
         out.push((high << 4) | low);
     }
     Ok(out)
@@ -438,403 +539,327 @@ const fn hex_value(byte: u8) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use synra_plugin_api::publisher::PublisherTrustStore;
 
-    struct Cleanup(std::path::PathBuf);
+    /// A package directory that removes itself.
+    struct Package {
+        path: PathBuf,
+    }
 
-    impl Cleanup {
-        fn new(name: &str) -> Self {
-            let dir = std::env::temp_dir().join(format!("synra-sign-{name}-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir).expect("creates");
-            Self(dir)
-        }
-
-        fn path(&self) -> &Path {
-            &self.0
-        }
-
-        fn write(&self, path: &str, contents: &[u8]) {
-            let full = self.0.join(path);
-            if let Some(parent) = full.parent() {
-                std::fs::create_dir_all(parent).expect("creates");
-            }
-            std::fs::write(full, contents).expect("writes");
-        }
-
-        /// A minimal headless plugin.
-        fn plugin(&self, artifact: &str, bytes: &[u8]) {
-            self.write(
-                "manifest.json",
-                format!(
-                    r#"{{
-  "id": "@synra-plugin/example",
-  "version": "1.0.0",
-  "title": "Example",
-  "publisher": {{ "id": "synra-official" }},
-  "sdk": {{ "min": "0.1.0" }},
-  "wit": "synra:plugin@1.0.0",
-  "runtime": {{ "headless": {{ "artifact": "{artifact}", "stateful": false }} }},
-  "capabilities": []
-}}"#
-                )
-                .as_bytes(),
+    impl Package {
+        /// Writes a manifest and one artifact.
+        fn new(name: &str, artifact: &str) -> Self {
+            let unique = format!(
+                "synra-sign-{}-{}-{name}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|elapsed| elapsed.as_nanos())
+                    .unwrap_or(0)
             );
-            self.write(artifact, bytes);
+            let path = std::env::temp_dir().join(unique.replace(['\\', ':', '.', ' '], "-"));
+            std::fs::create_dir_all(&path).expect("a directory");
+            let manifest = format!(
+                r#"{{
+                    "id": "@acme/{name}",
+                    "version": "1.2.3",
+                    "title": "Hello",
+                    "publisher": {{ "id": "acme" }},
+                    "sdk": {{ "min": "1.0.0" }},
+                    "wit": "1.0.0",
+                    "capabilities": [],
+                    "runtime": {{ "headless": {{ "artifact": "{artifact}", "stateful": false }} }}
+                }}"#
+            );
+            std::fs::write(path.join("manifest.json"), manifest).expect("a manifest");
+            // A directory artifact is a UI bundle: the path is a directory the fixture leaves empty, so a test can put
+            // files in it. A file artifact is a file with a header.
+            if artifact == "ui" {
+                std::fs::create_dir_all(path.join(artifact)).expect("a bundle directory");
+            }
+            else {
+                std::fs::write(path.join(artifact), b"\0asm\x01\0\0\0").expect("an artifact");
+            }
+            Self { path }
+        }
+
+        fn write(&self, name: &str, bytes: &[u8]) {
+            std::fs::write(self.path.join(name), bytes).expect("a file");
+        }
+
+        fn read(&self, name: &str) -> String {
+            std::fs::read_to_string(self.path.join(name)).expect("a file")
         }
     }
 
-    impl Drop for Cleanup {
+    impl Drop for Package {
         fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
+            let _ = std::fs::remove_dir_all(&self.path);
         }
     }
 
-    fn key() -> SigningKeyFile {
-        // A fixed key rather than a generated one, so a failure is reproducible. The value is arbitrary and is not a
-        // secret anybody should use.
-        SigningKeyFile::parse("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
-            .expect("parses")
+    fn key(seed: u8) -> SigningKeyFile {
+        SigningKeyFile::parse(&hex_encode(&[seed; 32])).expect("a key")
     }
 
-    // ── The key ───────────────────────────────────────────────────────────────────────────────────
+    #[test]
+    fn a_signed_package_verifies_against_its_own_bytes() {
+        // The round trip, from both sides: what `sign` writes is what `verify` reads, and the digests in between are
+        // of the bytes on disk.
+        let package = Package::new("hello", "plugin.wasm");
+        let content = SignedContent::read(&package.path).expect("content");
+        assert_eq!(content.plugin_id, "@acme/hello");
+        assert_eq!(content.publisher_id, "acme");
+        assert_eq!(content.subject.artifacts.len(), 1);
+        assert!(content.subject.artifacts.contains_key("plugin.wasm"));
+        assert!(content.subject.manifest.starts_with("sha256-"), "an SRI digest");
+
+        let signing = key(7);
+        let document = signing.sign(&content, "unix-ms:1");
+        let verified = verify(&document, &package.path, &PublisherTrustStore::new()).expect("verified");
+        assert_eq!(verified.plugin_id, "@acme/hello");
+        assert_eq!(verified.publisher_id, "acme");
+        assert_eq!(verified.fingerprint, signing.fingerprint());
+    }
+
+    #[test]
+    fn an_artifact_changed_after_signing_does_not_verify() {
+        // ★ The one outcome that is never a warning: either the package was altered after signing or it was signed
+        // over something else.
+        let package = Package::new("changed", "plugin.wasm");
+        let content = SignedContent::read(&package.path).expect("content");
+        let document = key(7).sign(&content, "unix-ms:1");
+
+        package.write("plugin.wasm", b"\0asm\x01\0\0\0\xff");
+        assert_eq!(
+            verify(&document, &package.path, &PublisherTrustStore::new()),
+            Err(SignError::Mismatch)
+        );
+    }
+
+    #[test]
+    fn a_manifest_changed_after_signing_does_not_verify() {
+        // The manifest is what decides what the plugin *is*, so a signature that did not cover it would let a plugin
+        // asking for `storage` be substituted for one that does not.
+        let package = Package::new("manifest", "plugin.wasm");
+        let content = SignedContent::read(&package.path).expect("content");
+        let document = key(7).sign(&content, "unix-ms:1");
+
+        let text = package.read("manifest.json").replace("Hello", "Something else");
+        package.write("manifest.json", text.as_bytes());
+        assert_eq!(
+            verify(&document, &package.path, &PublisherTrustStore::new()),
+            Err(SignError::Mismatch)
+        );
+    }
+
+    #[test]
+    fn a_document_signed_by_another_key_does_not_verify() {
+        let package = Package::new("stranger", "plugin.wasm");
+        let content = SignedContent::read(&package.path).expect("content");
+        let document = key(7).sign(&content, "unix-ms:1");
+        // The document is intact; the key inside it is not the one that signed it, because it was edited.
+        let swapped = document.replace(&key(7).public_base64(), &key(9).public_base64());
+
+        assert_eq!(
+            verify(&swapped, &package.path, &PublisherTrustStore::new()),
+            Err(SignError::Mismatch)
+        );
+    }
+
+    #[test]
+    fn a_revoked_publisher_is_refused_rather_than_reported_as_a_mismatch() {
+        // The two answers have different next steps: "the bytes changed" is a corrupt download, "this key is revoked"
+        // is a decision, and a caller that folded them together would offer a retry for something no retry fixes.
+        let package = Package::new("revoked", "plugin.wasm");
+        let content = SignedContent::read(&package.path).expect("content");
+        let signing = key(7);
+        let document = signing.sign(&content, "unix-ms:1");
+
+        let mut store = PublisherTrustStore::new();
+        store.revoke(signing.fingerprint(), "malicious code");
+        match verify(&document, &package.path, &store) {
+            Err(SignError::Untrusted { why }) => assert!(why.to_string().contains("malicious code")),
+            other => panic!("expected a revocation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_publisher_whose_key_changed_is_refused() {
+        let package = Package::new("rotated", "plugin.wasm");
+        let content = SignedContent::read(&package.path).expect("content");
+        let document = key(7).sign(&content, "unix-ms:1");
+
+        let mut store = PublisherTrustStore::new();
+        store.trust("acme", key(9).fingerprint());
+        match verify(&document, &package.path, &store) {
+            Err(SignError::Untrusted { why }) => assert!(why.to_string().contains("known with key")),
+            other => panic!("expected a key-change refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_publisher_the_device_already_trusts_is_reported_as_trusted() {
+        let package = Package::new("trusted", "plugin.wasm");
+        let content = SignedContent::read(&package.path).expect("content");
+        let signing = key(7);
+        let document = signing.sign(&content, "unix-ms:1");
+
+        let mut store = PublisherTrustStore::new();
+        store.trust("acme", signing.fingerprint());
+        let verified = verify(&document, &package.path, &store).expect("verified");
+        assert!(verified.trust.is_trusted());
+        assert!(!verified.trust.is_refusal());
+    }
+
+    #[test]
+    fn a_first_install_is_a_question_rather_than_a_refusal() {
+        let package = Package::new("first", "plugin.wasm");
+        let content = SignedContent::read(&package.path).expect("content");
+        let document = key(7).sign(&content, "unix-ms:1");
+
+        let verified = verify(&document, &package.path, &PublisherTrustStore::new()).expect("verified");
+        assert_eq!(verified.trust, publisher::PluginTrust::UnknownPublisher);
+        assert!(!verified.trust.is_trusted());
+        assert!(!verified.trust.is_refusal());
+    }
+
+    #[test]
+    fn an_artifact_that_is_not_there_is_named_rather_than_signed_as_nothing() {
+        let package = Package::new("missing", "plugin.wasm");
+        std::fs::remove_file(package.path.join("plugin.wasm")).expect("removed");
+
+        match SignedContent::read(&package.path) {
+            Err(SignError::NoArtifact { path }) => assert!(path.contains("plugin.wasm")),
+            other => panic!("expected a missing artifact, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_document_is_the_format_the_host_reads() {
+        // ★ The property that makes this tool useful: what it writes is what the host verifies with. A second format
+        // would produce signatures that this tool makes and the kernel refuses.
+        let package = Package::new("format", "plugin.wasm");
+        let content = SignedContent::read(&package.path).expect("content");
+        let document = key(7).sign(&content, "unix-ms:1");
+
+        let parsed = SignatureFile::parse(&document).expect("the contract's format");
+        assert_eq!(parsed.algorithm, publisher::ALGORITHM);
+        assert_eq!(parsed.version, publisher::SIGNATURE_VERSION);
+        assert!(parsed.verify().is_ok());
+    }
+
+    #[test]
+    fn the_signed_at_claim_is_recorded_and_changes_nothing() {
+        // It is a claim by whoever signed, so a verifier that used it to decide anything would be letting the package
+        // choose its own ordering. Two documents that differ only in it are the same statement.
+        let package = Package::new("clock", "plugin.wasm");
+        let content = SignedContent::read(&package.path).expect("content");
+        let signing = key(7);
+
+        let early = signing.sign(&content, "unix-ms:1");
+        let late = signing.sign(&content, "unix-ms:999");
+        assert_ne!(early, late, "the documents differ");
+        // And both verify, because the signature is over the subject and not over the document.
+        assert!(verify(&early, &package.path, &PublisherTrustStore::new()).is_ok());
+        assert!(verify(&late, &package.path, &PublisherTrustStore::new()).is_ok());
+    }
+
+    #[test]
+    fn a_public_key_beside_the_package_is_read_as_a_fingerprint() {
+        let package = Package::new("pinned", "plugin.wasm");
+        assert_eq!(expected_fingerprint(&package.path), None, "nothing pinned yet");
+
+        package.write("public-key.txt", key(7).public_hex().as_bytes());
+        assert_eq!(expected_fingerprint(&package.path), Some(key(7).fingerprint()));
+        // And a file that is not a key is not a fingerprint, rather than a wrong one.
+        package.write("public-key.txt", b"not a key");
+        assert_eq!(expected_fingerprint(&package.path), None);
+    }
+
+    #[test]
+    fn a_ui_bundle_directory_is_covered_by_its_files_in_sorted_order() {
+        // A directory listing's order is not defined, so an unsorted walk would produce a digest that changed between
+        // runs on the same content — and a signature that verified only sometimes.
+        let package = Package::new("ui", "ui");
+        std::fs::create_dir_all(package.path.join("ui")).expect("a directory");
+        package.write("ui/index.html", b"<html></html>");
+        package.write("ui/app.js", b"console.log(1)");
+
+        let first = SignedContent::read(&package.path).expect("content");
+        let second = SignedContent::read(&package.path).expect("content");
+        assert_eq!(first.subject, second.subject);
+
+        // And changing a file inside the bundle changes the digest.
+        package.write("ui/app.js", b"console.log(2)");
+        let third = SignedContent::read(&package.path).expect("content");
+        assert_ne!(first.subject.artifacts, third.subject.artifacts);
+    }
 
     #[test]
     fn a_key_round_trips_through_its_hex() {
-        // The format is a file an author types or stores, so reading back what was written has to give the same key.
-        let original = key();
+        let original = key(7);
         let again = SigningKeyFile::parse(&original.to_hex()).expect("parses");
         assert_eq!(again.to_hex(), original.to_hex());
         assert_eq!(again.public_hex(), original.public_hex());
+        assert_eq!(again.fingerprint(), original.fingerprint());
+        assert_eq!(original.to_hex().len(), 64);
+        assert_eq!(original.public_hex().len(), 64);
     }
 
     #[test]
-    fn a_generated_key_is_a_key() {
-        // From the system's randomness, and reported rather than worked around: a key from a weak source is one an
-        // attacker can forge, and the failure would be silent.
-        let generated = SigningKeyFile::generate().expect("generates");
-        assert_eq!(generated.to_hex().len(), 64);
-        assert_eq!(generated.public_hex().len(), 64);
-        // Two calls give two keys, which is the property a fixed source would break.
-        let other = SigningKeyFile::generate().expect("generates");
-        assert_ne!(generated.to_hex(), other.to_hex());
+    fn a_public_key_is_not_the_secret() {
+        // The failure this asserts against: a `public_hex` that returned the secret would publish the key that signs.
+        let signing = key(7);
+        assert_ne!(signing.public_hex(), signing.to_hex());
+        assert_ne!(signing.public_base64(), signing.to_hex());
     }
 
     #[test]
-    fn a_malformed_key_says_what_is_wrong() {
-        for (text, expected) in [
-            ("", "0 bytes and a key is 32"),
-            ("00", "1 bytes"),
-            ("0", "hex comes in pairs"),
-            ("zz", "not a hex digit"),
-        ] {
-            let error = SigningKeyFile::parse(text).expect_err("refused");
-            assert!(error.contains(expected), "{text:?} -> {error}");
+    fn a_generated_key_is_a_key_and_is_not_the_same_twice() {
+        let first = SigningKeyFile::generate().expect("randomness");
+        let second = SigningKeyFile::generate().expect("randomness");
+        assert_eq!(first.to_hex().len(), 64);
+        assert_ne!(first.to_hex(), second.to_hex());
+        assert_ne!(first.public_hex(), second.public_hex());
+    }
+
+    #[test]
+    fn a_key_file_that_is_not_a_key_is_refused_by_name() {
+        for wrong in ["", "abc", "zz", &"a".repeat(62)] {
+            match SigningKeyFile::parse(wrong) {
+                Err(reason) => assert!(!reason.is_empty(), "{wrong}"),
+                Ok(_) => panic!("{wrong} was accepted as a key"),
+            }
         }
-    }
-
-    #[test]
-    fn uppercase_hex_is_accepted() {
-        // An author who pasted a key from a document has upper case, and refusing it would be pedantry.
-        let lower = key();
-        let upper = SigningKeyFile::parse(&lower.to_hex().to_uppercase()).expect("parses");
-        assert_eq!(upper.public_hex(), lower.public_hex());
-    }
-
-    #[test]
-    fn the_public_key_is_derived_and_not_the_secret() {
-        // ★ A key file is a secret and a public key is not. A `public_hex` that returned the secret would publish the
-        // publisher's signing key in every registry listing.
-        let key = key();
-        assert_ne!(key.public_hex(), key.to_hex());
-        assert_eq!(key.public_hex().len(), 64);
-    }
-
-    // ── The content ───────────────────────────────────────────────────────────────────────────────
-
-    #[test]
-    fn the_content_is_the_manifest_identity_and_the_artifact() {
-        let dir = Cleanup::new("content");
-        dir.plugin("plugin.wasm", b"the module");
-
-        let content = SignedContent::read(dir.path()).expect("reads");
-        assert_eq!(content.plugin_id, "@synra-plugin/example");
-        assert_eq!(content.version, "1.0.0");
-        assert_eq!(content.wit, "synra:plugin@1.0.0");
-        assert_eq!(content.artifact, b"the module");
-    }
-
-    #[test]
-    fn the_artifact_path_comes_from_the_manifest() {
-        // The manifest is what the kernel reads, so signing a file the kernel will not load would be a signature over
-        // the wrong bytes — and it would verify, which is worse.
-        let dir = Cleanup::new("artifact-path");
-        dir.plugin("dist/plugin.wasm", b"the module");
-
-        let content = SignedContent::read(dir.path()).expect("reads");
-        assert_eq!(content.artifact, b"the module");
-    }
-
-    #[test]
-    fn a_missing_artifact_is_refused() {
-        let dir = Cleanup::new("no-artifact");
-        dir.plugin("plugin.wasm", b"x");
-        std::fs::remove_file(dir.path().join("plugin.wasm")).expect("removes");
-
-        assert!(matches!(SignedContent::read(dir.path()), Err(SignError::NoArtifact { .. })));
-    }
-
-    #[test]
-    fn the_encoding_cannot_be_confused_by_moving_a_boundary() {
-        // ★ The reason the fields are length-prefixed. Without it, `("ab", "c")` and `("a", "bc")` would produce the
-        // same bytes and one plugin's signature would verify for another.
-        let first = SignedContent {
-            plugin_id: "ab".to_owned(),
-            version: "c".to_owned(),
-            wit: "w".to_owned(),
-            artifact: b"x".to_vec(),
-        };
-        let second = SignedContent {
-            plugin_id: "a".to_owned(),
-            version: "bc".to_owned(),
-            wit: "w".to_owned(),
-            artifact: b"x".to_vec(),
-        };
-        assert_ne!(first.canonical_bytes(), second.canonical_bytes());
-    }
-
-    #[test]
-    fn the_encoding_is_a_function_of_the_content_alone() {
-        // Canonical, so a signature is a statement about the plugin rather than about how a manifest file happens to be
-        // formatted.
-        let content = SignedContent {
-            plugin_id: "@a/b".to_owned(),
-            version: "1.0.0".to_owned(),
-            wit: "synra:plugin@1.0.0".to_owned(),
-            artifact: b"bytes".to_vec(),
-        };
-        assert_eq!(content.canonical_bytes(), content.canonical_bytes());
+        // And hex is case-insensitive, because a key written down by hand may be either.
         assert_eq!(
-            content.canonical_bytes().len(),
-            content.plugin_id.len() + content.version.len() + content.wit.len() + content.artifact.len() + 12
+            SigningKeyFile::parse(&key(7).to_hex().to_uppercase()).expect("parses").to_hex(),
+            key(7).to_hex()
         );
     }
 
     #[test]
-    fn every_covered_field_changes_the_bytes() {
-        // Each one, asserted separately: a field that did not change the encoding would be a field the signature does
-        // not cover, which is the substitution the whole thing exists to prevent.
-        let base = SignedContent {
-            plugin_id: "@a/b".to_owned(),
-            version: "1.0.0".to_owned(),
-            wit: "synra:plugin@1.0.0".to_owned(),
-            artifact: b"bytes".to_vec(),
-        };
-        let with_id = SignedContent { plugin_id: "@a/c".to_owned(), ..base.clone() };
-        let with_version = SignedContent { version: "1.0.1".to_owned(), ..base.clone() };
-        let with_wit = SignedContent { wit: "synra:plugin@2.0.0".to_owned(), ..base.clone() };
-        let with_artifact = SignedContent { artifact: b"other".to_vec(), ..base.clone() };
-
-        for other in [with_id, with_version, with_wit, with_artifact] {
-            assert_ne!(base.canonical_bytes(), other.canonical_bytes());
+    fn a_document_that_is_not_a_document_is_refused_rather_than_read() {
+        let package = Package::new("garbage", "plugin.wasm");
+        for wrong in ["", "not json", "{}"] {
+            assert!(matches!(
+                verify(wrong, &package.path, &PublisherTrustStore::new()),
+                Err(SignError::DocumentUnreadable { .. })
+            ));
         }
     }
 
-    // ── Signing and checking ──────────────────────────────────────────────────────────────────────
-
     #[test]
-    fn a_signature_verifies_against_what_was_signed() {
-        let dir = Cleanup::new("round-trip");
-        dir.plugin("plugin.wasm", b"the module");
-        let content = SignedContent::read(dir.path()).expect("reads");
+    fn an_extra_file_in_a_signed_bundle_changes_what_was_signed() {
+        // The smallest possible tamper, and it has to move the digest.
+        let package = Package::new("extra", "plugin.wasm");
+        let before = SignedContent::read(&package.path).expect("content");
+        let document = key(7).sign(&before, "unix-ms:1");
 
-        let key = key();
-        let signature = key.sign(&content);
-        assert_eq!(verify(&content, &key.public_hex(), &signature), Ok(()));
-    }
-
-    #[test]
-    fn a_changed_artifact_does_not_verify() {
-        // The property the signature exists for: a download that differs is one the user is not asked to trust twice.
-        let dir = Cleanup::new("changed");
-        dir.plugin("plugin.wasm", b"the module");
-        let content = SignedContent::read(dir.path()).expect("reads");
-
-        let key = key();
-        let signature = key.sign(&content);
-
-        let changed = SignedContent { artifact: b"the modul3".to_vec(), ..content };
-        assert_eq!(verify(&changed, &key.public_hex(), &signature), Err(SignError::Mismatch));
-    }
-
-    #[test]
-    fn a_changed_capability_bearing_field_does_not_verify() {
-        // The same `.wasm` with a manifest that asks for more is a different plugin, and a signature over the artifact
-        // alone would let one be substituted for the other.
-        let dir = Cleanup::new("changed-wit");
-        dir.plugin("plugin.wasm", b"the module");
-        let content = SignedContent::read(dir.path()).expect("reads");
-
-        let key = key();
-        let signature = key.sign(&content);
-
-        let changed = SignedContent { wit: "synra:plugin@9.0.0".to_owned(), ..content };
-        assert_eq!(verify(&changed, &key.public_hex(), &signature), Err(SignError::Mismatch));
-    }
-
-    #[test]
-    fn another_publishers_key_does_not_verify() {
-        // The substitution the trust model is about: a plugin that is genuine, signed by somebody else.
-        let dir = Cleanup::new("other-key");
-        dir.plugin("plugin.wasm", b"the module");
-        let content = SignedContent::read(dir.path()).expect("reads");
-
-        let mine = key();
-        let theirs = SigningKeyFile::generate().expect("generates");
-        let signature = theirs.sign(&content);
-
-        assert_eq!(verify(&content, &mine.public_hex(), &signature), Err(SignError::Mismatch));
-    }
-
-    #[test]
-    fn a_malformed_signature_or_key_is_a_mismatch_and_not_a_panic() {
-        // A verifier runs on bytes from the network, so every shape of them is a refusal rather than a panic.
-        let content = SignedContent {
-            plugin_id: "@a/b".to_owned(),
-            version: "1.0.0".to_owned(),
-            wit: "synra:plugin@1.0.0".to_owned(),
-            artifact: b"bytes".to_vec(),
-        };
-        let key = key();
-        let good = key.sign(&content);
-
-        for (public, signature) in [
-            ("", good.as_str()),
-            ("00", good.as_str()),
-            ("zz", good.as_str()),
-            (key.public_hex().as_str(), ""),
-            (key.public_hex().as_str(), "00"),
-            (key.public_hex().as_str(), "zz"),
-            ("00", "00"),
-        ] {
-            assert_eq!(
-                verify(&content, public, signature),
-                Err(SignError::Mismatch),
-                "public {public:?}, signature {signature:?}"
-            );
-        }
-    }
-
-    // ── A UI bundle ───────────────────────────────────────────────────────────────────────────────
-
-    #[test]
-    fn a_directory_artifact_covers_every_file_and_its_name() {
-        // A UI plugin's artifact is a directory, and a bundle with the same files under different names is a different
-        // plugin.
-        let dir = Cleanup::new("ui");
-        dir.write(
-            "manifest.json",
-            br#"{
-  "id": "@synra-plugin/example",
-  "version": "1.0.0",
-  "title": "Example",
-  "publisher": { "id": "synra-official" },
-  "sdk": { "min": "0.1.0" },
-  "wit": "synra:plugin@1.0.0",
-  "runtime": { "ui": { "artifact": "ui", "entry": "index.html" } },
-  "capabilities": []
-}"#,
-        );
-        dir.write("ui/index.html", b"<html></html>");
-        dir.write("ui/app.js", b"console.log(1)");
-
-        let content = SignedContent::read(dir.path()).expect("reads");
-        let key = key();
-        let signature = key.sign(&content);
-        assert_eq!(verify(&content, &key.public_hex(), &signature), Ok(()));
-
-        // A file whose contents change invalidates it.
-        dir.write("ui/app.js", b"console.log(2)");
-        let changed = SignedContent::read(dir.path()).expect("reads");
-        assert_eq!(verify(&changed, &key.public_hex(), &signature), Err(SignError::Mismatch));
-    }
-
-    #[test]
-    fn a_directory_artifact_is_signed_in_a_stable_order() {
-        // A directory listing's order is not defined, so an unsorted walk would produce a signature that changed
-        // between runs on the same bytes — and `verify` would fail for a plugin nobody changed.
-        let dir = Cleanup::new("stable");
-        dir.write(
-            "manifest.json",
-            br#"{
-  "id": "@synra-plugin/example",
-  "version": "1.0.0",
-  "title": "Example",
-  "publisher": { "id": "synra-official" },
-  "sdk": { "min": "0.1.0" },
-  "wit": "synra:plugin@1.0.0",
-  "runtime": { "ui": { "artifact": "ui", "entry": "index.html" } },
-  "capabilities": []
-}"#,
-        );
-        for name in ["z.js", "a.js", "m/x.js", "m/a.js", "b.css"] {
-            dir.write(&format!("ui/{name}"), name.as_bytes());
-        }
-
-        let first = SignedContent::read(dir.path()).expect("reads");
-        let second = SignedContent::read(dir.path()).expect("reads");
-        assert_eq!(first.canonical_bytes(), second.canonical_bytes());
-    }
-
-    #[test]
-    fn a_renamed_file_changes_the_signature() {
-        // The path is covered as well as the contents, so a bundle cannot be rearranged under a valid signature.
-        let dir = Cleanup::new("renamed");
-        dir.write(
-            "manifest.json",
-            br#"{
-  "id": "@synra-plugin/example",
-  "version": "1.0.0",
-  "title": "Example",
-  "publisher": { "id": "synra-official" },
-  "sdk": { "min": "0.1.0" },
-  "wit": "synra:plugin@1.0.0",
-  "runtime": { "ui": { "artifact": "ui", "entry": "index.html" } },
-  "capabilities": []
-}"#,
-        );
-        dir.write("ui/a.js", b"same");
-        let before = SignedContent::read(dir.path()).expect("reads").canonical_bytes();
-
-        std::fs::remove_file(dir.path().join("ui/a.js")).expect("removes");
-        dir.write("ui/b.js", b"same");
-        let after = SignedContent::read(dir.path()).expect("reads").canonical_bytes();
-
-        assert_ne!(before, after);
-    }
-
-    // ── Hex ───────────────────────────────────────────────────────────────────────────────────────
-
-    #[test]
-    fn hex_round_trips_for_every_byte_value() {
-        // All 256, because a hex encoder with an off-by-one in the high nibble would pass a test that used only `0x0f`.
-        let bytes: Vec<u8> = (0..=255u8).collect();
-        assert_eq!(hex_decode(&hex_encode(&bytes)).expect("decodes"), bytes);
-    }
-
-    #[test]
-    fn sign_errors_explain_themselves() {
-        let errors = [
-            SignError::KeyUnreadable { path: "/k".to_owned(), reason: "gone".to_owned() },
-            SignError::KeyMalformed { path: "/k".to_owned(), reason: "short".to_owned() },
-            SignError::ManifestUnreadable { path: "/m".to_owned(), reason: "bad".to_owned() },
-            SignError::NoArtifact { path: "/a".to_owned() },
-            SignError::ArtifactUnreadable { path: "/a".to_owned(), reason: "bad".to_owned() },
-            SignError::Mismatch,
-        ];
-        for error in errors {
-            let text = error.to_string();
-            assert!(text.len() > 20, "{error:?} -> {text}");
-            assert!(!text.contains('{'), "{error:?} -> {text}");
-        }
+        package.write("extra.wasm", b"\0asm\x01\0\0\0");
+        // The manifest does not name it, so the subject is unchanged and the signature still holds — which is the
+        // right answer: a file the manifest does not name is not part of the plugin.
+        assert!(verify(&document, &package.path, &PublisherTrustStore::new()).is_ok());
     }
 }

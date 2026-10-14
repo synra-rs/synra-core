@@ -196,29 +196,39 @@ pub fn sign_plugin(args: &crate::args::SignArgs) -> Result<Outcome, String> {
     let content = crate::sign::SignedContent::read(&args.dir).map_err(|error| error.to_string())?;
 
     if let Some(signature_path) = &args.verify {
-        let signature = std::fs::read_to_string(signature_path).map_err(|error| {
+        let document = std::fs::read_to_string(signature_path).map_err(|error| {
             format!("the signature at {} could not be read: {error}", signature_path.display())
         })?;
-        let public_path = args.dir.join("public-key.txt");
-        let public = std::fs::read_to_string(&public_path).map_err(|error| {
-            format!(
-                "the public key at {} could not be read: {error}",
-                public_path.display()
-            )
-        })?;
 
-        let ok = crate::sign::verify(&content, public.trim(), signature.trim()).is_ok();
-        // One sentence either way, both naming the plugin: the answer an author needs is which plugin and which
-        // verdict, and a bare "ok" beside a filename is one they have to match up themselves.
-        let line = if ok {
-            format!("{} {} is signed by that key", content.plugin_id, content.version)
-        }
-        else {
-            format!(
-                "the signature does not verify against {} {} — the artifact, the manifest or the key is not the one \
-                 that signed it",
+        // ★ The trust store is **empty** here, and that is the honest answer for this command: an author checking
+        // their own package has not made a decision about their own publisher, and a tool that trusted whatever it was
+        // given would be a tool that verified nothing about who signed. What this proves is that the signature matches
+        // the bytes — which is what the author is asking.
+        let store = synra_plugin_api::publisher::PublisherTrustStore::new();
+        let outcome = crate::sign::verify(&document, &args.dir, &store);
+
+        // The key the author keeps beside the package, when there is one, is what makes this a check rather than a
+        // formality: a signature by a key that is not the one they wrote down is a signature by somebody else.
+        let pinned = crate::sign::expected_fingerprint(&args.dir);
+        let pinned_matches = match (&outcome, &pinned) {
+            (Ok(verified), Some(expected)) => verified.fingerprint == *expected,
+            _ => true,
+        };
+
+        let ok = outcome.is_ok() && pinned_matches;
+        let line = match (&outcome, ok) {
+            (Ok(verified), true) => format!(
+                "{} {} is signed by {} ({})",
+                verified.plugin_id, verified.version, verified.publisher_id, verified.fingerprint
+            ),
+            (Ok(verified), false) => format!(
+                "{} {} is signed, but not by the key in public-key.txt ({})",
+                verified.plugin_id, verified.version, verified.fingerprint
+            ),
+            (Err(error), _) => format!(
+                "the signature does not verify against {} {}: {error}",
                 content.plugin_id, content.version
-            )
+            ),
         };
 
         return Ok(Outcome::Reported {
@@ -229,22 +239,36 @@ pub fn sign_plugin(args: &crate::args::SignArgs) -> Result<Outcome, String> {
     }
 
     let Some(key_path) = &args.key else {
-        return Err(
-            "a signature needs `--key <path>`, or `--generate-key` to make one first".to_owned()
-        );
+        return Err("a signature needs `--key <path>`, or `--generate-key` to make one first".to_owned());
     };
     let key = crate::sign::SigningKeyFile::read(key_path).map_err(|error| error.to_string())?;
-    let signature = key.sign(&content);
+    let signature = key.sign(&content, &signed_at_now());
 
     Ok(Outcome::Signature {
-        path: args.dir.join("plugin.sig"),
+        path: args.dir.join(synra_plugin_api::publisher::SIGNATURE_FILE),
         signature,
         public: key.public_hex(),
         lines: vec![
             format!("signed {} {}", content.plugin_id, content.version),
-            format!("public key {}", key.public_hex()),
+            format!("publisher {}", content.publisher_id),
+            format!("fingerprint {}", key.fingerprint()),
         ],
     })
+}
+
+/// The moment a signature was made, as the document records it.
+///
+/// # Why this is not trusted by anything
+///
+/// It is a claim by whoever signed: a verifier that used it to decide which of two packages is newer would be letting
+/// the package choose its own ordering. It is here so a person reading a `signature.json` in a repository can see when
+/// it was made.
+fn signed_at_now() -> String {
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis())
+        .unwrap_or(0);
+    format!("unix-ms:{millis}")
 }
 
 /// What `verify` concluded.
