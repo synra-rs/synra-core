@@ -63,8 +63,13 @@ pub mod host_surface;
 pub mod lifecycle;
 pub mod pool;
 pub mod quota;
+pub mod registry;
 pub mod verify;
 
+pub use registry::{
+    DEFAULT_REGISTRY, Dist, FetchFailure, Integrity, MAX_PACKUMENT_BYTES, MAX_VERSIONS, PackagePattern, Packument,
+    RegistryConfig, RegistryMirror, SizeBlock, SynraBlock, VersionEntry, check_integrity, compare_versions,
+};
 pub use verify::{
     Candidate, HostFacts, Report as VerifyReport, Stage, Step, Verdict as VerifyVerdict, VerifyError, find_cycle,
     host_world, verify as verify_package,

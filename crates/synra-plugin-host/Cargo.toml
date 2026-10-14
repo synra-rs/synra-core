@@ -18,9 +18,12 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 parking_lot.workspace = true
-# The digest a cache key is built from. Already in the tree through `ed25519-dalek`, and named rather than re-exported
-# because a crate that computes a digest should say which implementation it trusts.
+# The digest a cache key is built from, and the one a registry's integrity string names. Already in the tree through
+# `ed25519-dalek`, and named rather than re-exported because a crate that computes a digest should say which
+# implementation it trusts.
 sha2.workspace = true
+# An SRI digest is base64, and `signature.json` carries its key and signature the same way.
+base64.workspace = true
 
 # ── The engine ────────────────────────────────────────────────────────────────────────────────────────────────────
 #
