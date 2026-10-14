@@ -237,7 +237,9 @@ fn every_function_in_the_contract_reaches_the_host_rather_than_an_unknown_functi
     let mut audit = Vec::new();
     let mut calls = session(&host, &grants, &budget, &mut audit);
 
-    let arguments = BTreeMap::from([
+    // A map here and not in the crate: the *test* wants a lookup by function name, and nothing in the host's own
+    // signature should name a standard container — which is why `implemented` answers with pairs.
+    let arguments = std::collections::BTreeMap::from([
         ("log", r#"{"level":"info","message":"hello"}"#),
         ("event-emit", r#"{"event":"a.b","payload":"{}"}"#),
         ("event-subscribe", "a.*"),

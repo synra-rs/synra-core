@@ -30,7 +30,7 @@ fn workspace_root() -> PathBuf {
 }
 
 #[test]
-#[ignore = "nine violations remain: four `BTreeMap`s in public signatures, and five foreign `std::io::Error`s in \
+#[ignore = "five violations remain: two `BTreeMap`s in `synra-plugin-host::verify`, and three foreign `std::io::Error`s in \
             functions this tool cannot yet tell are private — two really are private, and three are `pub(crate)` or \
             `pub(super)`. The test would enforce the promise the moment they are fixed. `cargo run -p api-guard -- .` \
             lists them."]

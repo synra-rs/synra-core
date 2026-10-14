@@ -22,8 +22,6 @@
 //! implements it with a recording stub. A host that owned the kernel would make every rule below untestable without
 //! one, and the rules — the gate, the rate limit, the audit record — are where the mistakes are.
 
-use std::collections::BTreeMap;
-
 use serde::{Deserialize, Serialize};
 use synra_capability::Capability;
 use synra_capability::CapabilitySet;
@@ -719,23 +717,31 @@ fn json_devices(devices: &[(String, String, String)]) -> String {
     format!("[{}]", body.join(","))
 }
 
-/// How many distinct functions the host serves, keyed by their bare names.
+/// Every function the host serves, as `(bare name, import name)`, sorted by the bare name.
 ///
 /// # Why this exists
 ///
 /// Because it is the one number that says whether the host and the contract are still the same surface. The generated
-/// table has 33 entries and so does this; a test compares them, so a function added to the contract and not to
-/// [`HostCalls::run`] fails rather than answering `unknownFunction` at run time — which a plugin author would see as
-/// their own mistake.
+/// table is what the gate, the linker and this all read; a test compares the two, so a function added to the contract
+/// and not handled by [`HostCalls::run`] fails rather than answering `unknownFunction` at run time — which a plugin
+/// author would see as their own mistake.
+///
+/// # Why a slice and not a map
+///
+/// Because the container is not what a caller wants: a caller wants *the pairs*, and a `BTreeMap` in a public signature
+/// is a promise about `std::collections` rather than about this crate. Sorted, so the answer is the same twice — which
+/// is the one property the map was providing.
 #[must_use]
-pub fn implemented() -> BTreeMap<&'static str, &'static str> {
-    host_surface::provided()
+pub fn implemented() -> Vec<(&'static str, &'static str)> {
+    let mut pairs: Vec<(&'static str, &'static str)> = host_surface::provided()
         .into_iter()
         .map(|import| {
             let function = import.rsplit_once('#').map_or(import, |(_, name)| name);
             (function, import)
         })
-        .collect()
+        .collect();
+    pairs.sort_unstable();
+    pairs
 }
 
 #[cfg(test)]
