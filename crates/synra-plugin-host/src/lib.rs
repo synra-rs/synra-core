@@ -16,13 +16,26 @@
 //!   refuses: a plugin may not run before its grants are decided, may not be reactivated while faulted, and may not be
 //!   uninstalled while running.
 //!
-//! # What is deliberately not here
+//! # What is here
 //!
-//! **No Wasmtime.** The design document puts the engine in this crate, and the engine belongs in the application
-//! layer instead — for one reason that matters: a crate carrying a C dependency and a large engine cannot be checked
-//! by `cargo test` alone, and the parts of this crate that get the answers *wrong* are not the parts that call into an
-//! engine. [`pool`] decides which instance a call gets and when an instance may be recycled; the engine is what sits
-//! behind a handle. Testing the decision without the engine is what makes the decision testable at all.
+//! * **The engine** ([`engine`]) — the backend trait, the real `wasmtime` backend behind the `wasm-runtime` feature,
+//!   the thread pool a blocking engine needs so it cannot stall an asynchronous runtime, the per-call budget
+//!   (`fuel` + wall clock + memory), and the compile cache whose key names every input that changes the bytes.
+//! * [`host_surface`] — the generated table of host functions and the gate each needs, so a contract change that is
+//!   not reflected here is a build failure rather than a host call nobody checks.
+//! * [`quota`] — *how much*: static limits and rate limits, which fail differently, plus the escalation ladder that
+//!   turns "asking too often" into a visible degradation before it becomes a disabled plugin.
+//! * [`lifecycle`] — *what it is currently doing*: the state machine whose value is the transitions it refuses.
+//!
+//! # A build without the engine
+//!
+//! `wasm-runtime` is off by default, and this crate then compiles no engine at all. That is not a stub: it is the
+//! configuration in which the execution layer is *testable*, because [`engine::scripted`] answers from a table instead
+//! of running a guest, and the questions that get answered wrongly here — which instance a call gets, whether a
+//! deadline was armed, what a run of traps does to health — do not need a guest to be asked.
+//!
+//! [`engine::Enforcement`] is how a caller learns the difference. A backend reports what it can actually do, and a
+//! host about to run third-party code refuses a limit it cannot enforce rather than believing it has one.
 //!
 //! # The pool's one hard rule
 //!
@@ -45,11 +58,16 @@
     )
 )]
 
+pub mod engine;
 pub mod host_surface;
 pub mod lifecycle;
 pub mod pool;
 pub mod quota;
 
+pub use engine::{
+    Backend, BackendError, BackendKind, CallBudget, CallOutcome, CompiledArtifact, CompileCache, Enforcement, Epoch,
+    EpochTicker, ExecutorRefusal, HostKind, PluginInstance, Scripted, ScriptedBackend, WasmBackend, WasmExecutor, Work,
+};
 pub use host_surface::{
     HostGate, CAPABILITIES, EXPORTED_INTERFACES, HOST_FUNCTIONS, HOST_INTERFACE, PACKAGE, PACKAGE_VERSION,
     gate, gated, is_declared_capability, permits, provided, provides, required_capabilities, undeclared_imports,

@@ -18,6 +18,31 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 parking_lot.workspace = true
+# The digest a cache key is built from. Already in the tree through `ed25519-dalek`, and named rather than re-exported
+# because a crate that computes a digest should say which implementation it trusts.
+sha2.workspace = true
+
+# ── The engine ────────────────────────────────────────────────────────────────────────────────────────────────────
+#
+# ★ Optional, and off by default. It is a large dependency with a C toolchain under it, and this crate's own
+# correctness — which instance a call gets, whether a deadline was armed, how a destination refuses — is testable
+# without it: `engine::scripted` is the backend that exists when this is off, and every test of the execution layer
+# runs against it.
+#
+# Turning it on is what makes the sandbox real: `cargo test -p synra-plugin-host --features wasm-runtime` compiles and
+# instantiates an actual component. A build with it off cannot run a plugin at all, and `engine::Enforcement` is how a
+# caller learns that rather than believing it has a bound it does not.
+wasmtime = { version = "38", optional = true, default-features = false, features = [
+  "component-model",
+  "cranelift",
+  "runtime",
+  "std",
+] }
+
+[features]
+default = []
+# The Wasm engine, and the only configuration that can execute a plugin's code.
+wasm-runtime = ["dep:wasmtime"]
 
 [build-dependencies]
 # The generator, as a library. The table is regenerated before every build, so a contract change that is not
