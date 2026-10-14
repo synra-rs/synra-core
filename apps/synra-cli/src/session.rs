@@ -24,6 +24,7 @@ use std::path::PathBuf;
 
 use crate::args::{Cli, Command, OutputFormat};
 use crate::doctor::DoctorReport;
+use synra_control::{Client, Request};
 use synra_observe::doctor::{HostFacts, ProbeTargets};
 use synra_store::Paths;
 
@@ -135,15 +136,57 @@ impl CommandOutcome {
 
 /// Runs a command.
 ///
-/// # The doctor is the one command with no kernel
+/// # The two commands that never open the socket
 ///
-/// Which is the point of it: a user whose kernel will not start is the user who runs `doctor` first, so it must work
-/// when nothing else does. Every other command needs a link, and saying so plainly is better than a half-answer.
+/// `doctor` exists for the user whose kernel will not start, so it must work when nothing else does. `db` reads the
+/// database directly, which is the point of it: a user whose kernel is misbehaving wants to look at the data without
+/// asking the kernel about it.
+///
+/// Everything else is a question, and [`crate::channel`] is what turns one into a request and the answer into output.
 #[must_use]
 pub fn dispatch(cli: &Cli) -> CommandOutcome {
-    match &cli.command {
-        Command::Doctor(args) => doctor_outcome(cli.output, args),
-        _ => no_kernel(cli.output),
+    let question =
+        match crate::channel::question_for(&cli.command, cli.output, || plugin_request(&cli.command))
+        {
+            Some(question) => question,
+            None => {
+                return match &cli.command {
+                    Command::Doctor(args) => doctor_outcome(cli.output, args),
+                    // A command with no question and no handler is `db`, whose own module takes it from here. Until it
+                    // does, saying so is better than an empty answer.
+                    _ => CommandOutcome::Failed(
+                        "this command reads the database directly, which is not implemented yet".to_owned(),
+                    ),
+                };
+            }
+        };
+
+    match Client::connect(&data_root()) {
+        Ok(mut client) => crate::channel::ask(&question, &mut client),
+        // ★ The socket could not be opened, and the error names the path. A generic "no kernel" would hide that the
+        // client looked somewhere specific — and the commonest cause is that it looked in the wrong place, which is
+        // exactly what `SYNRA_DATA_DIR` is for.
+        Err(error) => crate::channel::transport_failure(&error),
+    }
+}
+
+/// The request a plugin subcommand makes, when it is one this build can serve.
+///
+/// # Why only `list`
+///
+/// Installing, enabling and disabling change the kernel's state, and a request that means "change something" needs an
+/// answer the kernel can give about *whether* it changed. This build has no layer that can install a plugin, so the other
+/// actions are not asked for at all: a request whose answer would be a refusal is one this layer should not invent. The
+/// caller reports them for what they are.
+const fn plugin_request(command: &Command) -> Option<Request> {
+    use crate::args::PluginAction;
+
+    let Command::Plugin(args) = command else {
+        return None;
+    };
+    match &args.action {
+        PluginAction::List { .. } => Some(Request::Plugins),
+        _ => None,
     }
 }
 
@@ -181,18 +224,10 @@ fn doctor_outcome(format: Option<OutputFormat>, args: &crate::args::DoctorArgs) 
     }
 }
 
-/// What every command that needs a kernel says when there is none.
-fn no_kernel(format: Option<OutputFormat>) -> CommandOutcome {
-    let message = "no kernel is reachable; start one with `synra-daemon`";
-    match format {
-        // A machine-readable failure, so a script does not have to tell prose from JSON to know it failed — and a
-        // non-zero exit code, so it does not have to parse the JSON either.
-        Some(OutputFormat::Json) => CommandOutcome::json_failure(
-            serde_json::json!({ "code": "noKernel", "message": message }).to_string(),
-        ),
-        _ => CommandOutcome::Failed(message.to_owned()),
-    }
-}
+// `no_kernel` used to live here: every command but `doctor` printed "no kernel is reachable". It is gone because the
+// commands now open the socket, and the sentence a user needs is the one the socket error carries — which names the
+// **path the client looked at**. A generic message hid the commonest cause, which is that the client looked in the wrong
+// place.
 
 #[cfg(test)]
 mod tests {
@@ -265,15 +300,21 @@ mod tests {
     }
 
     #[test]
-    fn a_command_needing_a_kernel_says_so() {
-        // Every command but `doctor`. Saying so plainly is better than a half-answer, and it names the thing to start.
+    fn a_command_needing_a_kernel_that_is_not_running_says_where_it_looked() {
+        // ★ Every command but `doctor` and `db` opens the socket, so a kernel that is not running is a transport failure
+        // — and the sentence names the **path**, which is what the user needs. A generic "no kernel is reachable" would
+        // hide that the client looked somewhere specific, and the commonest cause is that it looked in the wrong place:
+        // that is what `SYNRA_DATA_DIR` is for.
         let outcome = dispatch(&cli(&["synra", "status"]));
         match outcome {
-            CommandOutcome::Failed(message) => {
-                assert!(message.contains("no kernel is reachable"), "{message}");
-                assert!(message.contains("synra-daemon"), "the message should say what to start: {message}");
+            CommandOutcome::Json { body, ok } => {
+                assert!(!ok, "a command with no kernel is a failure");
+                let value: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
+                assert_eq!(value["code"], "transport_not_open");
+                let message = value["message"].as_str().expect("a message");
+                assert!(message.contains("kernel.sock"), "{message}");
             }
-            other => panic!("expected a failure, got {other:?}"),
+            other => panic!("expected a JSON failure, got {other:?}"),
         }
     }
 
@@ -286,8 +327,11 @@ mod tests {
             CommandOutcome::Json { body, ok } => {
                 assert!(!ok, "a command with no kernel is a failure");
                 let value: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
-                assert_eq!(value["code"], "noKernel");
-                assert!(value["message"].as_str().expect("a message").contains("no kernel"));
+                assert_eq!(value["code"], "transport_not_open");
+                assert!(
+                    value["message"].as_str().expect("a message").contains("kernel.sock"),
+                    "the message should name the path: {body}"
+                );
             }
             other => panic!("expected JSON, got {other:?}"),
         }

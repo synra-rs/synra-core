@@ -48,7 +48,7 @@ pub mod plan;
 pub mod runtime;
 pub mod startup;
 
-pub use args::{DaemonArgs, Parsed};
+pub use args::{ClaimFile, DaemonArgs, Parsed, refresh_claim};
 pub use lock::{
     Claim, HEARTBEAT_INTERVAL_MS, HEARTBEAT_STALE_AFTER_MS, LOCK_FORMAT_VERSION, LockError,
     LockFile, LockOwner, decide,

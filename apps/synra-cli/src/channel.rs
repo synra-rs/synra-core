@@ -63,9 +63,10 @@ pub fn question_for(
     };
 
     match command {
-        // `status` is a document whatever was asked for: its summary is derived from the same value, and a script that
-        // asked for text still wants the numbers.
-        Command::Status => Some(Question { request: Request::Status, shape: Shape::Json }),
+        // ★ The shape follows `--output`, like every other command. The first version pinned `status` to JSON on the
+        // reasoning that its summary is derived from the same value — and the effect was that a user asking for text got
+        // a JSON document, which is the wrong answer to the question they asked.
+        Command::Status => Some(Question { request: Request::Status, shape }),
         Command::Devices(args) => Some(Question {
             // ★ The flag is carried, not dropped. A `--all` that did not arrive is a command whose flag is silently
             // ignored, and the output looks plausible either way.
