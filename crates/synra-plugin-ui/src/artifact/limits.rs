@@ -21,7 +21,10 @@ pub const MAX_ARTIFACT_BYTES: u64 = 64 * 1024 * 1024;
 pub const MAX_ARTIFACT_FILE_BYTES: u64 = MAX_ARTIFACT_BYTES;
 
 /// Why an artifact is not usable.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+///
+/// Not `Eq`: the compression-bomb refusal carries the ratio it exceeded, and a ratio is a real number. An `Eq` that
+/// was implemented by comparing a rounded copy would be a trait that lies about what it compares.
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
 #[non_exhaustive]
 pub enum ArtifactError {
     /// The bundle holds more files than the bound.
@@ -74,6 +77,52 @@ pub enum ArtifactError {
     /// error a user can act on.
     #[error("the artifact holds no files")]
     Empty,
+
+    /// An entry is a kind the host will not write.
+    ///
+    /// ★ Refused rather than resolved, and the reason is a race rather than a preference: a symbolic link is followed
+    /// by whoever opens the path *later*, so a host that resolved one during unpacking would be checking a target that
+    /// the archive's own next entry can change.
+    #[error("{path:?} is a {kind}, and an artifact may only contain files and directories")]
+    ForbiddenEntry {
+        /// The entry's path.
+        path: String,
+        /// What it is.
+        kind: &'static str,
+    },
+
+    /// A path has more components than the bound.
+    ///
+    /// A separate refusal from [`Self::BadPath`] because the path is *well formed*: it is simply deeper than the host
+    /// agreed to walk, and a message that said "unsafe path" would send an author looking for a `..` that is not
+    /// there.
+    #[error("{path:?} is {found} components deep, and the limit is {limit}")]
+    TooDeep {
+        /// The path.
+        path: String,
+        /// How deep it is.
+        found: usize,
+        /// The bound.
+        limit: usize,
+    },
+
+    /// An entry expands further than the ratio allows.
+    ///
+    /// The archive-bomb bound. A count and a total do not catch it: a single entry that expands to the total from a
+    /// few kilobytes compressed passes both, and the ratio is the only one of the three that notices.
+    #[error(
+        "{path:?} expands {expanded} bytes from {compressed} compressed, more than {limit} times its size"
+    )]
+    CompressionBomb {
+        /// The entry's path.
+        path: String,
+        /// Its expanded size.
+        expanded: u64,
+        /// Its compressed size.
+        compressed: u64,
+        /// The ratio the host allows.
+        limit: f64,
+    },
 }
 
 /// Why a path is not usable inside an artifact.
