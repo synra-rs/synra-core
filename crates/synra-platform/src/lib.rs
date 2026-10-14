@@ -58,12 +58,14 @@
 pub mod actions;
 pub mod error;
 pub mod guard;
-pub mod host;
+pub mod desktop;
+mod host;
 
 pub use actions::{
     Policies, PlatformAction, EXECUTABLE_EXTENSIONS, MAX_CHORD_LEN, MAX_CLIPBOARD_BYTES,
     MAX_NOTIFICATION_LEN, MAX_URL_LEN,
 };
+pub use desktop::{CommandPlatform, CommandRunner, Desktop, SystemRunner};
 pub use error::{PathRefusal, PlatformError, UrlRefusal};
 pub use guard::{
     RateLimiter, check_key_chord, check_notification, check_path, check_url, check_url_length,

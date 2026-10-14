@@ -89,6 +89,26 @@ pub enum PlatformError {
     /// Not a failure: a headless host has no clipboard, and a `synra doctor` run on a server-like build has no
     /// browser. The distinction matters because the caller's response differs — one is a configuration problem
     /// and the other is not.
+    /// A program this platform needed could not be run.
+    ///
+    /// # Why this is not `Unsupported`
+    ///
+    /// Because the two are different facts and a user acts differently on each: `Unsupported` is "this host has no
+    /// such capability", which is a property of the installation, and this is "the program that does it is missing or
+    /// failed", which is a property of the machine and is usually fixable. A desktop that reported the second as the
+    /// first would tell a user their system cannot open a browser when the truth is that `xdg-open` is not installed.
+    #[error("`{program}` could not be run: {reason}")]
+    RunnerFailed {
+        /// Which program.
+        program: String,
+        /// What it said, or why it could not be launched.
+        reason: String,
+    },
+
+    /// This host has no such capability at all, which is a property of the installation rather than of the machine.
+    ///
+    /// The distinction from [`Self::RunnerFailed`] is what a user acts on: a headless kernel genuinely cannot open a
+    /// browser, and a desktop whose `xdg-open` is missing can be fixed.
     #[error("this host cannot {0}")]
     Unsupported(&'static str),
 }
