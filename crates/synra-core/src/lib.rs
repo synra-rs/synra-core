@@ -60,6 +60,7 @@ pub mod link;
 pub mod messaging;
 pub mod pairing;
 pub mod peer;
+pub mod plugin_sync;
 pub mod routing;
 pub mod session;
 pub mod sessions;
@@ -111,4 +112,8 @@ pub use routing::{EventId, EventRegistry, RouteOutcome, RouterError};pub use ses
 pub use supervisor::{
     Cancellation, Criticality, Decision, RestartPolicy, ShutdownReport, StopReason, Supervisor, SupervisorError,
     TaskId, TaskRecord, TaskSpec, WhyNot, run_task,
+};
+pub use plugin_sync::{
+    ConflictPolicy, ReceiverDuty, RemoteState, SyncAction, SyncError, SyncOutcome, SyncRecord, SyncSession,
+    SyncSessionId, SyncTable, compare_versions as compare_plugin_versions, decide as decide_sync,
 };

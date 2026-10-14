@@ -1,0 +1,408 @@
+//! Sync, driven from both devices.
+//!
+//! The comparison tests are written as the *conversation*: what this device has, what the other one said, and what the
+//! sender should do about it. The receiver's tests are written as the attack: a chunk from another round, a package
+//! whose bytes are not the ones promised, a transfer declared complete with a hole in it.
+
+use synra_protocol::ids::{DeviceId, PluginId, TransferId};
+
+use super::*;
+
+fn plugin(name: &str) -> PluginId {
+    PluginId::parse(name).expect("a valid plugin id")
+}
+
+fn session(name: &str) -> SyncSessionId {
+    SyncSessionId::new(name)
+}
+
+/// What a device that has the plugin at a version and digest reports.
+fn theirs(version: &str, digest: &str) -> RemoteState {
+    RemoteState {
+        plugin_id: plugin("@acme/chat"),
+        version: Some(version.to_owned()),
+        digest: Some(digest.to_owned()),
+        active: true,
+    }
+}
+
+// ── The comparison ────────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn a_device_without_the_plugin_gets_it() {
+    let action = decide("1.0.0", "sha256-a", &RemoteState::absent(plugin("@acme/chat")), ConflictPolicy::NeverDowngrade);
+    assert!(action.is_push());
+    assert_eq!(action.as_str(), "push");
+    match action {
+        SyncAction::Push { why } => assert!(why.contains("does not have"), "{why}"),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn a_device_with_the_exact_bytes_is_skipped() {
+    // ★ The digest and not the version: two devices may hold the same version string with different bytes — a rebuilt
+    // artifact, a hand-edited bundle — and comparing versions alone would call that synced.
+    let action = decide("1.0.0", "sha256-a", &theirs("1.0.0", "sha256-a"), ConflictPolicy::SourceWins);
+    match action {
+        SyncAction::Skip { why } => assert!(why.contains("exact bytes"), "{why}"),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn the_same_version_with_different_bytes_is_pushed() {
+    // The case the digest comparison exists for.
+    let action = decide("1.0.0", "sha256-a", &theirs("1.0.0", "sha256-b"), ConflictPolicy::SourceWins);
+    assert!(action.is_push());
+}
+
+#[test]
+fn never_downgrade_refuses_to_send_an_older_version() {
+    // ★ The rule the default exists for: an automatic downgrade can put a device back on a version with a known
+    // vulnerability, and "my software was remotely rolled back" is a thing users are right to refuse.
+    let action = decide("1.9.0", "sha256-old", &theirs("1.10.0", "sha256-new"), ConflictPolicy::NeverDowngrade);
+    match action {
+        SyncAction::Skip { why } => {
+            assert!(why.contains("1.10.0") && why.contains("older"), "{why}");
+        }
+        other => panic!("expected a skip, got {other:?}"),
+    }
+}
+
+#[test]
+fn never_downgrade_sends_a_newer_or_equal_version() {
+    for (ours, theirs_version) in [("1.10.0", "1.9.0"), ("1.0.0", "1.0.0")] {
+        let action =
+            decide(ours, "sha256-x", &theirs(theirs_version, "sha256-y"), ConflictPolicy::NeverDowngrade);
+        assert!(action.is_push(), "{ours} vs {theirs_version}: {action:?}");
+    }
+}
+
+#[test]
+fn source_wins_sends_whatever_this_device_has() {
+    // Available because a user *can* mean it — a device being brought in line deliberately — and never the default.
+    let action = decide("1.9.0", "sha256-old", &theirs("1.10.0", "sha256-new"), ConflictPolicy::SourceWins);
+    assert!(action.is_push());
+    match action {
+        SyncAction::Push { why } => assert!(why.contains("by policy"), "{why}"),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn keep_newest_sends_only_a_newer_version() {
+    assert!(decide("1.10.0", "a", &theirs("1.9.0", "b"), ConflictPolicy::KeepNewest).is_push());
+    assert!(!decide("1.9.0", "a", &theirs("1.10.0", "b"), ConflictPolicy::KeepNewest).is_push());
+    // Equal versions with different bytes: nothing is newer, so nothing moves.
+    let action = decide("1.0.0", "a", &theirs("1.0.0", "b"), ConflictPolicy::KeepNewest);
+    match action {
+        SyncAction::Skip { why } => assert!(why.contains("at least as new"), "{why}"),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn independent_does_nothing() {
+    let action = decide("9.9.9", "a", &theirs("1.0.0", "b"), ConflictPolicy::Independent);
+    match action {
+        SyncAction::Skip { why } => assert!(why.contains("independent"), "{why}"),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn ask_carries_both_versions_so_the_user_can_decide() {
+    let action = decide("1.9.0", "a", &theirs("1.10.0", "b"), ConflictPolicy::Ask);
+    match action {
+        SyncAction::Ask { ours, theirs: Some(theirs_version) } => {
+            assert_eq!(ours, "1.9.0");
+            assert_eq!(theirs_version, "1.10.0");
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn the_version_comparison_does_not_get_ten_wrong() {
+    // The mistake that ships an old version to everybody: `1.10.0` sorts before `1.9.0` as text.
+    assert_eq!(compare_versions("1.10.0", "1.9.0"), core::cmp::Ordering::Greater);
+    assert_eq!(compare_versions("2.0.0", "10.0.0"), core::cmp::Ordering::Less);
+    assert_eq!(compare_versions("1.0.0", "1.0.0"), core::cmp::Ordering::Equal);
+    assert_eq!(compare_versions("1.0.0", "1.0.0-rc.1"), core::cmp::Ordering::Greater);
+}
+
+#[test]
+fn every_policy_has_a_name() {
+    let policies = [
+        ConflictPolicy::NeverDowngrade,
+        ConflictPolicy::SourceWins,
+        ConflictPolicy::KeepNewest,
+        ConflictPolicy::Independent,
+        ConflictPolicy::Ask,
+    ];
+    let mut seen: Vec<&str> = Vec::new();
+    for policy in policies {
+        let name = policy.as_str();
+        assert!(!name.is_empty());
+        assert!(!seen.contains(&name), "{name} names two policies");
+        seen.push(name);
+    }
+    assert_eq!(seen.len(), 5);
+}
+
+// ── The receiving side ────────────────────────────────────────────────────────────────────────────
+
+/// A session with four chunks.
+fn opened() -> SyncSession {
+    SyncSession::open(
+        session("round-1"),
+        plugin("@acme/chat"),
+        DeviceId::new(),
+        TransferId::new(),
+        "1.0.0",
+        "sha256-declared",
+        4,
+    )
+    .expect("a session")
+}
+
+#[test]
+fn a_chunk_from_another_round_is_refused() {
+    // ★ The isolation rule. A chunk from a previous round has the same index and different bytes, and absorbing one
+    // would corrupt the package in a way no digest catches until the end — or, worse, in a way it does.
+    let mut opened = opened();
+    match opened.absorb(&session("round-2"), 0) {
+        Err(SyncError::WrongSession { theirs, ours }) => {
+            assert_eq!(theirs, "round-2");
+            assert_eq!(ours, "round-1");
+        }
+        other => panic!("expected a session refusal, got {other:?}"),
+    }
+    assert_eq!(opened.received(), 0, "nothing was absorbed");
+}
+
+#[test]
+fn a_chunk_beyond_the_package_is_refused() {
+    let mut opened = opened();
+    match opened.absorb(&session("round-1"), 4) {
+        Err(SyncError::ChunkOutOfRange { index, total }) => {
+            assert_eq!(index, 4);
+            assert_eq!(total, 4);
+        }
+        other => panic!("expected a range refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_session_with_no_chunks_is_not_a_session() {
+    match SyncSession::open(
+        session("empty"),
+        plugin("@acme/chat"),
+        DeviceId::new(),
+        TransferId::new(),
+        "1.0.0",
+        "sha256-x",
+        0,
+    ) {
+        Err(SyncError::NoChunks) => {}
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn chunks_are_counted_once_and_a_resend_is_not_an_error() {
+    // A re-sent chunk is what a resumption *is*: a receiver that refused one would make a retry after a lost
+    // acknowledgement look like corruption.
+    let mut opened = opened();
+    assert!(opened.absorb(&session("round-1"), 0).expect("a chunk"));
+    assert!(!opened.absorb(&session("round-1"), 0).expect("a duplicate"), "the second is not new");
+    assert_eq!(opened.received(), 1);
+    assert_eq!(opened.duplicates(), 1);
+
+    let _ = opened.absorb(&session("round-1"), 3);
+    assert_eq!(opened.missing(), vec![1, 2]);
+    assert!(!opened.is_complete());
+}
+
+#[test]
+fn a_complete_session_has_nothing_missing() {
+    let mut opened = opened();
+    for index in 0..4 {
+        let _ = opened.absorb(&session("round-1"), index);
+    }
+    assert!(opened.is_complete());
+    assert!(opened.missing().is_empty());
+    assert_eq!(opened.received(), 4);
+    assert_eq!(opened.declared_version(), "1.0.0");
+    assert_eq!(opened.declared_digest(), "sha256-declared");
+    assert_eq!(opened.plugin_id(), &plugin("@acme/chat"));
+}
+
+#[test]
+fn a_transfer_declared_complete_with_a_hole_is_refused_and_names_the_hole() {
+    // ★ "Complete" is the sender's claim, and the receiver's own count is what decides. A sender that skipped a chunk
+    // would otherwise have its word taken for the package.
+    let mut opened = opened();
+    let _ = opened.absorb(&session("round-1"), 0);
+    let _ = opened.absorb(&session("round-1"), 2);
+    let _ = opened.absorb(&session("round-1"), 3);
+
+    match opened.conclude("sha256-declared", "sha256-declared") {
+        Err(SyncError::Incomplete { missing, indexes }) => {
+            assert_eq!(missing, 1);
+            assert_eq!(indexes, vec![1]);
+        }
+        other => panic!("expected an incomplete refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_tampered_package_is_refused_by_the_digest_the_receiver_computes() {
+    // ★ The rule from the design document's security table: the receiving device checks the whole package's digest
+    // itself. A device that trusted the sender's word about the bytes would be one where compromising a single
+    // machine compromises every machine it can reach.
+    let mut opened = opened();
+    for index in 0..4 {
+        let _ = opened.absorb(&session("round-1"), index);
+    }
+    // Every chunk arrived, and the assembled bytes are not what was promised: one chunk was substituted in transit.
+    match opened.conclude("sha256-declared", "sha256-something-else") {
+        Err(SyncError::DigestMismatch { declared, found }) => {
+            assert_eq!(declared, "sha256-declared");
+            assert_eq!(found, "sha256-something-else");
+        }
+        other => panic!("expected a digest refusal, got {other:?}"),
+    }
+    // And the same bytes as declared are accepted, so the check is not one that refuses everything.
+    assert_eq!(opened.conclude("sha256-declared", "sha256-declared"), Ok(()));
+}
+
+#[test]
+fn the_missing_list_is_in_order_so_a_retransmit_is_deterministic() {
+    // The sender is asked for exactly these, and a list that reordered between reads would make two retransmits of the
+    // same hole ask different questions.
+    let mut opened = opened();
+    let _ = opened.absorb(&session("round-1"), 2);
+    assert_eq!(opened.missing(), vec![0, 1, 3]);
+    assert_eq!(opened.missing(), vec![0, 1, 3]);
+}
+
+// ── The receiver's obligations and the outcome ────────────────────────────────────────────────────
+
+#[test]
+fn an_outcome_records_every_duty_the_device_owed_itself() {
+    // The seven things the design document says must not be skipped, made answerable rather than claimed.
+    let outcome = SyncOutcome::installed(plugin("@acme/chat"), session("round-1"), "1.0.0", true);
+    assert!(outcome.is_fully_checked());
+    assert!(outcome.installed);
+    assert!(outcome.activated);
+    assert_eq!(outcome.performed.len(), ReceiverDuty::ALL.len());
+    assert!(outcome.describe().contains("enabled"), "{}", outcome.describe());
+
+    // And an outcome that installed without checking is a bug the type can report.
+    let unchecked = SyncOutcome {
+        performed: vec![ReceiverDuty::PackageDigest],
+        ..SyncOutcome::installed(plugin("@acme/chat"), session("round-1"), "1.0.0", true)
+    };
+    assert!(!unchecked.is_fully_checked());
+    // The original is untouched, which is what makes the two assertions about the same value.
+    assert!(outcome.is_fully_checked());
+}
+
+#[test]
+fn a_refusal_is_not_fully_checked_because_nothing_was_installed() {
+    let outcome = SyncOutcome::refused(plugin("@acme/chat"), session("round-1"), "the signature did not verify");
+    assert!(!outcome.installed);
+    assert!(!outcome.activated);
+    assert!(outcome.installed_version.is_none());
+    assert!(outcome.is_fully_checked(), "nothing was installed, so nothing was owed");
+    assert!(outcome.describe().contains("signature"), "{}", outcome.describe());
+}
+
+#[test]
+fn every_duty_has_a_name_and_the_list_is_the_design_documents() {
+    let mut seen: Vec<&str> = Vec::new();
+    for duty in ReceiverDuty::ALL {
+        let name = duty.as_str();
+        assert!(!name.is_empty());
+        assert!(!seen.contains(&name), "{name} names two duties");
+        seen.push(name);
+    }
+    assert_eq!(ReceiverDuty::ALL.len(), 7);
+    // The two that are about *this* device rather than about the package, which is what "the receiver decides" means.
+    assert!(ReceiverDuty::ALL.contains(&ReceiverDuty::LocalActivation));
+    assert!(ReceiverDuty::ALL.contains(&ReceiverDuty::LocalGrants));
+    assert!(ReceiverDuty::ALL.contains(&ReceiverDuty::SessionComplete));
+}
+
+// ── The table ─────────────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn the_table_says_what_each_device_has() {
+    let mut table = SyncTable::new();
+    assert!(table.is_empty());
+    let laptop = DeviceId::new();
+    let phone = DeviceId::new();
+    table.record(laptop, theirs("1.0.0", "a"));
+    table.record(phone, RemoteState::absent(plugin("@acme/chat")));
+
+    assert_eq!(table.len(), 2);
+    assert_eq!(table.state_of(&plugin("@acme/chat"), laptop).and_then(|state| state.version.as_deref()), Some("1.0.0"));
+    assert!(table.state_of(&plugin("@acme/chat"), phone).is_some_and(|state| !state.has_it()));
+    assert_eq!(table.for_plugin(&plugin("@acme/chat")).len(), 2);
+    assert!(table.for_plugin(&plugin("@other/thing")).is_empty());
+}
+
+#[test]
+fn recording_a_device_twice_replaces_what_was_known() {
+    // A device's version changes, and the table is a cache of the last thing it said.
+    let mut table = SyncTable::new();
+    let laptop = DeviceId::new();
+    table.record(laptop, theirs("1.0.0", "a"));
+    table.record(laptop, theirs("1.1.0", "b"));
+
+    assert_eq!(table.len(), 1);
+    assert_eq!(table.state_of(&plugin("@acme/chat"), laptop).and_then(|state| state.version.as_deref()), Some("1.1.0"));
+}
+
+#[test]
+fn a_record_says_what_happened_and_why() {
+    let peer = DeviceId::new();
+    let pushed = SyncRecord::new(
+        plugin("@acme/chat"),
+        peer,
+        SyncAction::Push { why: "the other device does not have this plugin".to_owned() },
+        1_000,
+    );
+    assert!(pushed.describe().contains("push"), "{}", pushed.describe());
+    assert!(pushed.describe().contains("does not have"), "{}", pushed.describe());
+    assert_eq!(pushed.at_ms, 1_000);
+
+    let asked = SyncRecord::new(
+        plugin("@acme/chat"),
+        peer,
+        SyncAction::Ask { ours: "1.0.0".to_owned(), theirs: None },
+        1_000,
+    );
+    assert!(asked.describe().contains("ask"), "{}", asked.describe());
+    assert!(asked.describe().contains("nothing"), "{}", asked.describe());
+}
+
+#[test]
+fn every_refusal_explains_itself() {
+    let refusals = [
+        SyncError::WrongSession { theirs: "round-2".to_owned(), ours: "round-1".to_owned() },
+        SyncError::ChunkOutOfRange { index: 9, total: 4 },
+        SyncError::NoChunks,
+        SyncError::DigestMismatch { declared: "sha256-a".to_owned(), found: "sha256-b".to_owned() },
+        SyncError::Incomplete { missing: 2, indexes: vec![1, 3] },
+    ];
+    for refusal in &refusals {
+        let sentence = refusal.to_string();
+        assert!(sentence.len() > 20, "{refusal:?} -> {sentence}");
+        assert!(!sentence.contains('{'), "{sentence}");
+    }
+    assert!(refusals[0].to_string().contains("round-2"));
+    assert!(refusals[3].to_string().contains("sha256-b"));
+}
