@@ -30,10 +30,10 @@ fn workspace_root() -> PathBuf {
 }
 
 #[test]
-#[ignore = "twelve violations remain, and every one is a finding rather than a false positive: five `BTreeMap`s in \
-            public signatures, four foreign `std::io::Error`s in public ones, one in a `pub(crate)` function this tool \
-            still reports, and two in a private one. The test is written and would enforce the promise the moment they \
-            are fixed — which is why it is here rather than in a summary. `cargo run -p api-guard -- .` lists them."]
+#[ignore = "ten violations remain: five `BTreeMap`s in public signatures, and five foreign `std::io::Error`s in \
+            functions this tool cannot yet tell are private — two really are private, and three are `pub(crate)` or \
+            `pub(super)`. The test would enforce the promise the moment they are fixed. `cargo run -p api-guard -- .` \
+            lists them."]
 fn no_crate_that_makes_a_promise_breaks_it() {
     let root = workspace_root();
     let output = Command::new(env!("CARGO_BIN_EXE_api-guard"))

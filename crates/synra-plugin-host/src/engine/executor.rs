@@ -177,6 +177,20 @@ type Job = Box<dyn FnOnce() + Send + 'static>;
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum ExecutorRefusal {
+    /// A thread could not be started.
+    ///
+    /// # Why this is not `std::io::Error`
+    ///
+    /// Because this crate is semi-stable, and a public signature naming a foreign error is a promise about *that*
+    /// crate's version: a `std::io::Error` that gained a variant, or changed what its `kind` reports, would be a
+    /// breaking change to this crate's API without this crate having changed a line. The detail is kept as a string —
+    /// which the stability rules allow precisely here, for a foreign failure that this side cannot act on differently.
+    #[error("a plugin thread could not be started: {detail}")]
+    ThreadsUnavailable {
+        /// What the operating system said.
+        detail: String,
+    },
+
     /// Every thread is busy and the queue is at its capacity.
     ///
     /// Retryable, and deliberately a refusal rather than a wait: a caller with more concurrent plugin calls than the
@@ -216,9 +230,9 @@ impl ThreadPool {
     ///
     /// # Errors
     ///
-    /// [`std::io::Error`] when a thread cannot be started. Returned rather than ignored because an executor with fewer
-    /// threads than asked for has a concurrency the caller did not agree to.
-    pub fn new(threads: usize, queue_per_thread: usize) -> Result<Self, std::io::Error> {
+    /// [`ExecutorRefusal::ThreadsUnavailable`] when a thread cannot be started. Returned rather than ignored because an
+    /// executor with fewer threads than asked for has a concurrency the caller did not agree to.
+    pub fn new(threads: usize, queue_per_thread: usize) -> Result<Self, ExecutorRefusal> {
         let threads = threads.clamp(1, MAX_THREADS);
         let capacity = threads.saturating_mul(queue_per_thread.max(1));
         let (sender, receiver) = std::sync::mpsc::sync_channel::<Job>(capacity);
@@ -242,7 +256,10 @@ impl ThreadPool {
                             Err(_) => break,
                         }
                     }
-                })?;
+                })
+                // The operating system's reason is kept as a *string*, which is what the stability rules ask for: a
+                // foreign error in a public signature would be a promise about another crate's version.
+                .map_err(|error| ExecutorRefusal::ThreadsUnavailable { detail: error.to_string() })?;
         }
 
         Ok(Self { sender: Some(sender), threads, capacity })
@@ -322,8 +339,8 @@ impl WasmExecutor {
     ///
     /// # Errors
     ///
-    /// [`std::io::Error`] when a thread cannot be started.
-    pub fn start(threads: usize, queue_per_thread: usize) -> Result<Self, std::io::Error> {
+    /// [`ExecutorRefusal::ThreadsUnavailable`] when a thread cannot be started.
+    pub fn start(threads: usize, queue_per_thread: usize) -> Result<Self, ExecutorRefusal> {
         let epoch = Epoch::new();
         let ticker = EpochTicker::start(epoch.clone());
         Ok(Self { pool: ThreadPool::new(threads, queue_per_thread)?, epoch, ticker: Mutex::new(Some(ticker)) })
