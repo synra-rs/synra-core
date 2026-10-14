@@ -100,6 +100,16 @@ pub enum MessageError {
     /// lint that exists to stop exactly that kind of assumption.
     #[error("the event name was refused: {0}")]
     EventName(#[from] synra_protocol::event::EventNameError),
+
+    /// The profile this device would advertise is not one the protocol accepts.
+    ///
+    /// # Why the sender checks this at all
+    ///
+    /// Because the receiving side checks it too, and a request refused there has already been shown to a user who then
+    /// has to decide about it. Catching it here costs a string comparison and saves the one thing pairing cannot get
+    /// back: the other person's attention.
+    #[error("this device cannot ask to pair: {0}")]
+    InvalidProfile(&'static str),
 }
 
 /// Builds the envelope that carries text to a device.
@@ -146,6 +156,63 @@ pub fn text_to(
         Err(EnvelopeError::PayloadTooLarge { len, max }) => Err(MessageError::TooLong { len, max }),
         Err(other) => Err(MessageError::Envelope(other)),
     }
+}
+
+/// Builds the envelope that asks a device to pair.
+///
+/// # Why this lives here rather than in the daemon
+///
+/// Because the event name, the addressing and the trace have to be right, and the daemon is not the only thing that will
+/// want to ask. It is also how a test can check the envelope without a socket: a request built inline in a command
+/// handler cannot be inspected without running the command.
+///
+/// # Errors
+///
+/// [`MessageError::InvalidProfile`] when the profile this device would advertise is not one the protocol accepts — which
+/// is checked here as well as on the receiving side, because a request the other user is shown and then has refused
+/// wastes the one thing pairing cannot get back: their attention.
+pub fn pair_request(
+    from: DeviceId,
+    to: DeviceId,
+    profile: &synra_protocol::session::PeerProfile,
+    trace_id: TraceId,
+    sent_at_ms: i64,
+) -> Result<Envelope, MessageError> {
+    profile.validate().map_err(MessageError::InvalidProfile)?;
+    let event = EventName::parse(synra_protocol::event::events::PAIR_REQUEST)?;
+
+    Ok(Envelope::outbound(
+        OutboundSpec {
+            event,
+            target: to,
+            from,
+            trace_id,
+            sent_at_ms,
+            // A pairing request is answered by a person, and a person takes as long as they take. The window is the
+            // session's `pairing` timeout, which both ends hold — an envelope deadline here would be a second, different
+            // clock on the same decision.
+            ttl_ms: None,
+        },
+        Some(profile),
+    )?)
+}
+
+/// Builds the envelope that answers a pairing request.
+///
+/// # Errors
+///
+/// [`MessageError::Envelope`] when the protocol refuses the envelope, and
+/// [`MessageError::EventName`] if this build's own constant is not one the protocol accepts.
+pub fn pair_response(
+    request: &Envelope,
+    from: DeviceId,
+    answer: &synra_protocol::session::PairResponse,
+    sent_at_ms: i64,
+) -> Result<Envelope, MessageError> {
+    let event = EventName::parse(synra_protocol::event::events::PAIR_RESPONSE)?;
+    // A reply, so it carries the request's id and trace and is addressed to whoever asked: an answer that could not be
+    // correlated would leave the dialer waiting out its own window for a decision already made.
+    Ok(Envelope::reply_to(request, event, from, sent_at_ms, Some(answer))?)
 }
 
 #[cfg(test)]
@@ -337,5 +404,92 @@ mod tests {
         let envelope = message("hello");
         let payload: &RawValue = envelope.payload.as_deref().expect("a payload");
         assert!(payload.get().starts_with('{'), "{}", payload.get());
+    }
+
+
+    // ── Pairing envelopes ─────────────────────────────────────────────────────────────────────────
+
+    /// A profile this device would advertise.
+    fn profile(name: &str) -> synra_protocol::session::PeerProfile {
+        synra_protocol::session::PeerProfile {
+            device_id: device(A),
+            display_name: name.to_owned(),
+            platform: synra_protocol::session::PlatformKind::Desktop,
+            app_version: "0.1.0".to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_pair_request_is_addressed_to_the_device_and_names_the_event() {
+        let from = device(A);
+        let to = device(B);
+        let envelope =
+            pair_request(from, to, &profile("This device"), TraceId::new(), 1_000).expect("builds");
+
+        assert_eq!(envelope.event.as_str(), synra_protocol::event::events::PAIR_REQUEST);
+        assert_eq!(envelope.target, to);
+        assert_eq!(envelope.from, from);
+
+        // The payload is the *sender's* profile: the request's whole purpose is that the other user sees a name rather
+        // than an identifier, and a request carrying the recipient's own profile would show them themselves.
+        let payload = envelope.payload_str().expect("a payload");
+        let sent: synra_protocol::session::PeerProfile =
+            serde_json::from_str(payload).expect("the payload is a profile");
+        assert_eq!(sent.device_id, from);
+        assert_eq!(sent.display_name, "This device");
+    }
+
+    #[test]
+    fn a_pair_request_carries_no_envelope_deadline() {
+        // A person answers in their own time. The window is the session's `pairing` timeout, which both ends hold; an
+        // envelope deadline here would be a second, different clock on the same decision.
+        let envelope = pair_request(
+            device(A),
+            device(B),
+            &profile("This device"),
+            TraceId::new(),
+            1_000,
+        )
+        .expect("builds");
+        assert_eq!(envelope.ttl_ms, None);
+    }
+
+    #[test]
+    fn a_profile_this_device_could_not_advertise_is_refused_before_it_is_sent() {
+        // The receiving side checks this too, and a request refused there has already been shown to a user who then has
+        // to decide about it. Catching it here costs a comparison and saves their attention.
+        let mut blank = profile("");
+        blank.display_name = "   ".to_owned();
+        assert!(matches!(
+            pair_request(
+                device(A),
+                device(B),
+                &blank,
+                TraceId::new(),
+                1_000
+            ),
+            Err(MessageError::InvalidProfile(_))
+        ));
+    }
+
+    #[test]
+    fn a_pair_response_is_a_reply_that_names_the_request_and_traces_its_decision() {
+        let from = device(A);
+        let to = device(B);
+        let request =
+            pair_request(from, to, &profile("This device"), TraceId::new(), 1_000).expect("builds");
+
+        let answer = synra_protocol::session::PairResponse::accepted(
+            "aa".repeat(synra_protocol::handshake::LinkToken::LEN),
+        );
+        let response = pair_response(&request, to, &answer, 2_000).expect("builds");
+
+        assert_eq!(response.event.as_str(), synra_protocol::event::events::PAIR_RESPONSE);
+        // Addressed to whoever asked, and correlated with the request: an answer that could not be correlated would
+        // leave the dialer waiting out its own window for a decision already made.
+        assert_eq!(response.target, from);
+        assert_eq!(response.from, to);
+        assert_eq!(response.reply_to, Some(request.request_id));
+        assert_eq!(response.trace_id, request.trace_id, "one user action, one trace");
     }
 }
