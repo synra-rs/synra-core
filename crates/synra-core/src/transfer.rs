@@ -445,6 +445,23 @@ impl TransferSender {
         self.sent.set(index);
     }
 
+    /// Replaces what this sender believes has arrived with what the receiver reported.
+    ///
+    /// # Why the receiver's word replaces this side's rather than being merged with it
+    ///
+    /// Because a block that was written to a socket is not a block that arrived. The sender's own record says "I sent it";
+    /// the receiver's says "I have it", and only the second one means the transfer can finish. Merging would keep the
+    /// sender's bit for a block that was lost, so it would never be re-sent and the transfer would hang — waiting for an
+    /// acknowledgement of something the far end never received.
+    pub fn adopt_acknowledged(&mut self, acknowledged: &ProgressBitmap) {
+        // A report of a different size is not adopted: it describes a different transfer, and the caller checks the
+        // identifier. Sizing it to the shorter of the two would silently drop blocks.
+        if acknowledged.total_blocks() != self.sent.total_blocks() {
+            return;
+        }
+        self.sent = acknowledged.clone();
+    }
+
     /// Whether every block has been sent.
     #[must_use]
     pub fn is_complete(&self) -> bool {
@@ -675,6 +692,18 @@ impl TransferReceiver {
     #[must_use]
     pub const fn byte_length(&self) -> u64 {
         self.byte_length
+    }
+
+    /// The digest the sender promised, before any bytes arrived.
+    ///
+    /// # Why a caller needs it
+    ///
+    /// Because a transfer can end without a completion message — a caller that lost the link and wants to check what it
+    /// has, or a test driving the halves separately. Both need the digest the request carried, and reaching for a field is
+    /// not possible from outside this module.
+    #[must_use]
+    pub const fn expected_digest(&self) -> &SriDigest {
+        &self.expected
     }
 }
 

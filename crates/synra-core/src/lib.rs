@@ -56,6 +56,7 @@ pub mod link;
 pub mod messaging;
 pub mod peer;
 pub mod routing;
+pub mod session;
 pub mod sessions;
 pub mod socket;
 pub mod transfer;
