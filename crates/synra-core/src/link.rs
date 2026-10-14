@@ -31,7 +31,7 @@ use std::net::TcpStream;
 use bytes::Bytes;
 use synra_protocol::envelope::Envelope;
 use synra_protocol::frame::{
-    Frame, FrameBody, FrameDecoder, FrameEncoder, FrameError, FrameKind,
+    ChunkFrame, Frame, FrameBody, FrameDecoder, FrameEncoder, FrameError, FrameKind,
 };
 use synra_protocol::ids::DeviceId;
 
@@ -82,6 +82,26 @@ impl From<HandshakeError> for LinkError {
             other => Self::Envelope { why: other.to_string() },
         }
     }
+}
+
+/// What arrived on a link.
+///
+/// # Why the envelope is boxed
+///
+/// Because an `Envelope` holds a `Box<RawValue>` payload and a `CompactString` event name, so it is far larger than a
+/// block's four-byte header — and an enum sized for the larger variant makes every block, which is the common case during
+/// a transfer, pay for the rare one.
+#[derive(Debug)]
+pub enum Inbound {
+    /// A control-plane message.
+    Envelope(Box<Envelope>),
+    /// A block of a file, which the transfer layer owns.
+    Block {
+        /// Which block, within the transfer the caller is tracking.
+        chunk_id: u32,
+        /// The bytes.
+        data: Bytes,
+    },
 }
 
 /// A socket whose handshake is done.
@@ -202,6 +222,67 @@ impl PeerLink {
         Ok(())
     }
 
+    /// Sends a block of a file.
+    ///
+    /// # Why the block travels in its own frame kind rather than in an envelope
+    ///
+    /// Because the protocol says so, and the reason is arithmetic: an envelope is JSON, so binary payload in one is
+    /// base64 — a third more bytes and two transcodes per block. `ChunkFrame` puts the sequence number and the bytes in
+    /// the frame body with nothing between them.
+    ///
+    /// The block-size ceiling is the frame encoder's, so a block that is too large is refused before anything is written
+    /// rather than after a partial write.
+    ///
+    /// # Errors
+    ///
+    /// [`LinkError::Frame`] for a block the protocol refuses, and [`LinkError::Transport`] when the write fails.
+    pub fn send_chunk(&mut self, chunk_id: u32, data: &[u8]) -> Result<(), LinkError> {
+        let frame = Frame {
+            kind: FrameKind::Chunk,
+            flags: 0,
+            body: FrameBody::Chunk(ChunkFrame { chunk_id, data: Bytes::copy_from_slice(data) }),
+        };
+        self.send_frame(&frame)?;
+        self.sent = self.sent.saturating_add(1);
+        Ok(())
+    }
+
+    /// Reads the next thing the peer sent, whichever plane it is on.
+    ///
+    /// # Why this returns a sum rather than an envelope
+    ///
+    /// Because a transfer interleaves two planes, and a reader that understood only envelopes would see a block as an
+    /// unexpected frame and close the link — which is what [`PeerLink::receive`] does, and why this exists beside it.
+    /// Heartbeats stay inside: nothing above this has anything to do with them, and a caller that had to answer a `Ping`
+    /// is one that could forget to.
+    ///
+    /// # Errors
+    ///
+    /// As [`PeerLink::receive`], minus the refusal of a block.
+    pub fn receive_inbound(&mut self) -> Result<Inbound, LinkError> {
+        loop {
+            let frame = self.read_frame()?;
+            match frame.kind {
+                FrameKind::Envelope => {
+                    let envelope = self.parse_envelope(&frame)?;
+                    self.received = self.received.saturating_add(1);
+                    return Ok(Inbound::Envelope(Box::new(envelope)));
+                }
+                FrameKind::Chunk => {
+                    let FrameBody::Chunk(chunk) = frame.body else {
+                        return Err(LinkError::Unexpected { found: format!("{:?}", frame.body) });
+                    };
+                    self.received = self.received.saturating_add(1);
+                    return Ok(Inbound::Block { chunk_id: chunk.chunk_id, data: chunk.data });
+                }
+                FrameKind::Ping => self.pong()?,
+                FrameKind::Pong => {}
+                FrameKind::Bye => return Err(LinkError::Closed),
+                other => return Err(LinkError::Unexpected { found: other.to_string() }),
+            }
+        }
+    }
+
     /// Sends a heartbeat.
     ///
     /// # Errors
@@ -255,26 +336,13 @@ impl PeerLink {
     /// [`LinkError::Envelope`] for an envelope addressed elsewhere or claiming another sender, and
     /// [`LinkError::Transport`] when the stream fails.
     pub fn receive(&mut self) -> Result<Envelope, LinkError> {
-        loop {
-            let frame = self.read_frame()?;
-            match frame.kind {
-                // ★ The three checks that make this a link rather than a socket. `Envelope::inbound` refuses a target
-                // that is not this device; the `from` check is here, because only the link knows who the peer is.
-                FrameKind::Envelope => {
-                    let envelope = self.parse_envelope(&frame)?;
-                    self.received = self.received.saturating_add(1);
-                    return Ok(envelope);
-                }
-                FrameKind::Ping => {
-                    self.pong()?;
-                }
-                // A `Pong` is the answer to a `Ping` this link sent. There is nothing to do with it beyond believing
-                // the link is alive, which the fact that it arrived already says.
-                FrameKind::Pong => {}
-                FrameKind::Bye => return Err(LinkError::Closed),
-                other => {
-                    return Err(LinkError::Unexpected { found: other.to_string() });
-                }
+        // ★ Delegates rather than repeating the loop, so the two readers cannot drift. The difference is one decision:
+        // this refuses a block, because a caller that asked for an envelope has nowhere to put one — and silently dropping
+        // it would lose part of a file.
+        match self.receive_inbound()? {
+            Inbound::Envelope(envelope) => Ok(*envelope),
+            Inbound::Block { .. } => {
+                Err(LinkError::Unexpected { found: "chunk".to_owned() })
             }
         }
     }
@@ -494,9 +562,115 @@ mod tests {
     }
 
     #[test]
+    fn a_block_travels_from_one_link_to_the_other() {
+        // ★ The data plane, which the link did not carry until now: a `ChunkFrame` is a different frame kind from an
+        // envelope, and a reader that understood only envelopes refused it.
+        let (a, b) = connected();
+        let mut sender = link(a, PEER, LOCAL);
+        let mut receiver = link(b, LOCAL, PEER);
+
+        sender.send_chunk(7, b"block bytes").expect("sends");
+        match receiver.receive_inbound().expect("receives") {
+            Inbound::Block { chunk_id, data } => {
+                assert_eq!(chunk_id, 7);
+                assert_eq!(&data[..], b"block bytes");
+            }
+            other => panic!("expected a block, got {other:?}"),
+        }
+        assert_eq!(sender.sent(), 1);
+        assert_eq!(receiver.received(), 1);
+    }
+
+    #[test]
+    fn the_two_planes_interleave_without_confusing_each_other() {
+        // ★ What a transfer actually looks like on the wire: a control message, blocks, another control message. A reader
+        // that handled one plane but not the other would fail at the first block *or* at the first envelope after one.
+        let (a, b) = connected();
+        let mut sender = link(a, PEER, LOCAL);
+        let mut receiver = link(b, LOCAL, PEER);
+
+        sender.send(&envelope(PEER, LOCAL, "file.transfer.request")).expect("sends");
+        sender.send_chunk(0, b"first").expect("sends");
+        sender.send_chunk(1, b"second").expect("sends");
+        sender.send(&envelope(PEER, LOCAL, "file.transfer.complete")).expect("sends");
+
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            match receiver.receive_inbound().expect("receives") {
+                Inbound::Envelope(envelope) => {
+                    seen.push(format!("event:{}", envelope.event.as_str()));
+                }
+                Inbound::Block { chunk_id, data } => {
+                    seen.push(format!("block:{chunk_id}:{}", String::from_utf8_lossy(&data)));
+                }
+            }
+        }
+        assert_eq!(
+            seen,
+            vec![
+                "event:file.transfer.request",
+                "block:0:first",
+                "block:1:second",
+                "event:file.transfer.complete",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_caller_that_asked_for_an_envelope_is_told_about_a_block() {
+        // ★ `receive` refuses a block rather than dropping it. Dropping would lose part of a file silently, and the caller
+        // that wanted only envelopes is one that has nowhere to put it.
+        let (a, b) = connected();
+        let mut sender = link(a, PEER, LOCAL);
+        let mut receiver = link(b, LOCAL, PEER);
+
+        sender.send_chunk(0, b"data").expect("sends");
+        match receiver.receive() {
+            Err(LinkError::Unexpected { found }) => assert_eq!(found, "chunk"),
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_block_too_large_for_a_frame_is_refused() {
+        // The ceiling is the protocol's, and the refusal happens before anything is written rather than after.
+        let (a, _b) = connected();
+        let mut sender = link(a, PEER, LOCAL);
+        let too_big = vec![0u8; synra_protocol::limits::MAX_CHUNK_LEN + 1];
+        assert!(sender.send_chunk(0, &too_big).is_err());
+        // And the ceiling itself is accepted, because an off-by-one here would refuse a block the protocol allows.
+        let at_limit = vec![0u8; synra_protocol::limits::MAX_CHUNK_LEN];
+        assert!(sender.send_chunk(0, &at_limit).is_ok());
+    }
+
+    #[test]
+    fn a_ping_between_two_blocks_is_still_answered_invisibly() {
+        // The heartbeat stays the link's business on the data plane too: a caller reading blocks should never see one.
+        let (a, b) = connected();
+        let mut sender = link(a, PEER, LOCAL);
+        let mut receiver = link(b, LOCAL, PEER);
+
+        sender.send_chunk(0, b"before").expect("sends");
+        sender.ping().expect("sends");
+        sender.send_chunk(1, b"after").expect("sends");
+
+        match receiver.receive_inbound().expect("first") {
+            Inbound::Block { chunk_id, .. } => assert_eq!(chunk_id, 0),
+            other => panic!("expected a block, got {other:?}"),
+        }
+        match receiver.receive_inbound().expect("second") {
+            Inbound::Block { chunk_id, .. } => assert_eq!(chunk_id, 1, "the ping was not swallowed"),
+            other => panic!("expected a block, got {other:?}"),
+        }
+        // Exactly the two blocks were counted; the heartbeat is not a message.
+        assert_eq!(receiver.received(), 2);
+    }
+
+    #[test]
     fn a_frame_that_is_not_an_envelope_is_refused() {
-        // A `Chunk` outside a transfer is one with no transfer to belong to, and a `Hello` after the handshake is a peer
-        // that has lost track of where it is. Both are reported rather than routed.
+        // A `Hello` after the handshake is a peer that has lost track of where it is, and a `Bye` is one saying goodbye —
+        // neither is a message this reader carries. ★ A `Chunk` used to be in this list, and is not any more: the data
+        // plane travels here now, and a block is refused by `receive` specifically rather than as an unknown frame.
         let (a, b) = connected();
         let mut sender = link(a, PEER, LOCAL);
         let mut receiver = link(b, LOCAL, PEER);

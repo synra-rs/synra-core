@@ -77,7 +77,7 @@ pub use discovery::{
     Absorbed, CANDIDATE_TTL, Candidate, DiscoveryTable, UNUSABLE_NAME, announced_address,
 };
 pub use messaging::{ClipboardText, MessageError, TEXT_MIME, text_to};
-pub use link::{LinkError, PeerLink};
+pub use link::{Inbound, LinkError, PeerLink};
 pub use peer::{
     Flags, HandshakeError, LocalPeer, Negotiated, accept, agree, dial,
 };
