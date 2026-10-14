@@ -35,11 +35,17 @@
 )]
 
 pub mod db;
+pub mod records;
+pub mod sqlite;
 pub mod paths;
 pub mod sandbox;
 pub mod secrets;
 
 pub use db::{Health, Migration, MigrationOutcome, SchemaError, SchemaState, latest_version};
+pub use records::{
+    ConfigRow, DeviceRow, IdentityRow, PluginRow, RowError, SeenDeviceRow, columns,
+};
+pub use sqlite::{DbError, SynraDb, migration_versions};
 pub use paths::{PathError, Paths, is_within, sanitise_component};
 pub use sandbox::{CACHE, FILES, PluginDataRoot, SandboxMeta, SUBDIRECTORIES};
 pub use secrets::{

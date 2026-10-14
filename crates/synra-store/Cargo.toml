@@ -9,6 +9,10 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+# The engine the migrations are written for. `bundled` rather than the system's copy: a kernel that used whatever SQLite
+# the machine happened to have would behave differently on machines with different versions, and `foreign_keys` — the
+# pragma that makes the schema's `ON DELETE CASCADE` mean anything — is exactly the sort of thing a version can change.
+rusqlite = { version = "0.40", features = ["bundled"] }
 synra-protocol = { path = "../synra-protocol" }
 
 serde.workspace = true
