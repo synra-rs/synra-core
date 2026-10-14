@@ -118,8 +118,35 @@ impl DiscoveryService {
     ///
     /// As [`DiscoveryService::bind`].
     pub fn bind_with_interval(ours: DeviceAnnouncement, interval: Duration) -> Result<Self, SocketError> {
+        Self::bind_on(ours, synra_protocol::limits::DISCOVERY_PORT, interval)
+    }
+
+    /// Binds both sockets, with the responder on a chosen port.
+    ///
+    /// # Why the port is a parameter when the protocol fixes it
+    ///
+    /// Because a caller may have a reason to move it — two kernels on one host for a test, or a network where the
+    /// well-known port is taken by something else — and a flag that reported a port it did not use is worse than no flag.
+    /// The **default** is the protocol's constant, which is what keeps two devices able to find each other: a device that
+    /// listened somewhere else could not be found by anything that did not already know where to look.
+    ///
+    /// The querier stays on an ephemeral port, and that is not configurable. It is where the answers to this device's own
+    /// queries arrive, and it is deliberately *not* the shared port — a device that queried from there would have every
+    /// answer land on the socket it shares with every other device on the machine.
+    ///
+    /// # Errors
+    ///
+    /// [`SocketError::Bind`] when either socket cannot be bound.
+    pub fn bind_on(
+        ours: DeviceAnnouncement,
+        responder_port: u16,
+        interval: Duration,
+    ) -> Result<Self, SocketError> {
         Ok(Self {
-            responder: DiscoverySocket::bind_default()?,
+            responder: DiscoverySocket::bind(std::net::SocketAddr::from((
+                std::net::Ipv4Addr::UNSPECIFIED,
+                responder_port,
+            )))?,
             querier: DiscoverySocket::bind(std::net::SocketAddr::from((
                 std::net::Ipv4Addr::UNSPECIFIED,
                 0,

@@ -1259,6 +1259,7 @@ dependencies = [
  "synra-protocol",
  "synra-store",
  "thiserror",
+ "uuid",
 ]
 
 [[package]]

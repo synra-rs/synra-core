@@ -33,7 +33,16 @@ use synra_store::{PathError, Paths, sanitise_component};
 pub const DEFAULT_LISTEN_PORT: u16 = 47_100;
 
 /// The port discovery listens on by default.
-pub const DEFAULT_DISCOVERY_PORT: u16 = 47_101;
+///
+/// # Why this is the protocol's constant and not a number of its own
+///
+/// Because discovery only works if every device listens in the same place. The first version of this was `47_101`, chosen
+/// to sit next to the transport port — and it was **wrong twice over**: nothing ever bound it, because the discovery
+/// socket used the protocol's `32101` regardless, and a device that had actually honoured `47_101` would have been
+/// invisible to every device using the protocol's port.
+///
+/// The constant is *referenced* rather than repeated, so the flag, the socket and the protocol cannot drift apart again.
+pub const DEFAULT_DISCOVERY_PORT: u16 = synra_protocol::limits::DISCOVERY_PORT;
 
 /// Why a daemon will not start.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

@@ -47,6 +47,7 @@ pub mod lock;
 pub mod plan;
 pub mod runtime;
 pub mod startup;
+pub mod transport;
 
 pub use args::{ClaimFile, DaemonArgs, Parsed, refresh_claim};
 pub use lock::{

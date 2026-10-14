@@ -540,7 +540,27 @@ pub fn accept(
     flags: Flags,
     read_token: impl FnOnce(Option<&LinkToken>, DeviceId) -> PairingState,
 ) -> Result<(TcpStream, Negotiated), HandshakeError> {
-    let (mut stream, _) = listener.accept().map_err(|error| transport(&error))?;
+    let (stream, _) = listener.accept().map_err(|error| transport(&error))?;
+    accept_stream(stream, ours, sequence, flags, read_token)
+}
+
+/// Completes a handshake on a connection that was already taken.
+///
+/// # Why this is separate from [`accept`]
+///
+/// Because taking a connection is a queue pop and a handshake is a read with a timeout on it. A caller that has to hold
+/// something across the second — a lock, a loop — cannot express the difference if the two are one function.
+///
+/// # Errors
+///
+/// As [`accept`].
+pub fn accept_stream(
+    mut stream: TcpStream,
+    ours: &LocalPeer,
+    sequence: u64,
+    flags: Flags,
+    read_token: impl FnOnce(Option<&LinkToken>, DeviceId) -> PairingState,
+) -> Result<(TcpStream, Negotiated), HandshakeError> {
     if let Some(timeout) = flags.timeout {
         stream
             .set_write_timeout(Some(timeout))

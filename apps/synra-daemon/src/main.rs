@@ -119,12 +119,36 @@ fn serve(decision: &synra_daemon::Startup) -> ExitCode {
     );
     let host = synra_core::Host::new(identity.clone(), local_peer.clone());
 
+    // ★ The transport listener is what makes this device *reachable*. `dial` can only make outbound links, so without
+    // this a device could send and never receive — and the announcement above would name a port nothing is listening on.
+    // Bound here rather than in the library so the port is the one the announcement carries.
+    let (host, transport) = {
+        let mut host = host;
+        match synra_daemon::transport::bind(&mut host, plan.listen_port) {
+            Ok(address) => {
+                println!("transport on {address}");
+                (host, Ok(address))
+            }
+            Err(error) => {
+                // Reported rather than fatal, for the same reason discovery is: a device nobody can send to is worse than
+                // one that cannot start only in that it is quieter.
+                eprintln!("synra-daemon: nothing can connect to this device: {error}");
+                (host, Err(error))
+            }
+        }
+    };
+    let _ = transport;
+
     // ★ Discovery is bound *before* the control socket, and a failure is reported rather than fatal. A machine with no
     // network, a firewall, and a sandbox all produce the same thing — and a kernel that could not start without discovery
     // would be one that cannot run with its wireless switched off. What it means is that this device cannot be *found*;
     // every other command still works.
     let scan_until_ms = Arc::new(AtomicI64::new(0));
-    let discovery = match synra_core::DiscoveryService::bind(local_peer.announcement(plan.listen_port)) {
+    let discovery = match synra_core::DiscoveryService::bind_on(
+        local_peer.announcement(plan.listen_port),
+        plan.discovery_port,
+        synra_core::QUERY_INTERVAL,
+    ) {
         Ok(service) => {
             match service.responder_address() {
                 Ok(address) => println!("discovery on {address}"),
@@ -163,6 +187,20 @@ fn serve(decision: &synra_daemon::Startup) -> ExitCode {
     };
     println!("control socket {}", listener.path().display());
 
+    // ★ The stop flag is created **before** the threads that read it. The first version created it after the discovery
+    // worker and before the transport loop, which happened to work for one and not the other — an ordering that is a
+    // latent bug rather than a design, so the flag now comes first and everything that watches it starts below.
+    let beating = Arc::new(AtomicBool::new(true));
+
+    // ★ The transport listener runs on its own thread for the same reason discovery does: taking a connection is cheap but
+    // a handshake is not, and the control socket serves one client at a time. Each accepted connection is handed to its
+    // own thread, so a peer that is slow to say `Hello` delays nothing.
+    if runtime.host.lock().listen_nonblocking().is_ok() {
+        let peers = Arc::clone(&runtime.host);
+        let stop = Arc::clone(&beating);
+        std::thread::spawn(move || synra_daemon::transport::serve(&peers, &stop));
+    }
+
     // ★ Discovery runs on its own thread and the control loop only reads what it learned. `serve_one` blocks and the
     // listener cannot be cloned, so a scan inside a command would hold the control socket for its whole budget — and a
     // user's `status`, run to find out why things are slow, would wait for the network too.
@@ -181,7 +219,6 @@ fn serve(decision: &synra_daemon::Startup) -> ExitCode {
     // ★ The heartbeat runs on its own thread because the accept loop blocks. A refresh done from the loop would only
     // happen when a client connected — so a daemon nobody was talking to would look dead after the stale window, and the
     // next start would reclaim a directory a live daemon is serving.
-    let beating = Arc::new(AtomicBool::new(true));
     let heartbeat = {
         let stop = Arc::clone(&beating);
         let lock_path = plan.lock_path();

@@ -30,7 +30,7 @@
 //! [`synra_protocol::discovery::DiscoveryDatagram`]; what lives here is what to do with one once it has been parsed,
 //! which is the part with decisions in it.
 
-use std::net::{SocketAddr, TcpListener};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -172,6 +172,18 @@ impl Host {
         &self.identity
     }
 
+    /// Replaces the flags a handshake runs under.
+    ///
+    /// # Why a host built with `no_timeout` needs this
+    ///
+    /// Because the timeouts are a property of the *connection*, and a test that wants to prove a production handshake
+    /// completes has to be able to ask for one — while every other test in the module wants no waits at all, because a
+    /// test that hangs on a timeout is a test nobody can read the failure of. The alternative was a second constructor and
+    /// a helper for each, which is the same knob spelled twice.
+    pub const fn set_flags(&mut self, flags: Flags) {
+        self.flags = flags;
+    }
+
     /// This device's identifier.
     #[must_use]
     pub const fn device_id(&self) -> DeviceId {
@@ -294,6 +306,123 @@ impl Host {
             negotiated.device_id,
             negotiated.agreed,
             self.flags,
+        ))
+    }
+
+    /// Takes a connection if one is waiting, without handshaking on it.
+    ///
+    /// # Why this is separate from [`Host::accept`]
+    ///
+    /// Because the two halves are wildly different lengths. Taking a connection is a queue pop; a handshake is a read with
+    /// a six-second timeout on it. A loop that did both would hold the host for as long as a peer took to say `Hello` —
+    /// and a peer that connected and then went silent would freeze `devices` for six seconds, which is exactly the report a
+    /// user runs while something is wrong.
+    ///
+    /// So the loop pops here, cheaply, and hands the socket to a thread that handshakes on it.
+    ///
+    /// # Errors
+    ///
+    /// [`HostError::Bind`] when this host is not listening, or when the listener cannot accept. A would-block is reported
+    /// as `Ok(None)` rather than as an error, because "nothing is waiting" is not a failure.
+    pub fn try_accept(&self) -> Result<Option<TcpStream>, HostError> {
+        let Some(listener) = &self.listener else {
+            return Err(HostError::Bind {
+                address: SocketAddr::from(([0, 0, 0, 0], 0)),
+                why: "this host is not listening".to_owned(),
+            });
+        };
+        match listener.accept() {
+            Ok((stream, _)) => {
+                // ★ A connection accepted from a non-blocking listener **inherits** that mode on Windows, and every read on
+                // it then fails with `WSAEWOULDBLOCK` (10035) — which the link reports as a transport failure, so an
+                // incoming message looked like a broken connection. The listener has to be non-blocking for `try_accept` to
+                // be a poll; the connection must not be, because the handshake and the read loop on it are both ordinary
+                // blocking reads with timeouts of their own. Set back here rather than in the caller, because the caller
+                // receives a value and cannot fix it afterwards.
+                stream.set_nonblocking(false).map_err(|error| HostError::Bind {
+                    address: listener.local_addr().unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0))),
+                    why: format!("the connection could not be made blocking: {error}"),
+                })?;
+                Ok(Some(stream))
+            }
+            // Nothing waiting. Not a failure: the caller loops and asks again.
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
+            Err(error) => Err(HostError::Bind {
+                address: listener.local_addr().unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0))),
+                why: error.to_string(),
+            }),
+        }
+    }
+
+    /// Puts a stream into non-blocking mode, so [`Host::try_accept`] can be polled.
+    ///
+    /// # Errors
+    ///
+    /// [`HostError::Bind`] when the operating system refuses.
+    pub fn listen_nonblocking(&self) -> Result<(), HostError> {
+        let Some(listener) = &self.listener else {
+            return Err(HostError::Bind {
+                address: SocketAddr::from(([0, 0, 0, 0], 0)),
+                why: "this host is not listening".to_owned(),
+            });
+        };
+        listener.set_nonblocking(true).map_err(|error| HostError::Bind {
+            address: listener.local_addr().unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0))),
+            why: error.to_string(),
+        })
+    }
+
+    /// Completes a handshake on a connection that was already taken.
+    ///
+    /// # Errors
+    ///
+    /// [`HostError::Handshake`] when the exchange fails, and [`HostError::Incompatible`] when the two devices reach
+    /// agreement and the agreement is unusable.
+    pub fn complete_handshake(
+        &mut self,
+        stream: TcpStream,
+        now_ms: u64,
+        read_token: impl FnOnce(Option<&LinkToken>, DeviceId) -> PairingState,
+    ) -> Result<(PeerLink, Vec<RegistryEvent>), HostError> {
+        let address = stream.peer_addr().map_err(|error| HostError::Bind {
+            address: SocketAddr::from(([0, 0, 0, 0], 0)),
+            why: error.to_string(),
+        })?;
+        let (stream, negotiated) =
+            crate::peer::accept_stream(stream, &self.local, now_ms, self.flags, read_token)?;
+
+        if !negotiated.is_usable() {
+            return Err(HostError::Incompatible {
+                missing: format!("{:?}", negotiated.agreed.missing_required),
+            });
+        }
+
+        let (key, mut events) = self.sessions.open(
+            SessionId::new(),
+            negotiated.device_id,
+            negotiated.platform,
+            LinkToken::from_bytes([0u8; LinkToken::LEN]),
+            now_ms,
+        );
+        if let Ok(ready) = self.sessions.agree(key, negotiated.agreed.clone(), now_ms) {
+            events.extend(ready);
+        }
+        self.discovery.handshaked(
+            negotiated.device_id,
+            address,
+            Some(&negotiated.display_name),
+            millis_reading(now_ms),
+        );
+
+        Ok((
+            PeerLink::new(
+                stream,
+                self.identity.device_id,
+                negotiated.device_id,
+                negotiated.agreed,
+                self.flags,
+            ),
+            events,
         ))
     }
 
@@ -650,6 +779,84 @@ mod tests {
     }
 
     // ── Two hosts, end to end ─────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn a_handshake_completes_over_a_conversation_on_two_threads() {
+        // ★ The isolated question, with nothing else in it: does `dial` and `accept` complete when each side is on its own
+        // thread? The daemon's test of the same path hangs, and this is what separates the handshake from everything the
+        // daemon adds around it — a session registry, a discovery table, a listener that had to be set non-blocking.
+        let (mut server, _server_db, address) = listening(A, "Laptop");
+        let (mut client, _client_db) = host(B, "Phone");
+
+        let accepting = std::thread::spawn(move || {
+            server.accept(1_000, |_, _| PairingState::Unknown).map(|(link, _)| link.peer())
+        });
+
+        let dialled = client.dial(device(A), address, None, 1_000).map(|link| link.peer());
+        let accepted = accepting.join().expect("the acceptor finished");
+
+        assert_eq!(dialled.expect("dials"), device(A));
+        assert_eq!(accepted.expect("accepts"), device(B));
+    }
+
+    #[test]
+    fn a_handshake_completes_when_both_sides_are_on_production_flags() {
+        // ★ The second isolated question, and the one the daemon's failing test cannot separate: does a handshake still
+        // complete when both ends have a **read timeout** on their sockets? `Flags::production` sets one, the daemon's
+        // inbound handler sets another, and a deadline that fires *during* a handshake looks exactly like a peer that
+        // connected and said nothing — which is the shape of the hang.
+        let (mut host_a, _a_db, address) = listening(A, "Laptop");
+        let (mut host_b, _b_db) = host(B, "Phone");
+        // Both sides as a real pair: one process dials and the other answers, each with the protocol's own deadlines.
+        host_a.set_flags(Flags::production());
+        host_b.set_flags(Flags::production());
+
+        let serving = std::thread::spawn(move || {
+            host_a
+                .accept(1_000, |_, _| PairingState::Unknown)
+                .map(|(link, _)| link.peer())
+        });
+        let dialled = host_b
+            .dial(device(A), address, None, 1_000)
+            .map(|link| link.peer());
+
+        assert_eq!(dialled.expect("dials with a production timeout"), device(A));
+        assert_eq!(serving.join().expect("finished").expect("accepts"), device(B));
+    }
+
+    #[test]
+    fn a_non_blocking_listener_still_accepts_a_connection() {
+        // ★ The isolated question, with no handshake and no threads: does a non-blocking listener accept a connection at
+        // all? Three versions of a daemon test appeared to prove the opposite, and none of them could separate this from
+        // the conversation that follows it.
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("binds");
+        let address = listener.local_addr().expect("an address");
+        listener.set_nonblocking(true).expect("non-blocking");
+
+        // Nothing is waiting yet, which is what makes `try_accept` a poll rather than a block.
+        match listener.accept() {
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            other => panic!("expected a would-block on an idle listener, got {other:?}"),
+        }
+
+        // Somebody connects, and polling finds them.
+        let _dialer = TcpStream::connect(address).expect("connects");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    // And the mode can be turned back off on the accepted connection, which Windows requires before any
+                    // ordinary read on it will work.
+                    stream.set_nonblocking(false).expect("blocking");
+                    return;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(other) => panic!("unexpected accept error: {other}"),
+            }
+            assert!(std::time::Instant::now() < deadline, "the connection was never accepted");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
 
     #[test]
     fn two_hosts_complete_a_handshake_and_record_a_session() {
