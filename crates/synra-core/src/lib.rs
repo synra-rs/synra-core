@@ -56,6 +56,7 @@ pub mod discovery;
 pub mod host;
 pub mod identity;
 pub mod intent;
+pub mod kernel;
 pub mod link;
 pub mod messaging;
 pub mod pairing;
@@ -94,6 +95,9 @@ pub use messaging::{
 pub use link::{Inbound, LinkError, PeerLink};
 pub use peer::{
     Flags, HandshakeError, LocalPeer, Negotiated, accept, agree, dial,
+};
+pub use kernel::{
+    Kernel, KernelConfig, KernelError, KernelEvent, KernelSnapshot, NodeRole,
 };
 pub use identity::{
     DEFAULT_DISPLAY_NAME, Identity, MAX_DISPLAY_NAME_LEN, NameError, RenameError, check_display_name,

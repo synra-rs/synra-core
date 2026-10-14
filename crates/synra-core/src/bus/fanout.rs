@@ -150,8 +150,13 @@ impl<E: Clone> EventBus<E> {
 
     /// Takes everything waiting for a subscriber.
     ///
-    /// Returns [`Delivery::Events`] with an empty vector when nothing is waiting, which is not an error: a subscriber
-    /// that reads after every notification finds one event and a subscriber woken spuriously finds none.
+    /// Returns `None` when there is **nothing to hand over**: no events waiting and no loss to report. That is a poll
+    /// rather than a wait, and `None` is what makes a drain terminate — a `while let Some(delivery) = take(id)` around a
+    /// call that answered `Some` with an empty batch is an unbounded loop, so a caller that wrote one would have a
+    /// *hang* rather than a failing test.
+    ///
+    /// [`Delivery::Behind`] is returned even when no events survived, because the **loss** is the thing being handed
+    /// over: a subscriber told nothing after an overflow would go on drawing a picture with a hole in it.
     pub fn take(&self, id: SubscriberId) -> Option<Delivery<E>> {
         // ★ The lock is released before the `Delivery` is built. Clippy's `significant_drop_in_scrutinee` is about
         // resource contention rather than about correctness, and it is right here: a guard held while a `Vec` is moved
@@ -159,6 +164,9 @@ impl<E: Clone> EventBus<E> {
         let (events, overflowed, missed) = self.drain(id)?;
         if overflowed {
             return Some(Delivery::Behind { events, missed });
+        }
+        if events.is_empty() {
+            return None;
         }
         Some(Delivery::Events(events))
     }

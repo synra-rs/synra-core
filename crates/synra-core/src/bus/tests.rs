@@ -85,7 +85,9 @@ fn taking_empties_the_queue() {
     let id = bus.subscribe();
     bus.emit(Tick(1));
     assert_eq!(bus.take(id).expect("id").events(), &[Tick(1)]);
-    assert_eq!(bus.take(id).expect("id").events(), &[] as &[Tick]);
+    // ★ And the second read answers `None` rather than an empty batch, which is what makes a drain terminate: a `while
+    // let Some(..)` around a call that answered `Some(vec![])` would loop for ever rather than fail.
+    assert!(bus.take(id).is_none(), "an empty queue is nothing to hand over");
 }
 
 #[test]
@@ -186,10 +188,10 @@ fn the_overflow_is_reported_once_and_the_total_is_kept() {
 
     let first = bus.take(id).expect("id");
     assert_eq!(first.missed(), 1);
-    // Nothing new was emitted, so the second read has nothing and is not `Behind`.
-    let second = bus.take(id).expect("id");
-    assert!(!second.must_refresh(), "{second:?}");
-    // But the total survives, for a diagnostic.
+    // Nothing new was emitted, so the second read has nothing to hand over at all — and in particular is not reported
+    // as `Behind` a second time, which is what would make one overflow look like several.
+    assert!(bus.take(id).is_none(), "the loss was already reported");
+    // The total survives, for a diagnostic.
     assert_eq!(bus.report(id).expect("id").dropped, 1);
 }
 
