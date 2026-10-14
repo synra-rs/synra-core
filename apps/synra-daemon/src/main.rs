@@ -6,6 +6,7 @@
 
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::sync::atomic::AtomicI64;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use synra_control::Listener;
@@ -116,7 +117,28 @@ fn serve(decision: &synra_daemon::Startup) -> ExitCode {
         synra_core::platform_of_os(std::env::consts::OS),
         env!("CARGO_PKG_VERSION"),
     );
-    let host = synra_core::Host::new(identity.clone(), local_peer);
+    let host = synra_core::Host::new(identity.clone(), local_peer.clone());
+
+    // ★ Discovery is bound *before* the control socket, and a failure is reported rather than fatal. A machine with no
+    // network, a firewall, and a sandbox all produce the same thing — and a kernel that could not start without discovery
+    // would be one that cannot run with its wireless switched off. What it means is that this device cannot be *found*;
+    // every other command still works.
+    let scan_until_ms = Arc::new(AtomicI64::new(0));
+    let discovery = match synra_core::DiscoveryService::bind(local_peer.announcement(plan.listen_port)) {
+        Ok(service) => {
+            match service.responder_address() {
+                Ok(address) => println!("discovery on {address}"),
+                Err(error) => eprintln!("synra-daemon: {error}"),
+            }
+            Some(Arc::new(parking_lot::Mutex::new(service)))
+        }
+        Err(error) => {
+            // Not fatal, and said out loud: a user whose device cannot be found needs to know why, and "discovery is not
+            // running" is the answer to that rather than a line in a log nobody reads.
+            eprintln!("synra-daemon: discovery is not running: {error}");
+            None
+        }
+    };
 
     let runtime = Runtime {
         version: env!("CARGO_PKG_VERSION").to_owned(),
@@ -126,7 +148,9 @@ fn serve(decision: &synra_daemon::Startup) -> ExitCode {
         discovery_port: plan.discovery_port,
         started_at_ms: now_ms(),
         identity,
-        host: parking_lot::Mutex::new(host),
+        host: Arc::new(parking_lot::Mutex::new(host)),
+        discovery: discovery.clone(),
+        scan_until_ms: Arc::clone(&scan_until_ms),
         db,
     };
 
@@ -138,6 +162,21 @@ fn serve(decision: &synra_daemon::Startup) -> ExitCode {
         }
     };
     println!("control socket {}", listener.path().display());
+
+    // ★ Discovery runs on its own thread and the control loop only reads what it learned. `serve_one` blocks and the
+    // listener cannot be cloned, so a scan inside a command would hold the control socket for its whole budget — and a
+    // user's `status`, run to find out why things are slow, would wait for the network too.
+    if let Some(discovery) = &discovery {
+        let service = Arc::clone(discovery);
+        let peers = Arc::clone(&runtime.host);
+        let deadline = Arc::clone(&scan_until_ms);
+        // ★ The thread runs for the process's lifetime and is not joined. Nothing needs to end it early: the loop reads a
+        // deadline that expires on its own, and the process is what stops it. There is no join handle to keep either —
+        // dropping one detaches the thread, which is exactly what is wanted.
+        std::thread::spawn(move || {
+            synra_core::worker::run(&service, &peers, &deadline, synra_store::sqlite::now_ms);
+        });
+    }
 
     // ★ The heartbeat runs on its own thread because the accept loop blocks. A refresh done from the loop would only
     // happen when a client connected — so a daemon nobody was talking to would look dead after the stale window, and the

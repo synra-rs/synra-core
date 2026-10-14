@@ -473,7 +473,7 @@ mod tests {
         fn status(&self) -> Result<serde_json::Value, Refusal> {
             self.answer("status")
         }
-        fn devices(&self, _include_unpaired: bool) -> Result<serde_json::Value, Refusal> {
+        fn devices(&self, _include_unpaired: bool, _scan_ms: Option<u64>) -> Result<serde_json::Value, Refusal> {
             self.answer("devices")
         }
         fn send_text(&self, _to: &str, _text: &str) -> Result<serde_json::Value, Refusal> {
@@ -640,7 +640,7 @@ mod tests {
         client.handshake().expect("handshakes");
         for (request, kind) in [
             (Request::Status, "status"),
-            (Request::Devices { include_unpaired: true }, "devices"),
+            (Request::Devices { include_unpaired: true, scan_ms: None }, "devices"),
             (Request::Plugins, "plugins"),
             (Request::Logs { lines: 5, verbose: false }, "logs"),
         ] {

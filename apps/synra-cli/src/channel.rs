@@ -68,9 +68,16 @@ pub fn question_for(
         // a JSON document, which is the wrong answer to the question they asked.
         Command::Status => Some(Question { request: Request::Status, shape }),
         Command::Devices(args) => Some(Question {
-            // ★ The flag is carried, not dropped. A `--all` that did not arrive is a command whose flag is silently
-            // ignored, and the output looks plausible either way.
-            request: Request::Devices { include_unpaired: args.all },
+            // ★ Both flags are carried, not dropped. A `--all` or a `--scan-ms` that did not arrive is a command whose
+            // flag is silently ignored, and the output looks plausible either way — which is the failure mode a
+            // client-side sleep would have: it would look like a scan and be a delay.
+            //
+            // `--cached` means "do not scan", and it wins over `--scan-ms` because it is the more specific request: a
+            // client that said both asked for a scan and then said not to.
+            request: Request::Devices {
+                include_unpaired: args.all,
+                scan_ms: if args.cached { None } else { args.scan_ms },
+            },
             shape,
         }),
         Command::Send(args) => match (&args.text, &args.file) {
@@ -373,11 +380,17 @@ mod tests {
         // either way — so the assertion is on the operand rather than on the shape of the question.
         let question = question_for(&Command::Devices(devices_args(true)), None, || None)
             .expect("a question");
-        assert_eq!(question.request, Request::Devices { include_unpaired: true });
+        assert_eq!(
+            question.request,
+            Request::Devices { include_unpaired: true, scan_ms: None }
+        );
 
         let question = question_for(&Command::Devices(devices_args(false)), None, || None)
             .expect("a question");
-        assert_eq!(question.request, Request::Devices { include_unpaired: false });
+        assert_eq!(
+            question.request,
+            Request::Devices { include_unpaired: false, scan_ms: None }
+        );
     }
 
     #[test]

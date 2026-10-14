@@ -93,10 +93,17 @@ pub trait Kernel {
 
     /// The devices the kernel has seen, as one JSON value.
     ///
+    /// `scan_ms` is how long to look on the network before answering, and `None` means "answer from what you already
+    /// know". It is a parameter rather than something the caller does because only the kernel holds a discovery socket.
+    ///
     /// # Errors
     ///
     /// As [`Kernel::status`].
-    fn devices(&self, include_unpaired: bool) -> Result<serde_json::Value, Refusal>;
+    fn devices(
+        &self,
+        include_unpaired: bool,
+        scan_ms: Option<u64>,
+    ) -> Result<serde_json::Value, Refusal>;
 
     /// Sends text to a device.
     ///
@@ -264,7 +271,7 @@ impl Server {
 
         let result = match request {
             Request::Status => kernel.status(),
-            Request::Devices { include_unpaired } => kernel.devices(*include_unpaired),
+            Request::Devices { include_unpaired, scan_ms } => kernel.devices(*include_unpaired, *scan_ms),
             Request::SendText { to, text } => kernel.send_text(to, text),
             Request::SendFile { to, path } => kernel.send_file(to, path),
             Request::Plugins => kernel.plugins(),
@@ -336,8 +343,8 @@ mod tests {
         fn status(&self) -> Result<serde_json::Value, Refusal> {
             self.status.clone()
         }
-        fn devices(&self, include_unpaired: bool) -> Result<serde_json::Value, Refusal> {
-            self.asked.borrow_mut().push((include_unpaired, 0, false));
+        fn devices(&self, include_unpaired: bool, scan_ms: Option<u64>) -> Result<serde_json::Value, Refusal> {
+            self.asked.borrow_mut().push((include_unpaired, scan_ms.unwrap_or(0) as usize, false));
             self.devices.clone()
         }
         fn send_text(&self, _to: &str, _text: &str) -> Result<serde_json::Value, Refusal> {
@@ -466,7 +473,7 @@ mod tests {
             &kernel,
             &[
                 hello(),
-                Request::Devices { include_unpaired: true },
+                Request::Devices { include_unpaired: true, scan_ms: Some(750) },
                 Request::Logs { lines: 25, verbose: true },
             ],
         );
@@ -475,7 +482,7 @@ mod tests {
 
         // And the operands arrived rather than being dropped by the routing.
         let asked = kernel.asked.borrow();
-        assert_eq!(asked[0], (true, 0, false), "devices did not get its flag");
+        assert_eq!(asked[0], (true, 750, false), "devices did not get its flag and its scan budget");
         assert_eq!(asked[1], (false, 25, true), "logs did not get its operands");
     }
 
@@ -488,7 +495,7 @@ mod tests {
             &[
                 hello(),
                 Request::Status,
-                Request::Devices { include_unpaired: false },
+                Request::Devices { include_unpaired: false, scan_ms: None },
                 Request::SendText { to: "dev_a".to_owned(), text: "hi".to_owned() },
                 Request::SendFile { to: "dev_a".to_owned(), path: "/tmp/a".to_owned() },
                 Request::Plugins,

@@ -140,6 +140,21 @@ pub enum Request {
     Devices {
         /// Whether to include devices that are not paired.
         include_unpaired: bool,
+        /// How long to scan the network before answering, in milliseconds.
+        ///
+        /// # Why the kernel scans rather than the client waiting
+        ///
+        /// Because only the kernel has the discovery socket. A client that slept for this long and then asked would get
+        /// exactly the table it would have got without asking — the sleep would look like a scan and be a delay. Zero or
+        /// absent means "answer from what you already know", which is what a cached listing is.
+        ///
+        /// # Why it is optional
+        ///
+        /// So a client that knows nothing about scanning sends a request this kernel still understands. The protocol's
+        /// rule for evolution is that a peer may say a little more, and an absent field is an older client saying nothing
+        /// rather than saying zero.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        scan_ms: Option<u64>,
     },
 
     /// Send text to a device.
@@ -435,7 +450,7 @@ mod tests {
 
     #[test]
     fn a_message_round_trips() {
-        let request = Request::Devices { include_unpaired: true };
+        let request = Request::Devices { include_unpaired: true, scan_ms: None };
         assert_eq!(round_trip(&request), request);
     }
 
@@ -446,7 +461,7 @@ mod tests {
         let requests = [
             Request::Hello { version: PROTOCOL_VERSION },
             Request::Status,
-            Request::Devices { include_unpaired: false },
+            Request::Devices { include_unpaired: false, scan_ms: None },
             Request::SendText { to: "dev_a".to_owned(), text: "hi".to_owned() },
             Request::SendFile { to: "dev_a".to_owned(), path: "/tmp/a".to_owned() },
             Request::Plugins,
@@ -680,7 +695,7 @@ mod tests {
         assert!(Request::Hello { version: 99 }.is_handshake());
         for request in [
             Request::Status,
-            Request::Devices { include_unpaired: false },
+            Request::Devices { include_unpaired: false, scan_ms: None },
             Request::Plugins,
             Request::Logs { lines: 1, verbose: false },
         ] {
@@ -694,7 +709,7 @@ mod tests {
         let requests = [
             Request::Hello { version: 1 },
             Request::Status,
-            Request::Devices { include_unpaired: false },
+            Request::Devices { include_unpaired: false, scan_ms: None },
             Request::SendText { to: String::new(), text: String::new() },
             Request::SendFile { to: String::new(), path: String::new() },
             Request::Plugins,

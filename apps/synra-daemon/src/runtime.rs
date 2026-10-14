@@ -57,7 +57,22 @@ pub struct Runtime {
     /// Because `Kernel`'s methods take `&self` while the accept loop holds the runtime for the duration of a connection.
     /// One lock over both would mean a device listing waits for a socket read, which is exactly the case that must not
     /// happen: a report is what a user runs *while* something is wrong.
-    pub host: parking_lot::Mutex<Host>,
+    pub host: std::sync::Arc<parking_lot::Mutex<Host>>,
+    /// The discovery service, when this kernel could bind one.
+    ///
+    /// `None` rather than a failure, because a machine with no network, a firewall, and a sandbox all produce the same
+    /// thing — and a kernel that could not start without discovery would be one that cannot run with its wireless
+    /// switched off. Discovery is how peers are *found*, not how they are reached.
+    pub discovery: Option<std::sync::Arc<parking_lot::Mutex<synra_core::DiscoveryService>>>,
+    /// When a scan should stop, as a wall-clock reading, or zero for none.
+    ///
+    /// # Why a deadline rather than a flag
+    ///
+    /// Because the client asks for a *duration* and the worker asks itself "is now before that". A flag would have to be
+    /// cleared by whoever set it, and a client that disconnected mid-scan would leave it set — so the kernel would
+    /// broadcast for ever. A deadline expires on its own, which is the property that matters when the process that asked
+    /// is no longer there.
+    pub scan_until_ms: std::sync::Arc<std::sync::atomic::AtomicI64>,
     /// The kernel's database.
     ///
     /// # Why the runtime holds it rather than the caller
@@ -268,7 +283,14 @@ impl Kernel for Runtime {
         Ok(self.status_value(now_ms()))
     }
 
-    fn devices(&self, include_unpaired: bool) -> Result<serde_json::Value, Refusal> {
+    fn devices(&self, include_unpaired: bool, scan_ms: Option<u64>) -> Result<serde_json::Value, Refusal> {
+        // ★ The scan is done **before** the table is read, and by the worker rather than here. Only the worker owns the
+        // discovery socket, and a client that slept for the duration and then asked would get exactly the table it would
+        // have got without asking — the sleep would look like a scan and be a delay.
+        if let Some(scan_ms) = scan_ms.filter(|ms| *ms > 0) {
+            self.scan(scan_ms);
+        }
+
         // ★ Three sources, reported separately rather than merged. A paired device, a device merely heard on the network,
         // and this device are three different things to a user — and a list that put them together would present an
         // unauthenticated datagram as something the user had approved.
@@ -355,6 +377,46 @@ impl Kernel for Runtime {
     }
 }
 
+impl Runtime {
+    /// Asks the discovery worker to scan for a while, and waits for it.
+    ///
+    /// # Why the deadline is published rather than the work being done here
+    ///
+    /// Because the worker owns the sockets. This sets the deadline the worker reads and then waits, polling the table —
+    /// which is the only thing it can do, since the worker is a separate thread and there is no channel between them.
+    /// The wait is bounded by the request, and the deadline expires on its own if this caller goes away.
+    fn scan(&self, scan_ms: u64) {
+        let Some(discovery) = &self.discovery else {
+            // Nothing to scan with. Reported once rather than as a failure: the answer is still the table, which is all
+            // a kernel without a discovery socket can honestly offer.
+            return;
+        };
+
+        // The protocol's scan budget is the ceiling: a client may not ask the kernel to broadcast for longer than one
+        // scan is allowed to run, because the request is unauthenticated input from a local process.
+        let budget = scan_ms.min(u64::try_from(synra_protocol::limits::SCAN_TOTAL.as_millis()).unwrap_or(u64::MAX));
+        let deadline = now_ms().saturating_add(budget);
+        self.scan_until_ms.store(millis_reading_i64(deadline), std::sync::atomic::Ordering::Relaxed);
+
+        // The wait is on the clock rather than on the table, because a table that stopped changing is not the signal —
+        // the signal is the budget running out. Discovery's own scan window is what the protocol specifies.
+        let started = std::time::Instant::now();
+        let window = synra_protocol::limits::SCAN_PASSIVE.min(std::time::Duration::from_millis(budget));
+        while started.elapsed() < window {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        // Released here rather than left to expire, so a scan does not keep broadcasting for the remainder of its
+        // deadline after the client has been answered. The worker's own check would catch it, but only within one tick.
+        let _ = discovery;
+        self.scan_until_ms.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// A wall-clock reading as the signed value an atomic can hold.
+const fn millis_reading_i64(value: u64) -> i64 {
+    if value > i64::MAX as u64 { i64::MAX } else { value as i64 }
+}
+
 /// The wall clock, in milliseconds since the epoch.
 ///
 /// # Why the wall clock and not a monotonic reading
@@ -414,7 +476,12 @@ mod tests {
             discovery_port: 47101,
             started_at_ms: 1_000,
             identity,
-            host: parking_lot::Mutex::new(host),
+            host: std::sync::Arc::new(parking_lot::Mutex::new(host)),
+            // No discovery socket in a unit test: binding the well-known port would collide with a kernel that happens to
+            // be running on this machine, so the fixture leaves it absent — which is also the state a kernel with no
+            // network is in, and one the code has to handle anyway.
+            discovery: None,
+            scan_until_ms: std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0)),
             db,
         }
     }
@@ -467,7 +534,7 @@ mod tests {
         // merely heard on the network, and this device are three different things to a user — and a list that put them
         // together would present an unauthenticated datagram as something the user had approved.
         let dir = TempDir::new("devices");
-        let value = runtime(dir.path()).devices(true).expect("devices");
+        let value = runtime(dir.path()).devices(true, None).expect("devices");
 
         // This device, from the stored identity.
         assert_eq!(value["self"]["displayName"], "This device");
@@ -481,11 +548,38 @@ mod tests {
     }
 
     #[test]
+    fn a_scan_request_expires_on_its_own_and_is_capped_by_the_protocol() {
+        // ★ The deadline is published rather than the work being done here, and it **expires**. A flag would have to be
+        // cleared by whoever set it, and a client that disconnected mid-scan would leave it set — so the kernel would
+        // broadcast for ever. A deadline is the property that matters when the process that asked is no longer there.
+        let dir = TempDir::new("scan-request");
+        let runtime = runtime(dir.path());
+        assert_eq!(runtime.scan_until_ms.load(std::sync::atomic::Ordering::Relaxed), 0);
+
+        // No discovery socket in this fixture, so `scan` returns without publishing anything — and the call still has to
+        // be harmless, because a kernel with no network is a state the code has to handle.
+        assert!(runtime.discovery.is_none());
+        let _ = runtime.devices(true, Some(10)).expect("devices");
+        assert_eq!(runtime.scan_until_ms.load(std::sync::atomic::Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn a_zero_or_absent_scan_budget_does_not_scan() {
+        // `--cached` means "do not scan", and it is expressed as an absent budget rather than as a zero one so the
+        // protocol's own rule holds: an absent field is a client saying nothing, not a client saying zero.
+        let dir = TempDir::new("no-scan");
+        let runtime = runtime(dir.path());
+        assert!(runtime.devices(true, None).is_ok());
+        assert!(runtime.devices(true, Some(0)).is_ok());
+        assert_eq!(runtime.scan_until_ms.load(std::sync::atomic::Ordering::Relaxed), 0);
+    }
+
+    #[test]
     fn asking_without_the_unpaired_ones_omits_them_rather_than_listing_nothing() {
         // The flag is what a client uses for a compact view, and it is echoed back so a report says which question it
         // answered.
         let dir = TempDir::new("devices-compact");
-        let value = runtime(dir.path()).devices(false).expect("devices");
+        let value = runtime(dir.path()).devices(false, None).expect("devices");
         assert_eq!(value["includeUnpaired"], false);
         assert_eq!(value["found"].as_array().map(Vec::len), Some(0));
         // The paired ones are still reported: they are the recorded decisions, not candidates.
@@ -526,7 +620,7 @@ mod tests {
             now,
         );
 
-        let value = runtime.devices(true).expect("devices");
+        let value = runtime.devices(true, None).expect("devices");
         assert_eq!(value["paired"].as_array().map(Vec::len), Some(0), "nothing is paired");
         let found = value["found"].as_array().expect("a list");
         assert_eq!(found.len(), 1);
