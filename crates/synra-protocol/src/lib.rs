@@ -23,8 +23,7 @@
 //! # Design rules
 //!
 //! These are enforced by review and by tests, and they are the reason several types look the way
-//! they do. The reasoning lives in `design-docs/04-wire-protocol.md` and
-//! `design-docs/26-core-stability-and-perf.md`.
+//! they do.
 //!
 //! 1. **A structural problem closes the link.** The frame decoder never skips a bad frame; frame
 //!    boundaries cannot be recovered once lost, and a decoder that pretends otherwise turns a

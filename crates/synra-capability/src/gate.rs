@@ -1,4 +1,4 @@
-//! The call gate. (Implementation follows; see design-docs/10-capability-and-sandbox.md.)
+//! The call gate.
 
 /// A decision from the call gate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

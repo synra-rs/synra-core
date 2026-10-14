@@ -74,8 +74,8 @@ missing_docs = "warn"
 unreachable_pub = "warn"
 unused_qualifications = "warn"
 
-# ★ 严格 lint 集，沿用本机 clash-verge-rev 的做法。
-# 内核不许 panic / unwrap / expect：所有失败路径都要给出结构化错误。
+# 严格 lint 集。内核不许 panic / unwrap / expect：所有失败路径都要给出结构化错误。
+# 为什么这样严，以及改动时要注意什么，见 AGENT.md。
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
 # 正确性与可疑写法直接拒绝
@@ -91,7 +91,7 @@ await_holding_lock = "deny"
 async_yields_async = "deny"
 future_not_send = "deny"
 large_futures = "deny"
-# 性能与分配（[26 §4.2](../design-docs/26-core-stability-and-perf.md)）
+# 性能与分配
 redundant_clone = "deny"
 needless_pass_by_value = "deny"
 significant_drop_tightening = "deny"

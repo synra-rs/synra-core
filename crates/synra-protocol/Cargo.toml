@@ -10,7 +10,7 @@ authors.workspace = true
 keywords = ["synra", "protocol", "lan"]
 categories = ["network-programming"]
 
-# ★ 稳定层（[06 §7.1.2](../../design-docs/06-workspace-layout.md)）：遵守 SemVer。
+# ★ 稳定层：遵守 SemVer，破坏性变更需要 major 版本、ADR 与迁移说明（见 STABILITY.md）。
 # ★ 无 IO 依赖是硬约束：tokio / rusqlite / wasmtime / tauri 一律不得出现。
 [dependencies]
 serde.workspace = true

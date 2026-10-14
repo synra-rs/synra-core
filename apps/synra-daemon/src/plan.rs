@@ -12,7 +12,7 @@
 //!
 //! # The daemon has no interface, and that is the point
 //!
-//! [ADR-016](../../../design-docs/20-adr.md) says the kernel must work without a window, and this binary is the half
+//! The kernel must work without a window, and this binary is the half
 //! of that claim which has no window at all. So the platform is [`HeadlessPlatform`]: every action that would need a
 //! user — opening a URL, writing the clipboard, simulating a keystroke — returns `Unsupported` rather than pretending
 //! to have happened. A daemon that silently did nothing when a plugin asked to open a browser would be a daemon whose

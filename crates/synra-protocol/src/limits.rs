@@ -13,8 +13,8 @@
 //! # Changing a value here
 //!
 //! A timing change is a protocol change. Two peers with different values still interoperate — the
-//! timeouts are local decisions — but the *behaviour* differs, so a change here needs a note in
-//! `design-docs/04-wire-protocol.md` and a `Feature` if it alters what is sent.
+//! timeouts are local decisions — but the *behaviour* differs, so a change here is a protocol change
+//! and needs a `Feature` if it alters what is sent.
 
 use core::time::Duration;
 

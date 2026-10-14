@@ -7,7 +7,7 @@
 //! It is a **usable tool**: list the devices, send a file, manage plugins, read the log. A user on a terminal with no
 //! interface installed gets the same kernel.
 //!
-//! And it is the **proof that the kernel needs no interface**. [ADR-016](../../../design-docs/20-adr.md) says the
+//! And it is the **proof that the kernel needs no interface**. The
 //! kernel must be usable without a window, and the way to check a claim like that is to build the thing that would
 //! break if it were false. If a command here cannot work without Tauri, or needs a type the interface also defines,
 //! the kernel's boundary has broken — which is why this crate shares nothing with the application but the kernel's

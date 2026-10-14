@@ -2,7 +2,7 @@
 //!
 //! # What it exists for
 //!
-//! [ADR-016](../../../design-docs/20-adr.md) says the kernel must work without a window, and the way to check a claim
+//! The kernel must work without a window, and the way to check a claim
 //! like that is to build the thing that would break if it were false. This binary has no window at all: no WebView, no
 //! Tauri, no framework. If it compiles and runs, the kernel's boundary is clean.
 //!

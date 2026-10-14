@@ -1,7 +1,8 @@
 //! The message layer: who sent what to whom.
 //!
 //! An envelope is the fixed set of fields that wraps every message. It is the contract between two
-//! peers, so it changes only through the process in `design-docs/04-wire-protocol.md` §9.
+//! peers, so it changes only by the protocol's own evolution rules: a field may be added, an event
+//! name may be added, and a field's *meaning* may not change without raising the protocol number.
 //!
 //! # Nine fields, and no more
 //!

@@ -23,7 +23,7 @@
 //!
 //! Comparison here is by string, which is correct but not free. Routing does not use it: the host
 //! resolves a name to a small integer once and looks that up thereafter, so the per-frame cost is an
-//! array index rather than a string compare. See `design-docs/04-wire-protocol.md` §6.8.
+//! array index rather than a string compare.
 use core::fmt;
 
 use compact_str::CompactString;
