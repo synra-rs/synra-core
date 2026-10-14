@@ -175,4 +175,82 @@ mod tests {
         assert_eq!(HOST_INTERFACE, "synra:plugin/host");
         assert_eq!(PLUGIN_WORLD, "synra:plugin/plugin");
     }
+
+    #[test]
+    fn every_host_function_the_contract_declares_has_a_binding_and_an_import_name() {
+        // ★ The test that keeps the SDK and the contract the same size. Both files are generated from
+        // `wit/synra-plugin.wit` by the same tool, so a function added to the contract without regenerating the SDK is
+        // a function a plugin cannot call — and the symptom would be a plugin author concluding the host does not
+        // provide something it plainly does.
+        //
+        // The contract's table is read as **text** rather than through the crate that owns it: `synra-plugin-host`
+        // depends on this one through the workspace, and a dev-dependency back on it would be a cycle. What is being
+        // compared is a generated artifact against another generated artifact, which is a text comparison by nature.
+        let table = std::fs::read_to_string(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../synra-plugin-host/src/generated/capability_table.rs"),
+        )
+        .expect("the contract's capability table");
+        // The contract's table lists full import names and the SDK's constants are full import names, so they are
+        // compared as they are — a bare-name comparison would pass for a binding keyed by the wrong interface.
+        let declared: Vec<String> = table
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("(\"synra:plugin/host#"))
+            .filter_map(|rest| rest.split('"').next())
+            .map(|name| format!("synra:plugin/host#{name}"))
+            .collect();
+        assert_eq!(declared.len(), 35, "the contract's own count: {}", declared.len());
+
+        let generated = [
+            generated::imports::ENV_SDK_VERSION_IMPORT,
+            generated::imports::ENV_HOST_KIND_IMPORT,
+            generated::imports::ENV_LOCALE_IMPORT,
+            generated::imports::ENV_DARK_MODE_IMPORT,
+            generated::imports::ENV_CAN_IMPORT,
+            generated::imports::LOG_IMPORT,
+            generated::imports::EVENT_EMIT_IMPORT,
+            generated::imports::EVENT_SUBSCRIBE_IMPORT,
+            generated::imports::DEVICE_LIST_IMPORT,
+            generated::imports::DEVICE_SEND_IMPORT,
+            generated::imports::DEVICE_BROADCAST_IMPORT,
+            generated::imports::STORAGE_GET_IMPORT,
+            generated::imports::STORAGE_SET_IMPORT,
+            generated::imports::STORAGE_DELETE_IMPORT,
+            generated::imports::STORAGE_KEYS_IMPORT,
+            generated::imports::STORAGE_QUOTA_IMPORT,
+            generated::imports::SECRET_GET_IMPORT,
+            generated::imports::SECRET_SET_IMPORT,
+            generated::imports::SECRET_DELETE_IMPORT,
+            generated::imports::NETWORK_FETCH_IMPORT,
+            generated::imports::NETWORK_WEBSOCKET_IMPORT,
+            generated::imports::TRANSFER_SEND_IMPORT,
+            generated::imports::TRANSFER_STATUS_IMPORT,
+            generated::imports::PLATFORM_OPEN_URL_IMPORT,
+            generated::imports::PLATFORM_OPEN_PATH_IMPORT,
+            generated::imports::PLATFORM_REVEAL_PATH_IMPORT,
+            generated::imports::PLATFORM_SIMULATE_KEYS_IMPORT,
+            generated::imports::PLATFORM_NOTIFY_IMPORT,
+            generated::imports::PLATFORM_READ_CLIPBOARD_IMPORT,
+            generated::imports::PLATFORM_WRITE_CLIPBOARD_IMPORT,
+            generated::imports::PLATFORM_CAPABILITIES_IMPORT,
+            generated::imports::ACTION_DECLARE_IMPORT,
+            generated::imports::ACTION_INVOKE_IMPORT,
+            generated::imports::ACTION_LIST_IMPORT,
+            generated::imports::PLUGIN_ID_IMPORT,
+        ];
+
+        let mut missing: Vec<&String> =
+            declared.iter().filter(|name| !generated.contains(&name.as_str())).collect();
+        missing.sort_unstable();
+        assert!(missing.is_empty(), "the SDK has no binding for: {missing:?}");
+
+        let mut extra: Vec<&str> =
+            generated.iter().copied().filter(|name| !declared.iter().any(|held| held == name)).collect();
+        extra.sort_unstable();
+        assert!(extra.is_empty(), "the SDK binds functions the contract does not declare: {extra:?}");
+
+        // And every name is keyed by the interface, so a plugin cannot resolve one outside it.
+        for name in generated {
+            assert!(name.starts_with("synra:plugin/host#"), "{name}");
+        }
+    }
 }
