@@ -81,6 +81,16 @@ synra-core/
    wasmtime 组件模型、Tauri 移动端、UDP 局域网发现。
 3. 搭 workspace 与 CI（含结构守卫与 `cargo public-api` 快照）。
 
+## NOTES
+
+[`NOTES/`](./NOTES) holds records of bugs that cost more to *find* than to fix, written so the next
+investigation starts from them. They are not user documentation and not a changelog: they are about how a
+problem was located, including where the search went wrong.
+
+- [A 6-second transfer, and four rounds spent looking in the wrong place](./NOTES/2026-02-transfer-six-seconds.md)
+  — a function with no production caller, four broken observation channels, and the checklist that would have
+  found it in one round.
+
 ## 许可
 
 MIT
