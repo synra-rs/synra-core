@@ -99,20 +99,23 @@ impl std::fmt::Debug for Runtime {
     }
 }
 
-/// What the transfer layer does not do yet.
+/// What is still missing for a file to move.
 ///
-/// # Why this shrank to one command
+/// # Why the wording has shrunk twice
 ///
-/// It used to say that the kernel could neither discover, pair with nor send to a device, and four commands refused with
-/// it. Discovery, pairing and text sending are real now, so keeping that sentence would tell a user that working features
-/// are missing — the failure mode of a hand-maintained explanation, and the reason the wording is checked by a test rather
-/// than described in a comment.
+/// It first said the kernel could neither discover, pair with nor send to a device, and four commands refused with it.
+/// Discovery, pairing and text sending became real, so keeping that sentence would have told a user that working features
+/// were missing. Now the transfer *engine* exists — [`synra_core::TransferSender`] splits a file and hashes it,
+/// [`synra_core::TransferReceiver`] reassembles it and checks the digest — so the sentence has to shrink again, to the part
+/// that is genuinely absent.
 ///
-/// What remains is file transfer: the chunks, the resumption and the digest check. A user who runs `send --file` gets a
-/// sentence that names the part that is genuinely absent.
+/// What is absent is the plumbing: nothing yet puts a `TransferRequest` and its blocks on a link and drives the two ends
+/// from a running kernel. Saying "the transfer layer is not implemented" would now be **false**, and the failure mode of a
+/// hand-maintained explanation is exactly that it keeps saying the old thing — which is why a test checks this wording
+/// rather than a comment describing it.
 pub const MISSING_SESSION_LAYER: &str =
-    "the kernel's transfer layer is not implemented yet: this build can discover, pair and send text, and it cannot yet \
-     send a file";
+    "the file-sending path is not wired up yet: this build can discover, pair, send text, and split and verify a file, and \
+     it cannot yet move one over a link";
 
 impl Runtime {
     /// The `status` answer.

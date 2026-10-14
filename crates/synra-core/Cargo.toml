@@ -24,6 +24,10 @@ thiserror.workspace = true
 parking_lot.workspace = true
 # The frame body is the protocol's own `Bytes`, so the peer layer names it rather than copying into a `Vec`.
 bytes.workspace = true
+# The transfer layer names its own digest implementation: a whole-object check is the thing that decides whether a file
+# arrived, so which hash computes it is a decision rather than an implementation detail.
+sha2.workspace = true
+base64.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

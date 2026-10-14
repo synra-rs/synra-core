@@ -58,10 +58,15 @@ pub mod peer;
 pub mod routing;
 pub mod sessions;
 pub mod socket;
+pub mod transfer;
 pub mod worker;
 
 pub use admission::{
     AdmissionContext, AdmissionRefusal, AdmissionStep, PluginKey, admit, check, host_requirement,
+};
+pub use transfer::{
+    Absorbed as BlockAbsorbed, Block, MAX_CHUNK_SIZE, ObjectDigest, TransferError, TransferReceiver,
+    TransferSender, plan_blocks,
 };
 pub use worker::{DiscoveryService, QUERY_INTERVAL, Ticked, is_visible, run};
 pub use socket::{

@@ -50,6 +50,11 @@ time = { version = "0.3", features = ["serde", "formatting", "parsing"] }
 
 # ── 外部：错误 ──
 thiserror = "2"
+# The transfer layer's whole-object digest. Already in the tree through `ed25519-dalek`, so naming it adds no download —
+# and it is named rather than re-exported because a crate that computes digests should say which implementation it trusts.
+sha2 = "0.10"
+# Digest values travel as base64 without padding, which is what `SriDigest` accepts.
+base64 = "0.22"
 
 # ── 外部：可观测性 ──
 tracing = "0.1"
