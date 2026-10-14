@@ -49,11 +49,15 @@
 pub mod admission;
 pub mod bus;
 pub mod config;
+pub mod identity;
 pub mod routing;
 pub mod sessions;
 
 pub use admission::{
     AdmissionContext, AdmissionRefusal, AdmissionStep, PluginKey, admit, check, host_requirement,
+};
+pub use identity::{
+    DEFAULT_DISPLAY_NAME, Identity, MAX_DISPLAY_NAME_LEN, NameError, RenameError, check_display_name,
 };
 pub use config::{
     Catalog, Config, ConfigError, ConfigSnapshot, Setting, SettingKey, SettingKind,

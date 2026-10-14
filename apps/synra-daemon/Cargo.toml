@@ -11,6 +11,9 @@ authors.workspace = true
 [dependencies]
 synra-protocol = { path = "../../crates/synra-protocol" }
 synra-store = { path = "../../crates/synra-store" }
+# The domain model: the identity a device presents to its peers. `synra-core` depends on this crate in neither direction,
+# so this is a leaf dependency and not a cycle.
+synra-core = { path = "../../crates/synra-core" }
 synra-observe = { path = "../../crates/synra-observe" }
 synra-platform = { path = "../../crates/synra-platform" }
 synra-control = { path = "../../crates/synra-control" }

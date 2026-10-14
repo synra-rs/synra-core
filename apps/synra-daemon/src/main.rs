@@ -96,6 +96,17 @@ fn serve(decision: &synra_daemon::Startup) -> ExitCode {
         }
     }
 
+    // ★ The identity is read (or created) here, once — after the claim and before the socket. Reading it per request is
+    // how a device ends up with a second identity, because the read creates one when the row is absent.
+    let identity = match synra_core::Identity::load(&db, std::env::consts::OS, synra_store::sqlite::now_ms()) {
+        Ok(identity) => identity,
+        Err(error) => {
+            eprintln!("synra-daemon: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    println!("device {} ({})", identity.device_id, identity.display_name);
+
     let runtime = Runtime {
         version: env!("CARGO_PKG_VERSION").to_owned(),
         data_dir: std::path::PathBuf::from(&plan.data_dir),
@@ -103,6 +114,7 @@ fn serve(decision: &synra_daemon::Startup) -> ExitCode {
         listen_port: plan.listen_port,
         discovery_port: plan.discovery_port,
         started_at_ms: now_ms(),
+        identity,
         db,
     };
 

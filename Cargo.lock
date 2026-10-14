@@ -1252,6 +1252,7 @@ dependencies = [
  "serde",
  "serde_json",
  "synra-control",
+ "synra-core",
  "synra-observe",
  "synra-platform",
  "synra-protocol",

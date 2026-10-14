@@ -22,6 +22,7 @@
 use std::path::{Path, PathBuf};
 
 use synra_control::{Kernel, Refusal};
+use synra_core::Identity;
 use synra_protocol::error::ErrorCode;
 
 /// What the daemon knows about itself.
@@ -41,6 +42,14 @@ pub struct Runtime {
     /// A wall clock rather than a monotonic reading, because it is reported to a *client* — a separate process, whose
     /// monotonic clock is not comparable with this one. The same reasoning the claim file follows.
     pub started_at_ms: u64,
+    /// This device's identity.
+    ///
+    /// # Why the runtime holds it rather than reading it each time
+    ///
+    /// Because reading it is how a device gets a **second** identity: [`Identity::load`] creates one when the row is
+    /// absent, so a caller that read it per request would be creating one per request if the write ever failed. The
+    /// daemon reads it once at start-up, after the claim, and everything after that uses that value.
+    pub identity: Identity,
     /// The kernel's database.
     ///
     /// # Why the runtime holds it rather than the caller
@@ -104,6 +113,8 @@ impl Runtime {
             "transportPort": self.listen_port,
             "discoveryPort": self.discovery_port,
             "uptimeMs": now_ms.saturating_sub(self.started_at_ms),
+            "deviceId": self.identity.device_id.to_string(),
+            "deviceName": self.identity.display_name,
             "schemaVersion": schema,
             "schemaKnown": synra_store::SynraDb::known_version(),
             "tables": counts,
@@ -248,10 +259,17 @@ impl Kernel for Runtime {
     }
 
     fn devices(&self, _include_unpaired: bool) -> Result<serde_json::Value, Refusal> {
-        // ★ A refusal rather than an empty list. "No devices" and "I cannot tell you about devices" are different
-        // answers, and a client that received an empty list would report that nothing is paired — sending the user to
-        // look for a pairing problem in an installation where the code is not written.
-        Err(Refusal::new(ErrorCode::Unsupported, MISSING_SESSION_LAYER))
+        // ★ Still a refusal, and the reason is unchanged: the kernel cannot yet *reach* a device, so a list would be a
+        // description of a pairing rather than of anything usable. "No devices" and "I cannot tell you about devices"
+        // remain different answers.
+        //
+        // What is new is that the refusal carries this device's own identity. A user who runs `devices` because nothing
+        // works needs to know which device they are running it *on* — that identifier is what the other end has recorded
+        // against them, and reading it out is how a pairing problem is diagnosed.
+        Err(Refusal::new(
+            ErrorCode::Unsupported,
+            format!("{} (this device is {} — {MISSING_SESSION_LAYER})", self.identity.device_id, self.identity.display_name),
+        ))
     }
 
     fn send_text(&self, _to: &str, _text: &str) -> Result<serde_json::Value, Refusal> {
@@ -314,6 +332,7 @@ mod tests {
     fn runtime(dir: &Path) -> Runtime {
         let mut db = synra_store::SynraDb::open_in_memory().expect("opens");
         db.migrate().expect("migrates");
+        let identity = Identity::load(&db, "windows", 1_000).expect("an identity");
         Runtime {
             version: "0.1.0-test".to_owned(),
             data_dir: dir.to_path_buf(),
@@ -321,6 +340,7 @@ mod tests {
             listen_port: 47100,
             discovery_port: 47101,
             started_at_ms: 1_000,
+            identity,
             db,
         }
     }
