@@ -1,82 +1,17 @@
-//! Every session the kernel holds, and the rules for adding, moving and dropping one.
-//!
-//! # Why the whole state machine is in one file
-//!
-//! Because a registry's correctness *is* its transition rules: which moves are legal, what a session becomes when its
-//! link dies, and what an unknown key means. Split across files those rules can each look right while the set of them is
-//! wrong.
+//! The registry itself, and the transitions it permits.
 
 use std::collections::BTreeMap;
 
-use super::identity::SessionKey;
-use super::record::PeerSession;
-use super::state::{ClosureReason, LinkState};
 use synra_protocol::handshake::{Agreed, LinkToken};
 use synra_protocol::ids::{DeviceId, SessionId};
 use synra_protocol::limits;
 use synra_protocol::session::PlatformKind;
-/// What the registry decided about a session.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum RegistryEvent {
-    /// A session was opened.
-    Opened(SessionKey),
-    /// A session's handshake finished and it can carry work.
-    Ready(SessionKey),
-    /// A session began draining.
-    Draining(SessionKey),
-    /// A session ended, and why.
-    Closed(SessionKey, ClosureReason),
-    /// A peer opened a new session while an old one was alive, and the old one was closed.
-    ///
-    /// ★ The event a reconnect produces, and the one worth reporting: a UI that did not learn about it would show the
-    /// device twice, and work sent to the old entry would go nowhere.
-    Replaced {
-        /// The session that ended.
-        old: SessionKey,
-        /// The session that replaced it.
-        new: SessionKey,
-    },
-}
 
-/// Why the registry refused something.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[non_exhaustive]
-pub enum RegistryError {
-    /// There is no session with that key.
-    #[error("no session {0}")]
-    NoSuchSession(SessionKey),
-
-    /// The session has ended.
-    #[error("session {key} is closed: it ended because {}", .reason.explain())]
-    AlreadyClosed {
-        /// Which session.
-        key: SessionKey,
-        /// Why it ended.
-        reason: ClosureReason,
-    },
-
-    /// The transition is not one a link may make.
-    #[error("session {key} cannot go from {} to {}", .from.as_str(), .to.as_str())]
-    IllegalTransition {
-        /// Which session.
-        key: SessionKey,
-        /// Where it is.
-        from: LinkState,
-        /// Where it was asked to go.
-        to: LinkState,
-    },
-
-    /// The link token does not match the one the session was opened with.
-    ///
-    /// A frame that arrives with the wrong token is one from a different link, or from before a reconnect, and applying
-    /// it to this session would let the old link's frames move the new session's state.
-    #[error("session {key} was opened with a different link token")]
-    TokenMismatch {
-        /// Which session.
-        key: SessionKey,
-    },
-}
+use super::event::RegistryEvent;
+use super::super::identity::SessionKey;
+use super::super::record::PeerSession;
+use super::super::state::{ClosureReason, LinkState};
+use super::error::RegistryError;
 
 /// Everything the kernel knows about its links.
 ///
