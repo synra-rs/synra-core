@@ -74,7 +74,8 @@ pub use host_surface::{
     ungated,
 };
 pub use lifecycle::{
-    Lifecycle, State, StopRecord, Transition, TransitionError, UNSTABLE_THRESHOLD,
+    Consent, FailStage, Failed, InstallSource, Lifecycle, Move, MoveError, PluginSlot, Progress, Resolved, State,
+    StopRecord, Transition, TransitionError, UNSTABLE_THRESHOLD, Verified,
 };
 pub use pool::{
     IDLE_EVICT_AFTER, InstancePolicy, InstancePool, InstanceRecord, PoolRefusal, PoolReport,
