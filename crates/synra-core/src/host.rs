@@ -82,6 +82,35 @@ pub enum HostError {
     /// No session is open for that device.
     #[error("no session is open with {0}")]
     NoSession(DeviceId),
+
+    /// Nothing this kernel knows is called that.
+    #[error("no device is called {wanted} — run `synra devices --all` to see what is")]
+    NoSuchDevice {
+        /// What the user asked for.
+        wanted: String,
+    },
+
+    /// More than one device is called that.
+    ///
+    /// # Why this is refused rather than resolved
+    ///
+    /// Picking one would send a message to a device the user did not choose, and the sender would never know: the message
+    /// would arrive, and it would look deliberate. An identifier is the way to disambiguate, and saying so is more useful
+    /// than guessing.
+    #[error("{matches} devices are called {name} — use a device id instead")]
+    AmbiguousName {
+        /// The name.
+        name: String,
+        /// How many matched.
+        matches: usize,
+    },
+
+    /// A device is known and this kernel has no address for it.
+    #[error("there is no known address for {device_id} — it has never been seen on this network")]
+    Unreachable {
+        /// Which device.
+        device_id: DeviceId,
+    },
 }
 
 /// The kernel's view of its peers.
@@ -389,6 +418,69 @@ impl Host {
         self.discovery.handshaked(device_id, address, name, now_ms)
     }
 
+    /// Resolves what a user typed to a device this kernel can reach.
+    ///
+    /// # The three ways it can fail, and why they are separate
+    ///
+    /// * **No match** — nothing known is called that. The user mistyped, or the device has never been seen.
+    /// * **Ambiguous** — more than one device is called that. Picking one would send a message to a device the user did
+    ///   not choose, and the sender would never know: the message would arrive, and it would look deliberate.
+    /// * **Unreachable** — the device is known and this kernel has no address for it. A paired device whose row is in the
+    ///   database but which has never been announced or connected to. There is nothing to dial.
+    ///
+    /// # Why an identifier wins over a name
+    ///
+    /// Because an identifier is unambiguous by construction, and a name is whatever the other device decided to call
+    /// itself — including a name that is a valid identifier for a different device. Checking identifiers first means a
+    /// user who pasted an id gets the device they pasted rather than a device that renamed itself to match.
+    ///
+    /// # Errors
+    ///
+    /// [`HostError::NoSuchDevice`], [`HostError::AmbiguousName`] or [`HostError::Unreachable`].
+    pub fn resolve(&self, wanted: &str) -> Result<DeviceId, HostError> {
+        let trimmed = wanted.trim();
+        if trimmed.is_empty() {
+            return Err(HostError::NoSuchDevice { wanted: wanted.to_owned() });
+        }
+
+        // Identifiers first: an exact match on the canonical form, then a case-insensitive one, because a user pasting a
+        // UUID from a chat message may have a different case and there is nothing else it could mean.
+        for candidate in self.discovery.iter() {
+            if candidate.device_id.to_string().eq_ignore_ascii_case(trimmed) {
+                return Ok(candidate.device_id);
+            }
+        }
+
+        let matches: Vec<&Candidate> = self
+            .discovery
+            .iter()
+            .filter(|candidate| candidate.display_name.eq_ignore_ascii_case(trimmed))
+            .collect();
+
+        match matches.as_slice() {
+            [] => Err(HostError::NoSuchDevice { wanted: trimmed.to_owned() }),
+            [only] => {
+                // Known by name and there is no address to dial. Reported rather than dialled-and-failed: a connection
+                // attempt to an address this kernel never had would be an error about the network, and the real answer is
+                // that the device has not been seen.
+                if only.address.port() == 0 {
+                    return Err(HostError::Unreachable { device_id: only.device_id });
+                }
+                Ok(only.device_id)
+            }
+            many => Err(HostError::AmbiguousName {
+                name: trimmed.to_owned(),
+                matches: many.len(),
+            }),
+        }
+    }
+
+    /// The address this kernel would dial a device at.
+    #[must_use]
+    pub fn address_of(&self, device_id: DeviceId) -> Option<SocketAddr> {
+        self.discovery.get(device_id).map(|candidate| candidate.address)
+    }
+
     /// Records that a device said goodbye.
     ///
     /// # Why this is on the host rather than reached through the table
@@ -472,6 +564,7 @@ mod tests {
     use super::*;
     use crate::discovery::DiscoveryTable;
     use synra_protocol::discovery::TrustLevel;
+    use synra_protocol::handshake::PROTOCOL_VERSION;
     use synra_protocol::envelope::{Envelope, OutboundSpec};
     use synra_protocol::event::EventName;
     use synra_protocol::session::PlatformKind;
@@ -541,7 +634,7 @@ mod tests {
         let announcement = DeviceAnnouncement {
             device_id: device(B),
             display_name: "Phone".to_owned(),
-            protocol: synra_protocol::handshake::PROTOCOL_VERSION,
+            protocol: PROTOCOL_VERSION,
             port: 47100,
             platform: Some(PlatformKind::Android),
             app_version: Some("0.1.0".to_owned()),
@@ -598,7 +691,7 @@ mod tests {
         let announcement = DeviceAnnouncement {
             device_id: device(A),
             display_name: "Laptop".to_owned(),
-            protocol: synra_protocol::handshake::PROTOCOL_VERSION,
+            protocol: PROTOCOL_VERSION,
             port: address.port(),
             platform: Some(PlatformKind::Desktop),
             app_version: Some("0.1.0".to_owned()),
@@ -633,7 +726,7 @@ mod tests {
         let announcement = DeviceAnnouncement {
             device_id: device(A),
             display_name: "Laptop".to_owned(),
-            protocol: synra_protocol::handshake::PROTOCOL_VERSION,
+            protocol: PROTOCOL_VERSION,
             port: 1,
             platform: Some(PlatformKind::Desktop),
             app_version: None,
@@ -688,6 +781,141 @@ mod tests {
         assert_eq!(client.sent(), 1);
         // The receiving host recorded the session too, which is what makes the envelope attributable.
         assert_eq!(server.state_of(device(B)), Some(LinkState::Ready));
+    }
+
+    #[test]
+    fn text_travels_from_one_host_to_another() {
+        // ★ The end-to-end path `synra send` takes: resolve what the user typed, dial the address the kernel knows, and
+        // put a clipboard envelope on the link. Every piece has its own tests; what none of those can see is the sequence.
+        let (mut server, _server_db, address) = listening(A, "Laptop");
+        let (mut client, _client_db) = host(B, "Phone");
+
+        let serving = std::thread::spawn(move || {
+            let (mut link, _) = server.accept(1_000, |_, _| PairingState::Unknown).expect("accepts");
+            let envelope = link.receive().expect("receives");
+            let payload = envelope.payload.as_ref().expect("a payload").get().to_owned();
+            (envelope, payload, server)
+        });
+
+        // The client learns about the server the way it would on a network, then resolves it by name.
+        let announcement = DeviceAnnouncement {
+            device_id: device(A),
+            display_name: "Laptop".to_owned(),
+            protocol: PROTOCOL_VERSION,
+            port: address.port(),
+            platform: Some(PlatformKind::Desktop),
+            app_version: None,
+            features: Vec::new(),
+        };
+        client.heard(&announcement, address, 1_000);
+
+        // ★ By name, which is what `--to Laptop` does, and the identifier is what it resolves to.
+        let resolved = client.resolve("Laptop").expect("resolves");
+        assert_eq!(resolved, device(A));
+        assert_eq!(client.address_of(resolved), Some(address));
+
+        let envelope = crate::messaging::text_to(
+            client.device_id(),
+            resolved,
+            "hello from the phone",
+            synra_protocol::ids::TraceId::new(),
+            1_000,
+        )
+        .expect("builds");
+
+        let mut link = client.dial(resolved, address, None, 1_000).expect("dials");
+        client.send(&mut link, &envelope).expect("sends");
+
+        let (received, payload, _server) = serving.join().expect("finished");
+        assert_eq!(received.event.as_str(), synra_protocol::event::builtin::CLIPBOARD_RECEIVED);
+        assert_eq!(received.from, device(B));
+        // And the payload is the shape the receiver's own type parses.
+        let parsed: crate::messaging::ClipboardText =
+            serde_json::from_str(&payload).expect("parses");
+        assert_eq!(parsed.text, "hello from the phone");
+        assert_eq!(parsed.from_device_id, device(B));
+    }
+
+    #[test]
+    fn resolving_an_unknown_name_says_so_rather_than_dialling_nothing() {
+        let (client, _db) = host(B, "Phone");
+        match client.resolve("Nobody") {
+            Err(HostError::NoSuchDevice { wanted }) => assert_eq!(wanted, "Nobody"),
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        // And an empty string is not a device name either.
+        assert!(matches!(client.resolve("   "), Err(HostError::NoSuchDevice { .. })));
+    }
+
+    #[test]
+    fn resolving_an_ambiguous_name_is_refused_rather_than_guessed() {
+        // ★ Picking one would send a message to a device the user did not choose, and the sender would never know: the
+        // message would arrive, and it would look deliberate. An identifier is the way to disambiguate.
+        let (mut client, _db) = host(B, "Phone");
+        for id in [A, "33333333-3333-4333-8333-333333333333"] {
+            client.heard(
+                &DeviceAnnouncement {
+                    device_id: device(id),
+                    display_name: "Laptop".to_owned(),
+                    protocol: PROTOCOL_VERSION,
+                    port: 47_100,
+                    platform: None,
+                    app_version: None,
+                    features: Vec::new(),
+                },
+                SocketAddr::from(([10, 0, 0, 5], 1)),
+                1_000,
+            );
+        }
+
+        match client.resolve("Laptop") {
+            Err(HostError::AmbiguousName { name, matches }) => {
+                assert_eq!(name, "Laptop");
+                assert_eq!(matches, 2);
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        // And the identifier still works, which is what the message tells the user to use.
+        assert_eq!(client.resolve(A).expect("resolves"), device(A));
+    }
+
+    #[test]
+    fn an_identifier_wins_over_a_name_that_happens_to_match_it() {
+        // ★ An identifier is unambiguous by construction and a name is whatever the other device decided to call itself.
+        // Checking identifiers first means a user who pasted an id gets the device they pasted rather than a device that
+        // renamed itself to match.
+        let (mut client, _db) = host(B, "Phone");
+        client.heard(
+            &DeviceAnnouncement {
+                // A device whose *name* is another device's identifier.
+                device_id: device("33333333-3333-4333-8333-333333333333"),
+                display_name: A.to_owned(),
+                protocol: PROTOCOL_VERSION,
+                port: 47_100,
+                platform: None,
+                app_version: None,
+                features: Vec::new(),
+            },
+            SocketAddr::from(([10, 0, 0, 5], 1)),
+            1_000,
+        );
+        client.heard(
+            &DeviceAnnouncement {
+                device_id: device(A),
+                display_name: "Real".to_owned(),
+                protocol: PROTOCOL_VERSION,
+                port: 47_100,
+                platform: None,
+                app_version: None,
+                features: Vec::new(),
+            },
+            SocketAddr::from(([10, 0, 0, 6], 1)),
+            1_000,
+        );
+
+        assert_eq!(client.resolve(A).expect("resolves"), device(A));
+        // Case-insensitively too, because a user pasting a UUID may have a different case and nothing else it could mean.
+        assert_eq!(client.resolve(&A.to_uppercase()).expect("resolves"), device(A));
     }
 
     #[test]
@@ -746,7 +974,7 @@ mod tests {
         let announcement = DeviceAnnouncement {
             device_id: device(B),
             display_name: "Phone".to_owned(),
-            protocol: synra_protocol::handshake::PROTOCOL_VERSION,
+            protocol: PROTOCOL_VERSION,
             port: 47100,
             platform: None,
             app_version: None,

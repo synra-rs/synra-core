@@ -22,7 +22,7 @@
 use std::path::{Path, PathBuf};
 
 use synra_control::{Kernel, Refusal};
-use synra_core::{Host, Identity};
+use synra_core::{Host, HostError, Identity};
 use synra_protocol::error::ErrorCode;
 
 /// What the daemon knows about itself.
@@ -99,16 +99,20 @@ impl std::fmt::Debug for Runtime {
     }
 }
 
-/// The layers that are not written yet.
+/// What the transfer layer does not do yet.
 ///
-/// # Why this is one constant rather than a sentence at each call site
+/// # Why this shrank to one command
 ///
-/// Four commands refuse for the same reason, and a reason that lived in four places would drift — so a user
-/// investigating two of them would be told two different things about one missing layer. It is also what a test asserts
-/// against, so "the refusal names the missing part" is checked rather than described.
+/// It used to say that the kernel could neither discover, pair with nor send to a device, and four commands refused with
+/// it. Discovery, pairing and text sending are real now, so keeping that sentence would tell a user that working features
+/// are missing — the failure mode of a hand-maintained explanation, and the reason the wording is checked by a test rather
+/// than described in a comment.
+///
+/// What remains is file transfer: the chunks, the resumption and the digest check. A user who runs `send --file` gets a
+/// sentence that names the part that is genuinely absent.
 pub const MISSING_SESSION_LAYER: &str =
-    "the kernel's session layer is not implemented yet: this build can serve the control socket and report its own \
-     state, and it cannot yet discover, pair with or send to a device";
+    "the kernel's transfer layer is not implemented yet: this build can discover, pair and send text, and it cannot yet \
+     send a file";
 
 impl Runtime {
     /// The `status` answer.
@@ -360,11 +364,64 @@ impl Kernel for Runtime {
         }))
     }
 
-    fn send_text(&self, _to: &str, _text: &str) -> Result<serde_json::Value, Refusal> {
-        Err(Refusal::new(ErrorCode::Unsupported, MISSING_SESSION_LAYER))
+    fn send_text(&self, to: &str, text: &str) -> Result<serde_json::Value, Refusal> {
+        let now = synra_store::sqlite::now_ms();
+        let trace_id = synra_protocol::ids::TraceId::new();
+
+        // ★ The text is checked **before** the host is touched, and the order is a decision rather than a detail. An empty
+        // `--text` is a mistake in the argument the user just typed; reporting it as an unknown device would send them to
+        // check a device list for a mistake they made in their own sentence. The check is done by building an envelope
+        // addressed to *this* device, which the protocol validates, and then throwing it away — the real one is built once
+        // the device is known, so this costs one small allocation and no lock.
+        synra_core::text_to(self.identity.device_id, self.identity.device_id, text, trace_id, now)
+            .map_err(|error| Refusal::new(error_code_for(&error), error.to_string()))?;
+
+        // ★ One critical section, and the handshake is **outside** it. `dial` blocks for as long as a connection takes,
+        // and a `host` guard living across it would mean a `devices` listing waits for a network — which is exactly the
+        // report a user runs while something is wrong. So: resolve and read the address under the lock, release it, dial,
+        // and take it again to record what happened.
+        let (device_id, address, from) = {
+            let host = self.host.lock();
+            let device_id = host.resolve(to).map_err(|error| refusal_of(&error))?;
+            // Where to reach it. A device known by name but never seen has no address, which is a different answer from
+            // "nothing is called that".
+            let address = host.address_of(device_id).ok_or_else(|| {
+                Refusal::new(
+                    ErrorCode::DeviceOffline,
+                    format!("{device_id} is known and has no address — it has not been seen on this network"),
+                )
+            })?;
+            (device_id, address, host.device_id())
+        };
+
+        // The envelope is built now, addressed to the device that was resolved.
+        let envelope = synra_core::text_to(from, device_id, text, trace_id, now)
+            .map_err(|error| Refusal::new(error_code_for(&error), error.to_string()))?;
+
+        let mut host = self.host.lock();
+        // Dial, which is where the handshake establishes that the device on the other end really is the one asked for.
+        let mut link = host.dial(device_id, address, None, synra_u64(now)).map_err(|error| refusal_of(&error))?;
+        host.send(&mut link, &envelope).map_err(|error| refusal_of(&error))?;
+        drop(host);
+
+        // The link is closed on the way out rather than kept: the daemon has nowhere to record it between requests, and a
+        // link nobody is reading is one the peer sees as a connection that arrived and went silent. A session per message
+        // costs a handshake; holding links open is the next piece of work and is a design decision rather than a detail.
+        let _ = link.bye("message delivered");
+
+        Ok(serde_json::json!({
+            "sent": true,
+            "to": device_id.to_string(),
+            "bytes": text.len(),
+            "traceId": trace_id.to_string(),
+        }))
     }
 
     fn send_file(&self, _to: &str, _path: &str) -> Result<serde_json::Value, Refusal> {
+        // ★ Refused before the device is resolved, and that is the honest order. Every other step of this command would
+        // work — the device can be found, the link can be made — and none of it would move a byte, because the transfer
+        // layer is what is absent. A user who was told their device was unknown would go and check a device list to fix a
+        // problem that is not theirs.
         Err(Refusal::new(ErrorCode::Unsupported, MISSING_SESSION_LAYER))
     }
 
@@ -410,6 +467,58 @@ impl Runtime {
         let _ = discovery;
         self.scan_until_ms.store(0, std::sync::atomic::Ordering::Relaxed);
     }
+}
+
+/// A `HostError` as a refusal a client can act on.
+///
+/// # Why each failure gets its own code
+///
+/// Because the user's next step differs: a name nothing matches is a typo, an ambiguous name is a decision they have to
+/// make, an unreachable device is one that is switched off, and a handshake failure is a network. One code for all of them
+/// would leave the client unable to say anything but the message the kernel wrote.
+fn refusal_of(error: &HostError) -> Refusal {
+    let code = match error {
+        // Nothing is called that. `NotPaired` rather than a "not found": what the kernel knows about is devices it has
+        // seen, and one it has never seen is one it is not paired with — which is the fact the user can act on.
+        HostError::NoSuchDevice { .. } => ErrorCode::NotPaired,
+        // Known by name and never seen, so there is no address to dial.
+        HostError::Unreachable { .. } => ErrorCode::DeviceOffline,
+        // More than one matched, which is a decision the user has to make rather than a fault.
+        HostError::AmbiguousName { .. } => ErrorCode::InvalidArgument,
+        // The device is there and the two cannot work together, which is a version problem rather than a network one.
+        HostError::Incompatible { .. } => ErrorCode::Unsupported,
+        // A handshake or a link failure is the network.
+        HostError::Handshake(_) | HostError::Link(_) | HostError::Bind { .. } => ErrorCode::TransportNotOpen,
+        HostError::NoSession(_) => ErrorCode::NotPaired,
+        // `#[non_exhaustive]`: a failure this build does not know is still a failure, and `Internal` is the honest code
+        // for one it cannot name.
+        _ => ErrorCode::Internal,
+    };
+    Refusal::new(code, error.to_string())
+}
+
+/// The code for a message that could not be built.
+const fn error_code_for(error: &synra_core::MessageError) -> ErrorCode {
+    match error {
+        // The user typed nothing, or typed something too large for one message. Both are about the argument, and the
+        // second has its own code — the protocol has one for exactly this, and the client can offer "send as a file".
+        synra_core::MessageError::Empty => ErrorCode::InvalidArgument,
+        synra_core::MessageError::TooLong { .. } => ErrorCode::PayloadTooLarge,
+        // The event name is a constant this build declares, so this is a contradiction inside the kernel rather than
+        // anything the caller did.
+        synra_core::MessageError::Envelope(_) | synra_core::MessageError::EventName(_) => {
+            ErrorCode::Internal
+        }
+        _ => ErrorCode::Internal,
+    }
+}
+
+/// A wall-clock reading as the `u64` the session registry counts in.
+///
+/// Saturating, because a negative reading is a clock before the epoch and the registry's deadlines are unsigned — and a
+/// wrap would put the deadline in the distant future, which is a session that never expires.
+const fn synra_u64(value: i64) -> u64 {
+    if value < 0 { 0 } else { value as u64 }
 }
 
 /// A wall-clock reading as the signed value an atomic can hold.
@@ -631,17 +740,84 @@ mod tests {
     }
 
     #[test]
-    fn sending_is_refused_for_the_same_reason_as_listing() {
-        // One missing layer, one sentence. A reason that lived at each call site would drift, and a user investigating
-        // two commands would be told two different things about one gap.
-        let dir = TempDir::new("send");
+    fn sending_to_a_device_nothing_is_called_is_refused_before_anything_is_dialled() {
+        // ★ "Nothing is called that" is a question about the *text of the argument*, and answering it costs no network at
+        // all. A kernel that dialled first would spend a handshake to produce the same refusal.
+        let dir = TempDir::new("send-unknown");
         let runtime = runtime(dir.path());
-        for refusal in [runtime.send_text("d", "x"), runtime.send_file("d", "/tmp/a")] {
-            match refusal {
-                Err(refusal) => assert_eq!(refusal.message, MISSING_SESSION_LAYER),
-        // The refusal above is `send`'s; the `devices` list is real. Asserted here so the two are not confused.
+        match runtime.send_text("Nobody", "hello") {
+            Err(refusal) => {
+                assert_eq!(refusal.code, ErrorCode::NotPaired);
+                assert!(refusal.message.contains("Nobody"), "{}", refusal.message);
+                // And it says how to find out what there is.
+                assert!(refusal.message.contains("devices"), "{}", refusal.message);
+            }
+            Ok(value) => panic!("expected a refusal, got {value}"),
+        }
+    }
+
+    #[test]
+    fn sending_empty_text_is_refused_as_an_argument_rather_than_a_network_failure() {
+        // ★ The user typed nothing. That is a mistake at the shell, and the *code* says which kind of mistake — a client
+        // shows "there is no text to send" rather than offering to try again.
+        let dir = TempDir::new("send-empty");
+        let runtime = runtime(dir.path());
+        for text in ["", "   "] {
+            match runtime.send_text("anyone", text) {
+                Err(refusal) => assert_eq!(refusal.code, ErrorCode::InvalidArgument, "{text:?}"),
                 Ok(value) => panic!("expected a refusal, got {value}"),
             }
+        }
+    }
+
+    #[test]
+    fn text_too_large_for_one_message_gets_the_protocols_own_code() {
+        // ★ The protocol has a code for exactly this, and a client can act on it — the next step is to send a file rather
+        // than to retry. Reported as `InvalidArgument` it would read as a typo.
+        let dir = TempDir::new("send-huge");
+        let runtime = runtime(dir.path());
+        let huge = "a".repeat(200 * 1024 * 1024);
+        match runtime.send_text("anyone", &huge) {
+            Err(refusal) => {
+                assert_eq!(refusal.code, ErrorCode::PayloadTooLarge);
+                assert!(refusal.message.contains("file"), "{}", refusal.message);
+            }
+            Ok(value) => panic!("expected a refusal, got {value}"),
+        }
+    }
+
+    #[test]
+    fn file_sending_refuses_with_the_one_sentence_for_the_missing_layer() {
+        // One missing layer, one sentence. A reason that lived at each call site would drift, and a user investigating two
+        // commands would be told two different things about one gap.
+        //
+        // ★ It is now one command rather than two. Text sending is real, so an example that used it would be asserting a
+        // refusal that no longer happens — and a test kept in step by hand is exactly what "one sentence" is meant to stop.
+        let dir = TempDir::new("send");
+        let runtime = runtime(dir.path());
+        match runtime.send_file("d", "/tmp/a") {
+            Err(refusal) => {
+                assert_eq!(refusal.message, MISSING_SESSION_LAYER);
+                assert_eq!(refusal.code, ErrorCode::Unsupported);
+                // Not retryable: repeating it will keep failing until a new build is installed.
+                assert!(!refusal.is_retryable());
+            }
+            Ok(value) => panic!("expected a refusal, got {value}"),
+        }
+    }
+
+    #[test]
+    fn text_sending_no_longer_refuses_for_a_missing_layer() {
+        // ★ The other half of the assertion above: `send --text` must fail for a reason about the *device*, not about the
+        // layer. This is what would break first if the two commands were ever wired to the same refusal again.
+        let dir = TempDir::new("send-text-real");
+        let runtime = runtime(dir.path());
+        match runtime.send_text("d", "x") {
+            Err(refusal) => {
+                assert_ne!(refusal.message, MISSING_SESSION_LAYER);
+                assert_eq!(refusal.code, ErrorCode::NotPaired);
+            }
+            Ok(value) => panic!("expected a refusal, got {value}"),
         }
     }
 
@@ -652,7 +828,9 @@ mod tests {
         //
         // The example is `send`: listing devices is real now, and sending is what still needs the transfer layer.
         let dir = TempDir::new("retryable");
-        match runtime(dir.path()).send_text("d", "x") {
+        // `send --file` is the command that still refuses: text sending is real now, so an example that used it would be
+        // asserting a refusal that no longer happens.
+        match runtime(dir.path()).send_file("d", "/tmp/a") {
             Err(refusal) => {
                 assert_eq!(refusal.code, ErrorCode::Unsupported);
                 assert!(!refusal.is_retryable());

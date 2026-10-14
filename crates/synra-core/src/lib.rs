@@ -53,6 +53,7 @@ pub mod discovery;
 pub mod host;
 pub mod identity;
 pub mod link;
+pub mod messaging;
 pub mod peer;
 pub mod routing;
 pub mod sessions;
@@ -70,6 +71,7 @@ pub use host::{Attached, Host, HostError, SharedHost, millis_reading, shared};
 pub use discovery::{
     Absorbed, CANDIDATE_TTL, Candidate, DiscoveryTable, UNUSABLE_NAME, announced_address,
 };
+pub use messaging::{ClipboardText, MessageError, TEXT_MIME, text_to};
 pub use link::{LinkError, PeerLink};
 pub use peer::{
     Flags, HandshakeError, LocalPeer, Negotiated, accept, agree, dial,
