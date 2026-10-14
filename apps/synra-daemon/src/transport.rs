@@ -188,8 +188,12 @@ pub fn handle_within(
     // file it named. Without this the loop below would see a block as an unexpected frame and close the link — which is
     // what it did before, and why `send --file` could not work.
     let mut inbox = Inbox::new(data_dir);
+    // ★ The pairing prompt for this connection. Per-connection rather than shared, because the protocol's rule is one
+    // request at a time *per device* and a connection is one device's conversation — two peers dialling at once each get
+    // their own prompt rather than one being refused as `busy` for the other's benefit.
+    let mut pairing = synra_core::pairing::InboundPairing::new();
     loop {
-        match inbox.absorb(&mut link, synra_store::sqlite::now_ms(), PATIENCE) {
+        match inbox.absorb(&mut link, synra_store::sqlite::now_ms(), PATIENCE, &mut pairing) {
             Ok(decision) => match decision {
                 Decision::Delivered { event } => {
                     // ★ Recorded as well as reported. A message this kernel received has arrived, and a log that looked
@@ -200,6 +204,52 @@ pub fn handle_within(
                     );
                 }
                 Decision::Ignored => {}
+                Decision::Pairing { answer, request } => {
+                    events.push("pairing request".to_owned());
+                    // ★ A request that is waiting for a user sends nothing back. The prompt exists, and the answer will be
+                    // sent by whoever answers it — until then the dialer waits, which is what the protocol's pairing
+                    // timeout is for and why the dialer is required to give up on its own clock.
+                    if let Some(answer) = answer {
+                        // ★ A failure to answer is reported and does not end the link. The peer asked a question this
+                        // kernel could not reply to; closing the connection would take any transfer on it down for a
+                        // reason the user cannot see, and the dialer's own timeout already covers giving up.
+                        match synra_protocol::event::EventName::parse(
+                            synra_protocol::event::events::PAIR_RESPONSE,
+                        ) {
+                            Ok(event) => {
+                                match synra_protocol::envelope::Envelope::reply_to(
+                                    &request,
+                                    event,
+                                    link.local(),
+                                    synra_store::sqlite::now_ms(),
+                                    Some(&answer),
+                                ) {
+                                    Ok(reply) => {
+                                        if let Err(error) = link.send(&reply) {
+                                            eprintln!(
+                                                "synra-daemon: the pairing answer could not be sent: {error}"
+                                            );
+                                        }
+                                        else {
+                                            eprintln!(
+                                                "synra-daemon: {peer} asked to pair, and was answered"
+                                            );
+                                        }
+                                    }
+                                    Err(error) => eprintln!(
+                                        "synra-daemon: the pairing answer could not be built: {error}"
+                                    ),
+                                }
+                            }
+                            Err(error) => {
+                                eprintln!("synra-daemon: the pairing event name is invalid: {error}");
+                            }
+                        }
+                    }
+                    else {
+                        println!("{peer} is asking to pair");
+                    }
+                }
                 // Nothing arrived and the wait is over. The connection ends quietly: a peer that has gone silent has not
                 // done anything wrong, and `Served::ended` is for faults.
                 Decision::Idle => {

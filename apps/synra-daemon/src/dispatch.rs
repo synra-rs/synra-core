@@ -80,6 +80,19 @@ pub enum Decision {
         /// The event the message carried.
         event: String,
     },
+    /// A pairing request this kernel has an opinion about, and the answer to send back.
+    ///
+    /// # Why the envelope is not rebuilt from the event name
+    ///
+    /// Because a pairing answer is a *reply*: it carries the request's id, the request's trace, and is addressed to the
+    /// device that asked. All three come from the envelope that arrived, which is here and is not available to whoever
+    /// would otherwise construct the reply from `Delivered`'s single string.
+    Pairing {
+        /// What to tell the dialer, or `None` when the request is now waiting for a user.
+        answer: Option<synra_protocol::session::PairResponse>,
+        /// The message that arrived, so the reply can be addressed and correlated.
+        request: Box<synra_protocol::envelope::Envelope>,
+    },
     /// A message this connection has nothing to do with.
     Ignored,
     /// Nothing arrived and the wait is over, so the connection has nothing more to say.
@@ -141,6 +154,7 @@ impl Inbox {
         link: &mut PeerLink,
         now_ms: i64,
         patience: std::time::Duration,
+        pairing: &mut synra_core::pairing::InboundPairing,
     ) -> Result<Decision, synra_core::SessionError> {
         // * The patience is re-armed on **every** call, and it is what bounds a *quiet* peer rather than a slow one. An
         // earlier version computed the deadline once from the connection's start, so a receiver that was still working
@@ -172,6 +186,13 @@ impl Inbox {
                 });
             };
             if session::classify(&envelope) != Some(session::Message::Request) {
+                // ★ A pairing request is the one non-transfer message this kernel answers rather than merely reports. It is
+                // handled before the transfer path because it is not one: there is no file, no `transfer_id`, and no block
+                // to follow — and a pairing request reported as `Delivered` would leave a user's other device waiting for an
+                // answer this kernel never sends while the prompt, if it appeared at all, sat unanswered on a screen.
+                if envelope.event.as_str() == synra_protocol::event::events::PAIR_REQUEST {
+                    return Ok(self.pairing_request(&envelope, pairing));
+                }
                 return Ok(Decision::Delivered { event: envelope.event.as_str().to_owned() });
             }
             let name = proposed_name(&envelope)?;
@@ -227,6 +248,37 @@ impl Inbox {
             // nothing to do with rather than as a reason to fail the connection.
             _ => Ok(Decision::Ignored),
         }
+    }
+
+    /// Takes an arriving pairing request and produces the answer, if there is one yet.
+    ///
+    /// # Why a malformed request is refused rather than failed
+    ///
+    /// Because the link is not at fault. A peer that sends a pairing request this build cannot read has made a mistake in
+    /// one message, and closing the connection would take the transfer channel with it — the protocol document's rule
+    /// that a refusal does not end a link applies to a request that cannot be understood for the same reason it applies
+    /// to one that is declined.
+    fn pairing_request(
+        &self,
+        envelope: &synra_protocol::envelope::Envelope,
+        pairing: &mut synra_core::pairing::InboundPairing,
+    ) -> Decision {
+        let request = envelope
+            .payload_str()
+            .ok_or("the pairing request carried no payload")
+            .and_then(|json| {
+                serde_json::from_str::<synra_protocol::session::PairRequest>(json)
+                    .map_err(|_| "the pairing request was not readable")
+            });
+
+        let answer = match request {
+            // A request that is now waiting for a user has nothing to send yet: the answer comes from whoever answers the
+            // prompt, through a path that does not exist until the interface is wired up.
+            Ok(request) => pairing.offer(request),
+            Err(why) => Some(synra_protocol::session::PairResponse::refused(why)),
+        };
+
+        Decision::Pairing { answer, request: Box::new(envelope.clone()) }
     }
 
     /// Where a file with this name goes.
@@ -394,5 +446,121 @@ mod tests {
         let inbox = Inbox::new(dir.path());
         assert!(!inbox.is_busy());
         assert_eq!(inbox.directory(), dir.path().join(INBOX_DIR));
+    }
+
+    // ── The pairing request path ──────────────────────────────────────────────────────────────
+
+    /// A local device id for a request addressed to us.
+    fn local() -> synra_protocol::ids::DeviceId {
+        "01a139a9-8f3c-72ce-9c96-2b2c81f14551".parse().expect("a valid device id")
+    }
+
+    /// A pairing request envelope, with the payload spelled as the wire spells it.
+    fn pair_envelope(payload: &str) -> synra_protocol::envelope::Envelope {
+        let spec = synra_protocol::envelope::OutboundSpec {
+            event: synra_protocol::event::EventName::parse(synra_protocol::event::events::PAIR_REQUEST)
+                .expect("a valid event name"),
+            target: local(),
+            from: "01a139a9-8f3c-72ce-9c96-2b2c81f14552".parse().expect("a valid device id"),
+            trace_id: TraceId::new(),
+            sent_at_ms: 1_000,
+            ttl_ms: None,
+        };
+        // The payload is a JSON **document**, not a string holding one: the encoder serialises whatever it is given, so
+        // handing it `json!(payload)` would nest the document inside a JSON string and produce a request no parser
+        // accepts. A helper that got this wrong would report a failure in the code rather than in the helper.
+        let raw = serde_json::value::RawValue::from_string(payload.to_owned())
+            .expect("the payload is valid json");
+        synra_protocol::envelope::Envelope::outbound(spec, Some(&raw))
+            .expect("the payload is valid json")
+    }
+
+    /// A well-formed request payload.
+    fn request_json(name: &str) -> String {
+        serde_json::json!({
+            "profile": {
+                "deviceId": "01a139a9-8f3c-72ce-9c96-2b2c81f14552",
+                "displayName": name,
+                "platform": "desktop",
+                "appVersion": "0.1.0"
+            }
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn a_readable_pairing_request_waits_for_a_user_rather_than_being_answered() {
+        let inbox = Inbox::new(std::env::temp_dir().as_path());
+        let mut pairing = synra_core::pairing::InboundPairing::new();
+
+        let decision = inbox.pairing_request(&pair_envelope(&request_json("Laptop")), &mut pairing);
+        let Decision::Pairing { answer, request } = decision else {
+            panic!("a pairing request must produce a pairing decision");
+        };
+        assert!(answer.is_none(), "nothing is sent while the request waits for a user");
+        assert_eq!(
+            request.event.as_str(),
+            synra_protocol::event::events::PAIR_REQUEST,
+            "the request travels with the decision so the answer can be addressed from it"
+        );
+        assert!(pairing.pending().is_some(), "and the request is now on screen");
+    }
+
+    #[test]
+    fn a_second_request_while_one_waits_is_refused_without_ending_the_link() {
+        // Rule 2 of the pairing section, and rule 6: a refusal is an answer, not a reason to disconnect.
+        let inbox = Inbox::new(std::env::temp_dir().as_path());
+        let mut pairing = synra_core::pairing::InboundPairing::new();
+        let _ = inbox.pairing_request(&pair_envelope(&request_json("First")), &mut pairing);
+
+        let decision = inbox.pairing_request(&pair_envelope(&request_json("Second")), &mut pairing);
+        let Decision::Pairing { answer, .. } = decision else {
+            panic!("a pairing request must produce a pairing decision");
+        };
+        let answer = answer.expect("the second request is answered immediately");
+        assert!(!answer.accepted);
+        assert_eq!(answer.reason.as_deref(), Some("busy"));
+    }
+
+    #[test]
+    fn a_pairing_request_that_cannot_be_read_is_refused_rather_than_failing_the_link() {
+        // A peer that sends a mistake in one message has not broken the connection, and closing it would take any
+        // transfer on that link down for a reason the user cannot act on.
+        let inbox = Inbox::new(std::env::temp_dir().as_path());
+        let mut pairing = synra_core::pairing::InboundPairing::new();
+
+        for payload in [r#""a string, not an object""#, r#"{"profile":{}}"#] {
+            let decision = inbox.pairing_request(&pair_envelope(payload), &mut pairing);
+            let Decision::Pairing { answer, .. } = decision else {
+                panic!("a pairing request must produce a pairing decision");
+            };
+            let answer = answer.expect("an unreadable request is answered immediately");
+            assert!(!answer.accepted, "payload {payload} must be refused");
+            assert_eq!(answer.issued_token(), None, "a refusal issues no token");
+        }
+        assert!(pairing.pending().is_none(), "an unreadable request must not reach the prompt");
+    }
+
+    #[test]
+    fn a_pairing_request_with_no_payload_is_refused() {
+        let inbox = Inbox::new(std::env::temp_dir().as_path());
+        let mut pairing = synra_core::pairing::InboundPairing::new();
+
+        let spec = synra_protocol::envelope::OutboundSpec {
+            event: synra_protocol::event::EventName::parse(synra_protocol::event::events::PAIR_REQUEST)
+                .expect("a valid event name"),
+            target: local(),
+            from: "01a139a9-8f3c-72ce-9c96-2b2c81f14552".parse().expect("a valid device id"),
+            trace_id: TraceId::new(),
+            sent_at_ms: 1_000,
+            ttl_ms: None,
+        };
+        let bare = synra_protocol::envelope::Envelope::outbound::<()>(spec, None)
+            .expect("a payload-less envelope is valid");
+
+        let Decision::Pairing { answer, .. } = inbox.pairing_request(&bare, &mut pairing) else {
+            panic!("a pairing request must produce a pairing decision");
+        };
+        assert!(!answer.expect("answered immediately").accepted);
     }
 }
