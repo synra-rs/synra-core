@@ -1141,6 +1141,7 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
+ "synra-control",
  "synra-observe",
  "synra-platform",
  "synra-protocol",
