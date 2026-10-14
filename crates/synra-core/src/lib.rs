@@ -49,6 +49,7 @@
 pub mod admission;
 pub mod bus;
 pub mod config;
+pub mod discovery;
 pub mod identity;
 pub mod link;
 pub mod peer;
@@ -57,6 +58,9 @@ pub mod sessions;
 
 pub use admission::{
     AdmissionContext, AdmissionRefusal, AdmissionStep, PluginKey, admit, check, host_requirement,
+};
+pub use discovery::{
+    Absorbed, CANDIDATE_TTL, Candidate, DiscoveryTable, UNUSABLE_NAME, announced_address,
 };
 pub use link::{LinkError, PeerLink};
 pub use peer::{
