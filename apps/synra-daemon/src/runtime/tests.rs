@@ -583,7 +583,7 @@ fn answering_a_prompt_records_the_pairing_and_releases_the_waiting_link() {
         user_hint: None,
     };
     let synra_core::pairing::Offer::Waiting(waiter) =
-        runtime.pairing.offer(request_id, request, 1_000)
+        runtime.pairing.offer(request_id, request, "127.0.0.1:5000", 1_000)
     else {
         panic!("a first request waits for a user");
     };
@@ -625,7 +625,7 @@ fn declining_a_prompt_writes_nothing_and_releases_the_link() {
         user_hint: None,
     };
     let synra_core::pairing::Offer::Waiting(waiter) =
-        runtime.pairing.offer(request_id, request, 1_000)
+        runtime.pairing.offer(request_id, request, "127.0.0.1:5000", 1_000)
     else {
         panic!("a first request waits for a user");
     };

@@ -194,6 +194,18 @@ pub const MIGRATIONS: &[Migration] = &[
             "ALTER TABLE paired_devices ADD COLUMN link_token TEXT",
         ],
     },
+    Migration {
+        version: 7,
+        name: "paired-address",
+        statements: &[
+            // Where a paired device was last reached, as `host:port`. Recorded because it is the one fact about a peer
+            // this side *observed* rather than was told: the name is whatever the peer chose to call itself, and a user
+            // deciding about a prompt has nothing else to recognise a machine by. Nullable because a row written before
+            // this migration, or a pairing accepted with no socket under it — a local test — has no address, and an
+            // empty string is a value a later query would have to special-case.
+            "ALTER TABLE paired_devices ADD COLUMN last_address TEXT",
+        ],
+    },
 ];
 
 /// The schema version this build expects.

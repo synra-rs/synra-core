@@ -44,6 +44,12 @@ pub struct PairingRecord {
     pub platform: synra_protocol::session::PlatformKind,
     /// The token this side will expect on later links, as lowercase hex.
     pub link_token: String,
+    /// Where the request came from, as this side observed it.
+    ///
+    /// Written with the rest of the record because it is part of what was decided: a paired row that knows only the name
+    /// a device claimed cannot be shown to a user as "the machine on this address". Empty when the request arrived
+    /// without a socket behind it, which is how the desk is exercised in a test.
+    pub address: String,
 }
 
 /// A request waiting for the user, with what it will be recorded as.
@@ -65,6 +71,17 @@ pub struct PendingPairing {
     ///
     /// See [`verification_code`] for why this is derived rather than random, and what it does and does not prove.
     pub verification_code: String,
+    /// Where the request came from.
+    ///
+    /// Carried so a user can recognise a machine they have not paired with: the name is what the requester chose, and an
+    /// address is a fact this side observed rather than a claim. Empty when the caller had no address to give — a prompt
+    /// exercised without a socket.
+    pub address: String,
+    /// When this stops being worth deciding about.
+    ///
+    /// The desk holds a deadline for its own bookkeeping; this is the same instant, kept where the prompt is built so a
+    /// screen can show a countdown without reaching into the desk's internals.
+    pub expires_at_ms: i64,
 }
 
 /// The code two devices both display, for a user to compare before pairing.

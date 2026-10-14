@@ -80,6 +80,11 @@ pub struct DeviceRow {
     pub paired_at_ms: i64,
     /// When the peer was last seen.
     pub last_seen_ms: i64,
+    /// Where the peer was last reached, as `host:port`, when this side has ever known.
+    ///
+    /// `None` rather than an empty string: a device paired over something other than a socket has no address, and a
+    /// blank field in a device list is a value somebody reads as a fact.
+    pub address: Option<String>,
     /// Whether this device is refused.
     pub blocked: bool,
 }
@@ -105,6 +110,7 @@ impl DeviceRow {
         paired_at_ms: Option<i64>,
         last_seen_ms: Option<i64>,
         blocked: Option<i64>,
+        address: Option<&str>,
     ) -> Result<Self, RowError> {
         Ok(Self {
             device_id: required(device_id, "device_id")?.to_owned(),
@@ -113,6 +119,9 @@ impl DeviceRow {
             features: parse_features(required(features, "features")?)?,
             paired_at_ms: required(paired_at_ms, "paired_at_ms")?,
             last_seen_ms: required(last_seen_ms, "last_seen_ms")?,
+            // Optional, and empty is absent: the column was added by a migration, so a row written before it has no
+            // value at all, and the write path stores nothing rather than an empty string.
+            address: address.filter(|text| !text.is_empty()).map(str::to_owned),
             blocked: to_bool(blocked, "blocked")?,
         })
     }
@@ -371,6 +380,9 @@ pub mod columns {
         "paired_at_ms",
         "last_seen_ms",
         "blocked",
+        // Last, because that is where the migration that added it put it. The read below is positional, so this list
+        // and `DeviceRow::from_columns` are one order written twice — and this is the file that says which.
+        "last_address",
     ];
 
     /// The `devices_seen` columns, in the order `SeenDeviceRow::from_columns` takes them.
@@ -404,6 +416,31 @@ pub mod columns {
 mod tests {
     use super::*;
 
+    /// Builds a device row from the seven columns, with the address left out.
+    ///
+    /// A helper rather than a literal at each call site: the address is not what most of these tests are about, and a
+    /// signature that grows should not turn every assertion about a name into a second edit.
+    fn device_row(
+        device_id: Option<&str>,
+        display_name: Option<&str>,
+        platform: Option<&str>,
+        features: Option<&str>,
+        paired_at_ms: Option<i64>,
+        last_seen_ms: Option<i64>,
+        blocked: Option<i64>,
+    ) -> Result<DeviceRow, RowError> {
+        DeviceRow::from_columns(
+            device_id,
+            display_name,
+            platform,
+            features,
+            paired_at_ms,
+            last_seen_ms,
+            blocked,
+            None,
+        )
+    }
+
     // ── The device row ────────────────────────────────────────────────────────────────────────────
 
     #[test]
@@ -416,6 +453,7 @@ mod tests {
             Some(1_000),
             Some(2_000),
             Some(0),
+            Some("10.0.0.4:51000"),
         )
         .expect("a row");
         assert_eq!(row.device_id, "dev_a");
@@ -424,24 +462,37 @@ mod tests {
         assert_eq!(row.features, vec!["eventStream"]);
         assert_eq!(row.paired_at_ms, 1_000);
         assert_eq!(row.last_seen_ms, 2_000);
+        assert_eq!(row.address.as_deref(), Some("10.0.0.4:51000"));
         assert!(!row.blocked);
         assert!(row.is_usable());
+    }
+
+    #[test]
+    fn an_address_of_nothing_is_absent_rather_than_empty() {
+        // A device paired over something other than a socket, or a row written before the column existed. The distinction
+        // is what keeps a blank line out of a device list.
+        for value in [None, Some("")] {
+            let row = DeviceRow::from_columns(
+                Some("dev_a"),
+                Some("Laptop"),
+                Some("windows"),
+                Some("[]"),
+                Some(1_000),
+                Some(2_000),
+                Some(0),
+                value,
+            )
+            .expect("a row");
+            assert_eq!(row.address, None, "{value:?}");
+        }
     }
 
     #[test]
     fn a_blocked_device_is_not_usable() {
         // ★ The question the kernel actually asks. Written as a method rather than as a condition at each call site,
         // because the call sites are where it gets left out.
-        let row = DeviceRow::from_columns(
-            Some("d"),
-            Some("n"),
-            Some("p"),
-            Some("[]"),
-            Some(0),
-            Some(0),
-            Some(1),
-        )
-        .expect("a row");
+        let row = device_row(Some("d"), Some("n"), Some("p"), Some("[]"), Some(0), Some(0), Some(1))
+            .expect("a row");
         assert!(row.blocked);
         assert!(!row.is_usable());
     }
@@ -465,11 +516,11 @@ mod tests {
                 args[index] = None;
             }
             else {
+                // The address is the eighth column and is allowed to be absent — that is what `None` means for it — so
+                // the loop only walks the three integers the row requires.
                 numbers[index - 4] = None;
             }
-            match DeviceRow::from_columns(
-                args[0], args[1], args[2], args[3], numbers[0], numbers[1], numbers[2],
-            ) {
+            match device_row(args[0], args[1], args[2], args[3], numbers[0], numbers[1], numbers[2]) {
                 Err(RowError::Missing { column: reported }) => {
                     assert_eq!(reported, column, "index {index}");
                 }
@@ -483,15 +534,7 @@ mod tests {
         // ★ A fallback to "no features" would produce a device that pairs and then fails every transfer with a message
         // about a missing feature — pointing at the peer rather than at the row that is wrong.
         for text in ["[1, 2]", "{}", "not json", r#""a string""#] {
-            match DeviceRow::from_columns(
-                Some("d"),
-                Some("n"),
-                Some("p"),
-                Some(text),
-                Some(0),
-                Some(0),
-                Some(0),
-            ) {
+            match device_row(Some("d"), Some("n"), Some("p"), Some(text), Some(0), Some(0), Some(0)) {
                 Err(RowError::WrongType { column, .. }) => assert_eq!(column, "features", "{text}"),
                 other => panic!("`{text}` was accepted: {other:?}"),
             }
@@ -501,16 +544,8 @@ mod tests {
     #[test]
     fn an_empty_features_list_is_the_ordinary_case() {
         // The schema's own default is `'[]'`, so it is the value most rows have.
-        let row = DeviceRow::from_columns(
-            Some("d"),
-            Some("n"),
-            Some("p"),
-            Some("[]"),
-            Some(0),
-            Some(0),
-            Some(0),
-        )
-        .expect("a row");
+        let row = device_row(Some("d"), Some("n"), Some("p"), Some("[]"), Some(0), Some(0), Some(0))
+            .expect("a row");
         assert!(row.features.is_empty());
     }
 
@@ -520,15 +555,7 @@ mod tests {
         // would treat a `2` — which the schema forbids and a corrupt file can contain — as `true`. The point of checking
         // is that a value the schema does not allow is reported rather than interpreted.
         for value in [2_i64, -1, 99] {
-            match DeviceRow::from_columns(
-                Some("d"),
-                Some("n"),
-                Some("p"),
-                Some("[]"),
-                Some(0),
-                Some(0),
-                Some(value),
-            ) {
+            match device_row(Some("d"), Some("n"), Some("p"), Some("[]"), Some(0), Some(0), Some(value)) {
                 Err(RowError::NotABoolean { column, found }) => {
                     assert_eq!(column, "blocked");
                     assert!(found.contains(&value.to_string()), "{found}");
@@ -643,7 +670,7 @@ mod tests {
         // one: nothing fails, and a device's name becomes its platform.
         //
         // This asserts the count, and `the_column_lists_match_the_migration_schema` below asserts the names.
-        assert_eq!(columns::DEVICE.len(), 7);
+        assert_eq!(columns::DEVICE.len(), 8);
         assert_eq!(columns::SEEN_DEVICE.len(), 6);
         assert_eq!(columns::IDENTITY.len(), 4);
         assert_eq!(columns::PLUGIN.len(), 6);
@@ -720,8 +747,8 @@ mod tests {
         );
         assert_eq!(
             &columns::DEVICE[4..],
-            &["paired_at_ms", "last_seen_ms", "blocked"],
-            "the order `DeviceRow::from_columns` takes its integer columns"
+            &["paired_at_ms", "last_seen_ms", "blocked", "last_address"],
+            "the order `DeviceRow::from_columns` takes, with the two columns a migration appended at the end"
         );
     }
 
@@ -754,18 +781,11 @@ mod tests {
     fn the_rows_are_serialisable_which_is_what_the_dump_needs() {
         // `synra db dump` prints these as JSON, and a type that could not be serialised would make the command's own
         // output impossible.
-        let row = DeviceRow::from_columns(
-            Some("d"),
-            Some("n"),
-            Some("p"),
-            Some(r#"["a"]"#),
-            Some(1),
-            Some(2),
-            Some(0),
-        )
-        .expect("a row");
+        let row = device_row(Some("d"), Some("n"), Some("p"), Some(r#"["a"]"#), Some(1), Some(2), Some(0))
+            .expect("a row");
         let json = serde_json::to_string(&row).expect("serialises");
         assert!(json.contains("\"device_id\":\"d\""), "{json}");
+        assert!(json.contains("\"address\":null"), "an absent address is null rather than an empty string: {json}");
         let back: DeviceRow = serde_json::from_str(&json).expect("deserialises");
         assert_eq!(back, row);
     }

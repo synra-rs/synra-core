@@ -27,6 +27,7 @@ impl SynraDb {
                     row.get::<_, Option<i64>>(4)?,
                     row.get::<_, Option<i64>>(5)?,
                     row.get::<_, Option<i64>>(6)?,
+                    row.get::<_, Option<String>>(7)?.as_deref(),
                 ))
             })
             .map_err(|error| DbError::Statement { why: error.to_string() })?

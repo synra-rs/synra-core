@@ -52,7 +52,7 @@ fn a_dialler_with_no_token_is_asked_to_pair() {
 fn a_dialler_whose_token_matches_is_trusted() {
     let db = db();
     let ours = token(0x11);
-    db.pair_device(DEVICE_A, "Laptop", "windows", "[]", &ours.to_hex(), 1_000).expect("pairs");
+    db.pair_device(DEVICE_A, "Laptop", "windows", "[]", &ours.to_hex(), "127.0.0.1:5000", 1_000).expect("pairs");
 
     assert_eq!(state_for(&db, device(DEVICE_A), Some(&ours)), PairingState::Current);
     assert!(state_for(&db, device(DEVICE_A), Some(&ours)).is_trusted());
@@ -61,7 +61,7 @@ fn a_dialler_whose_token_matches_is_trusted() {
 #[test]
 fn a_dialler_whose_token_does_not_match_is_asked_to_pair_again() {
     let db = db();
-    db.pair_device(DEVICE_A, "Laptop", "windows", "[]", &token(0x11).to_hex(), 1_000).expect("pairs");
+    db.pair_device(DEVICE_A, "Laptop", "windows", "[]", &token(0x11).to_hex(), "127.0.0.1:5000", 1_000).expect("pairs");
 
     let state = state_for(&db, device(DEVICE_A), Some(&token(0x22)));
     assert_eq!(state, PairingState::Stale);
@@ -74,7 +74,7 @@ fn a_token_issued_to_another_device_does_not_open_this_one() {
     // peer's token open a link as a different device, which is the whole trust model failing.
     let db = db();
     let ours = token(0x33);
-    db.pair_device(DEVICE_A, "Laptop", "windows", "[]", &ours.to_hex(), 1_000).expect("pairs");
+    db.pair_device(DEVICE_A, "Laptop", "windows", "[]", &ours.to_hex(), "127.0.0.1:5000", 1_000).expect("pairs");
 
     assert_eq!(state_for(&db, device(DEVICE_A), Some(&ours)), PairingState::Current);
     assert_eq!(state_for(&db, device(DEVICE_B), Some(&ours)), PairingState::Stale);
@@ -115,7 +115,7 @@ fn a_pairing_accepted_through_the_session_is_recognised_on_the_next_link() {
         },
         user_hint: None,
     };
-    let Offer::Waiting(waiter) = desk.offer(request_id, request, 1_000) else {
+    let Offer::Waiting(waiter) = desk.offer(request_id, request, "127.0.0.1:5000", 1_000) else {
         panic!("it waits for a user");
     };
 
@@ -130,6 +130,7 @@ fn a_pairing_accepted_through_the_session_is_recognised_on_the_next_link() {
                 &record.platform.to_string(),
                 "[]",
                 &record.link_token,
+                &record.address,
                 1_000,
             )
             .map_err(|error| error.to_string())?;
@@ -154,6 +155,14 @@ fn a_pairing_accepted_through_the_session_is_recognised_on_the_next_link() {
 
     // And a device that took part in none of this is still asked to pair.
     assert_eq!(state_for(&db, device(DEVICE_B), Some(&dialer_holds)), PairingState::Stale);
+
+    // ★ The address travels with the pairing, because it is the only fact about the peer this side observed rather than
+    // was told. A record that dropped it would leave a device list showing a name the peer chose and nothing to check it
+    // against.
+    assert_eq!(
+        db.paired_devices().expect("lists")[0].address.as_deref(),
+        Some("127.0.0.1:5000"),
+    );
 }
 
 /// The code the two devices show is the same code.
@@ -217,7 +226,7 @@ fn the_pending_request_carries_the_verification_code() {
         },
         user_hint: None,
     };
-    assert!(matches!(desk.offer(request_id, request, 1_000), Offer::Waiting(_)));
+    assert!(matches!(desk.offer(request_id, request, "127.0.0.1:5000", 1_000), Offer::Waiting(_)));
 
     let pending = desk.request_of(request_id).expect("the request is waiting");
     assert_eq!(

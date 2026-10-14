@@ -423,6 +423,9 @@ impl Kernel for Runtime {
                         &platform.to_string(),
                         "[]",
                         &link_token,
+                        // The address this side dialled, which it resolved from discovery a few lines above. Recording it
+                        // means a device list can show where a peer was last reached without rediscovering it.
+                        &address.to_string(),
                         now,
                     )
                     .map_err(|error| {
@@ -476,6 +479,9 @@ impl Kernel for Runtime {
                     &record.platform.to_string(),
                     "[]",
                     &record.link_token,
+                    // The address the connection observed, carried on the prompt. It is empty when the request had no
+                    // socket under it, which records no address rather than an empty one.
+                    &record.address,
                     now,
                 )
                 .map(|_| ())

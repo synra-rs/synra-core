@@ -160,6 +160,11 @@ pub fn handle_within(
     timeout: Duration,
     desk: &Arc<synra_core::pairing::PairingDesk>,
 ) -> Served {
+    // ★ Read before the handshake consumes the stream, and kept as text. It is the one fact about the requester this side
+    // *observed* rather than was told: a prompt shows the name the device chose, and the address is what lets a user
+    // recognise a machine they have never paired with. A socket that cannot report it yields an empty string, because a
+    // prompt without an address is still a prompt and refusing to show one would be worse.
+    let peer_address = stream.peer_addr().map(|address| address.to_string()).unwrap_or_default();
     // ★ Set on the stream before anything reads from it. A peer that connects and goes silent — a port scan, another
     // product's client — is bounded by this rather than by the process's lifetime.
     if let Err(error) = stream.set_read_timeout(Some(timeout)) {
@@ -207,7 +212,7 @@ pub fn handle_within(
     // on it at all, and a per-connection state would make that answer invisible here — the dialer would wait out its own
     // thirty-second window for a decision the user had already made.
     loop {
-        match inbox.absorb(&mut link, synra_store::sqlite::now_ms(), PATIENCE, desk) {
+        match inbox.absorb(&mut link, synra_store::sqlite::now_ms(), PATIENCE, desk, &peer_address) {
             Ok(decision) => match decision {
                 Decision::Delivered { event } => {
                     // ★ Recorded as well as reported. A message this kernel received has arrived, and a log that looked

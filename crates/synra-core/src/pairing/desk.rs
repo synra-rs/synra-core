@@ -127,17 +127,44 @@ impl PairingDesk {
         waiting
     }
 
+    /// Every request waiting for a user, with what a prompt needs to show.
+    ///
+    /// # Why this is not the shape [`PairingDesk::pending`] returns
+    ///
+    /// Because a screen needs the name, the address and the code, and a caller that had to fetch each prompt by request id
+    /// would be reading the desk three times per prompt — with a window in between in which a prompt could be answered and
+    /// the identifiers it was holding would name nothing. One read gives a consistent list.
+    ///
+    /// Ordered by device, for [`PairingDesk::pending`]'s reason: a list whose order changed between reads would make a
+    /// prompt move while a user was reading it.
+    #[must_use]
+    pub fn prompts(&self) -> Vec<PendingPairing> {
+        let mut waiting: Vec<PendingPairing> = {
+            let entries = self.entries.lock();
+            entries.values().map(|entry| entry.pending.clone()).collect()
+        };
+        waiting.sort_by_key(|prompt| prompt.request.profile.device_id.to_string());
+        waiting
+    }
+
     /// Offers an arriving request.
     ///
     /// `request_id` is the envelope's, because that is what a dialer correlates the answer with — the [`PairRequest`]
-    /// payload carries none of its own.
+    /// payload carries none of its own. `address` is where it came from, as this side observed it; empty is allowed and
+    /// means the caller had none to give.
     ///
     /// # Returns
     ///
     /// [`Offer::Waiting`] with the waiter this connection should block on, or [`Offer::Refused`] with the answer to send
     /// now. A second request from a device that already has one pending is refused as [`PairRefusal::Busy`], and the
     /// first prompt is left alone.
-    pub fn offer(&self, request_id: RequestId, request: PairRequest, now_ms: i64) -> Offer {
+    pub fn offer(
+        &self,
+        request_id: RequestId,
+        request: PairRequest,
+        address: &str,
+        now_ms: i64,
+    ) -> Offer {
         let device = request.profile.device_id;
         let mut entries = self.entries.lock();
 
@@ -149,17 +176,17 @@ impl PairingDesk {
         }
 
         let code = verification_code(device, self.local);
+        let deadline_ms = now_ms.saturating_add(self.pairing_window_ms);
         let pending = PendingPairing {
             request_id,
             request,
             token: LinkToken::random(),
             verification_code: code,
+            address: address.to_owned(),
+            expires_at_ms: deadline_ms,
         };
         let (sender, answer) = std::sync::mpsc::channel();
-        let _ = entries.insert(
-            device,
-            Entry { pending, answer: sender, deadline_ms: now_ms.saturating_add(self.pairing_window_ms) },
-        );
+        let _ = entries.insert(device, Entry { pending, answer: sender, deadline_ms });
         // The entry is in place, so the desk is consistent. The caller may now block on the channel for as long as the
         // user takes, and holding the lock across that would stop every other connection from asking anything.
         drop(entries);
@@ -220,6 +247,9 @@ impl PairingDesk {
             display_name: pending.request.profile.display_name.clone(),
             platform: pending.request.profile.platform,
             link_token: pending.token.to_hex(),
+            // Carried from the prompt rather than re-observed here: the connection that saw the address has already
+            // gone, and what a user agreed to is what was on screen.
+            address: pending.address.clone(),
         };
 
         match write(&record) {
@@ -316,7 +346,7 @@ mod tests {
     fn an_offered_request_waits_and_appears_on_the_desk() {
         let desk = desk();
         let id = RequestId::new();
-        let Offer::Waiting(waiter) = desk.offer(id, request(peer(), "Laptop"), 1_000) else {
+        let Offer::Waiting(waiter) = desk.offer(id, request(peer(), "Laptop"), "127.0.0.1:5000", 1_000) else {
             panic!("a first request must wait for a user");
         };
         assert_eq!(waiter.request(), id);
@@ -333,9 +363,9 @@ mod tests {
         // would mean the user answers one device's request and the other device is paired.
         let desk = desk();
         let first = RequestId::new();
-        assert!(matches!(desk.offer(first, request(peer(), "First"), 1_000), Offer::Waiting(_)));
+        assert!(matches!(desk.offer(first, request(peer(), "First"), "127.0.0.1:5000", 1_000), Offer::Waiting(_)));
 
-        let Offer::Refused(answer) = desk.offer(RequestId::new(), request(peer(), "Second"), 1_001) else {
+        let Offer::Refused(answer) = desk.offer(RequestId::new(), request(peer(), "Second"), "127.0.0.1:5000", 1_001) else {
             panic!("a second request from the same device must be refused");
         };
         assert_eq!(answer.reason.as_deref(), Some(PairRefusal::Busy.as_str()));
@@ -351,8 +381,8 @@ mod tests {
         // One request at a time *per device*. Refusing the second device because the first is thinking would make one
         // user's hesitation another user's failure.
         let desk = desk();
-        assert!(matches!(desk.offer(RequestId::new(), request(peer(), "Laptop"), 1_000), Offer::Waiting(_)));
-        assert!(matches!(desk.offer(RequestId::new(), request(other(), "Phone"), 1_000), Offer::Waiting(_)));
+        assert!(matches!(desk.offer(RequestId::new(), request(peer(), "Laptop"), "127.0.0.1:5000", 1_000), Offer::Waiting(_)));
+        assert!(matches!(desk.offer(RequestId::new(), request(other(), "Phone"), "127.0.0.1:5000", 1_000), Offer::Waiting(_)));
         assert_eq!(desk.pending().len(), 2);
     }
 
@@ -360,7 +390,7 @@ mod tests {
     fn accepting_delivers_the_response_to_the_waiter() {
         let desk = desk();
         let id = RequestId::new();
-        let Offer::Waiting(waiter) = desk.offer(id, request(peer(), "Laptop"), 1_000) else {
+        let Offer::Waiting(waiter) = desk.offer(id, request(peer(), "Laptop"), "127.0.0.1:5000", 1_000) else {
             panic!("waiting");
         };
 
@@ -381,7 +411,7 @@ mod tests {
     fn declining_delivers_a_refusal_and_writes_nothing() {
         let desk = desk();
         let id = RequestId::new();
-        let Offer::Waiting(waiter) = desk.offer(id, request(peer(), "Laptop"), 1_000) else {
+        let Offer::Waiting(waiter) = desk.offer(id, request(peer(), "Laptop"), "127.0.0.1:5000", 1_000) else {
             panic!("waiting");
         };
 
@@ -402,7 +432,7 @@ mod tests {
         // retry — and the dialer must not be told the pairing succeeded.
         let desk = desk();
         let id = RequestId::new();
-        let Offer::Waiting(waiter) = desk.offer(id, request(peer(), "Laptop"), 1_000) else {
+        let Offer::Waiting(waiter) = desk.offer(id, request(peer(), "Laptop"), "127.0.0.1:5000", 1_000) else {
             panic!("waiting");
         };
 
@@ -423,7 +453,7 @@ mod tests {
     fn answering_twice_answers_once() {
         let desk = desk();
         let id = RequestId::new();
-        let _ = desk.offer(id, request(peer(), "Laptop"), 1_000);
+        let _ = desk.offer(id, request(peer(), "Laptop"), "127.0.0.1:5000", 1_000);
 
         let log = std::cell::RefCell::new(Vec::new());
         assert!(desk.answer(id, true, writes(&log)).is_some());
@@ -444,7 +474,7 @@ mod tests {
         // The dialer must not be left holding an open connection with no answer: "this request expired" is something a
         // user can act on, and silence is not.
         let desk = PairingDesk::new(local(), Duration::from_millis(1));
-        let Offer::Waiting(waiter) = desk.offer(RequestId::new(), request(peer(), "Laptop"), 1_000) else {
+        let Offer::Waiting(waiter) = desk.offer(RequestId::new(), request(peer(), "Laptop"), "127.0.0.1:5000", 1_000) else {
             panic!("waiting");
         };
 
@@ -456,8 +486,8 @@ mod tests {
     #[test]
     fn sweeping_drops_only_the_windows_that_closed() {
         let desk = PairingDesk::new(local(), Duration::from_millis(100));
-        let _ = desk.offer(RequestId::new(), request(peer(), "Old"), 1_000);
-        let _ = desk.offer(RequestId::new(), request(other(), "New"), 1_090);
+        let _ = desk.offer(RequestId::new(), request(peer(), "Old"), "127.0.0.1:5000", 1_000);
+        let _ = desk.offer(RequestId::new(), request(other(), "New"), "127.0.0.1:5000", 1_090);
 
         // At 1_050 the first is past its deadline (1_100 is not yet reached — it is still open); the second's is 1_190.
         assert_eq!(desk.sweep_expired(1_150), 1, "only the first window has closed");
@@ -470,7 +500,7 @@ mod tests {
         // The desk drops the entry, which drops the sender, which closes the channel — so the connection blocked on the
         // socket is released instead of waiting for a prompt that no longer exists.
         let desk = PairingDesk::new(local(), Duration::from_millis(1));
-        let Offer::Waiting(waiter) = desk.offer(RequestId::new(), request(peer(), "Laptop"), 1_000) else {
+        let Offer::Waiting(waiter) = desk.offer(RequestId::new(), request(peer(), "Laptop"), "127.0.0.1:5000", 1_000) else {
             panic!("waiting");
         };
         assert_eq!(desk.sweep_expired(2_000), 1);
@@ -484,7 +514,7 @@ mod tests {
     fn the_prompt_carries_the_code_the_other_screen_derives() {
         let desk = desk();
         let id = RequestId::new();
-        let _ = desk.offer(id, request(peer(), "Laptop"), 1_000);
+        let _ = desk.offer(id, request(peer(), "Laptop"), "127.0.0.1:5000", 1_000);
 
         let shown = desk.request_of(id).expect("on the desk");
         assert_eq!(shown.verification_code, crate::pairing::verification_code(peer(), local()));

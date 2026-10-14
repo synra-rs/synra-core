@@ -217,6 +217,7 @@ impl Inbox {
         now_ms: i64,
         patience: std::time::Duration,
         pairing: &synra_core::pairing::PairingDesk,
+        peer_address: &str,
     ) -> Result<Decision, synra_core::SessionError> {
         // * The patience is re-armed on **every** call, and it is what bounds a *quiet* peer rather than a slow one. An
         // earlier version computed the deadline once from the connection's start, so a receiver that was still working
@@ -253,7 +254,7 @@ impl Inbox {
                 // to follow — and a pairing request reported as `Delivered` would leave a user's other device waiting for an
                 // answer this kernel never sends while the prompt, if it appeared at all, sat unanswered on a screen.
                 if envelope.event.as_str() == synra_protocol::event::events::PAIR_REQUEST {
-                    return Ok(self.pairing_request(&envelope, pairing));
+                    return Ok(self.pairing_request(&envelope, pairing, peer_address));
                 }
                 return Ok(Decision::Delivered { event: envelope.event.as_str().to_owned() });
             }
@@ -324,6 +325,7 @@ impl Inbox {
         &self,
         envelope: &synra_protocol::envelope::Envelope,
         pairing: &synra_core::pairing::PairingDesk,
+        peer_address: &str,
     ) -> Decision {
         let refused = |why: String| Decision::Pairing {
             answer: Some(PairingAnswer::Now(synra_protocol::session::PairResponse::refused(why))),
@@ -340,7 +342,7 @@ impl Inbox {
         // Registered on the shared desk, which hands back the waiter this connection blocks on. The answer arrives from
         // whoever decides, through the channel the desk holds — so it does not matter that the user is not on this
         // connection, which is the whole reason the desk is shared.
-        let answer = match pairing.offer(envelope.request_id, request, synra_store::sqlite::now_ms()) {
+        let answer = match pairing.offer(envelope.request_id, request, peer_address, synra_store::sqlite::now_ms()) {
             synra_core::pairing::Offer::Waiting(waiter) => Some(PairingAnswer::Waiting(
                 std::sync::Arc::new(parking_lot::Mutex::new(Some(waiter))),
             )),
@@ -567,7 +569,7 @@ mod tests {
         let inbox = Inbox::new(std::env::temp_dir().as_path());
         let pairing = desk();
 
-        let decision = inbox.pairing_request(&pair_envelope(&request_json("Laptop")), &pairing);
+        let decision = inbox.pairing_request(&pair_envelope(&request_json("Laptop")), &pairing, "127.0.0.1:5000");
         let Decision::Pairing { answer, request } = decision else {
             panic!("a pairing request must produce a pairing decision");
         };
@@ -588,9 +590,9 @@ mod tests {
         // Rule 2 of the pairing section, and rule 6: a refusal is an answer, not a reason to disconnect.
         let inbox = Inbox::new(std::env::temp_dir().as_path());
         let pairing = desk();
-        let _ = inbox.pairing_request(&pair_envelope(&request_json("First")), &pairing);
+        let _ = inbox.pairing_request(&pair_envelope(&request_json("First")), &pairing, "127.0.0.1:5000");
 
-        let decision = inbox.pairing_request(&pair_envelope(&request_json("Second")), &pairing);
+        let decision = inbox.pairing_request(&pair_envelope(&request_json("Second")), &pairing, "127.0.0.1:5000");
         let Decision::Pairing { answer, .. } = decision else {
             panic!("a pairing request must produce a pairing decision");
         };
@@ -609,7 +611,7 @@ mod tests {
         let pairing = desk();
 
         for payload in [r#""a string, not an object""#, r#"{"profile":{}}"#] {
-            let decision = inbox.pairing_request(&pair_envelope(payload), &pairing);
+            let decision = inbox.pairing_request(&pair_envelope(payload), &pairing, "127.0.0.1:5000");
             let Decision::Pairing { answer, .. } = decision else {
                 panic!("a pairing request must produce a pairing decision");
             };
@@ -639,7 +641,7 @@ mod tests {
         let bare = synra_protocol::envelope::Envelope::outbound::<()>(spec, None)
             .expect("a payload-less envelope is valid");
 
-        let Decision::Pairing { answer, .. } = inbox.pairing_request(&bare, &pairing) else {
+        let Decision::Pairing { answer, .. } = inbox.pairing_request(&bare, &pairing, "127.0.0.1:5000") else {
             panic!("a pairing request must produce a pairing decision");
         };
         let PairingAnswer::Now(answer) = answer.expect("answered immediately") else {

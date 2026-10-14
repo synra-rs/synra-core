@@ -32,6 +32,10 @@ pub struct Paired {
 impl SynraDb {
     /// Records a pairing, or replaces the token of one that already exists.
     ///
+    /// `address` is where the peer was reached or last heard from, as `host:port`, and an empty string records no
+    /// address: a caller with no socket under it — a local pairing, or a test — has nothing to store, and a column
+    /// holding `""` is one every reader would have to treat as absent anyway.
+    ///
     /// # Errors
     ///
     /// [`DbError::Statement`] when the row cannot be written, which for a well-formed argument means the table is absent.
@@ -42,22 +46,26 @@ impl SynraDb {
         platform: &str,
         features: &str,
         link_token: &str,
+        address: &str,
         now_ms: i64,
     ) -> Result<Paired, DbError> {
+        let address = if address.is_empty() { None } else { Some(address) };
         self.connection
             .execute(
                 "INSERT INTO paired_devices \
-                     (device_id, display_name, platform, features, link_token, paired_at_ms, last_seen_ms, blocked) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, 0) \
+                     (device_id, display_name, platform, features, link_token, last_address, \
+                      paired_at_ms, last_seen_ms, blocked) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, 0) \
                  ON CONFLICT(device_id) DO UPDATE SET \
                      display_name = excluded.display_name, \
                      platform     = excluded.platform, \
                      features     = excluded.features, \
                      link_token   = excluded.link_token, \
+                     last_address = excluded.last_address, \
                      paired_at_ms = excluded.paired_at_ms, \
                      last_seen_ms = excluded.last_seen_ms, \
                      blocked      = 0",
-                params![device_id, display_name, platform, features, link_token, now_ms],
+                params![device_id, display_name, platform, features, link_token, address, now_ms],
             )
             .map_err(|error| DbError::Statement { why: error.to_string() })?;
 
