@@ -669,10 +669,25 @@ impl Receiving {
         now_ms: i64,
         deadline: std::time::Instant,
     ) -> Result<Received, SessionError> {
-        if std::time::Instant::now() >= deadline {
-            return Ok(Received::Ignored);
-        }
-        match link.receive_inbound()? {
+        // ★ A quiet link is not a closed one, and this is the read a receiver spends most of a transfer sitting on. An
+        // earlier version propagated the socket's timeout with `?`, so the caller saw a link failure and closed the
+        // connection — while the sender's completion was on its way down the same stream, one frame behind the last block.
+        // That is what made the confirmation arrive about half the time: whichever of the two got there first decided it.
+        //
+        // The deadline is what bounds the wait, so a peer that genuinely goes away is still noticed; a message that is
+        // simply late is still read.
+        let inbound = loop {
+            match link.receive_inbound() {
+                Ok(inbound) => break inbound,
+                Err(LinkError::TimedOut) => {
+                    if std::time::Instant::now() >= deadline {
+                        return Ok(Received::Ignored);
+                    }
+                }
+                Err(error) => return Err(SessionError::Link(error)),
+            }
+        };
+        match inbound {
             // ★ A block at the receiving end is the point of the whole exercise. The index in the frame is the block's
             // place in the object, which is why the block's own bytes need no header of their own.
             Inbound::Block { chunk_id, data } => {
@@ -1161,6 +1176,47 @@ mod tests {
 
 
     // ── The whole round trip, both ends at once ───────────────────────────────────────────────────
+
+    #[test]
+    fn a_receiver_waits_out_a_quiet_link_rather_than_abandoning_the_transfer() {
+        // ★ The read a receiver spends most of a transfer sitting on, and the bug that made the completion arrive about half
+        // the time: this used to propagate the socket's timeout with `?`, so the caller saw a link failure and closed the
+        // connection while the sender's completion was one frame behind the last block. The deadline is what bounds the
+        // wait — not the socket — so a message that is merely late is still read.
+        let dir = TempDir::new("quiet-link");
+        let source = file(&dir, "source.bin", b"abcdefgh");
+        let destination = dir.path().join("copy.bin");
+        let transfer = TransferSender::open(&source, 4).expect("opens");
+
+        // Production flags, so the socket has the short real timeout that used to end the transfer.
+        let (mut side_a, mut side_b) = connected_with(Flags::production());
+        let trace = TraceId::new();
+        propose(&mut side_a, &transfer, trace, 0).expect("proposes");
+        let Inbound::Envelope(envelope) = side_b.receive_inbound().expect("receives") else {
+            panic!("expected a proposal");
+        };
+        let mut receiving = Receiving::accept(&envelope, &destination, trace).expect("accepts");
+
+        // Nothing is sent for longer than the link's read timeout, then one block arrives. A receiver that gave up at the
+        // timeout would never see it.
+        let quiet_for = synra_protocol::limits::HELLO_TIMEOUT + std::time::Duration::from_millis(400);
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(quiet_for);
+            let data = transfer.read_block(0).expect("reads");
+            side_a.send_chunk(0, &data).expect("sends");
+            side_a
+        });
+
+        // A deadline far beyond the quiet period: the wait is bounded by this, not by the socket.
+        let received = receiving
+            .absorb(&mut side_b, 0, later())
+            .expect("a quiet link is not a failure");
+        assert!(
+            matches!(received, Received::Block { index: 0, .. }),
+            "the receiver gave up on a quiet link: {received:?}"
+        );
+        let _ = writer.join().expect("the writer finished");
+    }
 
     /// Two connected links under given flags.
     fn connected_with(flags: Flags) -> (PeerLink, PeerLink) {
