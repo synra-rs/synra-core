@@ -80,3 +80,70 @@ fn a_token_issued_to_another_device_does_not_open_this_one() {
     assert_eq!(state_for(&db, device(DEVICE_B), Some(&ours)), PairingState::Stale);
     assert_eq!(state_for(&db, device(DEVICE_B), None), PairingState::Unknown);
 }
+
+/// The whole chain: a pairing accepted through the session is one a later handshake recognises.
+///
+/// # Why this test exists on top of the two it crosses
+///
+/// Each half is tested where it lives — the session in `synra-core`, the decision here — and both passed while the token
+/// they exchanged was fiction. What neither could check is that the value one writes is the value the other reads, in
+/// the spelling the wire uses. That is exactly the seam where the column sat orphaned for a round: storage and lookup,
+/// both correct, with nothing in between producing a real value.
+#[test]
+fn a_pairing_accepted_through_the_session_is_recognised_on_the_next_link() {
+    use std::cell::RefCell;
+
+    use synra_core::pairing::InboundPairing;
+    use synra_protocol::session::{PairRequest, PairResponse, PeerProfile, PlatformKind};
+    use synra_store::SynraDb;
+
+    let mut db = SynraDb::open_in_memory().expect("opens");
+    db.migrate().expect("migrates");
+
+    // The dialer asks.
+    let mut pairing = InboundPairing::new();
+    let request = PairRequest {
+        profile: PeerProfile {
+            device_id: device(DEVICE_A),
+            display_name: "Laptop".to_owned(),
+            platform: PlatformKind::Desktop,
+            app_version: "0.1.0".to_owned(),
+        },
+        user_hint: None,
+    };
+    assert!(pairing.offer(request).is_none(), "it waits for a user");
+
+    // The user accepts, and the record is written where a later handshake will look for it. This is the same call the
+    // transport will make, so the chain under test is the chain that runs.
+    let written = RefCell::new(Vec::new());
+    let answer = pairing
+        .answer(true, |record| {
+            db.pair_device(
+                &record.device_id.to_string(),
+                &record.display_name,
+                &record.platform.to_string(),
+                "[]",
+                &record.link_token,
+                1_000,
+            )
+            .map_err(|error| error.to_string())?;
+            written.borrow_mut().push(record.link_token.clone());
+            Ok(())
+        })
+        .expect("an answer");
+
+    assert!(answer.accepted, "the pairing was recorded, so it may be answered as accepted");
+    let PairResponse { link_token, .. } = &answer;
+    let issued = link_token.as_deref().expect("an acceptance issues a token");
+
+    // What the dialer stores is what the answer carried, spelled as the wire spells it.
+    let dialer_holds = LinkToken::from_hex(issued).expect("the issued token is hex");
+    assert_eq!(
+        state_for(&db, device(DEVICE_A), Some(&dialer_holds)),
+        PairingState::Current,
+        "the token issued at pairing must be the token a later link is trusted by"
+    );
+
+    // And a device that took part in none of this is still asked to pair.
+    assert_eq!(state_for(&db, device(DEVICE_B), Some(&dialer_holds)), PairingState::Stale);
+}
