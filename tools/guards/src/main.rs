@@ -19,6 +19,9 @@
 //! 3. a `main.rs` growing logic instead of calling the library;
 //! 4. a crate reaching for `directories` outside the one module allowed to;
 //! 5. a host function bypassing the capability gate.
+//!
+//! It also runs the MSRV check, because `rust-version` in `Cargo.toml` is a promise and an unchecked promise is a
+//! number somebody typed.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -87,14 +90,80 @@ fn main() -> std::process::ExitCode {
     }
 
     println!();
-    if failures == 0 {
+    if failures == 0 && check_msrv(&root) {
         println!("{} guard(s) passed", guards().len());
         std::process::ExitCode::SUCCESS
     }
     else {
-        println!("{failures} guard(s) failed");
+        if failures > 0 {
+            println!("{failures} guard(s) failed");
+        }
         std::process::ExitCode::FAILURE
     }
+}
+
+/// The declared MSRV, checked by building with that toolchain.
+///
+/// # Why this is a check and not a number
+///
+/// `rust-version` is what a downstream user with an older compiler is promised. A promise nobody runs is one that rots
+/// the first time a dependency raises its own floor, and the failure then lands on that user rather than here.
+fn check_msrv(root: &Path) -> bool {
+    let Some(msrv) = declared_msrv(root) else {
+        println!("FAIL  the MSRV could not be read from Cargo.toml");
+        return false;
+    };
+    let toolchain = format!("+{msrv}");
+
+    let output = Command::new("cargo")
+        .arg(&toolchain)
+        .arg("check")
+        .arg("--workspace")
+        .arg("--all-targets")
+        .current_dir(root)
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => {
+            println!("ok    the workspace builds on its declared MSRV ({msrv})");
+            true
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            // A toolchain whose components are only *partly* installed is not an MSRV failure: `cargo +X` then tries to
+            // fetch the missing pieces, and a machine without network reports a download error. Reporting that as "does
+            // not build on the MSRV" would be a false accusation — and a guard that cries wolf is one people learn to
+            // ignore. The distinction is the point: "could not check" and "checked and failed" are different answers.
+            if stderr.contains("component download failed") || stderr.contains("error downloading file") {
+                println!("SKIP  the MSRV check needs a component that is not installed ({msrv})");
+                println!("        install it once with `rustup toolchain install {msrv}` while online");
+                return true;
+            }
+            println!("FAIL  the workspace does not build on its declared MSRV ({msrv})");
+            for line in stderr.lines().filter(|line| line.starts_with("error")).take(5) {
+                println!("        {line}");
+            }
+            false
+        }
+        Err(error) => {
+            // A missing toolchain is a failure rather than a skip: "could not check" and "checked and passed" are
+            // different answers, and only one of them is a promise kept.
+            println!("FAIL  the MSRV check could not run: {error}");
+            println!("        install it with `rustup toolchain install {msrv}`");
+            false
+        }
+    }
+}
+
+/// The `rust-version` the workspace manifest declares.
+fn declared_msrv(root: &Path) -> Option<String> {
+    let manifest = std::fs::read_to_string(root.join("Cargo.toml")).ok()?;
+    manifest.lines().find_map(|line| {
+        line.trim()
+            .strip_prefix("rust-version")
+            .and_then(|rest| rest.split('"').nth(1))
+            .map(str::to_owned)
+    })
 }
 
 /// The workspace root: the nearest ancestor whose `Cargo.toml` declares `[workspace]`.

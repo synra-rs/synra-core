@@ -93,6 +93,9 @@ is user documentation and neither is a changelog.
 - [UI design tokens, and how a plugin's interface stays consistent with the host](./NOTES/2026-02-ui-design-tokens.md)
   — why isolation makes shared components impossible, what the host injects instead, and the two channels a theme
   change needs.
+- [The feature matrix was never buildable](./NOTES/2026-02-the-feature-matrix-was-never-buildable.md)
+  — an audit of what the M0 acceptance criteria assume against what the workspace contains, and why an acceptance
+  criterion that cannot fail is not one.
 
 ## 许可
 
