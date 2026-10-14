@@ -83,13 +83,16 @@ synra-core/
 
 ## NOTES
 
-[`NOTES/`](./NOTES) holds records of bugs that cost more to *find* than to fix, written so the next
-investigation starts from them. They are not user documentation and not a changelog: they are about how a
-problem was located, including where the search went wrong.
+[`NOTES/`](./NOTES) holds two kinds of record: bugs that cost more to *find* than to fix, written so the next
+investigation starts from them, and decisions whose reasoning would otherwise live only in a conversation. Neither
+is user documentation and neither is a changelog.
 
 - [A 6-second transfer, and four rounds spent looking in the wrong place](./NOTES/2026-02-transfer-six-seconds.md)
   — a function with no production caller, four broken observation channels, and the checklist that would have
   found it in one round.
+- [UI design tokens, and how a plugin's interface stays consistent with the host](./NOTES/2026-02-ui-design-tokens.md)
+  — why isolation makes shared components impossible, what the host injects instead, and the two channels a theme
+  change needs.
 
 ## 许可
 
