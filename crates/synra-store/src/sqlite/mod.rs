@@ -39,6 +39,7 @@ mod plugins;
 mod settings;
 
 pub use migrations::migration_versions;
+pub use pairing::Paired;
 
 #[cfg(test)]
 mod tests;

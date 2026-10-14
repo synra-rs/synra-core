@@ -38,6 +38,25 @@ fn device(text: &str) -> DeviceId {
     text.parse().expect("a valid device id")
 }
 
+/// A pairing record, which is what the write takes.
+fn paired(
+    device_id: &str,
+    display_name: &str,
+    token: &str,
+    address: Option<&str>,
+    now_ms: i64,
+) -> synra_store::sqlite::Paired {
+    synra_store::sqlite::Paired {
+        device_id: device_id.to_owned(),
+        display_name: display_name.to_owned(),
+        platform: "windows".to_owned(),
+        features: "[]".to_owned(),
+        link_token: token.to_owned(),
+        address: address.map(str::to_owned),
+        paired_at_ms: now_ms,
+    }
+}
+
 /// Two identifiers that differ only in the last character, so a test cannot pass by matching the wrong row.
 const DEVICE_A: &str = "01a139a9-8f3c-72ce-9c96-2b2c81f14551";
 const DEVICE_B: &str = "01a139a9-8f3c-72ce-9c96-2b2c81f14552";
@@ -52,7 +71,7 @@ fn a_dialler_with_no_token_is_asked_to_pair() {
 fn a_dialler_whose_token_matches_is_trusted() {
     let db = db();
     let ours = token(0x11);
-    db.pair_device(DEVICE_A, "Laptop", "windows", "[]", &ours.to_hex(), "127.0.0.1:5000", 1_000).expect("pairs");
+    db.pair_device(&paired(DEVICE_A, "Laptop", &ours.to_hex(), Some("127.0.0.1:5000"), 1_000)).expect("pairs");
 
     assert_eq!(state_for(&db, device(DEVICE_A), Some(&ours)), PairingState::Current);
     assert!(state_for(&db, device(DEVICE_A), Some(&ours)).is_trusted());
@@ -61,7 +80,7 @@ fn a_dialler_whose_token_matches_is_trusted() {
 #[test]
 fn a_dialler_whose_token_does_not_match_is_asked_to_pair_again() {
     let db = db();
-    db.pair_device(DEVICE_A, "Laptop", "windows", "[]", &token(0x11).to_hex(), "127.0.0.1:5000", 1_000).expect("pairs");
+    db.pair_device(&paired(DEVICE_A, "Laptop", &token(0x11).to_hex(), Some("127.0.0.1:5000"), 1_000)).expect("pairs");
 
     let state = state_for(&db, device(DEVICE_A), Some(&token(0x22)));
     assert_eq!(state, PairingState::Stale);
@@ -74,7 +93,7 @@ fn a_token_issued_to_another_device_does_not_open_this_one() {
     // peer's token open a link as a different device, which is the whole trust model failing.
     let db = db();
     let ours = token(0x33);
-    db.pair_device(DEVICE_A, "Laptop", "windows", "[]", &ours.to_hex(), "127.0.0.1:5000", 1_000).expect("pairs");
+    db.pair_device(&paired(DEVICE_A, "Laptop", &ours.to_hex(), Some("127.0.0.1:5000"), 1_000)).expect("pairs");
 
     assert_eq!(state_for(&db, device(DEVICE_A), Some(&ours)), PairingState::Current);
     assert_eq!(state_for(&db, device(DEVICE_B), Some(&ours)), PairingState::Stale);
@@ -124,15 +143,15 @@ fn a_pairing_accepted_through_the_session_is_recognised_on_the_next_link() {
     let written = RefCell::new(Vec::new());
     let answer = desk
         .answer(request_id, true, |record| {
-            db.pair_device(
-                &record.device_id.to_string(),
-                &record.display_name,
-                &record.platform.to_string(),
-                "[]",
-                &record.link_token,
-                &record.address,
-                1_000,
-            )
+            db.pair_device(&synra_store::sqlite::Paired {
+                device_id: record.device_id.to_string(),
+                display_name: record.display_name.clone(),
+                platform: record.platform.to_string(),
+                features: "[]".to_owned(),
+                link_token: record.link_token.clone(),
+                address: Some(record.address.clone()),
+                paired_at_ms: 1_000,
+            })
             .map_err(|error| error.to_string())?;
             written.borrow_mut().push(record.link_token.clone());
             Ok(())
@@ -159,10 +178,9 @@ fn a_pairing_accepted_through_the_session_is_recognised_on_the_next_link() {
     // ★ The address travels with the pairing, because it is the only fact about the peer this side observed rather than
     // was told. A record that dropped it would leave a device list showing a name the peer chose and nothing to check it
     // against.
-    assert_eq!(
-        db.paired_devices().expect("lists")[0].address.as_deref(),
-        Some("127.0.0.1:5000"),
-    );
+    let listed = db.paired_devices().expect("lists");
+    let first = listed.first().expect("the device that just paired");
+    assert_eq!(first.address.as_deref(), Some("127.0.0.1:5000"));
 }
 
 /// The code the two devices show is the same code.

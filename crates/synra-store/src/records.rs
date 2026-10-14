@@ -90,7 +90,14 @@ pub struct DeviceRow {
 }
 
 impl DeviceRow {
-    /// Builds a row from the columns `paired_devices` declares, in its order.
+    /// Builds a row from the text columns `paired_devices` declares, in their order.
+    ///
+    /// # Why the text columns are one value
+    ///
+    /// Because they are the ones a query selects as a group and a reader reads as a group, and eight positional
+    /// arguments is where a caller starts getting them wrong — the compiler cannot tell `platform` from `features`,
+    /// and both are `Option<&str>`. The integers stay separate: there are three of them, they are not interchangeable
+    /// with the strings, and a struct for them would be a struct with no other reason to exist.
     ///
     /// # Errors
     ///
@@ -102,27 +109,18 @@ impl DeviceRow {
     /// An unparseable `features` column is a row the kernel cannot build a link from. Falling back to "no features"
     /// would produce a device that pairs and then fails every transfer with a message about a missing feature — pointing
     /// at the peer rather than at the row that is wrong.
-    pub fn from_columns(
-        device_id: Option<&str>,
-        display_name: Option<&str>,
-        platform: Option<&str>,
-        features: Option<&str>,
-        paired_at_ms: Option<i64>,
-        last_seen_ms: Option<i64>,
-        blocked: Option<i64>,
-        address: Option<&str>,
-    ) -> Result<Self, RowError> {
+    pub fn from_columns(text: DeviceText<'_>, numbers: DeviceNumbers) -> Result<Self, RowError> {
         Ok(Self {
-            device_id: required(device_id, "device_id")?.to_owned(),
-            display_name: required(display_name, "display_name")?.to_owned(),
-            platform: required(platform, "platform")?.to_owned(),
-            features: parse_features(required(features, "features")?)?,
-            paired_at_ms: required(paired_at_ms, "paired_at_ms")?,
-            last_seen_ms: required(last_seen_ms, "last_seen_ms")?,
+            device_id: required(text.device_id, "device_id")?.to_owned(),
+            display_name: required(text.display_name, "display_name")?.to_owned(),
+            platform: required(text.platform, "platform")?.to_owned(),
+            features: parse_features(required(text.features, "features")?)?,
+            paired_at_ms: required(numbers.paired_at_ms, "paired_at_ms")?,
+            last_seen_ms: required(numbers.last_seen_ms, "last_seen_ms")?,
             // Optional, and empty is absent: the column was added by a migration, so a row written before it has no
             // value at all, and the write path stores nothing rather than an empty string.
-            address: address.filter(|text| !text.is_empty()).map(str::to_owned),
-            blocked: to_bool(blocked, "blocked")?,
+            address: text.address.filter(|address| !address.is_empty()).map(str::to_owned),
+            blocked: to_bool(numbers.blocked, "blocked")?,
         })
     }
 
@@ -133,6 +131,35 @@ impl DeviceRow {
     pub const fn is_usable(&self) -> bool {
         !self.blocked
     }
+}
+
+/// The text columns of a `paired_devices` row, as a query returns them.
+///
+/// Optional in every field because a column the `SELECT` omitted reads as `NULL`, which is what makes a mistake in the
+/// column list a named refusal rather than a swapped value.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DeviceText<'a> {
+    /// The peer's identifier.
+    pub device_id: Option<&'a str>,
+    /// Its display name.
+    pub display_name: Option<&'a str>,
+    /// Its platform.
+    pub platform: Option<&'a str>,
+    /// Its features, as JSON.
+    pub features: Option<&'a str>,
+    /// Where it was last reached, when the column is there.
+    pub address: Option<&'a str>,
+}
+
+/// The integer columns of a `paired_devices` row.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DeviceNumbers {
+    /// When the pairing happened.
+    pub paired_at_ms: Option<i64>,
+    /// When the peer was last seen.
+    pub last_seen_ms: Option<i64>,
+    /// Whether it is blocked, as the schema's `0`/`1`.
+    pub blocked: Option<i64>,
 }
 
 /// A device the kernel has merely heard from.
@@ -430,14 +457,8 @@ mod tests {
         blocked: Option<i64>,
     ) -> Result<DeviceRow, RowError> {
         DeviceRow::from_columns(
-            device_id,
-            display_name,
-            platform,
-            features,
-            paired_at_ms,
-            last_seen_ms,
-            blocked,
-            None,
+            DeviceText { device_id, display_name, platform, features, address: None },
+            DeviceNumbers { paired_at_ms, last_seen_ms, blocked },
         )
     }
 
@@ -446,14 +467,14 @@ mod tests {
     #[test]
     fn a_device_row_is_built_from_the_columns_in_order() {
         let row = DeviceRow::from_columns(
-            Some("dev_a"),
-            Some("Laptop"),
-            Some("windows"),
-            Some(r#"["eventStream"]"#),
-            Some(1_000),
-            Some(2_000),
-            Some(0),
-            Some("10.0.0.4:51000"),
+            DeviceText {
+                device_id: Some("dev_a"),
+                display_name: Some("Laptop"),
+                platform: Some("windows"),
+                features: Some(r#"["eventStream"]"#),
+                address: Some("10.0.0.4:51000"),
+            },
+            DeviceNumbers { paired_at_ms: Some(1_000), last_seen_ms: Some(2_000), blocked: Some(0) },
         )
         .expect("a row");
         assert_eq!(row.device_id, "dev_a");
@@ -473,14 +494,14 @@ mod tests {
         // is what keeps a blank line out of a device list.
         for value in [None, Some("")] {
             let row = DeviceRow::from_columns(
-                Some("dev_a"),
-                Some("Laptop"),
-                Some("windows"),
-                Some("[]"),
-                Some(1_000),
-                Some(2_000),
-                Some(0),
-                value,
+                DeviceText {
+                    device_id: Some("dev_a"),
+                    display_name: Some("Laptop"),
+                    platform: Some("windows"),
+                    features: Some("[]"),
+                    address: value,
+                },
+                DeviceNumbers { paired_at_ms: Some(1_000), last_seen_ms: Some(2_000), blocked: Some(0) },
             )
             .expect("a row");
             assert_eq!(row.address, None, "{value:?}");

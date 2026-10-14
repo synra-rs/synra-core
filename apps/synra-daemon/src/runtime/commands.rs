@@ -417,17 +417,19 @@ impl Kernel for Runtime {
         match answered {
             synra_core::pairing::Answered::Accepted { device_id, display_name, platform, link_token } => {
                 self.db
-                    .pair_device(
-                        &device_id.to_string(),
-                        &display_name,
-                        &platform.to_string(),
-                        "[]",
-                        &link_token,
-                        // The address this side dialled, which it resolved from discovery a few lines above. Recording it
-                        // means a device list can show where a peer was last reached without rediscovering it.
-                        &address.to_string(),
-                        now,
-                    )
+                    .pair_device(&synra_store::sqlite::Paired {
+                        device_id: device_id.to_string(),
+                        display_name: display_name.clone(),
+                        // What the peer said it is, which the answer carried. The platform a prompt shows and the one
+                        // a row records are the same fact, so it is stored rather than re-derived from the OS.
+                        platform: platform.to_string(),
+                        features: "[]".to_owned(),
+                        link_token,
+                        // The address this side dialled, which it resolved from discovery a few lines above.
+                        // Recording it means a device list can show where a peer was last reached.
+                        address: Some(address.to_string()),
+                        paired_at_ms: now,
+                    })
                     .map_err(|error| {
                         Refusal::new(ErrorCode::Internal, format!("the pairing could not be recorded: {error}"))
                     })?;
@@ -473,18 +475,17 @@ impl Kernel for Runtime {
         let written = self
             .pairing
             .answer(request, accepted, |record| {
-                db.pair_device(
-                    &record.device_id.to_string(),
-                    &record.display_name,
-                    &record.platform.to_string(),
-                    "[]",
-                    &record.link_token,
-                    // The address the connection observed, carried on the prompt. It is empty when the request had no
+                db.pair_device(&synra_store::sqlite::Paired {
+                    device_id: record.device_id.to_string(),
+                    display_name: record.display_name.clone(),
+                    platform: record.platform.to_string(),
+                    features: "[]".to_owned(),
+                    link_token: record.link_token.clone(),
+                    // The address the connection observed, carried on the prompt. `None` when the request had no
                     // socket under it, which records no address rather than an empty one.
-                    &record.address,
-                    now,
-                )
-                .map(|_| ())
+                    address: Some(record.address.clone()).filter(|address| !address.is_empty()),
+                    paired_at_ms: now,
+                })
                 .map_err(|error| error.to_string())
             })
             .ok_or_else(|| {

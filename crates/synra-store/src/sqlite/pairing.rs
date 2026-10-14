@@ -23,8 +23,20 @@ pub struct Paired {
     pub device_id: String,
     /// The name the device gave.
     pub display_name: String,
+    /// What the device said it is, as the string the column holds.
+    ///
+    /// On the record because the column is `NOT NULL`: a device list reads it, and a writer that invented one would be
+    /// storing a fact about the peer that nobody observed — a desktop, for a phone.
+    pub platform: String,
     /// The features the two ends agreed on, as the JSON array the column holds.
     pub features: String,
+    /// The token a later link from this device must present.
+    ///
+    /// Carried on the record rather than kept apart, because it is half of what a pairing *is*: a row that recorded a
+    /// device and no way to recognise it is a row that will ask the user to pair again.
+    pub link_token: String,
+    /// Where the peer was reached, as `host:port`, or `None` when this side has no address for it.
+    pub address: Option<String>,
     /// When the pairing was recorded.
     pub paired_at_ms: i64,
 }
@@ -32,24 +44,16 @@ pub struct Paired {
 impl SynraDb {
     /// Records a pairing, or replaces the token of one that already exists.
     ///
-    /// `address` is where the peer was reached or last heard from, as `host:port`, and an empty string records no
-    /// address: a caller with no socket under it — a local pairing, or a test — has nothing to store, and a column
-    /// holding `""` is one every reader would have to treat as absent anyway.
+    /// # Why the record is one argument
+    ///
+    /// Because every field of it is a column, and passing them one by one means a caller can put the token where the
+    /// address goes — both are `&str`, and the compiler cannot tell them apart. The record is built by whoever knows
+    /// what it holds, and this writes it.
     ///
     /// # Errors
     ///
-    /// [`DbError::Statement`] when the row cannot be written, which for a well-formed argument means the table is absent.
-    pub fn pair_device(
-        &self,
-        device_id: &str,
-        display_name: &str,
-        platform: &str,
-        features: &str,
-        link_token: &str,
-        address: &str,
-        now_ms: i64,
-    ) -> Result<Paired, DbError> {
-        let address = if address.is_empty() { None } else { Some(address) };
+    /// [`DbError::Statement`] when the row cannot be written, which for a well-formed record means the table is absent.
+    pub fn pair_device(&self, paired: &Paired) -> Result<(), DbError> {
         self.connection
             .execute(
                 "INSERT INTO paired_devices \
@@ -65,16 +69,18 @@ impl SynraDb {
                      paired_at_ms = excluded.paired_at_ms, \
                      last_seen_ms = excluded.last_seen_ms, \
                      blocked      = 0",
-                params![device_id, display_name, platform, features, link_token, address, now_ms],
+                params![
+                    paired.device_id,
+                    paired.display_name,
+                    paired.platform,
+                    paired.features,
+                    paired.link_token,
+                    paired.address,
+                    paired.paired_at_ms,
+                ],
             )
             .map_err(|error| DbError::Statement { why: error.to_string() })?;
-
-        Ok(Paired {
-            device_id: device_id.to_owned(),
-            display_name: display_name.to_owned(),
-            features: features.to_owned(),
-            paired_at_ms: now_ms,
-        })
+        Ok(())
     }
 
     /// The token an outside dialler must present for `device_id`, if this device is paired with it.

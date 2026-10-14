@@ -396,6 +396,28 @@ fn every_error_explains_itself() {
 
 // ── Pairing ───────────────────────────────────────────────────────────────────────────────────
 
+/// A pairing record, which is what the write takes.
+///
+/// A helper rather than a literal at each call site, because what most of these tests are about is the token and the
+/// address rather than the platform and the features.
+fn paired(
+    device_id: &str,
+    display_name: &str,
+    token: &str,
+    address: Option<&str>,
+    now_ms: i64,
+) -> crate::sqlite::Paired {
+    crate::sqlite::Paired {
+        device_id: device_id.to_owned(),
+        display_name: display_name.to_owned(),
+        platform: "windows".to_owned(),
+        features: "[]".to_owned(),
+        link_token: token.to_owned(),
+        address: address.map(str::to_owned),
+        paired_at_ms: now_ms,
+    }
+}
+
 #[test]
 fn pairing_a_device_stores_the_token_a_later_link_must_present() {
     let db = migrated();
@@ -403,13 +425,10 @@ fn pairing_a_device_stores_the_token_a_later_link_must_present() {
     assert_eq!(db.link_token_for("dev-1").expect("queries"), None, "nothing is paired to begin with");
     assert!(!db.is_paired_with("dev-1").expect("queries"));
 
-    let paired = db
-        .pair_device("dev-1", "Laptop", "windows", r#"["TransferResume"]"#, "aa11", "10.0.0.4:51000", 1_700)
-        .expect("pairs");
+    let mut record = paired("dev-1", "Laptop", "aa11", Some("10.0.0.4:51000"), 1_700);
+    record.features = r#"["TransferResume"]"#.to_owned();
+    db.pair_device(&record).expect("pairs");
 
-    assert_eq!(paired.device_id, "dev-1");
-    assert_eq!(paired.display_name, "Laptop");
-    assert_eq!(paired.paired_at_ms, 1_700);
     assert_eq!(db.link_token_for("dev-1").expect("queries").as_deref(), Some("aa11"));
     assert!(db.is_paired_with("dev-1").expect("queries"));
     assert_eq!(db.paired_devices().expect("lists")[0].address.as_deref(), Some("10.0.0.4:51000"));
@@ -421,7 +440,7 @@ fn pairing_without_an_address_stores_none() {
     // reached over something other than a socket — or a test — must not leave a value behind that a device list would
     // then render as a blank line where an address belongs.
     let db = migrated();
-    db.pair_device("dev-1", "Laptop", "windows", "[]", "tok", "", 1_000).expect("pairs");
+    db.pair_device(&paired("dev-1", "Laptop", "tok", None, 1_000)).expect("pairs");
 
     assert_eq!(db.paired_devices().expect("lists")[0].address, None);
 }
@@ -431,8 +450,8 @@ fn pairing_the_same_device_again_replaces_its_token() {
     // The ordinary case, not an exception: a device is reset, its token is refused as stale, and the user pairs it
     // again. An insert that failed the second time would turn a routine action into an error.
     let db = migrated();
-    db.pair_device("dev-1", "Laptop", "windows", "[]", "first", "", 1_000).expect("pairs");
-    db.pair_device("dev-1", "Laptop renamed", "windows", "[]", "second", "", 2_000).expect("pairs again");
+    db.pair_device(&paired("dev-1", "Laptop", "first", None, 1_000)).expect("pairs");
+    db.pair_device(&paired("dev-1", "Laptop renamed", "second", None, 2_000)).expect("pairs again");
 
     assert_eq!(db.link_token_for("dev-1").expect("queries").as_deref(), Some("second"));
     assert_eq!(db.paired_devices().expect("lists").len(), 1, "pairing again must not add a second row");
@@ -447,20 +466,20 @@ fn pairing_again_clears_a_block() {
     // The block is set with SQL rather than through a method because no method exists: nothing in the kernel blocks a
     // device yet, so a `set_device_blocked` would be unused public API written only to make this test read nicely.
     let db = migrated();
-    db.pair_device("dev-1", "Laptop", "windows", "[]", "tok", "", 1_000).expect("pairs");
+    db.pair_device(&paired("dev-1", "Laptop", "tok", None, 1_000)).expect("pairs");
     db.connection
         .execute("UPDATE paired_devices SET blocked = 1 WHERE device_id = 'dev-1'", [])
         .expect("blocks");
     assert!(!db.is_paired_with("dev-1").expect("queries"), "a blocked device is not usable");
 
-    db.pair_device("dev-1", "Laptop", "windows", "[]", "tok2", "", 2_000).expect("pairs again");
+    db.pair_device(&paired("dev-1", "Laptop", "tok2", None, 2_000)).expect("pairs again");
     assert!(db.is_paired_with("dev-1").expect("queries"));
 }
 
 #[test]
 fn unpairing_removes_the_token_with_the_pairing() {
     let db = migrated();
-    db.pair_device("dev-1", "Laptop", "windows", "[]", "tok", "", 1_000).expect("pairs");
+    db.pair_device(&paired("dev-1", "Laptop", "tok", None, 1_000)).expect("pairs");
 
     assert!(db.unpair_device("dev-1").expect("unpairs"));
     assert_eq!(db.link_token_for("dev-1").expect("queries"), None);
@@ -472,7 +491,7 @@ fn a_pairing_from_before_tokens_reports_no_token_rather_than_failing() {
     // Migration 6 added the column as nullable, so a row written before it exists with a null token. Reading that must
     // be an answer — "paired, but must pair again" — not an error, because an error would refuse a link the user made.
     let db = migrated();
-    db.pair_device("dev-1", "Laptop", "windows", "[]", "tok", "", 1_000).expect("pairs");
+    db.pair_device(&paired("dev-1", "Laptop", "tok", None, 1_000)).expect("pairs");
     db.connection
         .execute("UPDATE paired_devices SET link_token = NULL WHERE device_id = 'dev-1'", [])
         .expect("clears the token");

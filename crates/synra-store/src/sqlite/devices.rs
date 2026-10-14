@@ -20,14 +20,18 @@ impl SynraDb {
         let rows = statement
             .query_map([], |row| {
                 Ok(DeviceRow::from_columns(
-                    row.get::<_, Option<String>>(0)?.as_deref(),
-                    row.get::<_, Option<String>>(1)?.as_deref(),
-                    row.get::<_, Option<String>>(2)?.as_deref(),
-                    row.get::<_, Option<String>>(3)?.as_deref(),
-                    row.get::<_, Option<i64>>(4)?,
-                    row.get::<_, Option<i64>>(5)?,
-                    row.get::<_, Option<i64>>(6)?,
-                    row.get::<_, Option<String>>(7)?.as_deref(),
+                    crate::records::DeviceText {
+                        device_id: row.get::<_, Option<String>>(0)?.as_deref(),
+                        display_name: row.get::<_, Option<String>>(1)?.as_deref(),
+                        platform: row.get::<_, Option<String>>(2)?.as_deref(),
+                        features: row.get::<_, Option<String>>(3)?.as_deref(),
+                        address: row.get::<_, Option<String>>(7)?.as_deref(),
+                    },
+                    crate::records::DeviceNumbers {
+                        paired_at_ms: row.get::<_, Option<i64>>(4)?,
+                        last_seen_ms: row.get::<_, Option<i64>>(5)?,
+                        blocked: row.get::<_, Option<i64>>(6)?,
+                    },
                 ))
             })
             .map_err(|error| DbError::Statement { why: error.to_string() })?
