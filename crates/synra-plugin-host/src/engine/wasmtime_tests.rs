@@ -128,6 +128,22 @@ const IMPORTS: &str = r#"
 )
 "#;
 
+/// A component importing a function the contract does not declare.
+///
+/// The linker defines exactly the contract's table, so this is refused by the linker rather than by a rule somebody has
+/// to remember — and the refusal names the function, which is what a plugin author needs.
+const IMPORTS_UNKNOWN: &str = r#"
+(component
+  (import "synra:plugin/host@1.0.0" (instance $host
+    (export "teleport" (func (result string)))))
+  (core module $m
+    (func (export "noop") (result i32) (i32.const 0)))
+  (core instance $i (instantiate $m))
+  (instance $lifecycle)
+  (export "synra:plugin/lifecycle@1.0.0" (instance $lifecycle))
+)
+"#;
+
 fn compile(backend: &WasmtimeBackend, wat: &str, id: &str) -> Box<dyn CompiledArtifact> {
     match backend.compile(wat.as_bytes(), id) {
         Ok(artifact) => artifact,
@@ -200,17 +216,31 @@ fn what_a_component_imports_is_read_from_the_component() {
 }
 
 #[test]
-fn a_component_that_imports_a_host_function_fails_to_instantiate_with_the_import_named() {
-    // ★ The refusal the host depends on until the generated bindings define these. A component built against a host
-    // that has a function this one does not must fail at *load* time, naming the function — not silently succeed and
-    // then do nothing when the plugin calls it.
+fn a_component_that_imports_a_host_function_instantiates_because_the_host_defines_it() {
+    // ★ The property the linker exists for. The contract's own `env-sdk-version` is defined, so a component built
+    // against the contract links — which is what makes a plugin that follows the WIT file runnable at all.
     let (backend, _executor) = backend_and_executor();
     let artifact = compile(&backend, IMPORTS, "@acme/imports");
 
     match handle(&backend).instantiate(artifact.as_ref()) {
+        Ok(_) => {}
+        Err(error) => panic!("a component importing a contract function did not link: {error}"),
+    }
+}
+
+#[test]
+fn a_component_that_imports_a_function_the_host_lacks_fails_to_instantiate_with_it_named() {
+    // ★ The other half, and the one that must keep holding: a component built against a host that has a function this
+    // one does not must fail at *load* time, naming the function — not silently succeed and then do nothing when the
+    // plugin calls it. The linker defines exactly the contract's table, so anything outside it is refused by the
+    // linker rather than by a rule somebody has to remember.
+    let (backend, _executor) = backend_and_executor();
+    let artifact = compile(&backend, IMPORTS_UNKNOWN, "@acme/unknown-import");
+
+    match handle(&backend).instantiate(artifact.as_ref()) {
         Err(BackendError::Instantiate { detail }) => {
             assert!(
-                detail.contains("synra:plugin/host") || detail.contains("env-sdk-version"),
+                detail.contains("teleport") || detail.contains("synra:plugin/host"),
                 "the refusal must name the import: {detail}"
             );
         }

@@ -29,7 +29,9 @@ pub mod scripted;
 pub mod types;
 
 #[cfg(feature = "wasm-runtime")]
-pub mod wasmtime_backend;
+pub mod linker;
+#[cfg(feature = "wasm-runtime")]
+mod wasmtime_backend;
 
 pub use cache::{CACHED_EXTENSION, CacheEntry, CacheError, CacheKey, CompileCache};
 pub use executor::{

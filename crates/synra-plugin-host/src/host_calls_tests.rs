@@ -420,6 +420,7 @@ fn calling_faster_than_the_limit_allows_is_refused_and_counted() {
 
     // ★ The assertion is on the *count before and after one refused call*, which is the only way to say "a refusal
     // does not reach the host" without a second call of its own changing the number being compared.
+    let started = std::time::Instant::now();
     let mut reached_at_refusal = 0;
     let mut refusals = 0;
     {
@@ -445,12 +446,16 @@ fn calling_faster_than_the_limit_allows_is_refused_and_counted() {
         }
     }
     assert!(refusals > 0, "the budget never refused");
-    // The burst is the bound the default quota sets, and the token bucket refills while the loop runs — so the count is
-    // asserted as a *range* around the burst rather than as the burst, because an exact number would be a test that
-    // fails when the machine is fast enough to refill a token.
+    // ★ The property rather than the number: the burst is the floor, and the ceiling is the burst plus however many
+    // tokens the refill could have added while the loop ran. An exact count would be a test that fails when the machine
+    // is fast enough to refill a token — which is what a fixed window did the first time this was written.
+    let refill = 500; // `host_calls_per_sec` in the default quota
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    let ceiling = 1_000 + refill * elapsed_ms / 1_000 + 1;
     assert!(
-        (1_000..1_100).contains(&reached_at_refusal),
-        "the burst is 1000 and the refill is 500/s, so the refusal came at {reached_at_refusal}"
+        (1_000..=ceiling).contains(&(reached_at_refusal as u64)),
+        "the burst is 1000 with a {refill}/s refill over {elapsed_ms}ms, so a refusal at {reached_at_refusal} is \
+         outside the bound"
     );
     assert!(audit.iter().any(|entry| entry.outcome == AuditOutcome::RateLimited));
 }

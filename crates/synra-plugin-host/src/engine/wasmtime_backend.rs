@@ -169,13 +169,18 @@ impl CompiledArtifact for EngineArtifact {
 }
 
 /// What an instance's store holds.
-struct StoreData {
+pub(crate) struct StoreData {
     /// The ceiling a growth is measured against, kept here because the engine's limiter does not report it back.
     ceiling: usize,
     /// Set when a growth the budget refused was attempted, so a call can report *why* it trapped rather than a
     /// generic trap the plugin author cannot act on.
     memory_refused: bool,
     limits: StoreLimits,
+    /// The plugin whose calls this instance makes, when the host gave it one.
+    ///
+    /// `None` for an instance the host built without a session, which is the only way a host function can be reached
+    /// without a gate — and the answer there is a refusal rather than a call.
+    pub(crate) session: Option<Box<dyn std::any::Any + Send + Sync>>,
 }
 
 impl wasmtime::ResourceLimiter for StoreData {
@@ -623,6 +628,7 @@ impl WasmBackend for WasmtimeBackend {
                 // number a hostile allocation is measured against.
                 ceiling: INSTANTIATION_CEILING,
                 memory_refused: false,
+                session: None,
                 limits: StoreLimitsBuilder::new().memory_size(INSTANTIATION_CEILING).build(),
             },
         );
@@ -632,7 +638,7 @@ impl WasmBackend for WasmtimeBackend {
         store.epoch_deadline_trap();
 
         let mut linker: Linker<StoreData> = Linker::new(&self.engine);
-        define_host(&mut linker).map_err(|error| BackendError::Engine {
+        crate::engine::linker::define(&mut linker).map_err(|error| BackendError::Engine {
             detail: format!("the host functions could not be defined: {error:#}"),
         })?;
 
@@ -651,21 +657,8 @@ impl WasmBackend for WasmtimeBackend {
     }
 }
 
-/// Defines the host functions this build provides.
-///
-/// # What is defined, and what is not
-///
-/// Nothing yet, and that is a deliberate refusal rather than an omission. Every function the contract declares moves
-/// strings across the component-model boundary, and the *bindings* are what know that convention: a hand-written
-/// definition would be a second implementation of it, in the one place where getting it wrong means reading a plugin's
-/// argument from the wrong offset. `crate::host_surface::HOST_FUNCTIONS` is the table those bindings will be generated
-/// from, and until they are, a component that imports one of these fails to **instantiate** with the import named.
-///
-/// That is the failure this design wants: a link error a plugin author can read, at the moment the plugin is loaded,
-/// rather than a call that quietly does nothing.
-const fn define_host(_linker: &mut Linker<StoreData>) -> anyhow::Result<()> {
-    Ok(())
-}
+// The host functions are defined by `engine::linker`, which is where the calling convention and the gate live. This
+// module keeps the engine: one `Store`, one `Instance`, and the budget applied to a call.
 
 /// Shares a built engine.
 #[must_use]
