@@ -556,7 +556,7 @@ pub fn accept(
 /// not map to the same [`std::io::ErrorKind`] — which is what the first version of this matched on, so one of them came
 /// through as a transport fault. A hang-up is one condition; how many codes a platform spells it with is the platform's
 /// business, so the codes are named here and the kinds are checked as well for the platforms where they carry it.
-fn peer_went_away(error: &std::io::Error) -> bool {
+pub(crate) fn peer_went_away(error: &std::io::Error) -> bool {
     // 10053 and 10054 are Winsock's, and the codes are stable. Named rather than imported, because naming them makes the
     // reason visible — and a reader who does not know them can look them up.
     const WSAECONNABORTED: i32 = 10053;
