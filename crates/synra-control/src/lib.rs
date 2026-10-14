@@ -54,7 +54,11 @@
     )
 )]
 
+pub mod server;
+
 use serde::{Deserialize, Serialize};
+
+pub use server::{Kernel, Refusal, Server, SessionState};
 
 /// The most bytes one message may be, header included.
 ///
@@ -247,9 +251,17 @@ impl Response {
     }
 
     /// Whether this is a success.
+    ///
+    /// # Why `Hello` counts
+    ///
+    /// It is an answer the kernel was happy to give, and it carries a value the client needs. A predicate that
+    /// recognised only `Ok` would call a successful handshake a failure — and the first version of this did, which is
+    /// the kind of mistake that makes a client report "the kernel refused my handshake" for a working connection.
+    ///
+    /// `Failed` is the only shape that is not a success, so it is the one that is matched.
     #[must_use]
     pub const fn is_ok(&self) -> bool {
-        matches!(self, Self::Ok { .. })
+        !matches!(self, Self::Failed { .. })
     }
 
     /// The error code, when this is a refusal.

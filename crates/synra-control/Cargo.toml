@@ -9,6 +9,10 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+# The stable error codes, so a refusal cannot invent a spelling or a retryability that the rest of the system disagrees
+# with. The protocol crate is pure data and pure rules, so this adds no weight.
+synra-protocol = { path = "../synra-protocol" }
+
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
