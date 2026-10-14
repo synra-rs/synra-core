@@ -445,6 +445,20 @@ impl TransferSender {
         self.sent.set(index);
     }
 
+    /// Whether this side has already written a block to the link.
+    ///
+    /// # Why a sender needs to ask
+    ///
+    /// Because a receiver's report says which blocks it **lacks**, and the moment a report is sent, every block still in
+    /// flight is one it lacks. Queueing those again puts a duplicate of each on the wire; the receiver absorbs it as
+    /// already-held, reports the rest as still missing, and the queue never drains — a 5 MB file ran to the sender's
+    /// 300-second deadline that way. So a block is queued only if it is reported missing **and** this side has not written
+    /// it, and this is how the second half of that is asked.
+    #[must_use]
+    pub fn has_sent(&self, index: u32) -> bool {
+        self.sent.contains(index)
+    }
+
     /// Replaces what this sender believes has arrived with what the receiver reported.
     ///
     /// # Why the receiver's word replaces this side's rather than being merged with it

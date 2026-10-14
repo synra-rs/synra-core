@@ -604,6 +604,19 @@ impl ProgressBitmap {
             .collect()
     }
 
+    /// The highest block index this bitmap holds, or `None` when it holds none.
+    ///
+    /// # Why a sender needs this
+    ///
+    /// Because a report is a snapshot and names as "missing" every block still crossing the network. A block **below** the
+    /// highest one the receiver holds has been passed over by an in-order reader, so it is genuinely lost and worth
+    /// rewriting; one above it is merely late. Without the distinction a sender rewrites what is already in flight — a
+    /// 5 MB transfer logged 54 duplicate blocks that way.
+    #[must_use]
+    pub fn highest(&self) -> Option<u32> {
+        (0..self.total_blocks).rev().find(|block| self.contains(*block))
+    }
+
     /// The raw bytes, for the wire.
     #[must_use]
     pub fn as_bytes(&self) -> &[u8] {

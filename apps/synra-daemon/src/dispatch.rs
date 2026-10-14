@@ -23,6 +23,7 @@
 use std::path::{Path, PathBuf};
 
 use synra_core::link::PeerLink;
+use synra_protocol::ids::TraceId;
 use synra_core::session::{self, Receiving, Received};
 
 /// The directory incoming files land in, under the data directory.
@@ -101,6 +102,11 @@ pub enum Decision {
 #[derive(Debug, Default)]
 pub struct Inbox {
     receiving: Option<Receiving>,
+    /// The trace the transfer's messages share, remembered when the proposal is accepted.
+    ///
+    /// Held here rather than read off [`Receiving`] at each report, because reading it would need the same `&self` the
+    /// report already borrows — and a trace is the connection's, not the transfer's.
+    trace: TraceId,
     inbox: PathBuf,
 }
 
@@ -108,7 +114,7 @@ impl Inbox {
     /// Prepares to receive into `<data>/inbox`.
     #[must_use]
     pub fn new(data_dir: &Path) -> Self {
-        Self { receiving: None, inbox: data_dir.join(INBOX_DIR) }
+        Self { receiving: None, trace: TraceId::new(), inbox: data_dir.join(INBOX_DIR) }
     }
 
     /// Whether a transfer is in progress.
@@ -179,6 +185,7 @@ impl Inbox {
             let trace = envelope.trace_id;
             let receiving = Receiving::accept(&envelope, &destination, trace)?;
             let transfer_id = receiving.transfer_id().to_string();
+            self.trace = trace;
             self.receiving = Some(receiving);
             return Ok(Decision::Accepted { transfer_id, file_name: name });
         }
@@ -187,7 +194,17 @@ impl Inbox {
             return Ok(Decision::Ignored);
         };
         match receiving.absorb(link, now_ms, deadline)? {
-            Received::Block { index, duplicate } => Ok(Decision::Stored { index, duplicate }),
+            Received::Block { index, duplicate } => {
+                // ★ The report the sender is waiting for, and the daemon never sent it. Its absence is what made **every**
+                // transfer cost one whole `HELLO_TIMEOUT`: the sender writes a window and then blocks on a report that never
+                // comes, so it only proceeds when its socket read times out — six seconds for a 2 KB file, six for 300 KB,
+                // and six per window for anything larger, which is why a 5 MB file ran to the sender's 300-second deadline.
+                //
+                // Only the engine and the tests ever called this. The daemon, which is the only thing that runs a real
+                // transfer, did not — so a fix that lived in a function nothing ran looked like it had been tried.
+                session::report_progress(link, receiving.receiver(), self.trace, now_ms)?;
+                Ok(Decision::Stored { index, duplicate })
+            }
             Received::Verified { .. } => {
                 // The transfer is over, so the state is released whatever happens to the file afterwards.
                 let path = receiving.path().to_path_buf();
