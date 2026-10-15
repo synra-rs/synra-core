@@ -37,6 +37,18 @@ use synra_protocol::ids::PluginId;
 
 /// The daemon's answer to a plugin's host calls.
 pub(crate) struct KernelHost {
+    /// What this machine can do with a URL, a path or a notification.
+    ///
+    /// ★ Why the *host* answers this rather than a blanket refusal.
+    ///
+    /// `HeadlessPlatform` runs the guard and then refuses, in that order, and its own doc says why: *"a plugin that
+    /// supplied `javascript:` should be told its address is refused, not that this host has no browser. The first is a
+    /// mistake the author can fix and the second is a fact about the installation."*
+    ///
+    /// This host used to answer every platform call with `notImplemented`, which is the second answer to the first
+    /// question — so a plugin with a malformed URL was told the installation lacked a feature, and its author had
+    /// nothing to act on. `synra-platform` had the right answer all along and no caller.
+    platform: synra_platform::HeadlessPlatform,
     /// The database, for the two questions that are answered from what is recorded: which capabilities the user granted,
     /// and what the interface was configured with.
     db: Arc<Mutex<synra_store::SynraDb>>,
@@ -48,7 +60,14 @@ impl KernelHost {
     /// A host over the daemon's own state.
     #[must_use]
     pub(crate) fn new(db: Arc<Mutex<synra_store::SynraDb>>, version: impl Into<String>) -> Self {
-        Self { db, version: version.into() }
+        Self {
+            db,
+            version: version.into(),
+            // The default policies: strict, and the ones a headless daemon should hold. Nothing configures them yet, and
+            // the builders on `Policies` are how a caller would — a daemon that let a plugin widen its own allowances
+            // would defeat the point of having them.
+            platform: synra_platform::HeadlessPlatform::default(),
+        }
     }
 
     /// A configuration value, which the store keeps as JSON text.
@@ -232,8 +251,66 @@ impl Host for KernelHost {
         Err(not_implemented("transfers"))
     }
 
-    fn platform(&self, _p: &PluginId, _a: &str, _arg: &str) -> Result<Option<String>, CallError> {
-        Err(not_implemented("platform actions"))
+    fn platform(
+        &self,
+        _plugin: &PluginId,
+        action: &str,
+        argument: &str,
+    ) -> Result<Option<String>, CallError> {
+        use synra_platform::Platform as _;
+        // The action names come from the contract, and the host maps them to the same enum the admission checks use, so
+        // a name that is not one is a contract disagreement rather than a plugin mistake.
+        let refusal = |error: synra_platform::PlatformError| CallError::new(
+            match error {
+                // ★ A refused address, path or chord is `badArgument`: the plugin supplied it, and telling it so is the
+                // whole reason the guard runs before the refusal.
+                synra_platform::PlatformError::BadUrl { .. }
+                | synra_platform::PlatformError::BadPath { .. }
+                | synra_platform::PlatformError::TooLong { .. }
+                | synra_platform::PlatformError::SimulateKeysNotGranted => CallError::BAD_ARGUMENT,
+                // And "this build has no browser" is `notImplemented`, which is a different fact about a different
+                // party: the first is the plugin's to fix, the second is the installation's.
+                synra_platform::PlatformError::Unsupported(_)
+                | synra_platform::PlatformError::Unavailable(_) => CallError::NOT_IMPLEMENTED,
+                // The rest are the host's own state rather than the plugin's argument: too soon after the last action,
+                // over its rate, out of quota. `hostFailed` is what a plugin retries on.
+                synra_platform::PlatformError::NoRecentInteraction { .. }
+                | synra_platform::PlatformError::RateLimited { .. }
+                | synra_platform::PlatformError::QuotaExceeded { .. } => CallError::HOST_FAILED,
+                // `PlatformError` is `#[non_exhaustive]`, so a variant added later lands here. `hostFailed` is the
+                // honest default: this build does not know what the new refusal means, and telling a plugin its argument
+                // was wrong when the fault may be the host's would be worse than a code it simply retries on.
+                _ => CallError::HOST_FAILED,
+            },
+            error.to_string(),
+        );
+
+        let outcome = match action {
+            "open-url" => self.platform.open_url(argument),
+            "open-path" => self.platform.open_path(std::path::Path::new(argument)),
+            "reveal-path" => self.platform.reveal_path(std::path::Path::new(argument), None),
+            "simulate-keys" => self.platform.simulate_keys(argument),
+            "read-clipboard" => self.platform.read_clipboard().map(|_| ()),
+            "write-clipboard" => self.platform.write_clipboard(argument),
+            "notify" => {
+                // A notification carries a title and a body separated by the contract's own delimiter — the same shape
+                // `host_calls` builds when it sends one.
+                let (title, body) = argument.split_once('\u{1}').unwrap_or((argument, ""));
+                self.platform.notify(title, body)
+            }
+            other => {
+                return Err(CallError::new(
+                    CallError::BAD_ARGUMENT,
+                    format!("`{other}` is not a platform action"),
+                ));
+            }
+        };
+        // `Ok` is unreachable for a headless host by construction — every method refuses after checking — and it is still
+        // handled rather than assumed, because a host that later performs the action must not need this match rewritten.
+        match outcome {
+            Ok(()) => Ok(None),
+            Err(error) => Err(refusal(error)),
+        }
     }
 
     fn action_declare(&self, _p: &PluginId, _n: &str, _s: &str) -> Result<(), CallError> {
@@ -309,7 +386,6 @@ mod tests {
             host.secret_get(&plugin, "k").map(|_| ()),
             host.fetch(&plugin, "{}").map(|_| ()),
             host.transfer_status(&plugin, "t").map(|_| ()),
-            host.platform(&plugin, "a", "{}").map(|_| ()),
             host.action_list(&plugin).map(|_| ()),
         ] {
             let error = refusal.expect_err("this build does not implement it");
@@ -320,6 +396,39 @@ mod tests {
             assert_eq!(error.code, synra_plugin_host::host_calls::CallError::NOT_IMPLEMENTED, "{error:?}");
         }
     }
+
+#[test]
+fn a_bad_address_is_the_plugins_mistake_rather_than_a_missing_feature() {
+    // ★ The ordering, which is the whole reason this host delegates to `HeadlessPlatform`.
+    //
+    // This host answered every platform call with `notImplemented` \u2014 including one whose URL was garbage. A plugin that
+    // supplied `javascript:` was then told the *installation* lacked a browser, which is a fact about the machine rather
+    // than about its own argument, and its author had nothing to act on.
+    //
+    // `HeadlessPlatform` runs the guard and *then* refuses, so a caller learns about the first thing it can fix.
+    let host = host_with(&[]);
+    let plugin = id("@acme/notes");
+
+    // The plugin's mistake: `badArgument`, because the address is the thing that is wrong.
+    let refused = host
+        .platform(&plugin, "open-url", "javascript:alert(1)")
+        .expect_err("the guard refuses this scheme");
+    assert_eq!(refused.code, "badArgument", "{refused:?}");
+    assert!(refused.message.contains("javascript"), "{}", refused.message);
+
+    // The installation's limitation: `notImplemented`, for an address that is perfectly fine.
+    let refused = host
+        .platform(&plugin, "open-url", "https://example.com")
+        .expect_err("a headless host has no browser");
+    assert_eq!(refused.code, "notImplemented", "{refused:?}");
+
+    // And a name that is not a platform action is the caller's mistake rather than either of those.
+    let refused = host
+        .platform(&plugin, "not-an-action", "")
+        .expect_err("that is not an action");
+    assert_eq!(refused.code, "badArgument", "{refused:?}");
+}
+
 
     #[test]
     fn the_answers_that_exist_are_the_daemons_own() {
