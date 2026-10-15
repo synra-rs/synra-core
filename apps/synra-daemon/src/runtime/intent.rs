@@ -2,7 +2,7 @@
 //!
 //! # Why this is a shim rather than the implementation
 //!
-//! Because the orchestration used to live here \u2014 **inside a binary** \u2014 and a second host needs it. The desktop shell has
+//! Because the orchestration used to live here — **inside a binary** — and a second host needs it. The desktop shell has
 //! its own `Board` and its own four intent commands, and it could not reuse a line of what was in this file; it would have
 //! had to duplicate it. It lives in [`synra_core::dispatch::orchestrate`] now, where both hosts reach it, and what remains
 //! here is the translation: the library answers with a [`RouteError`] carrying a contract code, and the control protocol
@@ -10,7 +10,7 @@
 //!
 //! # Why the wrappers keep their names and signatures
 //!
-//! Because the tests below are about the orchestration, and they exercise it through this host\u2019s own entry points. Moving
+//! Because the tests below are about the orchestration, and they exercise it through this host’s own entry points. Moving
 //! them would have been churn for no coverage; leaving them means the library is tested through a real host as well as on
 //! its own.
 

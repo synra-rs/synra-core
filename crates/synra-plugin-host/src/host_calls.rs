@@ -88,7 +88,7 @@ impl CallError {
     ///
     /// # ★ Why this is not `capabilityDenied`
     ///
-    /// Because the plugin **holds** the capability \u2014 that is why the gate let the call through to this check. What it
+    /// Because the plugin **holds** the capability — that is why the gate let the call through to this check. What it
     /// may not do is exercise it *here*, during a pure matching pass. Reporting `capabilityDenied` would send a user to a
     /// settings screen to grant something they already granted.
     pub const SIDE_EFFECT_NOT_ALLOWED: &'static str = "sideEffectNotAllowed";

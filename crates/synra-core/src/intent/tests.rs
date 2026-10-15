@@ -669,7 +669,7 @@ fn aiming_cannot_replace_a_device_the_plugin_already_chose() {
     // ★ The authority hole the candidate-count inference left open.
     //
     // A candidate that suggested a device is one whose plugin answered *where*; the intent reaches `Choosing` only because
-    // the user's setting asked them to confirm **which** plugin. `aim` used to accept a device there regardless \u2014 so a
+    // the user's setting asked them to confirm **which** plugin. `aim` used to accept a device there regardless — so a
     // caller could attach its own, and a share the plugin meant for a phone would run on this laptop.
     let place = DeviceId::new();
     let mut board = board();

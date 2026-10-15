@@ -1277,7 +1277,7 @@ fn a_request_id_that_is_not_one_is_refused_before_anything_is_looked_up() {
 fn enabling_a_plugin_writes_the_flag_and_says_so() {
     // ★ The write that had no caller.
     //
-    // `set_plugin_enabled` existed in the store and was tested there, and **nothing in production called it** \u2014 so
+    // `set_plugin_enabled` existed in the store and was tested there, and **nothing in production called it** — so
     // `synra plugin enable` could not have worked even once the CLI asked for it. This is the other end of that wire.
     let dir = TempDir::new("enable-plugin");
     let runtime = runtime(dir.path());
@@ -1291,7 +1291,7 @@ fn enabling_a_plugin_writes_the_flag_and_says_so() {
     // ★ Asserted in the database, not from the answer.
     //
     // The answer is the plugin list, so asserting on it would pass against an implementation that reported a list without
-    // writing anything \u2014 which is the exact shape of the defect this test exists for. `plugins()` re-reads the row.
+    // writing anything — which is the exact shape of the defect this test exists for. `plugins()` re-reads the row.
     let row = runtime
         .db()
         .plugins()
@@ -1313,7 +1313,7 @@ fn enabling_a_plugin_writes_the_flag_and_says_so() {
 fn enabling_a_plugin_that_is_not_installed_is_a_refusal() {
     // ★ A typo and a no-op are different answers.
     //
-    // `set_plugin_enabled` reports whether a row changed, so enabling an already-enabled plugin answers `false` \u2014 which
+    // `set_plugin_enabled` reports whether a row changed, so enabling an already-enabled plugin answers `false` — which
     // is a success with nothing to do. Reporting that as "no such plugin" would send a user looking for a mistake they did
     // not make; reporting a typo as a success would leave them believing it worked.
     let dir = TempDir::new("enable-plugin-typo");

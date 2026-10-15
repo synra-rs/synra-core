@@ -286,7 +286,7 @@ mod tests {
         // ★ The commands that did nothing and blamed the kernel.
         //
         // Every plugin action but `list` answered `None` from `plugin_request`, and a `None` there makes the CLI report
-        // "this command needs a running kernel, and none is reachable" \u2014 a false sentence about a kernel that is running,
+        // "this command needs a running kernel, and none is reachable" — a false sentence about a kernel that is running,
         // which sends the user to check the wrong thing. Both actions are in the documented command list.
         let request = |action: crate::args::PluginAction| {
             plugin_request(&Command::Plugin(crate::args::PluginArgs { action }))

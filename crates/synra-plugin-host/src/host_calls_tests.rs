@@ -409,7 +409,7 @@ fn a_pure_session_refuses_the_calls_that_act() {
     //
     // `Work::allows_side_effects` answers `false` for `CanHandle` and `true` for everything else, and its doc says "the
     // host is what makes that true, by running it with a context whose action-shaped calls are refused". **No such
-    // context existed.** A plugin's `can-handle` could send a message, open a browser, write storage or fetch a URL \u2014
+    // context existed.** A plugin's `can-handle` could send a message, open a browser, write storage or fetch a URL —
     // for every share the router asked about, before the user had chosen anything, and again for every share they then
     // cancelled.
     let host = Stub::with_devices(&[("device-a", "Laptop", "desktop")]);
@@ -434,7 +434,7 @@ fn a_pure_session_refuses_the_calls_that_act() {
             .expect_err("a matching pass may not call something that acts");
 
         assert_eq!(refused.code, CallError::SIDE_EFFECT_NOT_ALLOWED, "{import}");
-        // \u2605 The message names the reason, because the code alone does not tell an author what to do. "Side effect not
+        // ★ The message names the reason, because the code alone does not tell an author what to do. "Side effect not
         // allowed" during a matching pass means "move this call into `share.execute`", and saying so is the difference
         // between a fixable refusal and a mysterious one.
         assert!(refused.message.contains("can-handle"), "{import}: {}", refused.message);
@@ -479,9 +479,9 @@ fn a_matching_pass_may_still_read_and_log() {
 fn a_plugin_cannot_emit_an_event_in_another_plugins_namespace() {
     // ★ One plugin speaking as another.
     //
-    // `EventName::check_emittable_by` was written, tested and documented as the enforcement point \u2014 its own doc says
+    // `EventName::check_emittable_by` was written, tested and documented as the enforcement point — its own doc says
     // "The host calls this on every outbound plugin event. It is the difference between 'plugins have their own
-    // namespace' being true and it being a sentence in a document" \u2014 and **the host did not call it**. Every call site
+    // namespace' being true and it being a sentence in a document" — and **the host did not call it**. Every call site
     // was in its own test module, so a plugin could emit `_plugin.notes.something` and every subscriber would believe it
     // came from `notes`.
     let host = Stub::with_devices(&[]);

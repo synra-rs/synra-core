@@ -1,10 +1,10 @@
 //! Routing a share: asking the plugins, applying the answer, running what was chosen.
 //!
-//! # \u2605 Why this is in the library rather than in a host
+//! # ★ Why this is in the library rather than in a host
 //!
 //! Because **two hosts need it**. The daemon routes a share that arrives from a peer and one the CLI hands it; the desktop
 //! shell routes one from this machine's own share sheet. Until this module existed, the whole of that orchestration lived
-//! in `synra-daemon/src/runtime/intent.rs` \u2014 **inside a binary** \u2014 so the shell could not reuse a line of it and would
+//! in `synra-daemon/src/runtime/intent.rs` — **inside a binary** — so the shell could not reuse a line of it and would
 //! have had to duplicate roughly two hundred and fifty. The shell's `Board` was constructed and never used, and its four
 //! intent commands were explained away as "needs the intent board behind `AppState`", which was false: the board was
 //! already there.
@@ -18,8 +18,8 @@
 //!
 //! # Why the errors are the protocol's own codes
 //!
-//! Because the two hosts report failures differently \u2014 the daemon as a control-protocol refusal, the shell as an
-//! `IpcError` \u2014 and a library that picked one would make the other translate a foreign type. [`RouteError`] carries the
+//! Because the two hosts report failures differently — the daemon as a control-protocol refusal, the shell as an
+//! `IpcError` — and a library that picked one would make the other translate a foreign type. [`RouteError`] carries the
 //! `ErrorCode` the contract already defines and a sentence for a person, and each host wraps that in its own shape: one
 //! line each, and no shared vocabulary invented for the purpose.
 
@@ -195,7 +195,7 @@ impl CandidateView {
             "pluginId": self.plugin_id.as_str(),
             "pluginVersion": self.plugin_version,
             "action": self.action,
-            // The plugin's own arguments, so a client can show what would be acted on \u2014 the URL a link candidate
+            // The plugin's own arguments, so a client can show what would be acted on — the URL a link candidate
             // would open, rather than only the sentence describing it.
             "args": self.args,
             "title": self.title,
