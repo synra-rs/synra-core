@@ -380,7 +380,22 @@ impl Kernel for Runtime {
 
 
     fn intent_cancel(&self, intent: &str) -> Result<serde_json::Value, Refusal> {
-        crate::runtime::intent::cancel(&self.board, intent, "the user cancelled it")
+        let change = crate::runtime::intent::cancel(
+            &self.board,
+            self.identity.device_id,
+            intent,
+            "the user cancelled it",
+        )?;
+
+        // ★ A dispatched intent is running somewhere else, and cancelling it here does not stop it there.
+        //
+        // Without this, the other device finishes work the user withdrew and reports a result for it — and from this side
+        // that looks like a cancellation that quietly did not take.
+        if let Some(outbound) = &change.outbound {
+            self.send_outbound(outbound)?;
+        }
+
+        Ok(change.to_json())
     }
 
     /// Asks a device to pair, and waits for its user.

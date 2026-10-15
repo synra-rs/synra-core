@@ -29,6 +29,7 @@
 //!   arguments are taken from the board's own candidate rather than from whatever the caller sent, for the reason
 //!   `board::confirm` gives: acting on a choice that was never shown would run something the user did not choose.
 //! * [`InvokeResult`] — whether it ran, what it returned, and why not when it did not.
+//! * [`Cancel`] — why a dispatched action is being withdrawn.
 //!
 //! Both are `camelCase` JSON, like every other payload in this workspace.
 
@@ -36,7 +37,7 @@ use serde::{Deserialize, Serialize};
 
 use synra_protocol::envelope::{Envelope, OutboundSpec};
 use synra_protocol::event::{EventName, events};
-use synra_protocol::ids::{DeviceId, PluginId, TraceId};
+use synra_protocol::ids::{DeviceId, PluginId, RequestId, TraceId};
 
 use crate::messaging::MessageError;
 
@@ -73,6 +74,54 @@ pub struct InvokeResult {
     /// Measured there rather than here, because this is the only side that can see the plugin run: a sender that timed
     /// the round trip would report the network as the plugin's cost.
     pub elapsed_ms: u64,
+}
+
+/// Tells a device to stop running something it was asked to run.
+///
+/// # ★ Why this carries only a reason
+///
+/// Because the request identifier in the envelope is what names the work — "the device must be idempotent by request
+/// identifier" applies to a withdrawal exactly as it does to an invocation. A payload that named the plugin and action
+/// again would be a second description of the same request, and the two could disagree.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Cancel {
+    /// Why, in the words of whoever withdrew it.
+    pub reason: String,
+}
+
+/// The envelope a host must send to withdraw a dispatched action.
+///
+/// # Errors
+///
+/// As [`invoke`].
+pub fn cancel(
+    from: DeviceId,
+    to: DeviceId,
+    payload: &Cancel,
+    request_id: RequestId,
+    trace_id: TraceId,
+    sent_at_ms: i64,
+) -> Result<Envelope, MessageError> {
+    let mut envelope = build(events::INTENT_CANCEL, from, to, payload, trace_id, sent_at_ms)?;
+    // ★ The identifier of the request being withdrawn, **not** a new one.
+    //
+    // This is the whole of how the far side knows what to stop: it raised the work under the invocation's identifier and
+    // looks it up by exactly this value. A fresh identifier would name a request nobody made, the lookup would find
+    // nothing, and the withdrawal would be reported as delivered while the other device carried on — which is what the
+    // first version did, and what the test that withdrew from another device caught. It is a parameter rather than
+    // something minted here so that a caller cannot get it wrong by omission.
+    envelope.request_id = request_id;
+    Ok(envelope)
+}
+
+/// Reads why a dispatched action was withdrawn.
+///
+/// # Errors
+///
+/// As [`invoke_from`].
+pub fn cancel_from(envelope: &Envelope) -> Result<Cancel, MessageError> {
+    read(envelope, "an intent cancellation")
 }
 
 /// The envelope a host must send so an action runs somewhere else.
