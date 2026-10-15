@@ -185,12 +185,19 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
     // Taken before the guard moves into `_log`, because the runtime needs it and the guard is what keeps the file open.
     let log_verbosity = _log.as_ref().map(|guard| guard.verbosity());
 
+    // ★ The database goes behind its lock **here**, before the plugin host is built.
+    //
+    // The host a plugin's calls reach reads two things from it — which capabilities the user granted, and what the
+    // interface was configured with — so the handle has to exist first. It used to be wrapped much later, which is part
+    // of why the host had nothing to be built from and no session was ever installed.
+    let shared_db = Arc::new(parking_lot::Mutex::new(db));
+
     // ★ The plugin host is built **before** the runtime, and its failure ends the daemon.
     //
     // This is the one dependency that can refuse. Everything else here is data the daemon reads; an engine that will not
     // start means this host cannot run a plugin at all, and continuing would produce a daemon whose status report says
     // no plugins are loaded for a reason that has nothing to do with what the user installed.
-    let plugins = match crate::runtime::build_set() {
+    let plugins = match crate::runtime::build_set(Arc::clone(&shared_db)) {
         Ok(set) => Arc::new(parking_lot::Mutex::new(set)),
         Err(error) => {
             eprintln!("synra-daemon: the plugin host could not start: {error}");
@@ -207,7 +214,7 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
         // It records and does not trust: a directory that exists is a plugin that is *installed*, which is a different
         // statement from one the user has approved. See `record_discovered_plugins`.
         for discovered in crate::runtime::record_discovered_plugins(
-            &db,
+            &shared_db.lock(),
             std::path::Path::new(&plan.plugins_dir),
             // The runtime clock is `u64` and the database stamps `i64`; saturating rather than `as`, the same direction
             // as the crash-report stamp below — a clock problem should let the daemon run, not refuse to start.
@@ -242,7 +249,7 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
             let mut set = plugins.lock();
             crate::runtime::load_installed(
                 &mut set,
-                &db,
+                &shared_db.lock(),
                 std::path::Path::new(&plan.plugins_dir),
                 &verdict,
             )
@@ -264,7 +271,6 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
     //
     // The discovery thread writes what it hears; the control socket reads it. Neither can reach the other, so the handle
     // is shared rather than passed — and it is shared behind a lock because `rusqlite::Connection` is `Send` and not `Sync`.
-    let shared_db = Arc::new(parking_lot::Mutex::new(db));
 
     let runtime = Runtime {
         version: env!("CARGO_PKG_VERSION").to_owned(),

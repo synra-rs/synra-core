@@ -17,6 +17,9 @@ synra-core = { path = "../../crates/synra-core" }
 # The peer registry is behind its own lock so a device listing does not wait for a socket read.
 parking_lot.workspace = true
 synra-observe = { path = "../../crates/synra-observe" }
+# A plugin's `log` reaches the file the daemon already writes, so the crate that emits it names `tracing`
+# rather than reaching it through another crate's re-export.
+tracing = "0.1"
 synra-platform = { path = "../../crates/synra-platform" }
 synra-control = { path = "../../crates/synra-control" }
 # The kernel holds the plugin seam but not an engine, so the host brings one. This is the only dependency here that

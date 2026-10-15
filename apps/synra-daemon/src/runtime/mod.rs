@@ -21,6 +21,7 @@
 
 mod commands;
 mod devices;
+mod plugin_host;
 mod plugins;
 mod refusals;
 mod reports;

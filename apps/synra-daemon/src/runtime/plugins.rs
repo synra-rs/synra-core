@@ -100,10 +100,18 @@ impl LoadedSummary {
 /// Because a kind written here would be a decision this file makes on the engine's behalf, and the table that already
 /// answers it lives in [`synra_plugin_host::BackendKind::default_for`]. A daemon is a [`synra_plugin_host::HostKind::Headless`]
 /// host, so asking is both shorter and harder to get wrong than naming a variant.
-pub fn build_set() -> Result<PluginSet, BackendError> {
+pub fn build_set(
+    db: std::sync::Arc<parking_lot::Mutex<synra_store::SynraDb>>,
+) -> Result<PluginSet, BackendError> {
     let kind = synra_plugin_host::BackendKind::default_for(synra_plugin_host::HostKind::Headless);
     let engine = synra_plugin_host::engine::WasmtimeBackend::new(kind)?;
-    Ok(PluginSet::new(Backend::new(std::sync::Arc::new(engine))))
+    // ★ The host is what makes the capability gate run. Without one there is no session, and `linker::run` refuses
+    // every host call — so the gate never ran and nothing was audited.
+    let host = std::sync::Arc::new(crate::runtime::plugin_host::KernelHost::new(
+        db,
+        env!("CARGO_PKG_VERSION"),
+    ));
+    Ok(PluginSet::new(Backend::new(std::sync::Arc::new(engine)), host))
 }
 
 /// The plugin directories on disk that the database does not know about, recorded as installed and switched off.
@@ -344,6 +352,9 @@ fn load_one(
         grants,
         policy,
         limit: INSTANCE_LIMIT,
+        // The documented default allowance. A manifest does not declare a quota yet, so there is nothing more specific
+        // to take it from — and a number invented here would be a limit the plugin's author never agreed to.
+        quota: synra_plugin_host::quota::Quota::default(),
     })
     .map_err(|error| error.to_string())?;
     Ok(id)

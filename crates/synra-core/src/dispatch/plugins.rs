@@ -29,7 +29,9 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::Arc;
 
+use parking_lot::Mutex;
 use synra_capability::CapabilitySet;
 use synra_plugin_host::{
     Backend, BackendError, CallBudget, CallOutcome, CompiledArtifact, InstancePolicy,
@@ -131,15 +133,68 @@ pub struct PluginSpec {
     pub policy: InstancePolicy,
     /// How many instances may exist at once.
     pub limit: u32,
+    /// How much a call may use, and how often.
+    ///
+    /// ★ An argument for the same reason grants are: a quota is what the *host* decided this plugin may spend, so a
+    /// default here would be a limit nobody chose. It becomes the `Budget` every host call is counted against — the
+    /// object the gate consults when it decides whether a call is over its rate.
+    pub quota: synra_plugin_host::quota::Quota,
 }
 
 /// One loaded plugin: its compiled form, its grants, and the pool its instances come from.
 struct Loaded {
     version: String,
     compiled: Box<dyn CompiledArtifact>,
-    grants: CapabilitySet,
     pool: synra_plugin_host::InstancePool,
     live: HashMap<u64, Box<dyn PluginInstance>>,
+    /// What this plugin may do: its grants, its rate and its record.
+    ///
+    /// Separated from the artifact because the two answer different questions — "what is this" and "what may it do" —
+    /// and because the second is a statement that should be testable without a `.wasm` fixture to compile.
+    authority: Authority,
+}
+
+/// What a plugin may do, for as long as it is loaded.
+///
+/// # Why the budget and the record are here rather than on the instance
+///
+/// Because both belong to the **plugin**. A budget cloned per instance would multiply the rate by the instance limit —
+/// a plugin allowed ten calls a minute with four instances would get forty, which is not what its quota says — and an
+/// audit buffer of the instance's own would die with the store, which is the same as having no audit at all.
+pub(crate) struct Authority {
+    grants: CapabilitySet,
+    budget: Arc<synra_plugin_host::quota::Budget>,
+    audit: Arc<Mutex<Vec<synra_observe::audit::AuditEntry>>>,
+}
+
+impl Authority {
+    /// A plugin's authority: what it holds, what it may spend, and where its record goes.
+    #[must_use]
+    pub(crate) fn new(
+        grants: CapabilitySet,
+        quota: synra_plugin_host::quota::Quota,
+        audit: Arc<Mutex<Vec<synra_observe::audit::AuditEntry>>>,
+    ) -> Self {
+        Self { grants, budget: Arc::new(synra_plugin_host::quota::Budget::new(quota)), audit }
+    }
+
+    /// The session a host call is authorised against.
+    ///
+    /// The `Arc`s are cloned rather than rebuilt, so every instance of one plugin shares one rate and one record.
+    #[must_use]
+    pub(crate) fn session_for(
+        &self,
+        id: &PluginId,
+        host: &Arc<dyn synra_plugin_host::host_calls::Host>,
+    ) -> synra_plugin_host::engine::LinkerSession {
+        synra_plugin_host::engine::LinkerSession::with_audit(
+            id.clone(),
+            self.grants.clone(),
+            Arc::clone(&self.budget),
+            Arc::clone(host),
+            Arc::clone(&self.audit),
+        )
+    }
 }
 
 /// The plugins this kernel can ask.
@@ -152,6 +207,18 @@ struct Loaded {
 pub struct PluginSet {
     backend: Backend,
     loaded: HashMap<PluginId, Loaded>,
+    /// Where a plugin's effects reach.
+    ///
+    /// ★ The piece that was missing, and the reason the capability gate never ran. Every instance used to be created
+    /// with `session: None`, and `linker::run` refuses **every** host call when there is no session — so no plugin could
+    /// reach a host function at all and nothing was audited. The gate is the mechanism the whole capability model rests
+    /// on, and it was inert.
+    host: Arc<dyn synra_plugin_host::host_calls::Host>,
+    /// What plugins have done, bounded and readable.
+    ///
+    /// The kernel already has a ring for this ([`synra_observe::audit::AuditRing`]); what it did not have was a writer,
+    /// because the only path to one was `synra_core::Kernel::record_action`, and no host constructs that type.
+    audit: synra_observe::audit::AuditRing,
 }
 
 impl fmt::Debug for PluginSet {
@@ -170,12 +237,57 @@ impl fmt::Debug for PluginSet {
 }
 
 impl PluginSet {
-    /// A set with no plugins, over a given engine.
+    /// A set with no plugins, over a given engine and reaching a given host.
+    ///
+    /// # Why the host is required rather than defaulted
+    ///
+    /// Because there is no honest default. An instance with no session refuses every host call, so a set built without a
+    /// host would be one whose plugins can do nothing — and the failure would read as a plugin problem rather than as a
+    /// host that never said where its effects should go. Requiring it makes each caller state what its host is, which is
+    /// the same reason `PluginSpec` has no default grants.
     #[must_use]
-    pub fn new(backend: Backend) -> Self {
+    pub fn new(backend: Backend, host: Arc<dyn synra_plugin_host::host_calls::Host>) -> Self {
         Self {
             backend,
             loaded: HashMap::new(),
+            host,
+            audit: synra_observe::audit::AuditRing::new(),
+        }
+    }
+
+    /// What plugins have done, oldest first.
+    #[must_use]
+    pub fn audit(&self) -> Vec<synra_observe::audit::AuditEntry> {
+        self.audit.all()
+    }
+
+    /// What one plugin has done, oldest first.
+    #[must_use]
+    pub fn audit_for(&self, id: &PluginId) -> Vec<synra_observe::audit::AuditEntry> {
+        self.audit.for_plugin(id)
+    }
+
+    /// What one plugin had refused, which is what a user reads when asking why something did not work.
+    #[must_use]
+    pub fn refusals_for(&self, id: &PluginId) -> Vec<synra_observe::audit::AuditEntry> {
+        self.audit.refusals_for_plugin(id)
+    }
+
+    /// Moves whatever a plugin recorded during its last call into the ring.
+    ///
+    /// Called once per call rather than from inside the host call, because the entries are produced while the guest runs
+    /// and the set is borrowed by the caller for the duration. Draining after the fact is also what makes the buffer
+    /// bounded in practice: it holds one call's worth of entries, not a process's.
+    fn drain_audit(loaded: &mut Loaded, ring: &mut synra_observe::audit::AuditRing) {
+        let entries = {
+            let mut buffered = loaded.authority.audit.lock();
+            if buffered.is_empty() {
+                return;
+            }
+            std::mem::take(&mut *buffered)
+        };
+        for entry in entries {
+            ring.record(entry);
         }
     }
 
@@ -217,7 +329,7 @@ impl PluginSet {
     /// What a plugin has been granted.
     #[must_use]
     pub fn grants(&self, id: &PluginId) -> Option<&CapabilitySet> {
-        self.loaded.get(id).map(|loaded| &loaded.grants)
+        self.loaded.get(id).map(|loaded| &loaded.authority.grants)
     }
 
     /// Compiles a plugin and makes it askable.
@@ -260,9 +372,12 @@ impl PluginSet {
             Loaded {
                 version: spec.version,
                 compiled,
-                grants: spec.grants,
                 pool,
                 live: HashMap::new(),
+                // One budget per plugin rather than per instance: the rate is a property of what the plugin may
+                // spend, and the pool hands out instances freely — a per-instance budget would multiply the allowance
+                // by the instance limit.
+                authority: Authority::new(spec.grants, spec.quota, Arc::new(Mutex::new(Vec::new()))),
             },
         );
         Ok(())
@@ -307,8 +422,11 @@ impl PluginSet {
                 return Err(PluginSetError::AtInstanceLimit { id: id.clone() });
             }
         };
-        let outcome = Self::run_on(&self.backend, loaded, id, handle, work, budget);
+        let outcome = Self::run_on(&self.backend, &self.host, loaded, id, handle, work, budget);
         let _ = loaded.pool.release(handle, now_ms);
+        // ★ Drained **after** the call, not inside it: the entries are produced while the guest runs, and the ring lives
+        // behind the set that the caller is borrowing. Collecting here is also what keeps the buffer one call deep.
+        Self::drain_audit(loaded, &mut self.audit);
         outcome
     }
 
@@ -327,6 +445,7 @@ impl PluginSet {
     /// one entry from reaching across the whole set.
     fn run_on(
         backend: &Backend,
+        host: &Arc<dyn synra_plugin_host::host_calls::Host>,
         loaded: &mut Loaded,
         id: &PluginId,
         handle: u64,
@@ -335,7 +454,17 @@ impl PluginSet {
     ) -> Result<CallOutcome, PluginSetError> {
         if !loaded.live.contains_key(&handle) {
             match backend.instantiate(loaded.compiled.as_ref()) {
-                Ok(instance) => {
+                Ok(mut instance) => {
+                    // ★ The session, which is what makes the capability gate run at all.
+                    //
+                    // `instantiate` leaves the instance with no session, and `linker::run` refuses **every** host call
+                    // when there is no session — so before this, no plugin could reach a host function and nothing was
+                    // audited. The gate is the mechanism the whole capability model rests on, and it was inert.
+                    //
+                    // Installed once per instance rather than per call: the session holds the audit buffer and the
+                    // rate budget, and rebuilding it every call would reset both. `session_for` is where the loader's
+                    // decision about this plugin's authority lives.
+                    instance.set_session(loaded.authority.session_for(id, host));
                     loaded.live.insert(handle, instance);
                 }
                 Err(error) => return Err(PluginSetError::Compile(error)),
@@ -388,4 +517,67 @@ fn panic_detail(payload: &(dyn std::any::Any + Send)) -> String {
         return format!("the host panicked: {message}");
     }
     "the host panicked with a payload that is neither a string nor a string slice".to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use synra_capability::CapabilitySet;
+    use synra_plugin_host::quota::Quota;
+    use synra_protocol::ids::PluginId;
+
+    use super::Authority;
+
+    fn id(name: &str) -> PluginId {
+        PluginId::try_from(name.to_owned()).expect("a plugin id")
+    }
+
+    fn authority(grants: CapabilitySet) -> Authority {
+        Authority::new(grants, Quota::default(), Arc::new(parking_lot::Mutex::new(Vec::new())))
+    }
+
+    #[test]
+    fn a_session_carries_the_plugins_own_authority() {
+        // ★ The test the whole change exists for, and it needs no engine.
+        //
+        // Every instance used to be created with `session: None`, and `linker::run` refuses **every** host call when
+        // there is no session — so the capability gate, the mechanism the entire capability model rests on, never ran.
+        // Nothing failed; a plugin simply could not reach a host function, and the only signal was `HOST_FAILED`, which
+        // says "no session" rather than "you are not allowed".
+        //
+        // What is asserted is the session's own contents, because the session is what the linker reads. A test that
+        // called through the set could not tell a missing session from a denied capability: both refuse, with different
+        // codes, and only one of them means the gate ran.
+        let mut grants = CapabilitySet::new();
+        grants.insert_str("log:*").expect("a capability");
+
+        let session = authority(grants).session_for(&id("@synra/aaa"), &super::super::tests::host());
+
+        assert_eq!(session.plugin, id("@synra/aaa"));
+        assert!(
+            session
+                .grants
+                .contains(&synra_capability::Capability::parse("log:info").expect("a capability")),
+            "the session must carry the plugin's grants, not an empty set"
+        );
+    }
+
+    #[test]
+    fn two_instances_of_one_plugin_share_their_rate_and_their_record() {
+        // ★ Why the budget and the audit belong to the plugin rather than to the instance.
+        //
+        // A budget cloned per instance would multiply the rate by the instance limit — a plugin allowed ten calls a
+        // minute with four instances would get forty, which is not what its quota says. And a record of the instance's
+        // own would die with the store, which is the same as having no audit at all. Asserted with pointer equality,
+        // because "the same allowance" is exactly what a copy is not.
+        let authority = authority(CapabilitySet::new());
+        let host = super::super::tests::host();
+
+        let first = authority.session_for(&id("@synra/bbb"), &host);
+        let second = authority.session_for(&id("@synra/bbb"), &host);
+
+        assert!(Arc::ptr_eq(&first.budget, &second.budget), "two instances, two rates");
+        assert!(Arc::ptr_eq(&first.audit, &second.audit), "two instances, two records");
+    }
 }

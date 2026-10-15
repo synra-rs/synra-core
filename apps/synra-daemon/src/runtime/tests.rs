@@ -42,6 +42,8 @@ fn runtime(dir: &Path) -> Runtime {
     // Read before the identity is moved into the host: the desk derives the verification code from it, and the fixture is
     // the only place a test's device identity comes from.
     let local_id = identity.device_id;
+    // ★ One handle, shared: the runtime reads it and so does the host a plugin's calls reach.
+    let shared_db = std::sync::Arc::new(parking_lot::Mutex::new(db));
     Runtime {
         version: "0.1.0-test".to_owned(),
         data_dir: dir.to_path_buf(),
@@ -56,7 +58,7 @@ fn runtime(dir: &Path) -> Runtime {
         // network is in, and one the code has to handle anyway.
         discovery: None,
         scan_until_ms: std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0)),
-        db: std::sync::Arc::new(parking_lot::Mutex::new(db)),
+        db: std::sync::Arc::clone(&shared_db),
         pairing: std::sync::Arc::new(synra_core::pairing::PairingDesk::new(
             local_id,
             synra_protocol::session::SessionTimeouts::default().pairing,
@@ -65,6 +67,12 @@ fn runtime(dir: &Path) -> Runtime {
         // that compiles Wasmtime to assert a JSON field would be a slower version of the same test.
         plugins: std::sync::Arc::new(parking_lot::Mutex::new(synra_core::dispatch::PluginSet::new(
             synra_plugin_host::Backend::new(std::sync::Arc::new(synra_plugin_host::ScriptedBackend::new())),
+            // ★ The daemon's own host, not a stub. The fixture exists to answer questions about what the daemon
+            // reports, and a stub here would make every question about a plugin's authority answer the same thing.
+            std::sync::Arc::new(crate::runtime::plugin_host::KernelHost::new(
+                std::sync::Arc::clone(&shared_db),
+                "0.1.0-test",
+            )),
         ))),
         plugin_loads: std::sync::Arc::new(parking_lot::Mutex::new(
             crate::runtime::LoadedSummary::default(),
@@ -624,9 +632,17 @@ fn write_plugin(plugins_dir: &Path, id: &str, capability: &str) {
 /// A loader over a scripted engine, so a test can load without compiling Wasmtime.
 fn loader() -> (synra_core::dispatch::PluginSet, synra_plugin_host::ScriptedBackend) {
     let backend = synra_plugin_host::ScriptedBackend::new();
-    let set = synra_core::dispatch::PluginSet::new(synra_plugin_host::Backend::new(std::sync::Arc::new(
-        backend.clone(),
-    )));
+    let set = synra_core::dispatch::PluginSet::new(
+        synra_plugin_host::Backend::new(std::sync::Arc::new(backend.clone())),
+        // ★ The same host the fixture uses: a plugin loaded by these tests is given a session built from the real
+        // one, so a question about authority is answered by the code that answers it in production.
+        std::sync::Arc::new(crate::runtime::plugin_host::KernelHost::new(
+            std::sync::Arc::new(parking_lot::Mutex::new(
+                synra_store::SynraDb::open_in_memory().expect("a database"),
+            )),
+            "0.1.0-test",
+        )),
+    );
     (set, backend)
 }
 

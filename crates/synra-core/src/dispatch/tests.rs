@@ -16,6 +16,205 @@ use crate::intent::{Board, Choice, IntentSource};
 
 use super::{MatchReport, Matcher, PluginSet, PluginSetError, PluginSpec};
 
+/// A host that refuses everything, for tests that never reach one.
+///
+/// # Why this is written out rather than mocked
+///
+/// Because `Host` has no defaults: a host function with no implementation is one a plugin can call and get
+/// `unimplemented`, which is a worse answer than a refusal with a code. So every method is named, and each refusal
+/// carries a code a guest could branch on.
+///
+/// The tests in this file are about the **host's** behaviour — which plugin answered, what happens when one is broken —
+/// and none of them reaches a host function. What this exists for is that `PluginSet::new` requires a host, so that a
+/// set can never be built without one and quietly refuse every call for a reason the caller did not choose.
+struct Refusing;
+
+impl synra_plugin_host::host_calls::Host for Refusing {
+    fn sdk_version(&self) -> String {
+        "0.0.0".to_owned()
+    }
+    fn host_kind(&self) -> String {
+        "headless".to_owned()
+    }
+    fn locale(&self) -> String {
+        "en-GB".to_owned()
+    }
+    fn dark_mode(&self) -> bool {
+        false
+    }
+    fn can(&self, _plugin: &PluginId, _capability: &str) -> bool {
+        false
+    }
+    fn platform_capabilities(&self) -> Vec<String> {
+        Vec::new()
+    }
+    fn log(
+        &self,
+        _plugin: &PluginId,
+        _level: &str,
+        _message: &str,
+        _context: Option<&str>,
+    ) -> Result<(), synra_plugin_host::host_calls::CallError> {
+        Ok(())
+    }
+    fn event_emit(
+        &self,
+        _plugin: &PluginId,
+        _event: &str,
+        _payload: &str,
+    ) -> Result<(), synra_plugin_host::host_calls::CallError> {
+        refuse()
+    }
+    fn devices(&self) -> Vec<(String, String, String)> {
+        Vec::new()
+    }
+    fn device_send(
+        &self,
+        _p: &PluginId,
+        _t: &str,
+        _e: &str,
+        _pl: &str,
+    ) -> Result<(), synra_plugin_host::host_calls::CallError> {
+        refuse()
+    }
+    fn device_broadcast(
+        &self,
+        _p: &PluginId,
+        _e: &str,
+        _pl: &str,
+    ) -> Result<(), synra_plugin_host::host_calls::CallError> {
+        refuse()
+    }
+    fn storage_get(
+        &self,
+        _p: &PluginId,
+        _k: &str,
+    ) -> Result<Option<String>, synra_plugin_host::host_calls::CallError> {
+        refuse()
+    }
+    fn storage_set(
+        &self,
+        _p: &PluginId,
+        _k: &str,
+        _v: &str,
+    ) -> Result<(), synra_plugin_host::host_calls::CallError> {
+        refuse()
+    }
+    fn storage_delete(
+        &self,
+        _p: &PluginId,
+        _k: &str,
+    ) -> Result<(), synra_plugin_host::host_calls::CallError> {
+        refuse()
+    }
+    fn storage_keys(
+        &self,
+        _p: &PluginId,
+        _prefix: Option<&str>,
+    ) -> Result<Vec<String>, synra_plugin_host::host_calls::CallError> {
+        refuse()
+    }
+    fn storage_quota(
+        &self,
+        _p: &PluginId,
+    ) -> Result<(u64, u64), synra_plugin_host::host_calls::CallError> {
+        refuse()
+    }
+    fn secret_get(
+        &self,
+        _p: &PluginId,
+        _k: &str,
+    ) -> Result<Option<String>, synra_plugin_host::host_calls::CallError> {
+        refuse()
+    }
+    fn secret_set(
+        &self,
+        _p: &PluginId,
+        _k: &str,
+        _v: &str,
+    ) -> Result<(), synra_plugin_host::host_calls::CallError> {
+        refuse()
+    }
+    fn secret_delete(
+        &self,
+        _p: &PluginId,
+        _k: &str,
+    ) -> Result<(), synra_plugin_host::host_calls::CallError> {
+        refuse()
+    }
+    fn fetch(
+        &self,
+        _p: &PluginId,
+        _request_json: &str,
+    ) -> Result<String, synra_plugin_host::host_calls::CallError> {
+        refuse()
+    }
+    fn transfer_send(
+        &self,
+        _p: &PluginId,
+        _k: &str,
+        _t: &str,
+        _m: &str,
+    ) -> Result<String, synra_plugin_host::host_calls::CallError> {
+        refuse()
+    }
+    fn transfer_status(
+        &self,
+        _p: &PluginId,
+        _id: &str,
+    ) -> Result<String, synra_plugin_host::host_calls::CallError> {
+        refuse()
+    }
+    fn platform(
+        &self,
+        _p: &PluginId,
+        _a: &str,
+        _arg: &str,
+    ) -> Result<Option<String>, synra_plugin_host::host_calls::CallError> {
+        refuse()
+    }
+    fn action_declare(
+        &self,
+        _p: &PluginId,
+        _n: &str,
+        _s: &str,
+    ) -> Result<(), synra_plugin_host::host_calls::CallError> {
+        refuse()
+    }
+    fn action_list(
+        &self,
+        _p: &PluginId,
+    ) -> Result<String, synra_plugin_host::host_calls::CallError> {
+        refuse()
+    }
+    fn action_invoke(
+        &self,
+        _p: &PluginId,
+        _t: &str,
+        _n: &str,
+        _a: &str,
+    ) -> Result<String, synra_plugin_host::host_calls::CallError> {
+        refuse()
+    }
+}
+
+/// The refusal every method above gives, so the code is stated once.
+fn refuse<T>() -> Result<T, synra_plugin_host::host_calls::CallError> {
+    Err(synra_plugin_host::host_calls::CallError::new(
+        "NOT_IMPLEMENTED",
+        "this test host provides nothing",
+    ))
+}
+
+/// A host for the tests that never reach one.
+///
+/// `pub(super)` so the test module beside this one — the one that asks what a session is built from — can use the same
+/// host rather than writing its own twenty-seven methods.
+pub(super) fn host() -> std::sync::Arc<dyn synra_plugin_host::host_calls::Host> {
+    std::sync::Arc::new(Refusing)
+}
+
+
 /// A plugin id, from a name, for a test that does not care about scopes.
 fn id(name: &str) -> PluginId {
     PluginId::try_from(name.to_owned()).unwrap_or_else(|_| panic!("{name} is not a plugin id"))
@@ -70,6 +269,7 @@ fn load(set: &mut PluginSet, backend: &ScriptedBackend, name: &str, answer: Scri
         grants: CapabilitySet::new(),
         policy: InstancePolicy::Stateless,
         limit: 4,
+        quota: synra_plugin_host::quota::Quota::default(),
     })
     .unwrap_or_else(|error| panic!("{name} did not load: {error}"));
 }
@@ -138,7 +338,7 @@ fn versions(board: &Board, id: IntentId) -> Vec<String> {
 #[test]
 fn a_plugin_that_handles_a_share_becomes_a_candidate() {
     let backend = ScriptedBackend::new();
-    let mut set = PluginSet::new(Backend::new(std::sync::Arc::new(backend.clone())));
+    let mut set = PluginSet::new(Backend::new(std::sync::Arc::new(backend.clone())), host());
     load(
         &mut set,
         &backend,
@@ -167,7 +367,7 @@ fn a_plugin_that_handles_a_share_becomes_a_candidate() {
 #[test]
 fn declining_is_not_a_failure() {
     let backend = ScriptedBackend::new();
-    let mut set = PluginSet::new(Backend::new(std::sync::Arc::new(backend.clone())));
+    let mut set = PluginSet::new(Backend::new(std::sync::Arc::new(backend.clone())), host());
     load(
         &mut set,
         &backend,
@@ -194,7 +394,7 @@ fn declining_is_not_a_failure() {
 #[test]
 fn one_trapping_plugin_does_not_cost_the_user_the_others() {
     let backend = ScriptedBackend::new();
-    let mut set = PluginSet::new(Backend::new(std::sync::Arc::new(backend.clone())));
+    let mut set = PluginSet::new(Backend::new(std::sync::Arc::new(backend.clone())), host());
     load(
         &mut set,
         &backend,
@@ -254,7 +454,7 @@ fn one_trapping_plugin_does_not_cost_the_user_the_others() {
 #[test]
 fn a_plugin_that_panics_the_host_does_not_stop_the_kernel() {
     let backend = ScriptedBackend::new();
-    let mut set = PluginSet::new(Backend::new(std::sync::Arc::new(backend.clone())));
+    let mut set = PluginSet::new(Backend::new(std::sync::Arc::new(backend.clone())), host());
     load(
         &mut set,
         &backend,
@@ -308,7 +508,7 @@ fn an_artifact_importing_a_function_its_capabilities_do_not_cover_is_refused_at_
     // What is checked is what the **component** imports rather than what the manifest claims, so the double has to be
     // able to report an import for the check to be exercised at all. That is why `ScriptedBackend::importing` exists.
     let backend = ScriptedBackend::new().importing(&["synra:plugin/host#network-fetch"]);
-    let mut set = PluginSet::new(Backend::new(std::sync::Arc::new(backend)));
+    let mut set = PluginSet::new(Backend::new(std::sync::Arc::new(backend)), host());
 
     let refused = set.load(PluginSpec {
         id: id("@synra/aaa-wants-network"),
@@ -318,6 +518,7 @@ fn an_artifact_importing_a_function_its_capabilities_do_not_cover_is_refused_at_
         grants: CapabilitySet::new(),
         policy: InstancePolicy::Stateless,
         limit: 4,
+        quota: synra_plugin_host::quota::Quota::default(),
     });
 
     match refused {
@@ -339,7 +540,7 @@ fn an_artifact_importing_a_function_its_capabilities_do_cover_loads() {
     // The other direction, and the one that keeps the check from being a rule nobody can satisfy: the same import with
     // the capability behind it loads.
     let backend = ScriptedBackend::new().importing(&["synra:plugin/host#network-fetch"]);
-    let mut set = PluginSet::new(Backend::new(std::sync::Arc::new(backend)));
+    let mut set = PluginSet::new(Backend::new(std::sync::Arc::new(backend)), host());
 
     let mut grants = CapabilitySet::new();
     grants.insert_str("network:fetch:*").expect("a capability");
@@ -351,6 +552,7 @@ fn an_artifact_importing_a_function_its_capabilities_do_cover_loads() {
         grants,
         policy: InstancePolicy::Stateless,
         limit: 4,
+        quota: synra_plugin_host::quota::Quota::default(),
     })
     .expect("the import is covered, so the load succeeds");
 
@@ -359,7 +561,7 @@ fn an_artifact_importing_a_function_its_capabilities_do_cover_loads() {
 
 #[test]
 fn every_plugin_failing_is_distinguishable_from_nothing_being_installed() {    let backend = ScriptedBackend::new();
-    let mut set = PluginSet::new(Backend::new(std::sync::Arc::new(backend.clone())));
+    let mut set = PluginSet::new(Backend::new(std::sync::Arc::new(backend.clone())), host());
     load(&mut set, &backend, "@synra/aaa", Scripted::Timeout);
 
     let (mut board, intent_id) = raised_board();
@@ -375,7 +577,7 @@ fn every_plugin_failing_is_distinguishable_from_nothing_being_installed() {    l
 #[test]
 fn an_empty_kernel_matched_nothing_and_asked_nobody() {
     let backend = ScriptedBackend::new();
-    let mut set = PluginSet::new(Backend::new(std::sync::Arc::new(backend)));
+    let mut set = PluginSet::new(Backend::new(std::sync::Arc::new(backend)), host());
     let (mut board, intent_id) = raised_board();
 
     let report = Matcher::new(&mut set).match_share(&mut board, intent_id, share_json(), 1_000);
@@ -391,7 +593,7 @@ fn an_empty_kernel_matched_nothing_and_asked_nobody() {
 #[test]
 fn an_answer_that_is_not_json_is_recorded_rather_than_guessed_at() {
     let backend = ScriptedBackend::new();
-    let mut set = PluginSet::new(Backend::new(std::sync::Arc::new(backend.clone())));
+    let mut set = PluginSet::new(Backend::new(std::sync::Arc::new(backend.clone())), host());
     load(
         &mut set,
         &backend,
@@ -414,7 +616,7 @@ fn an_answer_that_is_not_json_is_recorded_rather_than_guessed_at() {
 #[test]
 fn a_plugin_that_only_says_yes_is_still_offered() {
     let backend = ScriptedBackend::new();
-    let mut set = PluginSet::new(Backend::new(std::sync::Arc::new(backend.clone())));
+    let mut set = PluginSet::new(Backend::new(std::sync::Arc::new(backend.clone())), host());
     load(
         &mut set,
         &backend,
@@ -439,7 +641,7 @@ fn a_plugin_that_only_says_yes_is_still_offered() {
 #[test]
 fn calling_a_plugin_that_is_not_loaded_says_so() {
     let backend = ScriptedBackend::new();
-    let mut set = PluginSet::new(Backend::new(std::sync::Arc::new(backend)));
+    let mut set = PluginSet::new(Backend::new(std::sync::Arc::new(backend)), host());
     let budget = Matcher::new(&mut set).budget();
 
     let error = set.call(&id("@synra/absent"), &Work::Deactivate, budget, 0);
@@ -455,7 +657,7 @@ fn calling_a_plugin_that_is_not_loaded_says_so() {
 #[test]
 fn unloading_a_plugin_takes_it_out_of_the_next_pass() {
     let backend = ScriptedBackend::new();
-    let mut set = PluginSet::new(Backend::new(std::sync::Arc::new(backend.clone())));
+    let mut set = PluginSet::new(Backend::new(std::sync::Arc::new(backend.clone())), host());
     load(
         &mut set,
         &backend,
@@ -491,7 +693,7 @@ fn unloading_a_plugin_takes_it_out_of_the_next_pass() {
 #[test]
 fn loading_twice_replaces_the_plugin() {
     let backend = ScriptedBackend::new();
-    let mut set = PluginSet::new(Backend::new(std::sync::Arc::new(backend.clone())));
+    let mut set = PluginSet::new(Backend::new(std::sync::Arc::new(backend.clone())), host());
     load(
         &mut set,
         &backend,
@@ -512,7 +714,7 @@ fn loading_twice_replaces_the_plugin() {
 #[test]
 fn the_version_a_dispatch_records_is_the_one_loaded_now() {
     let backend = ScriptedBackend::new();
-    let mut set = PluginSet::new(Backend::new(std::sync::Arc::new(backend.clone())));
+    let mut set = PluginSet::new(Backend::new(std::sync::Arc::new(backend.clone())), host());
     backend.script_for(
         "@synra/moving",
         &Work::CanHandle {
@@ -527,6 +729,7 @@ fn the_version_a_dispatch_records_is_the_one_loaded_now() {
         grants: CapabilitySet::new(),
         policy: InstancePolicy::Stateless,
         limit: 1,
+        quota: synra_plugin_host::quota::Quota::default(),
     })
     .unwrap_or_else(|error| panic!("did not load: {error}"));
 
