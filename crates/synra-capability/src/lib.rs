@@ -79,6 +79,7 @@
 
 pub mod capability;
 pub mod domain;
+pub mod error;
 pub mod gate;
 pub mod set;
 

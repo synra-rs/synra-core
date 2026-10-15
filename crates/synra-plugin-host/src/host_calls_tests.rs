@@ -960,6 +960,34 @@ fn a_returned_value_that_is_empty_becomes_the_json_null_the_glue_expects() {
 // ── The audit ─────────────────────────────────────────────────────────────────────────────────────
 
 #[test]
+fn a_refusal_tells_a_plugin_what_it_already_holds_in_that_domain() {
+    // ★ The wiring rather than the derivation.
+    //
+    // `CapabilityDenied::of` is tested in its own crate. What this asserts is that the gate hands it the **session's own
+    // grants** — a refusal built against an empty set would look identical from the outside and would tell every author
+    // "you hold nothing in that domain", which is exactly the kind of quiet wrong answer that makes an error message
+    // useless.
+    let host = Stub::default();
+    let grants = granted(&["storage:local:read"]);
+    let budget = budget();
+    let mut audit = Vec::new();
+    let mut calls = session(&host, &grants, &budget, &mut audit);
+
+    let refused = calls
+        .call("synra:plugin/host#storage-set", r#"{"key":"k","value":"v"}"#)
+        .expect_err("the write capability is not held");
+    let details: serde_json::Value =
+        serde_json::from_str(refused.details.as_deref().expect("details")).expect("valid JSON");
+
+    assert_eq!(details["capability"], "storage:local:write");
+    assert_eq!(details["granted"][0], "storage:local:read", "what the plugin actually holds");
+    assert!(
+        details["suggestion"].as_str().is_some_and(|text| text.contains("already holds")),
+        "and the suggestion notices it: {details}"
+    );
+}
+
+#[test]
 fn every_gated_call_is_audited_against_the_capability_it_needed() {
     let host = Stub::default();
     let grants = granted(&["storage:local:read"]);
@@ -1015,7 +1043,7 @@ fn every_error_code_is_a_name_a_plugin_branches_on() {
     // sentences, and they do not change with the wording of a message.
     let errors = [
         CallError::unknown("synra:plugin/host#teleport"),
-        CallError::denied("storage:local:write"),
+        CallError::denied("storage:local:write", &CapabilitySet::new()),
         CallError::new(CallError::RATE_LIMITED, "too fast"),
         CallError::new(CallError::BAD_ARGUMENT, "not json"),
         CallError::new(CallError::HOST_FAILED, "the keychain is locked"),
@@ -1029,9 +1057,16 @@ fn every_error_code_is_a_name_a_plugin_branches_on() {
     }
     // And a refusal names the capability, because the next thing a plugin does is ask the user for it.
     assert!(errors[1].message.contains("storage:local:write"));
-    assert_eq!(
-        errors[1].details.as_deref(),
-        Some("{\"capability\":\"storage:local:write\"}")
+    // ★ The three elements the design asks a refusal to carry, read out of the details a plugin is handed: what the call
+    // needed, what the plugin holds, and what to do about it. The first of the three was all that existed, so this is the
+    // assertion that would have failed against the old shape.
+    let details: serde_json::Value =
+        serde_json::from_str(errors[1].details.as_deref().expect("details")).expect("valid JSON");
+    assert_eq!(details["capability"], "storage:local:write");
+    assert_eq!(details["granted"], serde_json::json!([]));
+    assert!(
+        details["suggestion"].as_str().is_some_and(|text| text.contains("ask the user")),
+        "{details}"
     );
     // The serialised form carries the code, which is what the glue layer hands the guest.
     let json = serde_json::to_string(&errors[2]).expect("serialises");

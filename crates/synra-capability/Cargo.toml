@@ -19,6 +19,11 @@ thiserror.workspace = true
 [dev-dependencies]
 proptest.workspace = true
 rstest.workspace = true
+# ★ A dev-dependency rather than a dependency, and the distinction is the point: this crate has no serialisation dependency
+# on purpose — `CapabilityDenied::to_json` builds its text by hand so that a data format does not sit in the middle of the
+# matching rules — and the tests are the one place a real JSON parser is wanted, to check that what the hand-written encoder
+# produces is actually JSON.
+serde_json.workspace = true
 
 [lints]
 workspace = true

@@ -107,13 +107,18 @@ impl CallError {
     }
 
     /// The refusal for a capability the plugin does not hold.
+    ///
+    /// # ★ Why this takes the granted set as well as the missing capability
+    ///
+    /// Because the three things the design asks a refusal to carry are not answerable from the missing one alone. An author
+    /// reading "you need `storage:local:write`" cannot tell whether their plugin is one permission short of something the
+    /// user already trusts it with, or holds nothing in that domain at all — and those are different problems with
+    /// different answers. `synra_capability::error::CapabilityDenied` derives all three, and the suggestion it produces is
+    /// a fact about the two sets rather than a sentence somebody wrote by hand.
     #[must_use]
-    pub fn denied(capability: &str) -> Self {
-        Self::new(
-            Self::CAPABILITY_DENIED,
-            format!("this plugin does not hold `{capability}`"),
-        )
-        .with_details(format!("{{\"capability\":\"{capability}\"}}"))
+    pub fn denied(capability: &str, held: &CapabilitySet) -> Self {
+        let refused = synra_capability::error::CapabilityDenied::of(capability, held);
+        Self::new(Self::CAPABILITY_DENIED, refused.to_string()).with_details(refused.to_json())
     }
 
     /// The refusal for a function no host provides.
@@ -433,7 +438,7 @@ impl<'a> HostCalls<'a> {
             // capabilities.
             let held = Capability::parse(capability).is_ok_and(|needed| self.grants.grants(&needed));
             if !held {
-                let error = CallError::denied(capability);
+                let error = CallError::denied(capability, self.grants);
                 self.record(import_name, AuditOutcome::Denied, None);
                 return Err(error);
             }

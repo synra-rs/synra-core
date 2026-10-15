@@ -6,6 +6,8 @@
 //! right.
 
 use super::*;
+// The refusals these tests build are handed the set a plugin holds, so the set has to be nameable here.
+use synra_capability::CapabilitySet;
 
 /// Every function the contract declares, as bare names.
 fn contract_functions() -> Vec<String> {
@@ -133,7 +135,7 @@ fn a_log_line_carries_the_level_the_contract_names_rather_than_its_index() {
 fn a_refusal_is_the_json_the_outcome_variant_carries() {
     // The contract's shape for a call that can fail is `outcome`, whose `err` case carries a structured error with a
     // stable code. A refusal rendered as anything else would be one a plugin could not branch on.
-    let denied = CallError::denied("storage:local:write");
+    let denied = CallError::denied("storage:local:write", &CapabilitySet::new());
     let json = error_json(&denied);
     let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
     assert_eq!(parsed.get("code").and_then(|value| value.as_str()), Some("capabilityDenied"));
@@ -150,7 +152,7 @@ fn an_answer_that_is_empty_becomes_the_json_null_the_outcome_expects() {
     assert_eq!(Answer::Ok("null".to_owned()).into_outcome(), "null");
     assert_eq!(Answer::Ok("[1,2]".to_owned()).into_outcome(), "[1,2]");
     // And a refusal goes out as the error's JSON, not as its sentence.
-    let refused = Answer::Denied(CallError::denied("log:*"));
+    let refused = Answer::Denied(CallError::denied("log:*", &CapabilitySet::new()));
     assert!(refused.was_refused());
     assert!(refused.into_outcome().starts_with('{'));
 }
@@ -189,7 +191,7 @@ fn the_interface_a_guest_imports_is_the_one_the_contract_names() {
 fn a_refusal_a_guest_receives_names_what_to_ask_for() {
     // The next thing an author does after a refusal is ask the user for the capability, so the refusal names it — and
     // the code is one a plugin branches on rather than a sentence it parses.
-    let refused = Answer::Denied(CallError::denied("device:send:*"));
+    let refused = Answer::Denied(CallError::denied("device:send:*", &CapabilitySet::new()));
     let json = error_json(match &refused {
         Answer::Denied(error) => error,
         Answer::Ok(_) => panic!("a refusal"),
