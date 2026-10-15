@@ -52,7 +52,7 @@ pub fn question_for(
     output: Option<crate::args::OutputFormat>,
     plugin_request: impl FnOnce() -> Option<Request>,
 ) -> Option<Question> {
-    use crate::args::{Command, OutputFormat};
+    use crate::args::{Command, IntentAction, OutputFormat};
 
     // `--output` is a flag of the command line rather than of a subcommand, so the shape is decided once here instead of
     // being read off each set of arguments — which is what the first version did, and it read a field that does not
@@ -114,6 +114,22 @@ pub fn question_for(
             shape,
         }),
         Command::Plugin(_) => plugin_request().map(|request| Question { request, shape }),
+        // ★ The three answers to a prompt, each one request.
+        //
+        // `share` prints an identifier and this is what makes it usable: without these, routing could be started from the
+        // command line and never finished there, and the identifier was a value with no second command to spend it on.
+        Command::Intent(args) => Some(Question {
+            request: match &args.action {
+                IntentAction::Show { intent } => Request::IntentSnapshot { intent: intent.clone() },
+                IntentAction::Decide { intent, plugin, target } => Request::IntentDecide {
+                    intent: intent.clone(),
+                    plugin_id: plugin.clone(),
+                    target: target.clone(),
+                },
+                IntentAction::Cancel { intent } => Request::IntentCancel { intent: intent.clone() },
+            },
+            shape,
+        }),
         Command::Share(args) => Some(Question {
             request: Request::IntentDispatch {
                 mime: args.mime.clone(),
@@ -364,7 +380,7 @@ pub fn transport_failure(error: &synra_control::SocketError) -> crate::session::
 mod tests {
     use super::*;
     use crate::args::{
-        Command, DbAction, DbArgs, DevicesArgs, LogsArgs, OutputFormat, PairArgs, SendArgs,
+        Command, DbAction, DbArgs, DevicesArgs, IntentAction, LogsArgs, OutputFormat, PairArgs, SendArgs,
     };
 
     fn devices_args(all: bool) -> DevicesArgs {
@@ -475,6 +491,27 @@ mod tests {
             ("send", question_for(&Command::Send(send_args(Some("x"), None)), None, || None)),
             ("logs", question_for(&Command::Logs(logs_args(1, None, false)), None, || None)),
             (
+                "share",
+                question_for(
+                    &Command::Share(crate::args::ShareArgs {
+                        text: "https://example.com".to_owned(),
+                        mime: "text/uri-list".to_owned(),
+                    }),
+                    None,
+                    || None,
+                ),
+            ),
+            (
+                "intent",
+                question_for(
+                    &Command::Intent(crate::args::IntentArgs {
+                        action: crate::args::IntentAction::Show { intent: "abc".to_owned() },
+                    }),
+                    None,
+                    || None,
+                ),
+            ),
+            (
                 "doctor",
                 question_for(
                     &Command::Doctor(crate::args::DoctorArgs { failures_only: false, bundle: None }),
@@ -491,6 +528,51 @@ mod tests {
             let expected = !matches!(name, "doctor" | "db");
             assert_eq!(question.is_some(), expected, "{name}");
         }
+    }
+
+    #[test]
+    fn each_answer_to_a_prompt_becomes_its_own_request() {
+        // ★ The mapping, rather than the parsing. Three verbs that all reached `IntentSnapshot` would parse, print
+        // something plausible, and never decide or cancel anything \u2014 and no argument test would notice.
+        let ask = |action: crate::args::IntentAction| {
+            question_for(
+                &Command::Intent(crate::args::IntentArgs { action }),
+                None,
+                || None,
+            )
+            .map(|question| question.request)
+        };
+
+        assert!(matches!(
+            ask(crate::args::IntentAction::Show { intent: "abc".to_owned() }),
+            Some(Request::IntentSnapshot { .. })
+        ));
+        assert!(matches!(
+            ask(crate::args::IntentAction::Decide {
+                intent: "abc".to_owned(),
+                plugin: None,
+                target: None,
+            }),
+            Some(Request::IntentDecide { .. })
+        ));
+        assert!(matches!(
+            ask(crate::args::IntentAction::Cancel { intent: "abc".to_owned() }),
+            Some(Request::IntentCancel { .. })
+        ));
+
+        // And the two optional answers survive the trip. A `decide` that dropped them would be one where choosing between
+        // several plugins, or answering "where", silently did the default instead.
+        let Some(Request::IntentDecide { plugin_id, target, .. }) = ask(
+            crate::args::IntentAction::Decide {
+                intent: "abc".to_owned(),
+                plugin: Some("@acme/opener".to_owned()),
+                target: Some("0e5a1c34-0000-4000-8000-000000000001".to_owned()),
+            },
+        ) else {
+            panic!("expected a decide request");
+        };
+        assert_eq!(plugin_id.as_deref(), Some("@acme/opener"));
+        assert_eq!(target.as_deref(), Some("0e5a1c34-0000-4000-8000-000000000001"));
     }
 
     #[test]

@@ -78,6 +78,8 @@ pub enum Command {
     Logs(LogsArgs),
     /// Hand something to the kernel to route.
     Share(ShareArgs),
+    /// Answer a prompt about something being routed.
+    Intent(IntentArgs),
     /// Check that this machine can run the kernel.
     Doctor(DoctorArgs),
     /// Read the database directly.
@@ -104,6 +106,55 @@ pub struct ShareArgs {
     /// one, and a plugin that opened it would be acting on a guess.
     #[arg(long, value_name = "MIME", default_value = "text/plain")]
     pub mime: String,
+}
+
+/// Options for `intent`.
+#[derive(Debug, Args)]
+pub struct IntentArgs {
+    /// What to do with it.
+    #[command(subcommand)]
+    pub action: IntentAction,
+}
+
+/// The three answers a prompt can get.
+///
+/// # Why `show` is one of them
+///
+/// Because `share` returns an identifier and nothing else, and a caller who has an identifier needs to be able to look it
+/// up again — a prompt is answered in a later command, possibly by a different program. Without `show` the identifier
+/// `share` prints is a value with no use.
+#[derive(Debug, Subcommand)]
+pub enum IntentAction {
+    /// Ask what has become of an intent.
+    Show {
+        /// Which intent, as `share` printed it.
+        #[arg(value_name = "INTENT")]
+        intent: String,
+    },
+    /// Decide it: take the candidate the board settled on, or one the user names.
+    Decide {
+        /// Which intent.
+        #[arg(value_name = "INTENT")]
+        intent: String,
+        /// Which plugin, when the user was choosing between several.
+        ///
+        /// Omitted takes the candidate the board already settled on, which is the ordinary case: one plugin claimed the
+        /// share and there is nothing to choose between.
+        #[arg(long, value_name = "PLUGIN")]
+        plugin: Option<String>,
+        /// Where to run it, when the plugin that claimed the share did not say.
+        ///
+        /// A device identifier, as `devices` prints it. This is the answer to the question a plugin leaves open by
+        /// suggesting nowhere.
+        #[arg(long, value_name = "DEVICE")]
+        target: Option<String>,
+    },
+    /// Abandon it.
+    Cancel {
+        /// Which intent.
+        #[arg(value_name = "INTENT")]
+        intent: String,
+    },
 }
 
 /// Options for `devices`.
@@ -366,6 +417,7 @@ mod tests {
             vec!["synra", "doctor"],
             vec!["synra", "db", "dump"],
                 vec!["synra", "share", "https://example.com"],
+                vec!["synra", "intent", "show", "01a140ce-0000-7000-8000-000000000000"],
         ] {
             assert!(parse(&args).is_ok(), "{args:?} should parse");
         }
@@ -715,6 +767,55 @@ mod tests {
         assert_eq!(args.mime, "text/uri-list");
     }
 
+    #[test]
+    fn the_three_answers_to_a_prompt_each_parse() {
+        // ★ `share` prints an identifier and these are the commands that spend it. Before them, routing could be
+        // started from the command line and never finished there \u2014 the identifier was a value with no second command.
+        let Command::Intent(args) =
+            parsed(&["synra", "intent", "show", "01a140ce-0000-7000-8000-000000000000"]).command
+        else {
+            panic!("intent is a command");
+        };
+        assert!(matches!(args.action, IntentAction::Show { .. }));
+
+        let Command::Intent(args) = parsed(&["synra", "intent", "decide", "abc"]).command else {
+            panic!("intent is a command");
+        };
+        // Both optional: omitting them is the ordinary case \u2014 one plugin claimed the share and named where to run it.
+        assert!(matches!(
+            args.action,
+            IntentAction::Decide { plugin: None, target: None, .. }
+        ));
+
+        // And naming them is how a user answers a share that left either open.
+        let Command::Intent(args) = parsed(&[
+            "synra",
+            "intent",
+            "decide",
+            "abc",
+            "--plugin",
+            "@acme/opener",
+            "--target",
+            "0e5a1c34-0000-4000-8000-000000000001",
+        ])
+        .command
+        else {
+            panic!("intent is a command");
+        };
+        match args.action {
+            IntentAction::Decide { plugin, target, .. } => {
+                assert_eq!(plugin.as_deref(), Some("@acme/opener"));
+                assert_eq!(target.as_deref(), Some("0e5a1c34-0000-4000-8000-000000000001"));
+            }
+            other => panic!("expected decide, got {other:?}"),
+        }
+
+        let Command::Intent(args) = parsed(&["synra", "intent", "cancel", "abc"]).command else {
+            panic!("intent is a command");
+        };
+        assert!(matches!(args.action, IntentAction::Cancel { .. }));
+    }
+
     // ── The main.rs bound ─────────────────────────────────────────────────────────────────────────
 
     #[test]
@@ -726,6 +827,6 @@ mod tests {
         // Counted rather than named, so adding a command without adding it here is a failure — and the count is what
         // makes the list above (`every_documented_command_exists`) meaningful: a command that parses but is not on the
         // command surface would be one clap never dispatches to.
-        assert_eq!(Cli::command().get_subcommands().count(), 9);
+        assert_eq!(Cli::command().get_subcommands().count(), 10);
     }
 }
