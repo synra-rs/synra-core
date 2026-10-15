@@ -63,8 +63,9 @@ fn a_log_line_reaches_the_file_with_its_secrets_removed() {
     // diagnostic bundle, and it is asserted where it can fail — at the disk.
     tracing::info!(token = "hunter2", "the handshake used a token");
 
-    drop(guard);
-
+    // ★ The guard is **not** dropped here. Phase 2 raises the verbosity through it, and a raise needs the thing that
+    // owns the subscriber's configuration — so the phases below share one guard and one file, which is what makes the
+    // before/after comparison meaningful.
     let path = dir.path().join(LOG_FILE_NAME);
     let text = std::fs::read_to_string(&path).expect("the log file exists after a line was written");
 
@@ -75,7 +76,42 @@ fn a_log_line_reaches_the_file_with_its_secrets_removed() {
         "the secret reached the disk, which is the one thing the redacting writer exists to prevent: {text}"
     );
 
-    // ── Phase 2: a second `init` is refused rather than silently ignored ─────────────────────────────────
+    // ── Phase 2: dropping the guard flushes, and a raised verbosity changes what is written ─────────────
+    //
+    // ★ This is the phase that made `--verbose` mean something. `with_max_level` fixes the level when the subscriber is
+    // built, and `tracing` allows one subscriber per process — so for the life of the daemon there was no way to write a
+    // debug line, and `synra logs --verbose` filtered DEBUG out of a file that never contained any. The flag was a
+    // promise with nothing behind it.
+    //
+    // The two debug lines below are the whole assertion: one written **before** the raise and one **after**, into the
+    // same file, in one run. A test that only checked the second would pass against an implementation that wrote debug
+    // lines unconditionally — which is the failure mode this is here to catch, because a log that is always verbose is
+    // a log that fills a disk on a machine nobody is watching.
+    tracing::debug!("before the raise, which must not be kept");
+    assert!(!guard.verbosity().is_raised(), "nothing has asked for more yet");
+
+    guard.verbosity().raise_for_a_while(LogLevel::Debug);
+    assert!(guard.verbosity().is_raised(), "the raise has to take effect");
+    assert_eq!(
+        guard.verbosity().effective(),
+        LogLevel::Debug,
+        "the effective level is what the subscriber asks"
+    );
+    tracing::debug!("after the raise, which must be kept");
+
+    drop(guard);
+
+    let text = std::fs::read_to_string(&path).expect("the log file is still there");
+    assert!(
+        text.contains("after the raise"),
+        "raising the verbosity did not change what was written, so `--verbose` still shows nothing new: {text}"
+    );
+    assert!(
+        !text.contains("before the raise"),
+        "a debug line was kept before anything asked for one: {text}"
+    );
+
+    // ── Phase 3: a second `init` is refused rather than silently ignored ─────────────────────────────────
     //
     // The subscriber is already installed from phase 1 and stays installed for the life of the process — dropping the
     // guard closes the file, it does not uninstall. A second `init` has to say so: a caller that believed its own

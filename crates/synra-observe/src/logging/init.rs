@@ -104,6 +104,23 @@ pub enum LogError {
 #[must_use = "dropping the guard stops the log being written"]
 pub struct LogGuard {
     writer: Arc<Mutex<RedactingWriter<RotatingFile>>>,
+    /// What is being written, and the window a raise lasts for.
+    ///
+    /// Held here because the guard is what `init` hands back and what a caller keeps for the life of the process — the
+    /// daemon shares this with the thread that answers `synra logs --verbose`.
+    verbosity: Arc<super::verbosity::Verbosity>,
+}
+
+impl LogGuard {
+    /// The runtime verbosity, for a caller that wants to raise it.
+    ///
+    /// ★ This is what makes `--verbose` mean something. Raising it here changes what the subscriber writes from the
+    /// next event onwards, and the raise lapses after [`VERBOSE_WINDOW`](super::verbosity::VERBOSE_WINDOW) so a
+    /// forgotten flag does not leave a debug log running for a week.
+    #[must_use]
+    pub fn verbosity(&self) -> Arc<super::verbosity::Verbosity> {
+        Arc::clone(&self.verbosity)
+    }
 }
 
 impl std::fmt::Debug for LogGuard {
@@ -150,6 +167,34 @@ impl<'a> MakeWriter<'a> for SharedWriter {
     }
 }
 
+/// Raises what is written, at runtime, for a bounded window.
+///
+/// # ★ Why the level cannot simply be a constant
+///
+/// `with_max_level` fixes the level when the subscriber is built, and `tracing` allows one global subscriber per
+/// process — so a level chosen at start-up is the level for the life of the daemon. That made `synra logs --verbose`
+/// and `--trace` **promises with nothing behind them**: the CLI asked for debug lines, the file had none because
+/// nothing ever wrote any, and the command quietly showed the same lines as the default.
+///
+/// So the decision moves to the moment each event is considered. `Verbosity` already held the rule — a configured
+/// level, an override, and a window after which the override lapses — and had no production caller; this is what gives
+/// it one. The window matters as much as the raise: an override that never lapses is a debug log left on by accident,
+/// which is how a log file fills a disk on a machine nobody is watching.
+#[derive(Clone)]
+struct DynamicLevel(Arc<super::verbosity::Verbosity>);
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for DynamicLevel {
+    fn enabled(
+        &self,
+        metadata: &tracing::Metadata<'_>,
+        _context: tracing_subscriber::layer::Context<'_, S>,
+    ) -> bool {
+        // `LevelFilter`'s own ordering, so this cannot drift from the enum's: `Info >= Debug` is false, `Trace >=
+        // Debug` is true.
+        self.0.effective().to_tracing() >= *metadata.level()
+    }
+}
+
 /// Installs the subscriber that writes to a rotating file.
 ///
 /// # Errors
@@ -164,22 +209,28 @@ impl<'a> MakeWriter<'a> for SharedWriter {
 pub fn init(config: &LogConfig) -> Result<LogGuard, LogError> {
     let file = RotatingFile::open(config.directory.clone(), config.max_bytes, config.keep)?;
     let writer = Arc::new(Mutex::new(RedactingWriter::new(file)));
+    let verbosity = Arc::new(super::verbosity::Verbosity::new(config.level));
 
-    let subscriber = tracing_subscriber::fmt()
-        // ★ The writer is where redaction happens, which is the point: a field named `token` never reaches the disk, and
-        // the policy is applied on the way out rather than by every call site remembering to be careful.
-        .with_writer(SharedWriter(Arc::clone(&writer)))
-        // The ANSI escapes a terminal would interpret become noise in a file that is read back and filtered as text.
-        .with_ansi(false)
-        // The level is this crate's own enum rather than the environment variable `fmt` would otherwise consult, so the
-        // daemon's `--verbose` flag and the file's contents cannot disagree.
-        .with_max_level(config.level.to_tracing())
-        .finish();
+    use tracing_subscriber::layer::SubscriberExt as _;
+    let subscriber = tracing_subscriber::registry()
+        // The gate. It is a layer rather than a constant on the writer because the answer has to be able to change
+        // between two events, and this is the only place `tracing` asks.
+        .with(DynamicLevel(Arc::clone(&verbosity)))
+        .with(
+            tracing_subscriber::fmt::layer()
+                // ★ The writer is where redaction happens, which is the point: a field named `token` never reaches the
+                // disk, and the policy is applied on the way out rather than by every call site remembering to be
+                // careful.
+                .with_writer(SharedWriter(Arc::clone(&writer)))
+                // The ANSI escapes a terminal would interpret become noise in a file that is read back and filtered as
+                // text.
+                .with_ansi(false),
+        );
 
     use tracing_subscriber::util::SubscriberInitExt;
     subscriber.try_init().map_err(|_| LogError::AlreadyInstalled)?;
 
-    Ok(LogGuard { writer })
+    Ok(LogGuard { writer, verbosity })
 }
 
 /// The bytes a running logger has written, for a status report.
