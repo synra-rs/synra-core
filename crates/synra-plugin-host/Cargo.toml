@@ -60,6 +60,15 @@ rstest.workspace = true
 synra-store = { path = "../synra-store" }
 ed25519-dalek.workspace = true
 base64.workspace = true
+# ★ The text-to-binary assembler, for the tests only.
+#
+# The engine's `compile` takes a `.wasm` file — that is what a plugin author ships — and the fixtures in this crate are
+# written as `.wat` so a reader can check four lines against what the test asserts. Something has to turn one into the
+# other, and doing it here rather than through `wasmtime/wat` is deliberate: `wasm-text` is an *optional* feature, so a
+# build that turns on `wasm-runtime` without it compiles these tests and then fails every one of them with "magic header
+# not detected". That is a test suite whose result depends on which crate happened to enable the feature, which is
+# exactly the kind of green that is not green.
+wat = "1"
 
 [build-dependencies]
 # The generator, as a library. The table is regenerated before every build, so a contract change that is not

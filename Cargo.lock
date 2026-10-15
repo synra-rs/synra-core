@@ -1804,6 +1804,7 @@ dependencies = [
  "synra-store",
  "thiserror",
  "wasmtime",
+ "wat",
  "wit-codegen",
 ]
 

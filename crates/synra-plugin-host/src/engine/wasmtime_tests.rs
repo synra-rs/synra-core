@@ -144,8 +144,19 @@ const IMPORTS_UNKNOWN: &str = r#"
 )
 "#;
 
+/// Assembles a `.wat` fixture and compiles it, or fails with the engine's own reason.
+///
+/// # Why the assembly happens here rather than inside the engine
+///
+/// Because [`Backend::compile`] takes a `.wasm` file — that is what a plugin author ships — and these fixtures are
+/// written as `.wat` so a reader can check four lines of text against what the test asserts. Passing the text straight
+/// through used to work only when the optional `wasm-text` feature was on, and silently failed with "magic header not
+/// detected" in every build that enabled `wasm-runtime` without it. Assembling here means the fixture always reaches the
+/// engine in the form the engine actually accepts, whichever features the workspace happened to unify.
 fn compile(backend: &WasmtimeBackend, wat: &str, id: &str) -> Box<dyn CompiledArtifact> {
-    match backend.compile(wat.as_bytes(), id) {
+    let binary = wat::parse_str(wat)
+        .unwrap_or_else(|error| panic!("the {id} fixture is not valid text: {error}"));
+    match backend.compile(&binary, id) {
         Ok(artifact) => artifact,
         // Matched rather than unwrapped: a trait object is not `Debug`, and "did not compile" without the engine's
         // own reason is the message a plugin author can do nothing with.
