@@ -233,9 +233,11 @@ pub fn handle_within(
                     match share {
                         Some(item) => {
                             match router.route(&item, synra_store::sqlite::now_ms()) {
+                                // \u2605 The typed report rather than a JSON lookup. The value is a `Routed` now,
+                                // and walking it as JSON would have been the library's shape leaking into a log line.
                                 Ok(routed) => eprintln!(
                                     "synra-daemon: {peer} shared something — {} plugin(s) offered",
-                                    routed.get("offered").and_then(serde_json::Value::as_u64).unwrap_or(0)
+                                    routed.report.offered
                                 ),
                                 // A routing failure is reported and does not end the link: the message arrived, and
                                 // closing the connection would take down a transfer for a reason the peer cannot see.

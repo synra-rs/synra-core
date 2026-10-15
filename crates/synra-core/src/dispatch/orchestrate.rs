@@ -27,6 +27,7 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
+use synra_protocol::ids::PluginId;
 use synra_protocol::inbound::ShareItem;
 
 use super::matching::Matcher;
@@ -65,6 +66,180 @@ impl std::fmt::Display for RouteError {
 impl std::error::Error for RouteError {}
 
 
+
+/// What a routing pass produced.
+///
+/// # ★ Why a struct rather than JSON
+///
+/// Because two hosts want different things from the same fact. The daemon renders it for a control-protocol client; the
+/// desktop shell fills an `IntentSnapshot` whose fields (a device per candidate, whether it is online, when the intent
+/// started) are **not in this shape at all** — so a shell handed JSON could not produce a faithful DTO and would have to
+/// invent the missing fields. Typed values let each host ask for what it needs, and the JSON is one rendering among
+/// possible others rather than the only way out of the library.
+#[derive(Debug, Clone)]
+pub struct Routed {
+    /// Which intent this is, which a caller uses to answer it later.
+    pub intent_id: synra_protocol::ids::IntentId,
+    /// The trace this intent belongs to, for a log filter.
+    pub trace: synra_protocol::ids::TraceId,
+    /// Whether this call raised the intent, or found one already raised for the same request.
+    pub created: bool,
+    /// What stage it settled at.
+    pub state: &'static str,
+    /// What the plugins offered.
+    pub candidates: Vec<CandidateView>,
+    /// The pass's own account of itself.
+    pub report: super::matching::MatchReport,
+}
+
+/// One way an intent could be handled.
+#[derive(Debug, Clone)]
+pub struct CandidateView {
+    /// The plugin that answered.
+    pub plugin_id: PluginId,
+    /// The version that answered.
+    pub plugin_version: String,
+    /// What it proposes to do.
+    pub action: String,
+    /// Its arguments, as the plugin proposed them.
+    pub args: serde_json::Value,
+    /// One line for a prompt.
+    pub title: String,
+    /// Optional detail.
+    pub detail: Option<String>,
+    /// The capabilities the action needs.
+    pub required_caps: Vec<String>,
+    /// Where it suggested running, when it had an opinion.
+    pub suggested_target: Option<synra_protocol::ids::DeviceId>,
+}
+
+/// What has become of an intent.
+#[derive(Debug, Clone)]
+pub struct IntentView {
+    /// Which intent.
+    pub intent_id: synra_protocol::ids::IntentId,
+    /// Its trace.
+    pub trace: synra_protocol::ids::TraceId,
+    /// What stage it is at.
+    pub state: &'static str,
+    /// What the plugins offered.
+    pub candidates: Vec<CandidateView>,
+}
+
+/// The result of running the action a user chose.
+#[derive(Debug, Clone)]
+pub struct Decided {
+    /// Which intent.
+    pub intent_id: synra_protocol::ids::IntentId,
+    /// The envelope id a remote dispatch would be sent under.
+    pub request_id: synra_protocol::ids::RequestId,
+    /// Which plugin ran.
+    pub plugin_id: PluginId,
+    /// Which of its actions.
+    pub action: String,
+    /// Whether it succeeded.
+    pub ok: bool,
+    /// What it returned, or a sentence describing how it did not.
+    pub result: String,
+    /// Why the host could not make the call, when that is what happened.
+    pub error: Option<String>,
+    /// What stage the intent ended at.
+    pub state: &'static str,
+}
+
+/// An intent's state after a move that produces nothing else.
+#[derive(Debug, Clone)]
+pub struct StateChange {
+    /// Which intent.
+    pub intent_id: synra_protocol::ids::IntentId,
+    /// What stage it is at now.
+    pub state: &'static str,
+}
+
+impl CandidateView {
+    /// The shape the control protocol carries.
+    #[must_use]
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "pluginId": self.plugin_id.as_str(),
+            "pluginVersion": self.plugin_version,
+            "action": self.action,
+            // The plugin's own arguments, so a client can show what would be acted on \u2014 the URL a link candidate
+            // would open, rather than only the sentence describing it.
+            "args": self.args,
+            "title": self.title,
+            "detail": self.detail,
+            "requiredCaps": self.required_caps,
+        })
+    }
+}
+
+impl Routed {
+    /// The shape the control protocol carries.
+    #[must_use]
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "intent": self.intent_id.to_string(),
+            "trace": self.trace.to_string(),
+            // `false` means the same request had already raised an intent. Reported rather than hidden: a caller
+            // retrying after a lost answer needs to know it did not create a second one.
+            "created": self.created,
+            "state": self.state,
+            "candidates": self.candidates.iter().map(CandidateView::to_json).collect::<Vec<_>>(),
+            // ★ The pass's own report, which is what separates "nothing is installed" from "everything
+            // crashed". The two look identical from a candidate list, and a user cannot tell them apart.
+            "asked": self.report.asked,
+            "handled": self.report.handled,
+            "declined": self.report.declined,
+            "offered": self.report.offered,
+            "misbehaved": self.report.misbehaved.iter().map(|misbehaviour| {
+                serde_json::json!({
+                    "pluginId": misbehaviour.plugin_id.as_str(),
+                    "detail": misbehaviour.detail,
+                })
+            }).collect::<Vec<_>>(),
+        })
+    }
+}
+
+impl IntentView {
+    /// The shape the control protocol carries.
+    #[must_use]
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "intent": self.intent_id.to_string(),
+            "trace": self.trace.to_string(),
+            "state": self.state,
+            "candidates": self.candidates.iter().map(CandidateView::to_json).collect::<Vec<_>>(),
+        })
+    }
+}
+
+impl Decided {
+    /// The shape the control protocol carries.
+    #[must_use]
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "intent": self.intent_id.to_string(),
+            "requestId": self.request_id.to_string(),
+            "pluginId": self.plugin_id.as_str(),
+            "action": self.action,
+            "ok": self.ok,
+            "result": self.result,
+            "error": self.error,
+            "state": self.state,
+        })
+    }
+}
+
+impl StateChange {
+    /// The shape the control protocol carries.
+    #[must_use]
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({ "intent": self.intent_id.to_string(), "state": self.state })
+    }
+}
+
 /// Everything an inbound share is routed with.
 ///
 /// # ★ Why these travel together
@@ -101,7 +276,7 @@ impl Router {
         &self,
         item: &ShareItem,
         now_ms: i64,
-    ) -> Result<serde_json::Value, RouteError> {
+    ) -> Result<Routed, RouteError> {
         dispatch(&self.plugins, &self.board, item, now_ms)
     }
 }
@@ -117,7 +292,7 @@ pub fn dispatch(
     board: &Arc<Mutex<Board>>,
     item: &ShareItem,
     now_ms: i64,
-) -> Result<serde_json::Value, RouteError> {
+) -> Result<Routed, RouteError> {
     // The same JSON the plugin is handed as `can-handle`'s argument. It is produced from the typed item rather than
     // passed through, so a caller cannot ask a plugin about something that is not a share item.
     let item_json = serde_json::to_string(item).map_err(|error| {
@@ -166,32 +341,14 @@ pub fn dispatch(
         (id, trace, created, report, settled, candidates)
     };
 
-    Ok(serde_json::json!({
-        "intent": id.to_string(),
-        "trace": trace.to_string(),
-        // `false` means the same request had already raised an intent. Reported rather than hidden: a caller retrying
-        // after a lost answer needs to know it did not create a second one, which is the whole reason the board keeps
-        // the request id.
-        "created": created,
-        "state": settled.map_or("unknown", |state| state_name(&state)),
-        "candidates": candidates,
-        // ★ The pass's own report, which is what separates "nothing is installed" from "everything crashed". The two
-        // look identical from a candidate list, and a user cannot tell them apart.
-        "asked": report.asked,
-        "handled": report.handled,
-        "declined": report.declined,
-        "offered": report.offered,
-        "misbehaved": report
-            .misbehaved
-            .iter()
-            .map(|misbehaviour| {
-                serde_json::json!({
-                    "pluginId": misbehaviour.plugin_id.as_str(),
-                    "detail": misbehaviour.detail,
-                })
-            })
-            .collect::<Vec<_>>(),
-    }))
+    Ok(Routed {
+        intent_id: id,
+        trace,
+        created,
+        state: settled.map_or("unknown", |state| state_name(&state)),
+        candidates,
+        report,
+    })
 }
 
 /// Reads an intent's current state and candidates.
@@ -200,7 +357,7 @@ pub fn dispatch(
 ///
 /// [`RouteError`] when the identifier is not one, or names an intent this kernel never raised or has already forgotten —
 /// which is a different answer from "it is over", and the two must not be conflated.
-pub fn snapshot(board: &Arc<Mutex<Board>>, intent: &str) -> Result<serde_json::Value, RouteError> {
+pub fn snapshot(board: &Arc<Mutex<Board>>, intent: &str) -> Result<IntentView, RouteError> {
     let id = parse_intent(intent)?;
     let intents = board.lock();
     let Some(found) = intents.get(id) else {
@@ -209,12 +366,12 @@ pub fn snapshot(board: &Arc<Mutex<Board>>, intent: &str) -> Result<serde_json::V
             "this kernel has no such intent",
         ));
     };
-    let answer = serde_json::json!({
-        "intent": id.to_string(),
-        "trace": found.trace.to_string(),
-        "state": state_name(&found.state),
-        "candidates": candidates_of(&intents, id),
-    });
+    let answer = IntentView {
+        intent_id: id,
+        trace: found.trace,
+        state: state_name(&found.state),
+        candidates: candidates_of(&intents, id),
+    };
     drop(intents);
     Ok(answer)
 }
@@ -239,7 +396,7 @@ pub fn decide(
     plugin_id: Option<&str>,
     target: Option<&str>,
     now_ms: i64,
-) -> Result<serde_json::Value, RouteError> {
+) -> Result<Decided, RouteError> {
     let id = parse_intent(intent)?;
 
     // ★ The choice is resolved against the board's own list, not accepted from the caller.
@@ -251,7 +408,7 @@ pub fn decide(
     let (candidate, request_id, target) = {
         let mut intents = board.lock();
         if let Some(wanted) = plugin_id {
-            let plugin = synra_protocol::ids::PluginId::try_from(wanted.to_owned()).map_err(|_| {
+            let plugin = PluginId::try_from(wanted.to_owned()).map_err(|_| {
                 RouteError::new(
                     synra_protocol::ErrorCode::InvalidArgument,
                     "that is not a plugin identifier",
@@ -340,16 +497,16 @@ pub fn decide(
         .conclude(id, ok, &result, error.as_deref().map(synra_error), elapsed_ms)
         .map_err(|error| refuse_intent(&error))?;
 
-    Ok(serde_json::json!({
-        "intent": id.to_string(),
-        "requestId": request_id.to_string(),
-        "pluginId": candidate.plugin_id.as_str(),
-        "action": candidate.planned.action,
-        "ok": ok,
-        "result": result,
-        "error": error,
-        "state": state_name(&state),
-    }))
+    Ok(Decided {
+        intent_id: id,
+        request_id,
+        plugin_id: candidate.plugin_id,
+        action: candidate.planned.action,
+        ok,
+        result,
+        error,
+        state: state_name(&state),
+    })
 }
 
 /// Abandons an intent.
@@ -361,13 +518,10 @@ pub fn cancel(
     board: &Arc<Mutex<Board>>,
     intent: &str,
     reason: &str,
-) -> Result<serde_json::Value, RouteError> {
+) -> Result<StateChange, RouteError> {
     let id = parse_intent(intent)?;
     let state = board.lock().cancel(id, reason).map_err(|error| refuse_intent(&error))?;
-    Ok(serde_json::json!({
-        "intent": id.to_string(),
-        "state": state_name(&state),
-    }))
+    Ok(StateChange { intent_id: id, state: state_name(&state) })
 }
 
 /// A stable error the board records, from a message.
@@ -408,7 +562,7 @@ fn refuse_intent(error: &crate::intent::IntentError) -> RouteError {
 /// settled on one — `Confirming` holds a single candidate rather than a list. A snapshot built from it alone showed a
 /// share that had been routed successfully as having no candidates at all, which is precisely the fact a prompt needs.
 /// The states are listed here rather than defaulted, so a state added later has to be considered.
-fn candidates_of(board: &Board, id: synra_protocol::ids::IntentId) -> Vec<serde_json::Value> {
+fn candidates_of(board: &Board, id: synra_protocol::ids::IntentId) -> Vec<CandidateView> {
     use crate::intent::IntentState;
     let Some(intent) = board.get(id) else {
         return Vec::new();
@@ -425,21 +579,15 @@ fn candidates_of(board: &Board, id: synra_protocol::ids::IntentId) -> Vec<serde_
     };
     candidates
         .iter()
-        .map(|candidate| {
-            // ★ The title and detail as well as the identifiers: a prompt is built from these, and a client that only
-            // received `(plugin, action)` would have to invent the sentence a user reads — which is the plugin's own
-            // description of what it will do, not something a host can write for it.
-            serde_json::json!({
-                "pluginId": candidate.plugin_id.as_str(),
-                "pluginVersion": candidate.plugin_version,
-                "action": candidate.planned.action,
-                // The plugin's own arguments, so a client can show what would be acted on — the URL a link candidate
-                // would open, rather than only the sentence describing it.
-                "args": candidate.planned.args,
-                "title": candidate.title,
-                "detail": candidate.detail,
-                "requiredCaps": candidate.required_caps,
-            })
+        .map(|candidate| CandidateView {
+            plugin_id: candidate.plugin_id.clone(),
+            plugin_version: candidate.plugin_version.clone(),
+            action: candidate.planned.action.clone(),
+            args: candidate.planned.args.clone(),
+            title: candidate.title.clone(),
+            detail: candidate.detail.clone(),
+            required_caps: candidate.required_caps.clone(),
+            suggested_target: candidate.suggested_target,
         })
         .collect()
 }
@@ -458,9 +606,8 @@ const fn state_name(state: &crate::intent::IntentState) -> &'static str {
         IntentState::Cancelled { .. } => "cancelled",
         IntentState::Succeeded { .. } => "succeeded",
         IntentState::Failed { .. } => "failed",
-        // `IntentState` is `#[non_exhaustive]`, so a state added later is reported as unknown rather than failing to
-        // compile — and `unknown` is honest, because this build does not know what it means.
-        _ => "unknown",
+        // No wildcard: `IntentState` is `#[non_exhaustive]`, which binds callers in *other* crates and not this
+        // one, so a state added later is a compile error here — which is where the missing arm should be noticed.
     }
 }
 

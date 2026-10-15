@@ -46,7 +46,7 @@ pub(super) fn dispatch(
     item: &ShareItem,
     now_ms: i64,
 ) -> Result<serde_json::Value, Refusal> {
-    orchestrate::dispatch(plugins, board, item, now_ms).map_err(as_refusal)
+    orchestrate::dispatch(plugins, board, item, now_ms).map(|answer| answer.to_json()).map_err(as_refusal)
 }
 
 /// Reads an intent's current state and candidates.
@@ -55,7 +55,7 @@ pub(super) fn dispatch(
 ///
 /// [`Refusal`] when the identifier is not one, or names an intent this kernel never raised or has already forgotten.
 pub(super) fn snapshot(board: &Arc<Mutex<Board>>, intent: &str) -> Result<serde_json::Value, Refusal> {
-    orchestrate::snapshot(board, intent).map_err(as_refusal)
+    orchestrate::snapshot(board, intent).map(|answer| answer.to_json()).map_err(as_refusal)
 }
 
 /// Applies the user's answer, and runs what they chose.
@@ -74,7 +74,7 @@ pub(super) fn decide(
     now_ms: i64,
 ) -> Result<serde_json::Value, Refusal> {
     orchestrate::decide(plugins, board, local_device, intent, plugin_id, target, now_ms)
-        .map_err(as_refusal)
+        .map(|answer| answer.to_json()).map_err(as_refusal)
 }
 
 /// Abandons an intent.
@@ -87,7 +87,7 @@ pub(super) fn cancel(
     intent: &str,
     reason: &str,
 ) -> Result<serde_json::Value, Refusal> {
-    orchestrate::cancel(board, intent, reason).map_err(as_refusal)
+    orchestrate::cancel(board, intent, reason).map(|answer| answer.to_json()).map_err(as_refusal)
 }
 
 

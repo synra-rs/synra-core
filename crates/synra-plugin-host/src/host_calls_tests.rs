@@ -362,7 +362,7 @@ fn every_action_shaped_name_is_one_the_contract_declares() {
         .map(|import| import.rsplit_once('#').map_or(*import, |(_, name)| name))
         .collect();
 
-    for name in crate::host_calls::HostCalls::ACTION_SHAPED {
+    for name in HostCalls::ACTION_SHAPED {
         assert!(
             declared.contains(name),
             "`{name}` is listed as action-shaped but the contract does not declare it"
@@ -378,7 +378,7 @@ fn every_action_shaped_name_is_one_the_contract_declares() {
     ];
     for name in &declared {
         assert!(
-            crate::host_calls::HostCalls::ACTION_SHAPED.contains(name)
+            HostCalls::ACTION_SHAPED.contains(name)
                 || NOT_ACTION_SHAPED.contains(name),
             "`{name}` is declared and nobody decided whether it acts"
         );
