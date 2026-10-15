@@ -40,7 +40,7 @@ impl Kernel for Runtime {
         let now = now_ms();
 
         // The paired devices come from the database, which is the recorded decision.
-        let paired = self.db.paired_devices().map_err(|error| {
+        let paired = self.db().paired_devices().map_err(|error| {
             Refusal::new(ErrorCode::Internal, format!("could not read the paired devices: {error}"))
         })?;
         let mut paired_list: Vec<serde_json::Value> = Vec::new();
@@ -416,7 +416,7 @@ impl Kernel for Runtime {
 
         match answered {
             synra_core::pairing::Answered::Accepted { device_id, display_name, platform, link_token } => {
-                self.db
+                self.db()
                     .pair_device(&synra_store::sqlite::Paired {
                         device_id: device_id.to_string(),
                         display_name: display_name.clone(),
@@ -475,7 +475,7 @@ impl Kernel for Runtime {
 
         // The desk records the pairing before it builds the response, so "durable, then answered" is a property of the
         // desk rather than a hope about the order of two calls here. The record goes to the database this runtime claimed.
-        let db = &self.db;
+        let db = self.db();
         // The store's clock, which is the signed milliseconds the column holds. `Runtime::now_ms` is unsigned for the
         // uptime arithmetic it exists for, and using it here would need a cast that could wrap after the epoch.
         let now = synra_store::sqlite::now_ms();

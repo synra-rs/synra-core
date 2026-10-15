@@ -57,7 +57,7 @@ fn runtime(dir: &Path) -> Runtime {
         // network is in, and one the code has to handle anyway.
         discovery: None,
         scan_until_ms: std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0)),
-        db,
+        db: std::sync::Arc::new(parking_lot::Mutex::new(db)),
         pairing: std::sync::Arc::new(synra_core::pairing::PairingDesk::new(
             local_id,
             synra_protocol::session::SessionTimeouts::default().pairing,
@@ -348,7 +348,7 @@ fn a_fresh_installation_has_no_plugins_and_that_is_not_an_error() {
 /// Inserts a plugin row, which is what the database is the source of truth for.
 fn install(runtime: &Runtime, id: &str, enabled: i64, trusted: i64) {
     runtime
-        .db
+        .db()
         .insert_plugin(id, enabled != 0, trusted != 0, "healthy", 100, 200)
         .expect("a plugin row");
 }
@@ -462,7 +462,7 @@ fn an_enabled_and_trusted_plugin_is_actually_loaded() {
     install(&runtime, "@acme/hello", 1, 1);
 
     let (mut set, _backend) = loader();
-    let summary = crate::runtime::load_installed(&mut set, &runtime.db, &runtime.plugins_dir);
+    let summary = crate::runtime::load_installed(&mut set, &runtime.db(), &runtime.plugins_dir);
 
     assert_eq!(summary.len(), 1, "the one plugin that should run did; refused: {:?}", summary.refused);
     assert!(summary.contains(&synra_protocol::ids::PluginId::try_from("@acme/hello".to_owned()).expect("an id")));
@@ -479,7 +479,7 @@ fn a_plugin_the_user_never_trusted_is_not_loaded_and_not_refused() {
     install(&runtime, "@acme/hello", 1, 0);
 
     let (mut set, _backend) = loader();
-    let summary = crate::runtime::load_installed(&mut set, &runtime.db, &runtime.plugins_dir);
+    let summary = crate::runtime::load_installed(&mut set, &runtime.db(), &runtime.plugins_dir);
 
     assert!(summary.is_empty(), "an untrusted plugin is not loadable");
     assert!(summary.refused.is_empty(), "and untrusted is not a failure: {:?}", summary.refused);
@@ -508,7 +508,7 @@ fn one_broken_plugin_does_not_stop_the_others() {
     install(&runtime, "@acme/good", 1, 1);
 
     let (mut set, _backend) = loader();
-    let summary = crate::runtime::load_installed(&mut set, &runtime.db, &runtime.plugins_dir);
+    let summary = crate::runtime::load_installed(&mut set, &runtime.db(), &runtime.plugins_dir);
 
     assert_eq!(summary.len(), 1, "the working plugin loaded");
     assert_eq!(summary.refused.len(), 1, "and the broken one is accounted for");
@@ -536,7 +536,7 @@ fn a_ui_only_plugin_is_refused_rather_than_loaded_because_it_has_no_headless_hal
     install(&runtime, "@acme/ui-only", 1, 1);
 
     let (mut set, _backend) = loader();
-    let summary = crate::runtime::load_installed(&mut set, &runtime.db, &runtime.plugins_dir);
+    let summary = crate::runtime::load_installed(&mut set, &runtime.db(), &runtime.plugins_dir);
 
     assert!(summary.is_empty());
     assert_eq!(summary.refused.len(), 1);
@@ -553,7 +553,7 @@ fn the_report_says_what_was_loaded_and_not_a_constant() {
     install(&runtime, "@acme/hello", 1, 1);
 
     let (mut set, _backend) = loader();
-    let summary = crate::runtime::load_installed(&mut set, &runtime.db, &runtime.plugins_dir);
+    let summary = crate::runtime::load_installed(&mut set, &runtime.db(), &runtime.plugins_dir);
     *runtime.plugin_loads.lock() = summary;
 
     let value = runtime.plugins().expect("plugins");
@@ -571,7 +571,7 @@ fn the_report_names_a_plugin_it_could_not_load() {
     install(&runtime, "@acme/absent", 1, 1);
 
     let (mut set, _backend) = loader();
-    let summary = crate::runtime::load_installed(&mut set, &runtime.db, &runtime.plugins_dir);
+    let summary = crate::runtime::load_installed(&mut set, &runtime.db(), &runtime.plugins_dir);
     assert_eq!(summary.refused.len(), 1, "the fixture has a row and no directory");
     *runtime.plugin_loads.lock() = summary;
 
@@ -774,7 +774,7 @@ fn answering_a_prompt_records_the_pairing_and_releases_the_waiting_link() {
 
     // And the record is durable, so the next link from that device is trusted rather than asked to pair again.
     let state = crate::pairing::state_for(
-        &runtime.db,
+        &runtime.db(),
         dialer,
         synra_protocol::handshake::LinkToken::from_hex(
             delivered.issued_token().expect("an acceptance issues a token"),
@@ -812,7 +812,7 @@ fn declining_a_prompt_writes_nothing_and_releases_the_link() {
 
     let delivered = waiter.wait(std::time::Duration::from_millis(50));
     assert!(!delivered.accepted);
-    assert!(runtime.db.paired_devices().expect("reads").is_empty(), "a refusal records nothing");
+    assert!(runtime.db().paired_devices().expect("reads").is_empty(), "a refusal records nothing");
 }
 
 #[test]

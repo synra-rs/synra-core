@@ -349,6 +349,30 @@ pub fn run(
     on_demand: &Arc<AtomicI64>,
     now_ms: impl Fn() -> i64 + Send + 'static,
 ) {
+    run_recording(service, host, on_demand, now_ms, |_| {});
+}
+
+/// [`run`], which hands every candidate it has just heard to a callback.
+///
+/// # Why a callback rather than a database
+///
+/// Because this crate knows nothing about storage — that is the kernel's rule, and a worker that wrote rows would make
+/// `cargo check` of this crate pull in a database for a loop that only ever listens on a socket. The caller owns the
+/// write, and gets to decide what "remembered" means: the daemon writes to `devices_seen`, a test collects into a vector,
+/// and neither makes the other possible.
+///
+/// # Why the callback is called with a slice and not per candidate
+///
+/// Because it is called on every tick and the candidate list is usually empty. A signature that took one candidate would
+/// have to be called in a loop to decide there was nothing to say, and a caller that forgot the loop would simply never
+/// be told anything.
+pub fn run_recording(
+    service: &Arc<Mutex<DiscoveryService>>,
+    host: &Arc<Mutex<Host>>,
+    on_demand: &Arc<AtomicI64>,
+    now_ms: impl Fn() -> i64 + Send + 'static,
+    heard: impl Fn(&[crate::discovery::Candidate]) + Send + 'static,
+) {
     loop {
         let now = Instant::now();
         let wall = now_ms();
@@ -362,6 +386,18 @@ pub fn run(
             let mut host = host.lock();
             service.tick(&mut host, wall, now, deadline)
         };
+
+        // ★ The callback runs with **no lock held**. It is a caller-supplied closure that will usually write to a
+        // database, and nesting a third lock inside this loop — which the daemon's control socket also takes — is how a
+        // worker ends up blocking a device listing behind a write.
+        //
+        // Gated on `absorbed` being non-empty rather than called every tick, so a caller that writes a row per candidate
+        // is not paying for a write on every poll of an idle network.
+        if !ticked.absorbed.is_empty() {
+            let candidates: Vec<crate::discovery::Candidate> =
+                host.lock().usable(wall).into_iter().cloned().collect();
+            heard(&candidates);
+        }
 
         let service = service.lock();
         for (address, result) in service.answer_pending(&ticked) {

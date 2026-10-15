@@ -57,7 +57,14 @@ pub struct Runtime {
     /// Because the commands that read it are the runtime's, and a caller that had to pass it in would be one that could
     /// pass a different database from the one the daemon claimed. The claim is about the *data directory*, and the
     /// database is derived from it — so holding both here is what keeps them from being able to disagree.
-    pub db: synra_store::SynraDb,
+    /// The database, behind a lock.
+    ///
+    /// ★ `Mutex`, and this is not a style choice.
+    ///
+    /// `rusqlite::Connection` is `Send` but **not** `Sync`, so a bare `SynraDb` cannot be reached from the discovery
+    /// thread that records what it hears. Wrapping it makes the handle shareable, and the serialisation is the point: one
+    /// connection means the ordering of writes is a property of this code rather than of a lock.
+    pub db: std::sync::Arc<parking_lot::Mutex<synra_store::SynraDb>>,
 
     /// The pairing prompts waiting for a user, shared with the transport threads.
     ///
@@ -87,6 +94,18 @@ pub struct Runtime {
     /// Held beside the set rather than recomputed, because a report that reloaded every plugin to find out how many were
     /// loaded would be a report that compiles artifacts as a side effect of being asked a question.
     pub plugin_loads: std::sync::Arc<parking_lot::Mutex<crate::runtime::plugins::LoadedSummary>>,
+}
+
+impl Runtime {
+    /// The database, locked for as long as the caller needs it.
+    ///
+    /// A method rather than a public field so every call site has to say it is holding the lock. A field would let one
+    /// command lock it in a function and use it in another, and the guard's scope is exactly what decides whether the
+    /// discovery thread's write waits behind a device listing.
+    #[must_use]
+    pub fn db(&self) -> parking_lot::MutexGuard<'_, synra_store::SynraDb> {
+        self.db.lock()
+    }
 }
 
 impl std::fmt::Debug for Runtime {

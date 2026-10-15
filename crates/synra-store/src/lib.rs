@@ -43,7 +43,7 @@ pub mod secrets;
 
 pub use db::{Health, Migration, MigrationOutcome, SchemaError, SchemaState, latest_version};
 pub use records::{
-    ConfigRow, DeviceRow, IdentityRow, PluginGrantRow, PluginRow, RowError, SeenDeviceRow, columns,
+    ConfigRow, DeviceRow, IdentityRow, PluginGrantRow, PluginRow, RowError, Seen, SeenDeviceRow, columns,
 };
 // `Paired` is here because `SynraDb::pair_device` takes one: a public method whose argument type is not exported is
 // a method no caller outside this crate can call at all.

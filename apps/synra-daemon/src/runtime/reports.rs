@@ -20,8 +20,8 @@ impl Runtime {
     pub(super) fn status_value(&self, now_ms: u64) -> serde_json::Value {
         // ★ The schema version and the row counts are read rather than described. A status that said "database: ok"
         // without asking would be a status that cannot be wrong — and therefore one that cannot tell a user anything.
-        let schema = self.db.recorded_version().ok().flatten();
-        let counts = self.db.counts().ok().map(|rows| {
+        let schema = self.db().recorded_version().ok().flatten();
+        let counts = self.db().counts().ok().map(|rows| {
             rows.into_iter()
                 .map(|(table, count)| (table, serde_json::json!(count)))
                 .collect::<serde_json::Map<String, serde_json::Value>>()
@@ -64,7 +64,7 @@ impl Runtime {
         // The first version of this listed the directory, which answered a different question: a plugin whose directory
         // is there but whose row is not has never been installed by the kernel, and one whose row is there and whose
         // directory is gone has been removed from disk behind its back. Both are states a user needs to see.
-        let rows = self.db.plugins().map_err(|error| {
+        let rows = self.db().plugins().map_err(|error| {
             Refusal::new(ErrorCode::Internal, format!("could not read the plugins table: {error}"))
         })?;
 

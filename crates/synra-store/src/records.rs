@@ -162,6 +162,26 @@ pub struct DeviceNumbers {
     pub blocked: Option<i64>,
 }
 
+/// A sighting of a device this kernel has not paired with.
+///
+/// The write shape, as opposed to [`SeenDeviceRow`] which is what comes back out. Separate types because one is a claim
+/// made by something that heard an announcement and the other is a row the database produced — and a caller that could
+/// build a row by hand would be able to invent a `first_seen_ms` that predates the device.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Seen {
+    /// The device, as the announcement stated it.
+    pub device_id: String,
+    /// The name it announced.
+    pub display_name: String,
+    /// Its platform, as the string the column holds.
+    pub platform: String,
+    /// When it was heard.
+    pub seen_at_ms: i64,
+    /// Which path heard it, for a user who needs to know where a device is.
+    pub source: String,
+}
+
 /// A device the kernel has merely heard from.
 ///
 /// # Why this is a separate type from [`DeviceRow`]

@@ -170,6 +170,12 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
         Arc::new(parking_lot::Mutex::new(summary))
     };
 
+    // ★ Wrapped before the runtime is built, because two things need it and only one of them is the runtime.
+    //
+    // The discovery thread writes what it hears; the control socket reads it. Neither can reach the other, so the handle
+    // is shared rather than passed — and it is shared behind a lock because `rusqlite::Connection` is `Send` and not `Sync`.
+    let shared_db = Arc::new(parking_lot::Mutex::new(db));
+
     let runtime = Runtime {
         version: env!("CARGO_PKG_VERSION").to_owned(),
         data_dir: std::path::PathBuf::from(&plan.data_dir),
@@ -181,7 +187,7 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
         host: Arc::new(parking_lot::Mutex::new(host)),
         discovery: discovery.clone(),
         scan_until_ms: Arc::clone(&scan_until_ms),
-        db,
+        db: Arc::clone(&shared_db),
         pairing,
         plugins,
         plugin_loads,
@@ -221,11 +227,40 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
         let service = Arc::clone(discovery);
         let peers = Arc::clone(&runtime.host);
         let deadline = Arc::clone(&scan_until_ms);
+        // ★ Cloned into the thread because the closure outlives this function — it runs for the process's lifetime, and a
+        // borrowed `shared_db` would make that impossible to express.
+        let remembered = Arc::clone(&shared_db);
         // ★ The thread runs for the process's lifetime and is not joined. Nothing needs to end it early: the loop reads a
         // deadline that expires on its own, and the process is what stops it. There is no join handle to keep either —
         // dropping one detaches the thread, which is exactly what is wanted.
         std::thread::spawn(move || {
-            synra_core::worker::run(&service, &peers, &deadline, synra_store::sqlite::now_ms);
+            synra_core::worker::run_recording(
+                &service,
+                &peers,
+                &deadline,
+                synra_store::sqlite::now_ms,
+                // ★ What discovery heard is written down here, because before this nothing wrote `devices_seen` at all —
+                // the table existed, the reader existed, and every start of the app showed the same empty list.
+                move |candidates| {
+                    for candidate in candidates {
+                        let sighting = synra_store::Seen {
+                            device_id: candidate.device_id.to_string(),
+                            display_name: candidate.display_name.clone(),
+                            // The announcement's platform is an enum; the column is a string, and the enum's own name is
+                            // the string the device-card test compares against.
+                            platform: format!("{:?}", candidate.platform.unwrap_or(synra_protocol::session::PlatformKind::Desktop)),
+                            seen_at_ms: candidate.last_seen_ms,
+                            source: candidate.address.to_string(),
+                        };
+                        // Reported rather than retried: the next announcement refreshes the row anyway, and a failed write
+                        // is reported once rather than on every scan of the same device.
+                        let written = remembered.lock().record_seen_device(&sighting);
+                        if let Err(error) = written {
+                            eprintln!("synra-daemon: could not remember {}: {error}", sighting.device_id);
+                        }
+                    }
+                },
+            );
         });
     }
 
