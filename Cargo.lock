@@ -1794,6 +1794,7 @@ dependencies = [
  "synra-capability",
  "synra-control",
  "synra-core",
+ "synra-fetch",
  "synra-observe",
  "synra-platform",
  "synra-plugin-api",

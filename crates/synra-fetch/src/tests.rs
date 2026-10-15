@@ -298,8 +298,17 @@ fn a_plugin_may_have_only_so_many_requests_in_flight() {
         std::thread::spawn(move || client.fetch(&get(&url)))
     };
 
-    // Give the first request time to take the slot.
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    // ★ Wait for **evidence** that the slot is held, rather than for a duration that is usually long enough.
+    //
+    // The server answering is the proof: the slot is taken before the request is sent, so a request that arrived means the
+    // count is 1. This was a fixed 200 ms sleep, and it passed alone and failed in the workspace run — where the machine is
+    // compiling and testing everything at once and 200 ms is not a promise. A sleep that has to be long enough is a test
+    // whose result depends on the load, which is the flakiness that teaches people to re-run rather than to read.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while server.requests() == 0 {
+        assert!(std::time::Instant::now() < deadline, "the first request never reached the server");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
 
     let refused = client.fetch(&get(&server.url("/second"))).expect_err("the slot is taken");
     assert_eq!(refused.code, ErrorCode::RateLimited, "{refused}");
