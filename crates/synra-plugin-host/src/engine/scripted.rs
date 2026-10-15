@@ -25,8 +25,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use parking_lot::Mutex;
 
 use super::types::{
-    Backend, BackendError, BackendKind, CallBudget, CallOutcome, CompiledArtifact, Enforcement, PluginInstance,
-    WasmBackend, Work,
+    Backend, BackendError, BackendKind, CallBudget, CallOutcome, CompiledArtifact, Enforcement,
+    PluginInstance, WasmBackend, Work,
 };
 
 /// Why a scripted backend would not compile an artifact.
@@ -103,6 +103,16 @@ pub struct ScriptedBackend {
 struct Shared {
     /// The answers, by `interface.function`, e.g. `share.can-handle`.
     answers: Mutex<std::collections::HashMap<String, Scripted>>,
+    /// The answers for one plugin, by `interface.function` — the exception, not the rule.
+    ///
+    /// # Why a per-plugin table exists at all
+    ///
+    /// Because one table cannot express the property that matters most on a matching pass: *one plugin failing must not
+    /// cost the user the others.* With a single table every plugin answers the same thing, so a test can only ever
+    /// prove that two plugins behave alike — and the bug this table lets a test catch is two plugins behaving differently
+    /// in the one way that hurts. See [`ScriptedBackend::script_for`].
+    per_plugin:
+        Mutex<std::collections::HashMap<String, std::collections::HashMap<String, Scripted>>>,
     /// The answer for a call with no entry, which is `Ok("")` unless a caller says otherwise.
     fallback: Mutex<Scripted>,
     /// How many calls have been made, across every instance.
@@ -116,11 +126,32 @@ impl ScriptedBackend {
         Self {
             shared: Arc::new(Shared {
                 answers: Mutex::new(std::collections::HashMap::new()),
+                per_plugin: Mutex::new(std::collections::HashMap::new()),
                 fallback: Mutex::new(Scripted::Ok(String::new())),
                 calls: AtomicU64::new(0),
             }),
             version: "scripted-1".to_owned(),
         }
+    }
+
+    /// Sets what one plugin's copy of one entry point answers.
+    ///
+    /// # Why this exists
+    ///
+    /// Because the shared table is keyed by entry point alone, so every plugin answers the same thing and a test cannot
+    /// set up the case where one plugin traps while another works. That case is the one a matching pass most needs to
+    /// be checked against: a share offered to nine plugins must still reach the user when one of them is broken, and
+    /// with one table there is no way to write that test at all.
+    ///
+    /// It shadows [`ScriptedBackend::script`] for this plugin and nothing else.
+    pub fn script_for(&self, plugin_id: &str, work: &Work, answer: Scripted) {
+        let _ = self
+            .shared
+            .per_plugin
+            .lock()
+            .entry(plugin_id.to_owned())
+            .or_default()
+            .insert(work.to_string(), answer);
     }
 
     /// A backend with one answer already in it.
@@ -149,9 +180,26 @@ impl ScriptedBackend {
 }
 
 impl Shared {
-    /// What an entry point answers.
-    fn answer_for(&self, work: &Work) -> Scripted {
-        let found = self.answers.lock().get(&work.to_string()).cloned();
+    /// What an entry point answers for one plugin.
+    ///
+    /// # The order of the three lookups
+    ///
+    /// Per-plugin first, then the shared table, then the fallback. Per-plugin first because it is the most specific
+    /// answer and the only one that can make two plugins differ; the shared table exists so a test that cares about one
+    /// plugin does not have to repeat the id for every entry point it scripts.
+    fn answer_for(&self, plugin_id: &str, work: &Work) -> Scripted {
+        let key = work.to_string();
+        let per_plugin = {
+            let tables = self.per_plugin.lock();
+            tables
+                .get(plugin_id)
+                .and_then(|table| table.get(&key))
+                .cloned()
+        };
+        if let Some(answer) = per_plugin {
+            return answer;
+        }
+        let found = self.answers.lock().get(&key).cloned();
         found.unwrap_or_else(|| self.fallback.lock().clone())
     }
 }
@@ -166,6 +214,7 @@ impl Default for ScriptedBackend {
 #[derive(Debug)]
 pub struct ScriptedArtifact {
     digest: String,
+    plugin_id: String,
 }
 
 impl CompiledArtifact for ScriptedArtifact {
@@ -186,6 +235,8 @@ pub struct ScriptedInstance {
     host_calls: u64,
     /// The epoch of the most recent call's deadline, which is what a test reads to prove one was armed.
     deadline_epoch: Option<u64>,
+    /// Which plugin this instance belongs to, so per-plugin scripts are found.
+    plugin_id: String,
 }
 
 impl PluginInstance for ScriptedInstance {
@@ -212,7 +263,7 @@ impl PluginInstance for ScriptedInstance {
         // would also satisfy an untouched instance.
         self.memory = self.memory.saturating_add(4096);
 
-        Ok(match self.shared.answer_for(work) {
+        Ok(match self.shared.answer_for(&self.plugin_id, work) {
             Scripted::Ok(payload) => CallOutcome::Ok(payload),
             Scripted::Failed { code, message } => CallOutcome::Failed { code, message },
             Scripted::Trap { detail } => CallOutcome::Trap { detail },
@@ -243,25 +294,41 @@ impl WasmBackend for ScriptedBackend {
         // Honest about itself: it has no engine, so it has no instruction counting, no interruption and no
         // precompilation. The one thing it can do is report a memory limit it was given — which is what `memory: true`
         // means here, and why the flag is about the *budget* being answerable rather than about a real linear memory.
-        Enforcement { fuel: false, epoch: false, memory: true, precompile: false }
+        Enforcement {
+            fuel: false,
+            epoch: false,
+            memory: true,
+            precompile: false,
+        }
     }
 
     fn engine_version(&self) -> &str {
         &self.version
     }
 
-    fn compile(&self, wasm: &[u8], plugin_id: &str) -> Result<Box<dyn CompiledArtifact>, BackendError> {
+    fn compile(
+        &self,
+        wasm: &[u8],
+        plugin_id: &str,
+    ) -> Result<Box<dyn CompiledArtifact>, BackendError> {
         if wasm.is_empty() {
-            return Err(BackendError::Compile { detail: ScriptError::Empty.to_string() });
+            return Err(BackendError::Compile {
+                detail: ScriptError::Empty.to_string(),
+            });
         }
         if !wasm.starts_with(b"\0asm") {
-            return Err(BackendError::Compile { detail: ScriptError::NotWasm.to_string() });
+            return Err(BackendError::Compile {
+                detail: ScriptError::NotWasm.to_string(),
+            });
         }
         // The digest mixes the plugin id with the bytes, so two plugins given the same fixture artifact do not share a
         // cache entry — which would be a real bug in a cache keyed on bytes alone if a build ever shipped one artifact
         // for several plugins.
         let digest = digest_of(plugin_id, wasm);
-        Ok(Box::new(ScriptedArtifact { digest }))
+        Ok(Box::new(ScriptedArtifact {
+            digest,
+            plugin_id: plugin_id.to_owned(),
+        }))
     }
 
     fn instantiate(
@@ -271,16 +338,32 @@ impl WasmBackend for ScriptedBackend {
     ) -> Result<Box<dyn PluginInstance>, BackendError> {
         if compiled.kind() != BackendKind::Scripted {
             return Err(BackendError::Engine {
-                detail: format!("a {} artefact cannot be run by the {} backend", compiled.kind(), self.kind()),
+                detail: format!(
+                    "a {} artefact cannot be run by the {} backend",
+                    compiled.kind(),
+                    self.kind()
+                ),
             });
         }
         // The table an instance reads is this backend's, found through the handle. A mistake here would be a call that
         // quietly succeeds against an empty table, which is the failure a test can least afford — so the fallback is
         // this backend's own table rather than a fresh one.
-        let shared = backend
-            .concrete::<Self>()
-            .map_or_else(|| Arc::clone(&self.shared), |concrete| Arc::clone(&concrete.shared));
-        Ok(Box::new(ScriptedInstance { shared, memory: 0, host_calls: 0, deadline_epoch: None }))
+        let shared = backend.concrete::<Self>().map_or_else(
+            || Arc::clone(&self.shared),
+            |concrete| Arc::clone(&concrete.shared),
+        );
+        // Which plugin this instance is for, so a per-plugin script can be found. Taken from the artifact rather than
+        // from `&self` because a backend holds every plugin's scripts and only the artifact says which one this is.
+        let plugin_id = (compiled as &dyn std::any::Any)
+            .downcast_ref::<ScriptedArtifact>()
+            .map_or_else(String::new, |artifact| artifact.plugin_id.clone());
+        Ok(Box::new(ScriptedInstance {
+            shared,
+            plugin_id,
+            memory: 0,
+            host_calls: 0,
+            deadline_epoch: None,
+        }))
     }
 }
 
@@ -310,11 +393,15 @@ mod tests {
     use super::*;
 
     fn work() -> Work {
-        Work::CanHandle { item_json: "{}".to_owned() }
+        Work::CanHandle {
+            item_json: "{}".to_owned(),
+        }
     }
 
     fn compiled(backend: &ScriptedBackend) -> Box<dyn CompiledArtifact> {
-        backend.compile(b"\0asm\x01\0\0\0", "@acme/hello").expect("compiles")
+        backend
+            .compile(b"\0asm\x01\0\0\0", "@acme/hello")
+            .expect("compiles")
     }
 
     /// The handle an instance is made from.
@@ -346,7 +433,10 @@ mod tests {
             // backend's job is the host's own refusal, which is the header — the engine's is its own test's.
             &b"\0as"[..],
         ] {
-            let refused = matches!(backend.compile(bytes, "p"), Err(BackendError::Compile { .. }));
+            let refused = matches!(
+                backend.compile(bytes, "p"),
+                Err(BackendError::Compile { .. })
+            );
             assert!(refused, "{bytes:?} was accepted");
         }
     }
@@ -356,24 +446,37 @@ mod tests {
         // The shape matters: it is a cache key part, and the safety check on a key insists on hex.
         let digest = digest_of("@acme/hello", b"\0asm\x01\0\0\0");
         assert_eq!(digest.len(), 64);
-        assert!(digest.chars().all(|character| character.is_ascii_hexdigit()));
+        assert!(
+            digest
+                .chars()
+                .all(|character| character.is_ascii_hexdigit())
+        );
     }
 
     #[test]
     fn two_plugins_sharing_an_artifact_do_not_share_a_digest() {
         let backend = ScriptedBackend::new();
-        let first = backend.compile(b"\0asm\x01\0\0\0", "@acme/one").expect("compiles");
-        let second = backend.compile(b"\0asm\x01\0\0\0", "@acme/two").expect("compiles");
+        let first = backend
+            .compile(b"\0asm\x01\0\0\0", "@acme/one")
+            .expect("compiles");
+        let second = backend
+            .compile(b"\0asm\x01\0\0\0", "@acme/two")
+            .expect("compiles");
         assert_ne!(first.digest(), second.digest());
     }
 
     #[test]
     fn a_scripted_answer_reaches_the_caller() {
-        let backend = ScriptedBackend::answering(&work(), Scripted::Ok("{\"handled\":true}".to_owned()));
+        let backend =
+            ScriptedBackend::answering(&work(), Scripted::Ok("{\"handled\":true}".to_owned()));
         let artifact = compiled(&backend);
-        let mut instance = handle(&backend).instantiate(artifact.as_ref()).expect("an instance");
+        let mut instance = handle(&backend)
+            .instantiate(artifact.as_ref())
+            .expect("an instance");
 
-        let outcome = instance.call(&work(), CallBudget::unlimited()).expect("a call");
+        let outcome = instance
+            .call(&work(), CallBudget::unlimited())
+            .expect("a call");
         assert_eq!(outcome.payload(), Some("{\"handled\":true}"));
         assert!(outcome.is_ok());
         assert!(!outcome.is_misbehaviour());
@@ -384,12 +487,19 @@ mod tests {
         // ★ The distinction the health model is built on: a plugin that reports a failure is working.
         let backend = ScriptedBackend::answering(
             &work(),
-            Scripted::Failed { code: "device_offline".to_owned(), message: "the peer went away".to_owned() },
+            Scripted::Failed {
+                code: "device_offline".to_owned(),
+                message: "the peer went away".to_owned(),
+            },
         );
         let artifact = compiled(&backend);
-        let mut instance = handle(&backend).instantiate(artifact.as_ref()).expect("an instance");
+        let mut instance = handle(&backend)
+            .instantiate(artifact.as_ref())
+            .expect("an instance");
 
-        let outcome = instance.call(&work(), CallBudget::unlimited()).expect("a call");
+        let outcome = instance
+            .call(&work(), CallBudget::unlimited())
+            .expect("a call");
         assert!(!outcome.is_ok());
         assert!(!outcome.is_misbehaviour(), "{outcome:?}");
         assert_eq!(outcome.as_str(), "failed");
@@ -397,11 +507,20 @@ mod tests {
 
     #[test]
     fn a_trap_is_misbehaviour() {
-        let backend = ScriptedBackend::answering(&work(), Scripted::Trap { detail: "unreachable".to_owned() });
+        let backend = ScriptedBackend::answering(
+            &work(),
+            Scripted::Trap {
+                detail: "unreachable".to_owned(),
+            },
+        );
         let artifact = compiled(&backend);
-        let mut instance = handle(&backend).instantiate(artifact.as_ref()).expect("an instance");
+        let mut instance = handle(&backend)
+            .instantiate(artifact.as_ref())
+            .expect("an instance");
 
-        let outcome = instance.call(&work(), CallBudget::unlimited()).expect("a call");
+        let outcome = instance
+            .call(&work(), CallBudget::unlimited())
+            .expect("a call");
         assert!(outcome.is_misbehaviour());
         assert_eq!(outcome.as_str(), "trap");
     }
@@ -410,7 +529,9 @@ mod tests {
     fn a_timeout_reports_the_budget_it_was_given() {
         let backend = ScriptedBackend::answering(&work(), Scripted::Timeout);
         let artifact = compiled(&backend);
-        let mut instance = handle(&backend).instantiate(artifact.as_ref()).expect("an instance");
+        let mut instance = handle(&backend)
+            .instantiate(artifact.as_ref())
+            .expect("an instance");
 
         let budget = CallBudget {
             fuel: Some(1),
@@ -418,7 +539,12 @@ mod tests {
             max_memory_growth: Some(1024),
         };
         let outcome = instance.call(&work(), budget).expect("a call");
-        assert_eq!(outcome, CallOutcome::Timeout { after: std::time::Duration::from_millis(250) });
+        assert_eq!(
+            outcome,
+            CallOutcome::Timeout {
+                after: std::time::Duration::from_millis(250)
+            }
+        );
     }
 
     #[test]
@@ -427,9 +553,16 @@ mod tests {
         // of a timeout would be tested by an outcome nothing would ever produce in a running kernel.
         let backend = ScriptedBackend::answering(&work(), Scripted::Timeout);
         let artifact = compiled(&backend);
-        let mut instance = handle(&backend).instantiate(artifact.as_ref()).expect("an instance");
+        let mut instance = handle(&backend)
+            .instantiate(artifact.as_ref())
+            .expect("an instance");
 
-        assert!(instance.call(&work(), CallBudget::unlimited()).expect("a call").is_ok());
+        assert!(
+            instance
+                .call(&work(), CallBudget::unlimited())
+                .expect("a call")
+                .is_ok()
+        );
     }
 
     #[test]
@@ -446,13 +579,19 @@ mod tests {
             timeout: Some(std::time::Duration::from_millis(1)),
             max_memory_growth: None,
         };
-        assert_eq!(enforcement.first_gap(&bounded), Some("an instruction budget"));
+        assert_eq!(
+            enforcement.first_gap(&bounded),
+            Some("an instruction budget")
+        );
     }
 
     #[test]
     fn a_full_engine_has_no_gap() {
         let enforcement = Enforcement::full();
-        assert_eq!(enforcement.first_gap(&CallBudget::from_quota(&crate::quota::Quota::default())), None);
+        assert_eq!(
+            enforcement.first_gap(&CallBudget::from_quota(&crate::quota::Quota::default())),
+            None
+        );
     }
 
     #[test]

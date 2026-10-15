@@ -27,6 +27,8 @@
 //! * [`intent`] — the orchestration the product exists for: what a user asked for, which plugins answered, whether a
 //!   person is interrupted, and what happened — with the deadline, the idempotency key and the choice between
 //!   automatic and asking all decided by a value rather than by a timer.
+//! * [`dispatch`] — the seam between [`intent`] and the plugins that answer it: which plugins a kernel can ask, and one
+//!   matching pass that turns their answers into candidates.
 //!
 //! # What is deliberately not here
 //!
@@ -53,6 +55,7 @@ pub mod admission;
 pub mod bus;
 pub mod config;
 pub mod discovery;
+pub mod dispatch;
 pub mod host;
 pub mod identity;
 pub mod intent;
