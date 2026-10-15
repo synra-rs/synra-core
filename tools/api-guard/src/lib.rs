@@ -145,6 +145,11 @@ pub const CRATES: &[(&str, Tier)] = &[
     ("synra-ipc", Tier::Internal),
     ("synra-testkit", Tier::Internal),
     ("synra-testkit-alloc", Tier::Internal),
+    // ★ A host-side crate rather than a kernel one: it is the HTTP client the `network-fetch` capability needs, and
+    // it is deliberately outside the kernel's dependency graph so TLS does not reach Android (see its `Cargo.toml`).
+    // `Internal` because nothing outside this workspace compiles against it yet — a plugin author talks to
+    // `synra-plugin-api`, not to this — and promoting a tier later breaks no one while demoting one does.
+    ("synra-fetch", Tier::Internal),
     // ★ The two that the previous check could not see.
     //
     // `every_crate_in_the_workspace_has_a_tier` asserted `CRATES.len() >= 13` and these are the fourteenth and

@@ -11,7 +11,7 @@ it. Everything here is in the workspace's `crates/`, plus the two hosts and the 
 | --- | --- | --- | --- | --- |
 | **Stable** | `synra-protocol`, `synra-capability`, `synra-plugin-api` | SemVer. A breaking change needs a major version, an ADR, and a migration note. | yes | the rules below, and `api-guard` |
 | **Semi-stable** | `synra-net`, `synra-store`, `synra-core`, `synra-plugin-host` | SemVer. A **trait** may gain a method in a minor version if that method has a default. | yes | the rules below, and `api-guard` |
-| **Internal** | `synra-observe`, `synra-platform`, `synra-plugin-ui`, `synra-ipc`, `synra-control`, `synra-plugin-sdk`, `synra-testkit`*, `synra-testkit-alloc`*, `wit-codegen`, `synra-plugin-cli`, `synra-cli`, `synra-daemon` | No promise. Anything may change in any version. | partly | nothing — and that is the point |
+| **Internal** | `synra-observe`, `synra-platform`, `synra-plugin-ui`, `synra-ipc`, `synra-control`, `synra-plugin-sdk`, `synra-testkit`*, `synra-testkit-alloc`*, `synra-fetch`, `wit-codegen`, `synra-plugin-cli`, `synra-cli`, `synra-daemon` | No promise. Anything may change in any version. | partly | nothing — and that is the point |
 
 \* `synra-testkit` and `synra-testkit-alloc` set `publish = false`: a fixture's API changes whenever a test needs it,
 and a published crate's API is a promise.

@@ -1,0 +1,29 @@
+[package]
+name = "synra-fetch"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+# ★ A host-side crate, and deliberately not part of the kernel's graph.
+#
+# `network-fetch` is the one capability that reaches the public internet on a user's behalf, and it needs a TLS stack. Put
+# in `synra-net` it would violate that crate's own statement that it handles "two devices, once a socket exists" and
+# performs no IO; put in `synra-core` it would drag `rustls` and a crypto backend into the dependency graph of a crate that
+# `matrix` cross-compiles for Android. So it is here: a crate the **hosts** depend on, and the kernel does not.
+[dependencies]
+synra-core = { path = "../synra-core" }
+synra-protocol = { path = "../synra-protocol" }
+
+ureq = { version = "3", default-features = false, features = ["rustls", "gzip"] }
+
+serde.workspace = true
+serde_json.workspace = true
+parking_lot.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+synra-testkit = { path = "../synra-testkit" }
