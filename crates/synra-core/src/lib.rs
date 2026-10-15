@@ -64,6 +64,7 @@ pub mod kernel;
 pub mod link;
 pub mod listener;
 pub mod messaging;
+pub mod network;
 pub mod pairing;
 pub mod peer;
 pub mod plugin_sync;
