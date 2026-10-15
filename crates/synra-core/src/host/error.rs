@@ -71,4 +71,17 @@ pub enum HostError {
         /// Which device.
         device_id: DeviceId,
     },
+
+    /// A name cannot be announced as this device's name.
+    ///
+    /// # Why the name is echoed back shortened
+    ///
+    /// Because this is the message a user reads when a rename was refused, and a name they typed can be four hundred
+    /// characters of an emoji run — which is both unreadable in a log and a way to write an unbounded line somewhere
+    /// else. The full name is in the identity the caller already holds.
+    #[error("{name:?} is not a name this device will announce")]
+    Unnameable {
+        /// Enough of the name to recognise it.
+        name: String,
+    },
 }

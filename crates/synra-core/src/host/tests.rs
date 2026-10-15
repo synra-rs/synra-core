@@ -620,3 +620,50 @@ fn a_table_with_a_chosen_lifetime_is_what_a_test_needs() {
     let table = DiscoveryTable::with_ttl(device(A), std::time::Duration::from_millis(10));
     assert_eq!(table.ttl(), std::time::Duration::from_millis(10));
 }
+
+// ── Renaming ───────────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn a_rename_reaches_the_name_that_goes_into_a_handshake() {
+    let (mut host, _db) = host(A, "Old name");
+    host.rename_self("Kitchen tablet").expect("a rename");
+
+    // Both copies, because the fault this method exists to prevent is one copy being updated and the other not — and
+    // asserting on only the visible one is how that fault gets reintroduced.
+    assert_eq!(host.identity().display_name, "Kitchen tablet", "the stored identity");
+    assert_eq!(host.announced_name(), "Kitchen tablet", "the announced name");
+}
+
+#[test]
+fn a_refused_rename_leaves_both_copies_untouched() {
+    let (mut host, _db) = host(A, "Old name");
+    let error = host.rename_self("   ").expect_err("a blank name");
+    assert!(matches!(error, HostError::Unnameable { .. }));
+    assert_eq!(host.identity().display_name, "Old name", "the stored identity");
+    assert_eq!(host.announced_name(), "Old name", "the announced name");
+}
+
+#[test]
+fn a_name_with_a_rejected_shape_changes_nothing() {
+    let (mut host, _db) = host(A, "Old name");
+    for name in ["", "***", " padded "] {
+        assert!(host.rename_self(name).is_err(), "{name:?} is not a name");
+    }
+    assert_eq!(host.announced_name(), "Old name", "nothing was half-applied");
+}
+
+#[test]
+fn the_refusal_echoes_only_enough_of_the_name_to_recognise_it() {
+    // A user can paste four hundred characters of emoji; a log line that carries all of it is a problem of its own.
+    let long = "🎉".repeat(400);
+    let error = host(A, "Old name").0.rename_self(&long).expect_err("not a name");
+    let echoed = match error {
+        HostError::Unnameable { name } => name,
+        other => panic!("expected a refusal, got {other}"),
+    };
+    assert!(
+        echoed.chars().count() <= 24,
+        "the echo is {} characters, not a bounded prefix",
+        echoed.chars().count()
+    );
+}

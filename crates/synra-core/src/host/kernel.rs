@@ -88,6 +88,41 @@ impl Host {
         self.identity.device_id
     }
 
+    /// What this device announces as its name.
+    ///
+    /// Read through the host rather than off the identity because the host holds its own copy: a caller that reads
+    /// `identity.display_name` after a rename has proved nothing about the name that goes out on the wire.
+    #[must_use]
+    pub fn announced_name(&self) -> &str {
+        &self.local.display_name
+    }
+
+    /// Applies a rename to every copy this host announces.
+    ///
+    /// # Why this exists rather than a setter the caller reaches for
+    ///
+    /// Because the host holds the name twice — in [`Identity`] and in [`LocalPeer`] — and the second is the one that
+    /// goes into every handshake. A rename that updates only the first leaves two devices that disagree about each
+    /// other's name until something restarts, which is the kind of fault that gets reported as "it only fixes itself
+    /// when I reopen the app".
+    ///
+    /// # Errors
+    ///
+    /// [`HostError::Unchanged`] never — the method succeeds — but the name is validated here rather than at the call
+    /// site so that a host cannot be made to announce a name that [`Identity::rename`] would have refused. Returns
+    /// `HostError` so a future invariant (a name that a peer's UI cannot render, say) has somewhere to go without
+    /// changing every caller's signature.
+    pub fn rename_self(&mut self, name: &str) -> Result<(), HostError> {
+        if !name.chars().any(char::is_alphanumeric) || name.trim() != name || name.is_empty() {
+            return Err(HostError::Unnameable {
+                name: name.chars().take(24).collect(),
+            });
+        }
+        self.identity.display_name = name.to_owned();
+        self.local.display_name = name.to_owned();
+        Ok(())
+    }
+
     /// What this device announces to peers.
     #[must_use]
     pub const fn local_peer(&self) -> &LocalPeer {
