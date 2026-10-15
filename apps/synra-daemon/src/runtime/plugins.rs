@@ -101,17 +101,46 @@ impl LoadedSummary {
 /// answers it lives in [`synra_plugin_host::BackendKind::default_for`]. A daemon is a [`synra_plugin_host::HostKind::Headless`]
 /// host, so asking is both shorter and harder to get wrong than naming a variant.
 pub fn build_set(
-    db: std::sync::Arc<parking_lot::Mutex<synra_store::SynraDb>>,
+    db: &std::sync::Arc<parking_lot::Mutex<synra_store::SynraDb>>,
 ) -> Result<PluginSet, BackendError> {
     let kind = synra_plugin_host::BackendKind::default_for(synra_plugin_host::HostKind::Headless);
     let engine = synra_plugin_host::engine::WasmtimeBackend::new(kind)?;
     // ★ The host is what makes the capability gate run. Without one there is no session, and `linker::run` refuses
     // every host call — so the gate never ran and nothing was audited.
     let host = std::sync::Arc::new(crate::runtime::plugin_host::KernelHost::new(
-        db,
+        std::sync::Arc::clone(db),
         env!("CARGO_PKG_VERSION"),
     ));
-    Ok(PluginSet::new(Backend::new(std::sync::Arc::new(engine)), host))
+
+    // ★ And the audit gets its durable half, which it has never had.
+    //
+    // `plugin_audit` was created by the first migration and its own comment says what it is for: *"A ring in memory, but the
+    // durable part is what makes the interface's 'recent activity' survive a restart."* The ring was written — every call is
+    // drained into it — and nothing ever wrote the table, so the audit a user sees is the last ten thousand calls of **this
+    // run** and a restart empties it.
+    //
+    // The sink is a closure rather than a store handle on the set, because the kernel is what decides a call is auditable
+    // and the host is what has a database. A write that fails is logged and does not fail the call: the call has already
+    // happened, and refusing it afterwards would tell a plugin its action did not occur when it did — the same reasoning as
+    // `checkpoint_intent`.
+    let audit_db = std::sync::Arc::clone(db);
+    let sink = std::sync::Arc::new(move |entry: &synra_observe::audit::AuditEntry| {
+        let record = synra_store::records::AuditRecord {
+            plugin_id: entry.plugin.as_str().to_owned(),
+            capability: entry.capability.to_string(),
+            outcome: entry.outcome.as_str().to_owned(),
+            at_ms: entry.at_ms,
+            elapsed_ms: entry.elapsed_ms.map(|elapsed| i64::try_from(elapsed).unwrap_or(i64::MAX)),
+        };
+        if let Err(error) = audit_db.lock().record_audit(&record) {
+            tracing::error!(
+                plugin = entry.plugin.as_str(),
+                "an audit record could not be written down: {error}. The call it describes has already happened."
+            );
+        }
+    });
+
+    Ok(PluginSet::new(Backend::new(std::sync::Arc::new(engine)), host).with_audit_sink(sink))
 }
 
 /// The plugin directories on disk that the database does not know about, recorded as installed and switched off.

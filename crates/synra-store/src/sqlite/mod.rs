@@ -31,6 +31,7 @@ use rusqlite::{Connection, OpenFlags};
 use crate::db::{Health, PRAGMAS, latest_version};
 use crate::records::RowError;
 
+mod audit;
 mod devices;
 mod identities;
 mod intents;

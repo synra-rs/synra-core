@@ -467,6 +467,52 @@ fn one_trapping_plugin_does_not_cost_the_user_the_others() {
 ///
 /// So this test does not simulate the production consequence, and it does not claim to. In a real dispatch there is no
 /// harness around the call: the unwind would travel out of `run_on`, out of the matcher, and out of whatever kernel
+#[test]
+fn every_audited_call_reaches_the_sink_as_well_as_the_ring() {
+    // ★ The two halves of one trail, and the assertion that they are the same trail.
+    //
+    // The ring is what the interface reads *now*; the sink is what survives a restart. A record written to one and not the
+    // other is a trail that disagrees with itself the moment the process ends — so the two lists are compared rather than
+    // each being checked for plausibility.
+    //
+    // ★ Why this drives the drain rather than a scripted call.
+    //
+    // The first version of this test ran a matching pass over scripted plugins and asserted the sink had seen something. It
+    // had seen nothing, and was right to: `ScriptedBackend` answers from a table, so no guest runs, no host function is
+    // called, and nothing is audited. The entries a sink receives are produced by a **real** component calling a host
+    // function, which is what the `wasm-text` suite in `synra-plugin-host` drives. What is tested here is the seam this
+    // round added — `drain_audit`, which is the one place the two halves are written — with the entries put where a real
+    // call puts them.
+    let backend = ScriptedBackend::new();
+    let delivered = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let collected = std::sync::Arc::clone(&delivered);
+
+    let mut set =
+        PluginSet::new(Backend::new(std::sync::Arc::new(backend.clone())), host()).with_audit_sink(
+            std::sync::Arc::new(move |entry: &synra_observe::audit::AuditEntry| {
+                collected.lock().push(entry.clone());
+            }),
+        );
+    load(&mut set, &backend, "@synra/aaa-notes", Scripted::Ok(r#"{"handled":true}"#.to_owned()));
+
+    let plugin = id("@synra/aaa-notes");
+    let entry = synra_observe::audit::AuditEntry::new(
+        1_000,
+        plugin.clone(),
+        synra_capability::Capability::parse("device:list").expect("a capability"),
+        synra_observe::audit::AuditOutcome::Allowed,
+        Some(4),
+    );
+
+    assert!(
+        set.drain_record_for_test(&plugin, entry.clone()),
+        "the plugin has to be loaded for there to be a buffer to drain"
+    );
+
+    assert_eq!(*delivered.lock(), vec![entry.clone()], "the sink saw the record");
+    assert_eq!(set.audit(), vec![entry], "and so did the ring");
+}
+
 /// thread was running it — no `Trap` outcome, no audit record, and no prompt for the user. The test detects the
 /// regression; the difference it makes in production is larger than the difference it makes here.
 #[test]

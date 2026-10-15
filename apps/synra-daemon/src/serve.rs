@@ -36,6 +36,12 @@ const INTENT_RETENTION_MS: i64 = 24 * 60 * 60 * 1_000;
 /// An hour, as the design's `GcTask` says.
 const GC_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
+/// How long a recorded call is kept, in milliseconds.
+///
+/// Seven days, from the design's storage table (`17 §6`). Longer than a log's window because the record carries no content:
+/// a capability names a destination, never what was sent to it, which is the whole reason this is safe to keep.
+const AUDIT_RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1_000;
+
 /// How long the first sweep waits after start-up.
 ///
 /// ★ Not zero, and the reason is the design's own requirement that GC runs when the daemon is *idle*.
@@ -70,12 +76,21 @@ fn collect_loop(
     }
 
     while !supervisor.is_shutting_down() {
-        let (intents, devices) = crate::runtime::intents::sweep(&db.lock(), INTENT_RETENTION_MS);
-        if intents > 0 {
-            println!("collected {intents} finished intent(s)");
+        let collected = crate::runtime::intents::sweep(
+            &db.lock(),
+            crate::runtime::intents::Retention {
+                intents_ms: INTENT_RETENTION_MS,
+                audit_ms: AUDIT_RETENTION_MS,
+            },
+        );
+        if collected.intents > 0 {
+            println!("collected {} finished intent(s)", collected.intents);
         }
-        if devices > 0 {
-            println!("forgot {devices} device(s) heard from long ago");
+        if collected.devices > 0 {
+            println!("forgot {} device(s) heard from long ago", collected.devices);
+        }
+        if collected.audit > 0 {
+            println!("forgot {} recorded call(s)", collected.audit);
         }
         if !sleep_until_shutdown(supervisor, every) {
             return;
@@ -277,7 +292,7 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
     // This is the one dependency that can refuse. Everything else here is data the daemon reads; an engine that will not
     // start means this host cannot run a plugin at all, and continuing would produce a daemon whose status report says
     // no plugins are loaded for a reason that has nothing to do with what the user installed.
-    let plugins = match crate::runtime::build_set(Arc::clone(&shared_db)) {
+    let plugins = match crate::runtime::build_set(&shared_db) {
         Ok(set) => Arc::new(Mutex::new(set)),
         Err(error) => {
             eprintln!("synra-daemon: the plugin host could not start: {error}");

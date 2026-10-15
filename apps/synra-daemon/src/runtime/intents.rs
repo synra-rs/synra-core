@@ -149,8 +149,8 @@ pub(crate) const SEEN_DEVICE_CEILING: usize = 500;
 /// when that decision changes. The database is the only thing either needs, which is what lets this run on a thread that
 /// cannot hold the runtime.
 #[must_use]
-pub(crate) fn sweep(db: &synra_store::SynraDb, intent_retention_ms: i64) -> (usize, usize) {
-    let intents = collect(db, intent_retention_ms);
+pub(crate) fn sweep(db: &synra_store::SynraDb, retention: Retention) -> Collected {
+    let intents = collect(db, retention.intents_ms);
     let devices = match db.forget_seen_devices_beyond(SEEN_DEVICE_CEILING) {
         Ok(removed) => removed,
         Err(error) => {
@@ -158,7 +158,40 @@ pub(crate) fn sweep(db: &synra_store::SynraDb, intent_retention_ms: i64) -> (usi
             0
         }
     };
-    (intents, devices)
+    // ★ The third target, and the one that only became collectable when it got a writer: `plugin_audit` is filled by the
+    // sink `build_set` installs, and the design gives it seven days. A sweep written before that would have been collecting
+    // an empty table.
+    let audit = match db.forget_audit_before(store_now().saturating_sub(retention.audit_ms)) {
+        Ok(removed) => removed,
+        Err(error) => {
+            tracing::error!("audit records could not be collected: {error}");
+            0
+        }
+    };
+    Collected { intents, devices, audit }
+}
+
+/// How long each kind of record is kept.
+///
+/// A value rather than constants read inside the sweep, so a test can say "a day" without waiting one — the same reason the
+/// schedule is a parameter in `serve`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Retention {
+    /// How long a finished intent is kept.
+    pub(crate) intents_ms: i64,
+    /// How long a recorded call is kept.
+    pub(crate) audit_ms: i64,
+}
+
+/// What one sweep removed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Collected {
+    /// Finished intents past their retention.
+    pub(crate) intents: usize,
+    /// Devices heard from beyond the ceiling.
+    pub(crate) devices: usize,
+    /// Recorded calls past their retention.
+    pub(crate) audit: usize,
 }
 
 /// The retention sweep, over a database rather than a runtime.

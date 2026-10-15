@@ -241,7 +241,25 @@ pub struct PluginSet {
     /// The kernel already has a ring for this ([`synra_observe::audit::AuditRing`]); what it did not have was a writer,
     /// because the only path to one was `synra_core::Kernel::record_action`, and no host constructs that type.
     audit: synra_observe::audit::AuditRing,
+    /// Where a record goes besides the ring, when a host has somewhere to put it.
+    ///
+    /// ★ Why this is a callback rather than a store handle
+    ///
+    /// Because the kernel is what decides that a call is auditable, and the **host** is what has a database. `synra-core`
+    /// depends on neither `rusqlite` nor a path, so the only honest way to hand a record on is to be given somewhere to put
+    /// it — which is the same split as `decide` returning an envelope it cannot send and the daemon sending it.
+    ///
+    /// `None` is the ordinary state for a kernel with nowhere durable to write: a test, or a build whose store is not
+    /// open. The ring still fills, so the audit the interface shows is complete for this process either way.
+    audit_sink: Option<AuditSink>,
 }
+
+/// Where one audit record goes, besides the ring.
+///
+/// A boxed closure rather than a trait, because there is exactly one thing it can do — take a record — and a trait with one
+/// method would be a name for the same signature. `Send + Sync` because the set is behind a lock that callers on several
+/// threads take.
+pub type AuditSink = Arc<dyn Fn(&synra_observe::audit::AuditEntry) + Send + Sync>;
 
 impl fmt::Debug for PluginSet {
     /// Deliberately not derived.
@@ -274,6 +292,7 @@ impl PluginSet {
             loaded: HashMap::new(),
             host,
             audit: synra_observe::audit::AuditRing::new(),
+            audit_sink: None,
         }
     }
 
@@ -295,12 +314,30 @@ impl PluginSet {
         self.audit.refusals_for_plugin(id)
     }
 
+    /// Hands every record to a sink as well as to the ring.
+    ///
+    /// # Why the host installs one
+    ///
+    /// Because the ring is bounded (`synra_observe::audit::MEMORY_CAPACITY`) and lives in this process, so the audit a user
+    /// sees is the recent history **of this run** — and the migration that created `plugin_audit` says what the table is
+    /// for: *"the durable part is what makes the interface's 'recent activity' survive a restart."* A sink is how the two
+    /// are the same trail rather than two.
+    #[must_use]
+    pub fn with_audit_sink(mut self, sink: AuditSink) -> Self {
+        self.audit_sink = Some(sink);
+        self
+    }
+
     /// Moves whatever a plugin recorded during its last call into the ring.
     ///
     /// Called once per call rather than from inside the host call, because the entries are produced while the guest runs
     /// and the set is borrowed by the caller for the duration. Draining after the fact is also what makes the buffer
     /// bounded in practice: it holds one call's worth of entries, not a process's.
-    fn drain_audit(loaded: &mut Loaded, ring: &mut synra_observe::audit::AuditRing) {
+    fn drain_audit(
+        loaded: &mut Loaded,
+        ring: &mut synra_observe::audit::AuditRing,
+        sink: Option<&AuditSink>,
+    ) {
         let entries = {
             let mut buffered = loaded.authority.audit.lock();
             if buffered.is_empty() {
@@ -309,8 +346,43 @@ impl PluginSet {
             std::mem::take(&mut *buffered)
         };
         for entry in entries {
+            // ★ The sink is called **before** the record is moved into the ring, because the ring takes it by value. Both
+            // get the same record: the ring is what the interface reads now, and the sink is what survives a restart. A
+            // trail written to only one of them is a trail that disagrees with itself after a restart.
+            if let Some(sink) = sink {
+                sink(&entry);
+            }
             ring.record(entry);
         }
+    }
+
+    /// Feeds one record to the drain, the way a gated call does.
+    ///
+    /// # ★ Why this exists, and why it is `#[cfg(test)]`
+    ///
+    /// The entries a sink receives are produced by a **real** component calling a host function. The scripted backend these
+    /// tests use answers from a table, so no guest runs, no host function is called, and nothing is audited — which is why
+    /// the first version of the sink test asserted the sink had seen something and seen nothing. A test of this seam has to
+    /// put the record where a call puts it, and that is not an entry point production has any use for.
+    ///
+    /// # Returns
+    ///
+    /// `false` when no plugin by that name is loaded, so a caller cannot mistake "nothing happened" for "it was drained".
+    #[cfg(test)]
+    pub(crate) fn drain_record_for_test(
+        &mut self,
+        plugin: &PluginId,
+        entry: synra_observe::audit::AuditEntry,
+    ) -> bool {
+        // Destructured rather than reached through `self` three times: the drain needs the buffer, the ring and the sink at
+        // once, and borrowing them from `self` separately is what the compiler refuses.
+        let Self { loaded, audit, audit_sink, .. } = self;
+        let Some(loaded) = loaded.get_mut(plugin) else {
+            return false;
+        };
+        loaded.authority.audit.lock().push(entry);
+        Self::drain_audit(loaded, audit, audit_sink.as_ref());
+        true
     }
 
     /// The engine these plugins run on.
@@ -465,7 +537,7 @@ impl PluginSet {
         let _ = loaded.pool.release(handle, now_ms);
         // ★ Drained **after** the call, not inside it: the entries are produced while the guest runs, and the ring lives
         // behind the set that the caller is borrowing. Collecting here is also what keeps the buffer one call deep.
-        Self::drain_audit(loaded, &mut self.audit);
+        Self::drain_audit(loaded, &mut self.audit, self.audit_sink.as_ref());
         outcome
     }
 
