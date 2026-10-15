@@ -276,6 +276,39 @@ impl Kernel for Runtime {
         self.plugins_value()
     }
 
+    /// Turns a plugin on or off, and answers with the list as it now stands.
+    ///
+    /// """ + S + """ The write, which had no caller.
+    ///
+    /// `set_plugin_enabled` existed in the store, was tested, and **nothing in production called it** — so `synra plugin
+    /// enable` could not have worked even if the CLI had asked. Answering with the whole list rather than the one row is
+    /// deliberate: enabling a plugin changes what `plugins` reports, and a caller that had to ask twice would be one
+    /// showing a stale list until it did.
+    fn plugin_set_enabled(&self, plugin_id: &str, enabled: bool) -> Result<serde_json::Value, Refusal> {
+        let changed = self
+            .db
+            .lock()
+            .set_plugin_enabled(plugin_id, enabled, synra_store::sqlite::now_ms())
+            .map_err(|error| Refusal::new(ErrorCode::Internal, error.to_string()))?;
+        // """ + S + """ No such plugin is a refusal, and a plugin already in that state is not.
+        //
+        // `set_plugin_enabled` returns whether a row changed, so a second `enable` on an enabled plugin answers `false` —
+        // a success with nothing to do. Reporting that as "no such plugin" would make a caller retry a typo that is not
+        // there, and reporting a typo as a success would leave them believing it worked.
+        let installed = self
+            .db
+            .lock()
+            .plugin_is_installed(plugin_id)
+            .unwrap_or(false);
+        if !changed && !installed {
+            return Err(Refusal::new(
+                ErrorCode::InvalidArgument,
+                format!("no plugin is installed as `{plugin_id}`"),
+            ));
+        }
+        self.plugins_value()
+    }
+
     fn logs(&self, lines: usize, verbose: bool, trace: Option<&str>) -> Result<serde_json::Value, Refusal> {
         self.logs_value(lines, verbose, trace)
     }

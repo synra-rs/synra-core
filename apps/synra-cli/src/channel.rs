@@ -575,7 +575,7 @@ mod tests {
         assert_eq!(target.as_deref(), Some("0e5a1c34-0000-4000-8000-000000000001"));
     }
 
-    #[test]
+        #[test]
     fn the_two_commands_that_need_no_kernel_say_so() {
         // ★ `doctor` exists for the user whose kernel will not start, and `db` reads the database directly. Sending them
         // over the socket would make the first fail in exactly the case it exists for.

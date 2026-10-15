@@ -520,6 +520,10 @@ mod tests {
         ))
     }
 
+    fn plugin_set_enabled(&self, _plugin_id: &str, _enabled: bool) -> Result<serde_json::Value, Refusal> {
+        Err(Refusal::new(ErrorCode::Internal, "this kernel keeps no plugin records"))
+    }
+
     fn plugins(&self) -> Result<serde_json::Value, Refusal> {
             self.answer("plugins")
         }

@@ -126,6 +126,14 @@ pub trait Kernel {
     /// As [`Kernel::status`].
     fn plugins(&self) -> Result<serde_json::Value, Refusal>;
 
+    /// Turns a plugin on or off.
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal`] when no plugin has that identifier, which is a different answer from "it was already in that state"
+    /// — the second is a success, and a caller that could not tell them apart would report a typo as a no-op.
+    fn plugin_set_enabled(&self, plugin_id: &str, enabled: bool) -> Result<serde_json::Value, Refusal>;
+
     /// Hands the kernel something to route.
     ///
     /// # ★ Why this is the method that makes the kernel do its job
@@ -353,6 +361,9 @@ impl Server {
             Request::SendText { to, text } => kernel.send_text(to, text),
             Request::SendFile { to, path } => kernel.send_file(to, path),
             Request::Plugins => kernel.plugins(),
+            Request::PluginSetEnabled { plugin_id, enabled } => {
+                kernel.plugin_set_enabled(plugin_id, *enabled)
+            }
             Request::IntentDispatch { mime, text } => kernel.intent_dispatch(mime, text),
             Request::IntentSnapshot { intent } => kernel.intent_snapshot(intent),
             Request::IntentDecide { intent, plugin_id, target } => {
@@ -475,6 +486,10 @@ mod tests {
             ErrorCode::Internal,
             "this kernel does not route intents",
         ))
+    }
+
+    fn plugin_set_enabled(&self, _plugin_id: &str, _enabled: bool) -> Result<serde_json::Value, Refusal> {
+        Err(Refusal::new(ErrorCode::Internal, "this kernel keeps no plugin records"))
     }
 
     fn plugins(&self) -> Result<serde_json::Value, Refusal> {

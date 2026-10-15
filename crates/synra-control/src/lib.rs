@@ -176,6 +176,23 @@ pub enum Request {
     /// The installed plugins.
     Plugins,
 
+    /// Turn a plugin on or off.
+    ///
+    /// ★ Why this had to exist.
+    ///
+    /// Because `synra plugin enable` and `synra plugin disable` are in the documented command list, they parse, and they
+    /// did **nothing**: `plugin_request` answered `None` for every action but `list`, and a `None` from there means the
+    /// CLI reports "this command needs a running kernel, and none is reachable" — a sentence that is false, and that
+    /// sends a user to check a daemon which is running perfectly well.
+    ///
+    /// The database side already existed and was tested (`set_plugin_enabled`); what was missing was any way to reach it.
+    PluginSetEnabled {
+        /// Which plugin.
+        plugin_id: String,
+        /// Whether it should be usable.
+        enabled: bool,
+    },
+
     /// Hands the kernel something to route.
     ///
     /// # ★ Why this request had to exist
@@ -314,6 +331,7 @@ impl Request {
             Self::SendFile { .. } => "sendFile",
             Self::Plugins => "plugins",
                 Self::IntentDispatch { .. } => "intentDispatch",
+                Self::PluginSetEnabled { .. } => "pluginSetEnabled",
                 Self::IntentCancel { .. } => "intentCancel",
                 Self::IntentDecide { .. } => "intentDecide",
                 Self::IntentSnapshot { .. } => "intentSnapshot",

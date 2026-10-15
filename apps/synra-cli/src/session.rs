@@ -179,6 +179,14 @@ pub fn dispatch(cli: &Cli) -> CommandOutcome {
                     // "this command reads the database directly, which is not implemented yet". Three verbs a user can
                     // see and none of them worked. The store side already existed; what was missing was this branch.
                     Command::Db(args) => crate::db::outcome(cli.output, args),
+                    // ★ "No kernel is reachable" is true for a command that needs one and cannot find it, and false
+                    // for one that never asks. `plugin install` and `plugin remove` parse, appear in the documented list,
+                    // and have no request to send — so they get the answer that is about them.
+                    Command::Plugin(_) => CommandOutcome::Failed(
+                        "this command is not implemented: installing needs a registry client, and removing needs a \
+decision about the plugin's stored data that nothing has made yet"
+                            .to_owned(),
+                    ),
                     _ => CommandOutcome::Failed(
                         "this command needs a running kernel, and none is reachable".to_owned(),
                     ),
@@ -203,7 +211,7 @@ pub fn dispatch(cli: &Cli) -> CommandOutcome {
 /// answer the kernel can give about *whether* it changed. This build has no layer that can install a plugin, so the other
 /// actions are not asked for at all: a request whose answer would be a refusal is one this layer should not invent. The
 /// caller reports them for what they are.
-const fn plugin_request(command: &Command) -> Option<Request> {
+fn plugin_request(command: &Command) -> Option<Request> {
     use crate::args::PluginAction;
 
     let Command::Plugin(args) = command else {
@@ -211,7 +219,23 @@ const fn plugin_request(command: &Command) -> Option<Request> {
     };
     match &args.action {
         PluginAction::List { .. } => Some(Request::Plugins),
-        _ => None,
+        // ★ These two did nothing at all, and said so wrongly.
+        //
+        // Every action but `list` answered `None`, and a `None` from here makes the CLI report "this command needs a
+        // running kernel, and none is reachable" — a false sentence about a kernel that is running perfectly well, which
+        // sends the user to check the wrong thing.
+        PluginAction::Enable { plugin_id } => Some(Request::PluginSetEnabled {
+            plugin_id: plugin_id.clone(),
+            enabled: true,
+        }),
+        PluginAction::Disable { plugin_id } => Some(Request::PluginSetEnabled {
+            plugin_id: plugin_id.clone(),
+            enabled: false,
+        }),
+        // Still nothing, and now for a reason that is true: installing needs a registry client, and removing needs a
+        // decision about the plugin's stored data that nothing has made. `question_for` cannot say any of that, so
+        // `dispatch` does.
+        PluginAction::Install { .. } | PluginAction::Remove { .. } => None,
     }
 }
 
@@ -256,6 +280,47 @@ fn doctor_outcome(format: Option<OutputFormat>, args: &crate::args::DoctorArgs) 
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn enabling_and_disabling_a_plugin_ask_the_kernel() {
+        // ★ The commands that did nothing and blamed the kernel.
+        //
+        // Every plugin action but `list` answered `None` from `plugin_request`, and a `None` there makes the CLI report
+        // "this command needs a running kernel, and none is reachable" \u2014 a false sentence about a kernel that is running,
+        // which sends the user to check the wrong thing. Both actions are in the documented command list.
+        let request = |action: crate::args::PluginAction| {
+            plugin_request(&Command::Plugin(crate::args::PluginArgs { action }))
+        };
+
+        assert!(matches!(
+            request(crate::args::PluginAction::Enable { plugin_id: "@acme/x".to_owned() }),
+            Some(Request::PluginSetEnabled { enabled: true, .. })
+        ));
+        assert!(matches!(
+            request(crate::args::PluginAction::Disable { plugin_id: "@acme/x".to_owned() }),
+            Some(Request::PluginSetEnabled { enabled: false, .. })
+        ));
+        // The identifier survives, because a request that enabled the wrong plugin would be worse than one that enabled
+        // none at all.
+        let Some(Request::PluginSetEnabled { plugin_id, .. }) =
+            request(crate::args::PluginAction::Enable { plugin_id: "@acme/x".to_owned() })
+        else {
+            panic!("expected a plugin request");
+        };
+        assert_eq!(plugin_id, "@acme/x");
+
+        // And the two that remain ask nothing, which `dispatch` reports in its own words rather than as a missing kernel.
+        assert!(request(crate::args::PluginAction::Install {
+            source: "@acme/x".to_owned(),
+            version: None,
+        })
+        .is_none());
+        assert!(request(crate::args::PluginAction::Remove {
+            plugin_id: "@acme/x".to_owned(),
+            data: false,
+        }).is_none());
+    }
+
     use super::*;
     use clap::Parser;
 

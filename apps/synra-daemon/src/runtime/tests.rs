@@ -1271,3 +1271,61 @@ fn a_request_id_that_is_not_one_is_refused_before_anything_is_looked_up() {
         .expect_err("that is not a request id");
     assert!(error.message.contains("not a request id"), "{error:?}");
 }
+
+
+#[test]
+fn enabling_a_plugin_writes_the_flag_and_says_so() {
+    // ★ The write that had no caller.
+    //
+    // `set_plugin_enabled` existed in the store and was tested there, and **nothing in production called it** \u2014 so
+    // `synra plugin enable` could not have worked even once the CLI asked for it. This is the other end of that wire.
+    let dir = TempDir::new("enable-plugin");
+    let runtime = runtime(dir.path());
+    let plugin = "@acme/switchable";
+    install(&runtime, plugin, 0, 0);
+
+    runtime
+        .plugin_set_enabled(plugin, true)
+        .expect("enabling an installed plugin succeeds");
+
+    // ★ Asserted in the database, not from the answer.
+    //
+    // The answer is the plugin list, so asserting on it would pass against an implementation that reported a list without
+    // writing anything \u2014 which is the exact shape of the defect this test exists for. `plugins()` re-reads the row.
+    let row = runtime
+        .db()
+        .plugins()
+        .expect("plugins")
+        .into_iter()
+        .find(|row| row.plugin_id == plugin)
+        .expect("the row is still there");
+    assert!(row.enabled, "the flag was not written: {row:?}");
+
+    // And the answer is the list it now stands in, so a caller does not have to ask twice.
+    let listed = runtime.plugin_set_enabled(plugin, false).expect("the list");
+    assert!(
+        listed.to_string().contains(plugin),
+        "the answer is the plugin list: {listed}"
+    );
+}
+
+#[test]
+fn enabling_a_plugin_that_is_not_installed_is_a_refusal() {
+    // ★ A typo and a no-op are different answers.
+    //
+    // `set_plugin_enabled` reports whether a row changed, so enabling an already-enabled plugin answers `false` \u2014 which
+    // is a success with nothing to do. Reporting that as "no such plugin" would send a user looking for a mistake they did
+    // not make; reporting a typo as a success would leave them believing it worked.
+    let dir = TempDir::new("enable-plugin-typo");
+    let runtime = runtime(dir.path());
+    install(&runtime, "@acme/switchable", 1, 0);
+
+    // Already enabled: a second enable is a success, because there is nothing to correct.
+    assert!(runtime.plugin_set_enabled("@acme/switchable", true).is_ok());
+
+    // Not installed at all: a refusal that names it, so the user can see their own typo.
+    let refused = runtime
+        .plugin_set_enabled("@acme/typo", true)
+        .expect_err("no such plugin");
+    assert!(refused.to_string().contains("@acme/typo"), "{refused}");
+}
