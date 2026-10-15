@@ -303,6 +303,34 @@ impl Kernel for Runtime {
         )
     }
 
+    fn intent_snapshot(&self, intent: &str) -> Result<serde_json::Value, Refusal> {
+        crate::runtime::intent::snapshot(&self.board, intent)
+    }
+
+    /// Applies the user's answer, and runs what they chose.
+    ///
+    /// \u2605 The one place in the daemon where a plugin's action actually runs. Everything before it \u2014 the matching pass,
+    /// the board's states, the prompt \u2014 is a question; this is the answer, and it happens only for the plugin the user
+    /// picked.
+    fn intent_decide(
+        &self,
+        intent: &str,
+        plugin_id: Option<&str>,
+    ) -> Result<serde_json::Value, Refusal> {
+        crate::runtime::intent::decide(
+            &self.plugins,
+            &self.board,
+            self.identity.device_id,
+            intent,
+            plugin_id,
+            synra_store::sqlite::now_ms(),
+        )
+    }
+
+    fn intent_cancel(&self, intent: &str) -> Result<serde_json::Value, Refusal> {
+        crate::runtime::intent::cancel(&self.board, intent, "the user cancelled it")
+    }
+
     /// Asks a device to pair, and waits for its user.
     ///
     /// # Why the host lock is released before the request is sent

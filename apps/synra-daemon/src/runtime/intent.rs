@@ -112,31 +112,236 @@ pub(super) fn dispatch(
     }))
 }
 
-/// The candidates the board is holding for an intent.
-fn candidates_of(board: &Board, id: synra_protocol::ids::IntentId) -> Vec<serde_json::Value> {
-    board
-        .get(id)
-        .map(|intent| {
-            intent
-                .state
-                .candidates()
-                .iter()
-                .map(|candidate| {
-                    // \u2605 The title and detail as well as the identifiers: a prompt is built from these, and a client
-                    // that only received `(plugin, action)` would have to invent the sentence a user reads \u2014 which is
-                    // the plugin's own description of what it will do, not something a host can write for it.
-                    serde_json::json!({
-                        "pluginId": candidate.plugin_id.as_str(),
-                        "pluginVersion": candidate.plugin_version,
-                        "action": candidate.planned.action,
-                        "title": candidate.title,
-                        "detail": candidate.detail,
-                        "requiredCaps": candidate.required_caps,
-                    })
+/// Reads an intent's current state and candidates.
+///
+/// # Errors
+///
+/// [`Refusal`] when the identifier is not one, or names an intent this kernel never raised or has already forgotten —
+/// which is a different answer from "it is over", and the two must not be conflated.
+pub(super) fn snapshot(board: &Arc<Mutex<Board>>, intent: &str) -> Result<serde_json::Value, Refusal> {
+    let id = parse_intent(intent)?;
+    let intents = board.lock();
+    let Some(found) = intents.get(id) else {
+        return Err(Refusal::new(
+            synra_protocol::ErrorCode::InvalidArgument,
+            "this kernel has no such intent",
+        ));
+    };
+    let answer = serde_json::json!({
+        "intent": id.to_string(),
+        "trace": found.trace.to_string(),
+        "state": state_name(&found.state),
+        "candidates": candidates_of(&intents, id),
+    });
+    drop(intents);
+    Ok(answer)
+}
+
+/// Applies the user's answer, and runs what they chose.
+///
+/// # \u2605 Why this is the one place an action happens
+///
+/// Because everything before it is a question. The matching pass asks every plugin whether it can handle a share and
+/// produces candidates; this is where the answer becomes an action \u2014 and only for the plugin the user picked, which is
+/// what stops "what can handle this?" from running third-party code as a side effect.
+///
+/// # Errors
+///
+/// [`Refusal`] when the intent is unknown or is not in a state that can be decided, when the named plugin was not among
+/// the candidates, or when the identifier is not one.
+pub(super) fn decide(
+    plugins: &Arc<Mutex<PluginSet>>,
+    board: &Arc<Mutex<Board>>,
+    local_device: synra_protocol::ids::DeviceId,
+    intent: &str,
+    plugin_id: Option<&str>,
+    now_ms: i64,
+) -> Result<serde_json::Value, Refusal> {
+    let id = parse_intent(intent)?;
+
+    // \u2605 The choice is resolved against the board's own list, not accepted from the caller.
+    //
+    // `Board::choose` checks that the plugin and action were actually offered \u2014 "a choice arrives from an interface, and
+    // acting on one that was never shown would run something the user did not choose". Looking the action up from the
+    // board rather than taking it from the client also means a client sends what the user clicked (a plugin) rather than
+    // a hand-built action string, which is one fewer thing for it to get wrong.
+    let (candidate, request_id, target) = {
+        let mut intents = board.lock();
+        if let Some(wanted) = plugin_id {
+            let plugin = synra_protocol::ids::PluginId::try_from(wanted.to_owned()).map_err(|_| {
+                Refusal::new(
+                    synra_protocol::ErrorCode::InvalidArgument,
+                    "that is not a plugin identifier",
+                )
+            })?;
+            // The action comes from the candidate the user is choosing between, so a client cannot name an action the
+            // plugin never proposed.
+            let offered = intents
+                .get(id)
+                .and_then(|found| {
+                    found
+                        .state
+                        .candidates()
+                        .iter()
+                        .find(|candidate| candidate.plugin_id == plugin)
+                        .map(|candidate| candidate.planned.action.clone())
                 })
-                .collect()
+                .ok_or_else(|| {
+                    Refusal::new(
+                        synra_protocol::ErrorCode::InvalidArgument,
+                        "that plugin did not offer anything for this share",
+                    )
+                })?;
+            intents
+                .choose(id, &synra_core::intent::CandidateChoice::new(plugin, offered))
+                .map_err(|error| refuse_intent(&error))?;
+        }
+        // \u2605 The target is read **before** confirming, because confirming moves the state and the target is what decides
+        // where the action runs. A remote target is not a local call with different arguments: it is a message to another
+        // device, and running it here would be doing the user's action on the wrong machine.
+        let target = intents.get(id).and_then(|found| match &found.state {
+            synra_core::intent::IntentState::Confirming { target, .. } => Some(*target),
+            _ => None,
+        });
+        let (candidate, request_id) = intents.confirm(id).map_err(|error| refuse_intent(&error))?;
+        // Released here rather than at the end of the enclosing block: the board is shared with every other connection,
+        // and a guard held past its last use is a second share waiting on this one.
+        drop(intents);
+        (candidate, request_id, target)
+    };
+
+    // \u2605 Only a target that is **this** device runs here.
+    //
+    // The board's `confirm` produces a request id because the ordinary dispatch is an envelope to another machine \u2014
+    // "the candidate and the envelope id the caller must send under". Sending is not implemented in this build, and
+    // pretending otherwise would run a user's action on the machine they shared *from* rather than the one they chose.
+    if target != Some(local_device) {
+        return Err(Refusal::new(
+            synra_protocol::ErrorCode::Unsupported,
+            "running an action on another device is not implemented in this build",
+        ));
+    }
+
+    // \u2605 The call itself. `execute` is the only function in the system that runs a plugin's action, and it is reached
+    // from here alone.
+    let started_ms = now_ms.max(0) as u64;
+    let outcome = {
+        let mut set = plugins.lock();
+        synra_core::dispatch::execute(&mut set, &candidate.plugin_id, &candidate, started_ms)
+    };
+
+    let (ok, result, error) = match outcome {
+        Ok(synra_plugin_host::CallOutcome::Ok(payload)) => (true, payload, None),
+        Ok(other) => (false, other.as_str().to_owned(), None),
+        Err(failure) => (false, String::new(), Some(failure.to_string())),
+    };
+    // Measured from the moment the call was made rather than from the intent's creation: what a user reads is "this took
+    // 40 ms", and an intent that sat in a prompt for a minute did not take a minute to run.
+    let elapsed_ms = u64::try_from(synra_store::sqlite::now_ms().saturating_sub(now_ms)).unwrap_or(0);
+    let state = board
+        .lock()
+        .conclude(id, ok, &result, error.as_deref().map(synra_error), elapsed_ms)
+        .map_err(|error| refuse_intent(&error))?;
+
+    Ok(serde_json::json!({
+        "intent": id.to_string(),
+        "requestId": request_id.to_string(),
+        "pluginId": candidate.plugin_id.as_str(),
+        "action": candidate.planned.action,
+        "ok": ok,
+        "result": result,
+        "error": error,
+        "state": state_name(&state),
+    }))
+}
+
+/// Abandons an intent.
+///
+/// # Errors
+///
+/// [`Refusal`] when the identifier is not one or names an intent this kernel never raised.
+pub(super) fn cancel(
+    board: &Arc<Mutex<Board>>,
+    intent: &str,
+    reason: &str,
+) -> Result<serde_json::Value, Refusal> {
+    let id = parse_intent(intent)?;
+    let state = board.lock().cancel(id, reason).map_err(|error| refuse_intent(&error))?;
+    Ok(serde_json::json!({
+        "intent": id.to_string(),
+        "state": state_name(&state),
+    }))
+}
+
+/// A stable error the board records, from a message.
+///
+/// The board wants a `SynraError` so a device that was told to run something receives a code it can branch on rather than
+/// a sentence. `Internal` is the honest code for "the host could not make the call": the plugin did not fail, the host
+/// did.
+fn synra_error(message: &str) -> synra_protocol::SynraError {
+    synra_protocol::SynraError::new(synra_protocol::ErrorCode::Internal, message)
+}
+
+/// An intent identifier from its text.
+fn parse_intent(text: &str) -> Result<synra_protocol::ids::IntentId, Refusal> {
+    text.parse::<synra_protocol::ids::IntentId>().map_err(|_| {
+        Refusal::new(
+            synra_protocol::ErrorCode::InvalidArgument,
+            "that is not an intent identifier",
+        )
+    })
+}
+
+/// Turns a board error into a refusal, keeping its own words.
+///
+/// # Why the board's message is passed through
+///
+/// Because it already says what a user needs — "this intent is not waiting to be confirmed, it is choosing" names both the
+/// attempt and the state — and re-wording it here would be a second description of the same state machine, free to
+/// disagree with the first.
+fn refuse_intent(error: &synra_core::intent::IntentError) -> Refusal {
+    Refusal::new(synra_protocol::ErrorCode::InvalidArgument, &error.to_string())
+}
+
+/// The candidates the board is holding for an intent.
+///
+/// # Why this is not `IntentState::candidates()`
+///
+/// Because that method answers "what is the user choosing **between**", and it returns an empty slice once the board has
+/// settled on one \u2014 `Confirming` holds a single candidate rather than a list. A snapshot built from it alone showed a
+/// share that had been routed successfully as having no candidates at all, which is precisely the fact a prompt needs.
+/// The states are listed here rather than defaulted, so a state added later has to be considered.
+fn candidates_of(board: &Board, id: synra_protocol::ids::IntentId) -> Vec<serde_json::Value> {
+    use synra_core::intent::IntentState;
+    let Some(intent) = board.get(id) else {
+        return Vec::new();
+    };
+    let one;
+    let candidates: &[synra_core::intent::IntentCandidate] = match &intent.state {
+        IntentState::Matching { candidates, .. } | IntentState::Choosing { candidates } => candidates,
+        IntentState::Confirming { candidate, .. } | IntentState::Dispatching { candidate, .. } => {
+            one = std::slice::from_ref(candidate);
+            one
+        }
+        // Over, one way or another, and there is nothing left to offer.
+        _ => &[],
+    };
+    candidates
+        .iter()
+        .map(|candidate| {
+            // \u2605 The title and detail as well as the identifiers: a prompt is built from these, and a client that only
+            // received `(plugin, action)` would have to invent the sentence a user reads \u2014 which is the plugin's own
+            // description of what it will do, not something a host can write for it.
+            serde_json::json!({
+                "pluginId": candidate.plugin_id.as_str(),
+                "pluginVersion": candidate.plugin_version,
+                "action": candidate.planned.action,
+                "title": candidate.title,
+                "detail": candidate.detail,
+                "requiredCaps": candidate.required_caps,
+            })
         })
-        .unwrap_or_default()
+        .collect()
 }
 
 /// A stable name for a state, for a client that switches on it.
@@ -169,7 +374,7 @@ mod tests {
     use synra_protocol::ids::DeviceId;
     use synra_protocol::inbound::ShareItem;
 
-    use super::dispatch;
+    use super::{cancel, decide, dispatch, snapshot};
 
     /// A set over a scripted engine whose `can-handle` says yes, plus the host a plugin's calls reach.
     fn set_that_accepts(plugin: &str) -> Arc<Mutex<PluginSet>> {
@@ -189,9 +394,29 @@ mod tests {
                     "action": "open",
                     "title": "Open the link",
                     "required": [],
+                    // \u2605 A target, because without one the board settles the intent into `Choosing` \u2014 the question
+                    // "where should this run?" \u2014 and no method on `Board` answers it. `choose` re-enters `Choosing` for a
+                    // candidate with no target and `confirm` refuses anything that is not `Confirming`, so an intent in
+                    // that state cannot be advanced at all. This fixture names this device so the decide path is
+                    // reachable; the gap is recorded rather than worked around in production code.
+                    "target": local_device().to_string(),
                 })
                 .to_string(),
             ),
+        );
+        // ★ `share.execute` is scripted with the arguments the kernel actually sends, which are `null`.
+        //
+        // That is not a fixture shortcut: `Proposal` — the answer `can-handle` gives — has no `args` field, so
+        // `into_candidate` builds the candidate with `args: Value::Null`. A plugin is therefore told **which action to run
+        // and nothing about what to run it on**, and the design's own contract says the same
+        // (`execute: func(action: string, args-json: string)` — no item). Scripting this call with a real URL would
+        // make the fixture describe a system that does not exist, which is the one thing a fixture must not do.
+        backend.script(
+            &synra_plugin_host::Work::Execute {
+                action: "open".to_owned(),
+                args_json: "null".to_owned(),
+            },
+            synra_plugin_host::Scripted::Ok("opened".to_owned()),
         );
         let mut set = PluginSet::new(
             Backend::new(Arc::new(backend)),
@@ -220,9 +445,21 @@ mod tests {
         Arc::new(Mutex::new(set))
     }
 
+    /// The device these tests treat as "this one".
+    ///
+    /// ★ A fixed identifier rather than `DeviceId::new()`. The first version generated a fresh one per call, so the
+    /// target the fixture's proposal named was never the target `decide` compared against — and the failure read as
+    /// "running an action on another device is not implemented", which is a true statement about a test that had invented
+    /// two devices.
+    fn local_device() -> DeviceId {
+        "0e5a1c34-0000-4000-8000-000000000001"
+            .parse()
+            .expect("a device id")
+    }
+
     fn item() -> ShareItem {
         ShareItem {
-            from: DeviceId::new(),
+            from: local_device(),
             mime: "text/uri-list".to_owned(),
             text: Some("https://example.com".to_owned()),
             transfers: Vec::new(),
@@ -253,6 +490,66 @@ mod tests {
         // The prompt's own words travel with the candidate: a client that received only identifiers would have to invent
         // the sentence a user reads, and that sentence is the plugin's description of what it will do.
         assert_eq!(candidates[0]["title"], "Open the link");
+    }
+
+    #[test]
+    fn a_decided_share_runs_the_plugin_and_records_what_it_returned() {
+        // \u2605 The end of the line: a share becomes an action.
+        //
+        // Every test before this one stops at "a candidate was produced". This is the only place in the system where a
+        // plugin's action actually runs, and the assertion is on what the plugin was asked to do \u2014 not on the state
+        // name, which would pass for an implementation that never called anything.
+        let plugins = set_that_accepts("@acme/opener");
+        let board = Arc::new(Mutex::new(synra_core::intent::Board::new()));
+
+        let routed = dispatch(&plugins, &board, &item(), 1_000).expect("routed");
+        let intent = routed["intent"].as_str().expect("an id").to_owned();
+
+        let answer =
+            decide(&plugins, &board, local_device(), &intent, None, 2_000).expect("decided");
+
+        assert_eq!(answer["ok"], true, "{answer}");
+        assert_eq!(answer["pluginId"], "@acme/opener");
+        assert_eq!(answer["action"], "open");
+        // The plugin's own return value, carried through rather than replaced by a status word.
+        assert_eq!(answer["result"], "opened");
+        assert_eq!(answer["state"], "succeeded", "{answer}");
+
+        // \u2605 And the plugin was asked to **execute**, which is the call that has side effects. Asserting only on the
+        // state would pass against an implementation that never invoked anything.
+        // ★ And the gap is pinned rather than glossed over: the plugin was **not** told what to open. The script above
+        // matches only `args_json: "null"`, so this test fails the moment the kernel starts sending the item — which is
+        // what a fix would do, and what a reader of this test needs to know.
+    }
+
+    #[test]
+    fn an_unknown_intent_is_refused_rather_than_answered_with_an_empty_one() {
+        // \u2605 "There is no such intent" and "the intent is over" are different answers, and a client that received an
+        // empty snapshot for the first would show a user a prompt for something that never existed.
+        let plugins = set_that_accepts("@acme/opener");
+        let board = Arc::new(Mutex::new(synra_core::intent::Board::new()));
+
+        let refused = snapshot(&board, "01a140ce-0000-7000-8000-000000000000");
+
+        assert!(refused.is_err(), "an unknown intent is not an empty snapshot");
+        // And an identifier that is not one is refused before the board is consulted at all.
+        assert!(snapshot(&board, "not-an-intent").is_err());
+        let _ = plugins;
+    }
+
+    #[test]
+    fn cancelling_an_intent_ends_it_and_says_so() {
+        let plugins = set_that_accepts("@acme/opener");
+        let board = Arc::new(Mutex::new(synra_core::intent::Board::new()));
+        let routed = dispatch(&plugins, &board, &item(), 1_000).expect("routed");
+        let intent = routed["intent"].as_str().expect("an id").to_owned();
+
+        let answer = cancel(&board, &intent, "the user changed their mind").expect("cancelled");
+
+        assert_eq!(answer["state"], "cancelled", "{answer}");
+        // \u2605 And it is no longer live: a cancelled intent that still appeared in the list would be a prompt a user
+        // could answer after saying no.
+        assert!(board.lock().live().is_empty(), "a cancelled intent is not live");
     }
 
     #[test]

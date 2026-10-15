@@ -199,6 +199,42 @@ pub enum Request {
         text: String,
     },
 
+    /// What has become of an intent.
+    ///
+    /// # Why a UI needs this
+    ///
+    /// Because routing is asynchronous from the user's point of view: a prompt appears after the plugins have answered,
+    /// and the answer they give has to be applied to the same intent the prompt was about. Asking for the snapshot is how
+    /// an interface finds out whether it is still choosing, now confirming, or already over.
+    IntentSnapshot {
+        /// Which intent.
+        intent: String,
+    },
+
+    /// The user's answer to a prompt.
+    IntentDecide {
+        /// Which intent.
+        intent: String,
+        /// Which plugin the user picked, when they were choosing between several.
+        ///
+        /// `None` takes the candidate the board already settled on, which is the ordinary case: one plugin claimed the
+        /// share and the user confirmed it.
+        plugin_id: Option<String>,
+        // ★ There is no `target` here, and its absence is a finding rather than an oversight.
+        //
+        // A candidate whose plugin suggested no device leaves the intent in `Choosing`, and that state is the question
+        // "where should this run?" — but `Board` has no method that answers it. `choose` re-enters `Choosing` when the
+        // candidate has no target, and `confirm` refuses anything that is not `Confirming`, so an intent in that state
+        // cannot be advanced at all. A `target` parameter here would be a field the kernel accepted and then ignored,
+        // which is worse than a field that is not there.
+    },
+
+    /// The user changed their mind.
+    IntentCancel {
+        /// Which intent.
+        intent: String,
+    },
+
     /// The tail of the kernel's log.
     Logs {
         /// How many lines.
@@ -274,6 +310,9 @@ impl Request {
             Self::SendFile { .. } => "sendFile",
             Self::Plugins => "plugins",
                 Self::IntentDispatch { .. } => "intentDispatch",
+                Self::IntentCancel { .. } => "intentCancel",
+                Self::IntentDecide { .. } => "intentDecide",
+                Self::IntentSnapshot { .. } => "intentSnapshot",
             Self::Logs { .. } => "logs",
             Self::Pair { .. } => "pair",
             Self::PairAnswer { .. } => "pairAnswer",

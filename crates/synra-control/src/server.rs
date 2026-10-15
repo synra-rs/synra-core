@@ -146,6 +146,39 @@ pub trait Kernel {
     /// [`Refusal`] when the item cannot be read into the shape a plugin is asked about.
     fn intent_dispatch(&self, mime: &str, text: &str) -> Result<serde_json::Value, Refusal>;
 
+    /// What has become of an intent.
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal`] when the identifier is not one, or names an intent this kernel never raised or has already forgotten.
+    fn intent_snapshot(&self, intent: &str) -> Result<serde_json::Value, Refusal>;
+
+    /// Applies the user's answer to a prompt, and runs what they chose.
+    ///
+    /// # ★ Why this is where an action finally happens
+    ///
+    /// Because everything before it is a question. `intent_dispatch` asks every plugin whether it can handle a share;
+    /// this is the one place where the answer becomes an action, and it happens only for the plugin the user picked.
+    /// Keeping the two apart is what stops "what can handle this?" from running third-party code as a side effect.
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal`] when the intent is unknown, is not in a state that can be decided, or names a plugin that was not
+    /// among the candidates — a choice that was never offered must not run.
+    fn intent_decide(
+        &self,
+        intent: &str,
+        plugin_id: Option<&str>,
+    ) -> Result<serde_json::Value, Refusal>;
+
+    /// The user changed their mind.
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal`] when the intent is unknown or has already finished. Cancelling something that is over is not a
+    /// failure a user should see, but it is also not a cancellation, and the answer says which happened.
+    fn intent_cancel(&self, intent: &str) -> Result<serde_json::Value, Refusal>;
+
     /// The tail of the kernel's log.
     ///
     /// # Errors
@@ -320,6 +353,11 @@ impl Server {
             Request::SendFile { to, path } => kernel.send_file(to, path),
             Request::Plugins => kernel.plugins(),
             Request::IntentDispatch { mime, text } => kernel.intent_dispatch(mime, text),
+            Request::IntentSnapshot { intent } => kernel.intent_snapshot(intent),
+            Request::IntentDecide { intent, plugin_id } => {
+                kernel.intent_decide(intent, plugin_id.as_deref())
+            }
+            Request::IntentCancel { intent } => kernel.intent_cancel(intent),
             Request::Logs { lines, verbose, trace } => kernel.logs(*lines, *verbose, trace.as_deref()),
             Request::Pair { device } => kernel.pair(device),
             Request::PairAnswer { request_id, accepted } => kernel.pair_answer(request_id, *accepted),
@@ -405,6 +443,31 @@ mod tests {
     /// ★ A double that returned an empty candidate list would be worse than this: "nothing can handle it" and "this is
     /// not implemented here" are different facts, and a test that could not tell them apart would be asserting about the
     /// double rather than about the code.
+    fn intent_snapshot(&self, _intent: &str) -> Result<serde_json::Value, Refusal> {
+        Err(Refusal::new(
+            synra_protocol::ErrorCode::Internal,
+            "this kernel does not route intents",
+        ))
+    }
+
+    fn intent_decide(
+        &self,
+        _intent: &str,
+        _plugin_id: Option<&str>,
+    ) -> Result<serde_json::Value, Refusal> {
+        Err(Refusal::new(
+            synra_protocol::ErrorCode::Internal,
+            "this kernel does not route intents",
+        ))
+    }
+
+    fn intent_cancel(&self, _intent: &str) -> Result<serde_json::Value, Refusal> {
+        Err(Refusal::new(
+            synra_protocol::ErrorCode::Internal,
+            "this kernel does not route intents",
+        ))
+    }
+
     fn intent_dispatch(&self, _mime: &str, _text: &str) -> Result<serde_json::Value, Refusal> {
         Err(Refusal::new(
             synra_protocol::ErrorCode::Internal,

@@ -487,6 +487,31 @@ mod tests {
     /// ★ A double that returned an empty candidate list would be worse than this: "nothing can handle it" and "this is
     /// not implemented here" are different facts, and a test that could not tell them apart would be asserting about the
     /// double rather than about the code.
+    fn intent_snapshot(&self, _intent: &str) -> Result<serde_json::Value, Refusal> {
+        Err(Refusal::new(
+            synra_protocol::ErrorCode::Internal,
+            "this kernel does not route intents",
+        ))
+    }
+
+    fn intent_decide(
+        &self,
+        _intent: &str,
+        _plugin_id: Option<&str>,
+    ) -> Result<serde_json::Value, Refusal> {
+        Err(Refusal::new(
+            synra_protocol::ErrorCode::Internal,
+            "this kernel does not route intents",
+        ))
+    }
+
+    fn intent_cancel(&self, _intent: &str) -> Result<serde_json::Value, Refusal> {
+        Err(Refusal::new(
+            synra_protocol::ErrorCode::Internal,
+            "this kernel does not route intents",
+        ))
+    }
+
     fn intent_dispatch(&self, _mime: &str, _text: &str) -> Result<serde_json::Value, Refusal> {
         Err(Refusal::new(
             synra_protocol::ErrorCode::Internal,

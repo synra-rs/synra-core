@@ -23,11 +23,13 @@
 //! Because this module must not decide which engine exists. See [`plugins`] for why that is a build-size question and
 //! not just an aesthetic one.
 
+pub mod execute;
 pub mod matching;
 pub mod plugins;
 
 #[cfg(test)]
 mod tests;
 
+pub use execute::{EXECUTE_BUDGET_MS, execute, execute_budget};
 pub use matching::{MatchReport, Matcher};
 pub use plugins::{PluginSet, PluginSetError, PluginSpec};
