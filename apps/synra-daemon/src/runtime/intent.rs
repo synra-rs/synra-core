@@ -336,6 +336,9 @@ fn candidates_of(board: &Board, id: synra_protocol::ids::IntentId) -> Vec<serde_
                 "pluginId": candidate.plugin_id.as_str(),
                 "pluginVersion": candidate.plugin_version,
                 "action": candidate.planned.action,
+                // The plugin's own arguments, so a client can show what would be acted on \u2014 the URL a link candidate
+                // would open, rather than only the sentence describing it.
+                "args": candidate.planned.args,
                 "title": candidate.title,
                 "detail": candidate.detail,
                 "requiredCaps": candidate.required_caps,
@@ -400,21 +403,24 @@ mod tests {
                     // that state cannot be advanced at all. This fixture names this device so the decide path is
                     // reachable; the gap is recorded rather than worked around in production code.
                     "target": local_device().to_string(),
+                    // ★ And it says what to open. This is the field whose absence made the previous round's test pin
+                    // `args_json: "null"`: `can-handle` is handed the item and `execute` is not, so with no way to pass
+                    // the URL along, a plugin could propose an action it had no way to perform.
+                    "args": { "url": "https://example.com" },
                 })
                 .to_string(),
             ),
         );
-        // ★ `share.execute` is scripted with the arguments the kernel actually sends, which are `null`.
+        // ★ `share.execute` is scripted with **the arguments the plugin itself proposed from `can-handle`**.
         //
-        // That is not a fixture shortcut: `Proposal` — the answer `can-handle` gives — has no `args` field, so
-        // `into_candidate` builds the candidate with `args: Value::Null`. A plugin is therefore told **which action to run
-        // and nothing about what to run it on**, and the design's own contract says the same
-        // (`execute: func(action: string, args-json: string)` — no item). Scripting this call with a real URL would
-        // make the fixture describe a system that does not exist, which is the one thing a fixture must not do.
+        // The script is keyed on the exact `args_json`, so this is an assertion about what the kernel sends: if the URL
+        // did not survive from `can-handle` to `execute`, this call would not match and the test would fail. The round
+        // before this one scripted `"null"` here, because that is what the kernel sent — a plugin was told which action
+        // to run and nothing about what to run it on.
         backend.script(
             &synra_plugin_host::Work::Execute {
                 action: "open".to_owned(),
-                args_json: "null".to_owned(),
+                args_json: serde_json::json!({ "url": "https://example.com" }).to_string(),
             },
             synra_plugin_host::Scripted::Ok("opened".to_owned()),
         );
@@ -517,9 +523,32 @@ mod tests {
 
         // \u2605 And the plugin was asked to **execute**, which is the call that has side effects. Asserting only on the
         // state would pass against an implementation that never invoked anything.
-        // ★ And the gap is pinned rather than glossed over: the plugin was **not** told what to open. The script above
-        // matches only `args_json: "null"`, so this test fails the moment the kernel starts sending the item — which is
-        // what a fix would do, and what a reader of this test needs to know.
+        // ★ And what the plugin proposed is what it was given. The call above is scripted on the exact arguments,
+        // so this is the thing that would break if the URL stopped being carried — the defect that stood here before.
+    }
+
+    #[test]
+    fn the_arguments_a_plugin_proposed_are_what_it_is_given_to_execute() {
+        // ★ The property that was missing entirely.
+        //
+        // `can-handle` is handed the shared item and `execute` is not — the contract is
+        // `execute(action: string, args-json: string)`. Before `Proposal::args` existed there was **no path** for the URL
+        // to travel between them, so every action ran against `null` and a plugin that claimed a link could not open it.
+        let plugins = set_that_accepts("@acme/opener");
+        let board = Arc::new(Mutex::new(synra_core::intent::Board::new()));
+        let routed = dispatch(&plugins, &board, &item(), 1_000).expect("routed");
+        let intent = routed["intent"].as_str().expect("an id").to_owned();
+
+        // The candidate the board is holding carries it before anything is decided, which is where the URL has to be for
+        // the decision to be able to use it.
+        let candidates = routed["candidates"].as_array().expect("a list");
+        assert_eq!(
+            candidates[0]["args"],
+            serde_json::json!({ "url": "https://example.com" }),
+            "the proposal's own arguments travel with the candidate: {routed}"
+        );
+
+        decide(&plugins, &board, local_device(), &intent, None, 2_000).expect("decided");
     }
 
     #[test]

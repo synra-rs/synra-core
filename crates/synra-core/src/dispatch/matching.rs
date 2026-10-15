@@ -58,6 +58,31 @@ pub struct Proposal {
     /// The capabilities the action needs, which the gate checks before anything runs.
     #[serde(default)]
     pub required: Vec<String>,
+    /// What `execute` should be given.
+    ///
+    /// ★ **Without this, `execute` could not know what to act on.**
+    ///
+    /// `can-handle` is handed the shared item and `execute` is not — the contract is
+    /// `execute(action: string, args-json: string)` — so a plugin that answered "yes, I can open this" was called with
+    /// `("open", "null")` and had no way to learn *which* link. The action could be proposed and never performed, which
+    /// is why this field exists rather than a fourth parameter on `execute`.
+    ///
+    /// # Why the plugin supplies this rather than the host
+    ///
+    /// Because only the plugin knows what its own action needs. "Open this link" wants the URL and nothing else; "add to
+    /// reading list" wants the URL and the title; a file share wants a transfer id. A host that decided would be guessing
+    /// at every plugin's interface. Here the plugin copies whatever it needs out of the item it was already given, and the
+    /// host carries it across unchanged — it does not read, interpret or filter the contents.
+    ///
+    /// # Why this is not a way to smuggle anything past the gate
+    ///
+    /// Because the args go back to the plugin that wrote them, and the gate judges capabilities rather than arguments. A
+    /// plugin cannot escalate by lying to itself, and the item it copied from is one the host already handed it.
+    ///
+    /// Absent means `null`, which is exactly what every plugin received before this field existed — an older plugin that
+    /// does not send `args` behaves as it did.
+    #[serde(default)]
+    pub args: serde_json::Value,
     /// Where it suggests running, when it has an opinion.
     #[serde(default)]
     pub target: Option<DeviceId>,
@@ -89,7 +114,9 @@ impl Proposal {
         let planned = PlannedAction {
             plugin_id: plugin_id.clone(),
             action,
-            args: serde_json::Value::Null,
+            // ★ Carried through from the plugin's own answer rather than overwritten. This line used to be
+            // `Value::Null`, which meant `execute` was always called with `null` — see `Proposal::args`.
+            args: self.args,
         };
         Some(IntentCandidate {
             plugin_id,

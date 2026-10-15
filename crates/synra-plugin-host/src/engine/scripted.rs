@@ -159,6 +159,39 @@ struct Shared {
     calls: AtomicU64,
 }
 
+/// The key a script is stored under.
+///
+/// # \u2605 Why this is not `Work`'s `Display`
+///
+/// Because `Display` is `interface.function` \u2014 `share.execute` \u2014 which is the right label for a log line and the wrong
+/// key for a fixture. Two calls to `share.execute` with different actions, or two `can-handle` calls about different
+/// shares, collapsed onto one entry, so a script could not say what it was an answer *to* and a test could not tell
+/// whether the arguments it expected were the ones sent.
+///
+/// That is not hypothetical: `share.execute` was called with `null` for every action in the system, and no fixture could
+/// observe it, because every `execute` call had the same key. A test that cannot see its input cannot check it.
+///
+/// The payload is part of the key, so a script states the call it answers — and a call whose arguments differ from every
+/// script falls through to the fallback, which is a failure a test notices rather than a silent match.
+///
+/// There is deliberately no wildcard arm. `Work` is `#[non_exhaustive]`, which binds callers outside this crate and not
+/// this one: a variant added later is a compile error here, which is where the decision about how it should key belongs.
+/// A wildcard would let it key on its name alone, quietly, and the fixture would stop distinguishing its payload.
+fn key_for(work: &Work) -> String {
+    let payload = match work {
+        Work::Activate { config_json } => config_json.as_str(),
+        Work::Deactivate => "",
+        Work::Migrate { from_version, to_version } => {
+            return format!("{work}|{from_version}|{to_version}");
+        }
+        Work::Tick { tick_json } => tick_json.as_str(),
+        Work::CanHandle { item_json } => item_json.as_str(),
+        Work::Execute { action, args_json } => return format!("{work}|{action}|{args_json}"),
+        Work::InvokeAction { name, args_json } => return format!("{work}|{name}|{args_json}"),
+    };
+    format!("{work}|{payload}")
+}
+
 impl ScriptedBackend {
     /// A backend whose calls all succeed with an empty payload.
     #[must_use]
@@ -202,7 +235,7 @@ impl ScriptedBackend {
             .lock()
             .entry(plugin_id.to_owned())
             .or_default()
-            .insert(work.to_string(), answer);
+            .insert(key_for(work), answer);
     }
 
     /// A backend with one answer already in it.
@@ -215,7 +248,7 @@ impl ScriptedBackend {
 
     /// Sets what one entry point answers.
     pub fn script(&self, work: &Work, answer: Scripted) {
-        let _ = self.shared.answers.lock().insert(work.to_string(), answer);
+        let _ = self.shared.answers.lock().insert(key_for(work), answer);
     }
 
     /// Sets what a call with no entry of its own answers.
@@ -239,7 +272,7 @@ impl Shared {
     /// answer and the only one that can make two plugins differ; the shared table exists so a test that cares about one
     /// plugin does not have to repeat the id for every entry point it scripts.
     fn answer_for(&self, plugin_id: &str, work: &Work) -> Scripted {
-        let key = work.to_string();
+        let key = key_for(work);
         let per_plugin = {
             let tables = self.per_plugin.lock();
             tables
