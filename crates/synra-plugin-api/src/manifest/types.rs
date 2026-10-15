@@ -370,3 +370,26 @@ pub enum ValidationLevel {
     /// Runs where a caller supplies a [`ManifestContext`] with the artifacts and the implementation.
     Verify,
 }
+
+/// The digest a consent decision is recorded against.
+///
+/// # ★ Why this is here rather than at each caller
+///
+/// Because two callers need it and they must agree to the byte. The shell records the user's decision against this
+/// value; the daemon refuses to run a plugin whose manifest no longer hashes to what was recorded. Two implementations
+/// that drifted — one hashing the parsed value, one the raw text — would produce a mismatch on every plugin, or worse,
+/// a match for a manifest that had only been reformatted.
+///
+/// So it hashes the **bytes exactly as they are on disk**, which is why it takes text and not a [`Manifest`]: by the
+/// time a manifest has been parsed, field order and whitespace are gone, and two files differing only in those would
+/// hash alike.
+///
+/// SHA-256 in hex — the same construction the plugin CLI uses for an artifact and the registry uses for an integrity
+/// string, so a reader who recognises one recognises the other.
+#[must_use]
+pub fn manifest_digest(text: &str) -> String {
+    use sha2::Digest as _;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(text.as_bytes());
+    format!("{:x}", hasher.finalize())
+}

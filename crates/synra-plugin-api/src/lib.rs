@@ -36,7 +36,7 @@ pub use boundary::{DeviceTarget, LogLevel, Outcome};
 pub use manifest::{
     ActionDeclaration, CapabilityDeclaration, ComposeDependency, EventDeclaration, HandleDeclaration,
     HeadlessRuntime, Implementation, Manifest, ManifestContext, ManifestError, Publisher,
-    ResourceHints, Runtime, SdkRequirement, UiRuntime, ValidationLevel, to_wire_slug,
+    ResourceHints, Runtime, SdkRequirement, UiRuntime, ValidationLevel, manifest_digest, to_wire_slug,
 };
 pub use publisher::{
     ALGORITHM, Fingerprint, PluginTrust, PublisherTrustStore, SIGNATURE_FILE, SIGNATURE_VERSION, SignatureCheck,
