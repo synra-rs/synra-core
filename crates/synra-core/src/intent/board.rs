@@ -117,6 +117,48 @@ impl Board {
         self.matching_window
     }
 
+    /// Puts an intent back on the board, as it was when the store was written.
+    ///
+    /// # Returns
+    ///
+    /// `false` when the board already holds this identifier, in which case nothing changes.
+    ///
+    /// # ★ Why this exists, and why it is not `raise`
+    ///
+    /// Restoring is not raising. `raise` mints an identifier, a trace and a deadline, and it applies the idempotency rule —
+    /// all of which have already happened for an intent read back from the store. Calling it here would give a restored
+    /// intent a **new** identifier, so a peer that resent the request it originally raised would be answered with a second
+    /// intent and the action would run twice, and the trace would no longer match the one in every log line about it.
+    ///
+    /// # Why a duplicate is refused rather than overwritten
+    ///
+    /// Because the two are not the same intent, and the board cannot tell which one is current: a restored copy of an
+    /// intent the board has already been working on would roll its state backwards, and a rollback looks exactly like
+    /// progress to everything downstream. So the first one wins and the caller is told.
+    pub fn restore(&mut self, intent: Intent) -> bool {
+        let id = intent.id;
+        if self.intents.contains_key(&id) {
+            return false;
+        }
+        let _ = self.intents.insert(id, intent);
+        // ★ Appended to `order`, which is what a sweep walks to drop the oldest finished intents. A restored intent is the
+        // oldest thing on the board, and putting it at the end would make a sweep consider it last — so the caller is
+        // expected to restore oldest first, which is the order `load_intents` answers in.
+        self.order.push(id);
+        true
+    }
+
+    /// Every intent on the board, in the order they were raised.
+    ///
+    /// # Why this is needed rather than iterating `live`
+    ///
+    /// Because persisting has to save what *changed*, and what changed may be an intent that has just ended — `live` is
+    /// exactly the intents that have not. A board that could only list its live intents could not persist a result.
+    #[must_use]
+    pub fn all(&self) -> Vec<&Intent> {
+        self.order.iter().filter_map(|id| self.intents.get(id)).collect()
+    }
+
     /// Raises an intent, or answers with the one this request already raised.
     ///
     /// # Returns
