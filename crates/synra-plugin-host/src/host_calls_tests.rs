@@ -960,6 +960,44 @@ fn a_returned_value_that_is_empty_becomes_the_json_null_the_glue_expects() {
 // ── The audit ─────────────────────────────────────────────────────────────────────────────────────
 
 #[test]
+fn the_gate_records_its_four_metrics() {
+    // ★ The design's `gate_*` metrics, from the one place that knows their answers.
+    //
+    // `RingRecorder` was written, tested and reachable from nothing: every one of the ~30 metrics in the design's list was
+    // unwired, and the recorder had no producer at all. This is the first — the gate, because it is where "was it allowed,
+    // for which plugin, against which capability, and if not, was it the set or the limiter" is already decided.
+    let host = Stub::default();
+    let grants = granted(&["device:list"]);
+    let budget = budget();
+    let recorder = synra_observe::metrics::RingRecorder::new();
+    let mut audit = Vec::new();
+    let mut calls = session(&host, &grants, &budget, &mut audit).with_metrics(&recorder);
+
+    // One allowed, one denied.
+    let _ = calls.call("synra:plugin/host#device-list", "");
+    let _ = calls.call("synra:plugin/host#device-send", "{}");
+
+    let snapshot = recorder.snapshot();
+    assert_eq!(
+        snapshot.get("gate_checks_total{result=allowed}"),
+        Some(&synra_observe::metrics::Value::Counter(1)),
+        "the allowed check"
+    );
+    assert_eq!(
+        snapshot.get("gate_checks_total{result=denied}"),
+        Some(&synra_observe::metrics::Value::Counter(1)),
+        "and the refused one"
+    );
+    // ★ And the refusal names the capability, which is the label the design asks `gate_denied_total` to carry — it is the
+    // question "which permission do plugins keep asking for and not have", and a count without it cannot answer that.
+    assert_eq!(
+        snapshot.get("gate_denied_total{capability=device:send:*}"),
+        Some(&synra_observe::metrics::Value::Counter(1)),
+        "named rather than counted in the abstract"
+    );
+}
+
+#[test]
 fn a_refusal_tells_a_plugin_what_it_already_holds_in_that_domain() {
     // ★ The wiring rather than the derivation.
     //

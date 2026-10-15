@@ -332,6 +332,17 @@ pub struct HostCalls<'a> {
     /// See [`Work::allows_side_effects`](crate::Work::allows_side_effects), which answers the question and — until this
     /// field existed — was never asked.
     side_effects: bool,
+    /// Where this call's place in the numbers goes, when the host keeps numbers at all.
+    ///
+    /// ★ Why the gate is where metrics start.
+    ///
+    /// Because it is the one place that already knows the answer to every question the design's `gate_*` metrics ask:
+    /// whether the check passed, which plugin asked, which capability, and — when it did not pass — whether it was the
+    /// capability set or the rate limiter that said no. A metric recorded anywhere else would be a second opinion about a
+    /// decision made here.
+    ///
+    /// `None` is a real state: a unit test, or a host that keeps no numbers.
+    metrics: Option<&'a synra_observe::metrics::RingRecorder>,
 }
 
 impl std::fmt::Debug for HostCalls<'_> {
@@ -359,7 +370,17 @@ impl<'a> HostCalls<'a> {
         budget: &'a Budget,
         audit: &'a mut Vec<AuditEntry>,
     ) -> Self {
-        Self { host, plugin, grants, budget, audit, side_effects: true }
+        Self { host, plugin, grants, budget, audit, side_effects: true, metrics: None }
+    }
+
+    /// The same session, recording what it does.
+    #[must_use]
+    pub const fn with_metrics(
+        mut self,
+        metrics: &'a synra_observe::metrics::RingRecorder,
+    ) -> Self {
+        self.metrics = Some(metrics);
+        self
     }
 
     /// Which plugin.
@@ -440,11 +461,22 @@ impl<'a> HostCalls<'a> {
             if !held {
                 let error = CallError::denied(capability, self.grants);
                 self.record(import_name, AuditOutcome::Denied, None);
+                // ★ The numbers, written beside the audit rather than instead of it.
+                //
+                // The two answer different questions and neither replaces the other: the audit is *which plugin tried to do
+                // what it could not*, one entry per call, bounded and read by a person. The metric is *how often*, aggregated
+                // and read by a graph. The outcome label is `AuditOutcome`'s own name, so a count in the metrics and a line
+                // in the audit cannot come to disagree about what happened.
+                self.count("gate_checks_total", &[("result", AuditOutcome::Denied.as_str())], 1);
+                self.count("gate_denied_total", &[("capability", capability)], 1);
                 return Err(error);
             }
+            self.count("gate_checks_total", &[("result", AuditOutcome::Allowed.as_str())], 1);
             if let Err(limited) = self.budget.consume(Self::rate_kind(import_name), 1, clock_ms()) {
                 let error = CallError::new(CallError::RATE_LIMITED, limited.to_string());
                 self.record(import_name, AuditOutcome::RateLimited, None);
+                self.count("gate_checks_total", &[("result", AuditOutcome::RateLimited.as_str())], 1);
+                self.count("gate_rate_limited_total", &[("plugin", self.plugin.as_str())], 1);
                 return Err(error);
             }
         }
@@ -758,6 +790,40 @@ fn check_emittable(plugin: &PluginId, event: &str) -> Result<(), CallError> {
     name.check_emittable_by(&plugin.wire_slug())
         .map_err(|error| CallError::new(CallError::BAD_ARGUMENT, error.to_string()))
 }
+
+/// Adds one to a counter, when there is anywhere to add it to.
+///
+/// # Why the labels are sorted here rather than by the caller
+///
+/// Because `SeriesKey::new` sorts them, and a label list built in a different order at a different call site would be the
+/// same series either way — so this takes them as they read best at the call site and lets the key do the canonicalising.
+///
+/// # Why a missing recorder is not an error
+///
+/// Because a host that keeps no numbers is a host, not a broken one, and a call that failed because a *metric* could not be
+/// written would be a call refused for a reason the plugin cannot see or act on.
+fn count_metric(
+    metrics: Option<&synra_observe::metrics::RingRecorder>,
+    name: &str,
+    labels: &[(&str, &str)],
+    value: u64,
+) {
+    let Some(recorder) = metrics else {
+        return;
+    };
+    let key = synra_observe::metrics::SeriesKey::new(
+        name,
+        labels
+            .iter()
+            .map(|(label, text)| ((*label).to_owned(), (*text).to_owned())),
+    );
+    recorder.counter_add(&key, value);
+}
+
+    /// Adds to a counter on the session's recorder, when there is one.
+    fn count(&self, name: &str, labels: &[(&str, &str)], value: u64) {
+        Self::count_metric(self.metrics, name, labels, value);
+    }
 
 /// Writes one audit record.
     fn record(&mut self, import_name: &str, outcome: AuditOutcome, elapsed_ms: Option<u64>) {
