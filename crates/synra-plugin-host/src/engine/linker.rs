@@ -89,6 +89,10 @@ fn run(state: &mut StoreData, import_name: &str, argument: &str) -> Answer {
     if !state.side_effects {
         calls = calls.pure();
     }
+    // The gate's counters, when the session was given somewhere to put them.
+    if let Some(metrics) = session.metrics.as_deref() {
+        calls = calls.with_metrics(metrics);
+    }
     let answer = match calls.call(import_name, argument) {
         Ok(answer) => Answer::Ok(answer),
         Err(error) => Answer::Denied(error),

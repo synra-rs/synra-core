@@ -92,7 +92,8 @@ fn runtime_over(dir: &Path, shared_db: std::sync::Arc<parking_lot::Mutex<synra_s
                 "0.1.0-test",
             )),
         ))),
-        plugin_loads: std::sync::Arc::new(parking_lot::Mutex::new(
+        metrics: std::sync::Arc::new(synra_observe::metrics::RingRecorder::new()),
+    plugin_loads: std::sync::Arc::new(parking_lot::Mutex::new(
             crate::runtime::LoadedSummary::default(),
         )),
         board: std::sync::Arc::new(parking_lot::Mutex::new(synra_core::intent::Board::new())),
@@ -117,6 +118,45 @@ fn status_reports_the_hosts_own_state() {
     assert_eq!(value["transportPort"], 47100);
     assert_eq!(value["discoveryPort"], 47101);
     assert!(value["dataDir"].as_str().is_some_and(|s| !s.is_empty()));
+}
+
+#[test]
+fn status_reports_the_gates_counters() {
+    // ★ The whole loop, end to end: a plugin's refused call becomes a counter on the recorder the daemon owns, and the
+    // daemon's `status` reports it.
+    //
+    // Every link of this was missing at some point in this session. The recorder had no producer at all; the producer had
+    // no way to reach the kernel; and `diag_metrics` was a command in the contract with no trait method, no handler and no
+    // data behind it. The reader here is `status`, which is a command that already existed and already worked.
+    let dir = TempDir::new("status-metrics");
+    let runtime = runtime(dir.path());
+
+    // A refused call, made the way the gate makes one.
+    let refused =
+        synra_plugin_host::host_calls::CallError::denied("device:send:*", &synra_capability::CapabilitySet::new());
+    assert!(!refused.message.is_empty());
+    let key = synra_observe::metrics::SeriesKey::new(
+        "gate_denied_total",
+        [("capability".to_owned(), "device:send:*".to_owned())],
+    );
+    runtime.metrics.counter_inc(&key);
+
+    let value = runtime.status().expect("status");
+    let series = value["metrics"]["values"].as_array().expect("the series list");
+    let refused_series = series
+        .iter()
+        .find(|entry| entry["key"]["name"] == "gate_denied_total")
+        .expect("the refusal is reported");
+
+    assert_eq!(refused_series["value"]["kind"], "counter");
+    assert_eq!(refused_series["value"]["value"], 1);
+    // And the label survives the trip, because a count without one cannot answer "which permission do plugins keep asking
+    // for and not have" — the question the design's `gate_*` metrics exist for.
+    let labels = refused_series["key"]["labels"].as_array().expect("labels");
+    assert!(
+        labels.iter().any(|pair| pair[0] == "capability" && pair[1] == "device:send:*"),
+        "{refused_series}"
+    );
 }
 
 #[test]

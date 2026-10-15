@@ -48,7 +48,30 @@ impl Runtime {
             // working feature was absent. That is the failure mode of a hand-maintained list, and the reason the test below
             // asserts the **exact** contents rather than a superset.
             "notImplemented": [],
+            // ★ The gate's counters, which is the first thing in this report that a plugin *did* rather than
+            // something the daemon was configured with.
+            //
+            // Reported as series rather than as a total, because a total is the one shape that cannot answer the question
+            // the design's `gate_*` metrics exist for: which capability plugins keep asking for and not having. A count
+            // with no label would say "somebody was refused" and nothing about what to do.
+            "metrics": self.metrics_value(),
         })
+    }
+
+    /// The counters, as the recorder's own snapshot.
+    ///
+    /// # Why this serialises rather than shapes
+    ///
+    /// Because `MetricsSnapshot`, `SeriesValue`, `SeriesKey` and `Value` already derive `serde::Serialize` with
+    /// `rename_all = "camelCase"` — they were built to cross this boundary, and the first version of this method took the
+    /// snapshot apart and rebuilt it as a list of `{name, labels, value}` objects. That is the same data with a second
+    /// spelling: a reader would have had to know both, and nothing kept the two in step.
+    ///
+    /// Serialising the recorder's own type means the shape a client sees **is** the shape the recorder produces, with the
+    /// series already sorted by rendered key and every label carried as a label. A counter arrives as
+    /// `{"kind":"counter","value":1}`, which is what tells a client how to draw it rather than leaving it to guess.
+    pub(super) fn metrics_value(&self) -> serde_json::Value {
+        serde_json::to_value(self.metrics.snapshot()).unwrap_or(serde_json::Value::Null)
     }
 
     /// What is installed in the plugins directory.

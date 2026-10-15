@@ -51,6 +51,12 @@ pub struct LinkerSession {
     pub audit: Arc<Mutex<Vec<AuditEntry>>>,
     /// The host the effects reach.
     pub host: Arc<dyn Host>,
+    /// Where this plugin's calls are counted, when the kernel keeps numbers.
+    ///
+    /// ★ An `Option` rather than a recorder with a default, because "no metrics" is a state a kernel can be in —
+    /// a test, or a build that keeps none — and a default recorder would be one nobody ever reads. That is the same as
+    /// having none, except that it allocates on every call.
+    pub metrics: Option<Arc<synra_observe::metrics::RingRecorder>>,
 }
 
 impl LinkerSession {
@@ -72,7 +78,14 @@ impl LinkerSession {
         host: Arc<dyn Host>,
         audit: Arc<Mutex<Vec<AuditEntry>>>,
     ) -> Self {
-        Self { plugin, grants, budget, audit, host }
+        Self { plugin, grants, budget, audit, host, metrics: None }
+    }
+
+    /// The same session, counting what it does.
+    #[must_use]
+    pub fn with_metrics(mut self, metrics: Arc<synra_observe::metrics::RingRecorder>) -> Self {
+        self.metrics = Some(metrics);
+        self
     }
 
     /// What the plugin did, in the order it did it.

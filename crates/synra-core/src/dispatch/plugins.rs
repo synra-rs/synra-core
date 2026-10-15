@@ -176,6 +176,8 @@ pub(crate) struct Authority {
     grants: CapabilitySet,
     budget: Arc<synra_plugin_host::quota::Budget>,
     audit: Arc<Mutex<Vec<synra_observe::audit::AuditEntry>>>,
+    /// Where this plugin's gate decisions are counted, when the kernel keeps numbers.
+    metrics: Option<Arc<synra_observe::metrics::RingRecorder>>,
 }
 
 impl Authority {
@@ -186,7 +188,23 @@ impl Authority {
         quota: synra_plugin_host::quota::Quota,
         audit: Arc<Mutex<Vec<synra_observe::audit::AuditEntry>>>,
     ) -> Self {
-        Self { grants, budget: Arc::new(synra_plugin_host::quota::Budget::new(quota)), audit }
+        Self { grants, metrics: None, budget: Arc::new(synra_plugin_host::quota::Budget::new(quota)), audit }
+    }
+
+    /// The same authority, counting what it does.
+    ///
+    /// ★ Why the recorder is a builder rather than a constructor argument.
+    ///
+    /// Because a plugin's authority is a statement about what it may do, and it should be constructible — and testable —
+    /// without a kernel that keeps numbers. A required argument would make every test that asks "what may this plugin do"
+    /// also state where its metrics go; `None` inside the struct is the same fact with the caller left alone.
+    #[must_use]
+    pub(crate) fn with_metrics(
+        mut self,
+        metrics: Arc<synra_observe::metrics::RingRecorder>,
+    ) -> Self {
+        self.metrics = Some(metrics);
+        self
     }
 
     /// The quota in force for this plugin, which is the degraded one once it has been degraded.
@@ -209,13 +227,17 @@ impl Authority {
         id: &PluginId,
         host: &Arc<dyn synra_plugin_host::host_calls::Host>,
     ) -> synra_plugin_host::engine::LinkerSession {
-        synra_plugin_host::engine::LinkerSession::with_audit(
+        let session = synra_plugin_host::engine::LinkerSession::with_audit(
             id.clone(),
             self.grants.clone(),
             Arc::clone(&self.budget),
             Arc::clone(host),
             Arc::clone(&self.audit),
-        )
+        );
+        match self.metrics.as_ref() {
+            Some(metrics) => session.with_metrics(Arc::clone(metrics)),
+            None => session,
+        }
     }
 }
 
@@ -252,6 +274,11 @@ pub struct PluginSet {
     /// `None` is the ordinary state for a kernel with nowhere durable to write: a test, or a build whose store is not
     /// open. The ring still fills, so the audit the interface shows is complete for this process either way.
     audit_sink: Option<AuditSink>,
+    /// Where the gate's counters go, when the kernel keeps numbers.
+    ///
+    /// Shared rather than one per plugin, because the design's `gate_*` metrics are read as one series across plugins: the
+    /// plugin is a **label** on a series, not a series of its own.
+    metrics: Option<Arc<synra_observe::metrics::RingRecorder>>,
 }
 
 /// Where one audit record goes, besides the ring.
@@ -293,6 +320,7 @@ impl PluginSet {
             host,
             audit: synra_observe::audit::AuditRing::new(),
             audit_sink: None,
+            metrics: None,
         }
     }
 
@@ -325,6 +353,20 @@ impl PluginSet {
     #[must_use]
     pub fn with_audit_sink(mut self, sink: AuditSink) -> Self {
         self.audit_sink = Some(sink);
+        self
+    }
+
+    /// The same set, counting the gate's decisions.
+    ///
+    /// # Why this is separate from the audit sink
+    ///
+    /// Because the two answer different questions and have different lifetimes. A sink is *what happened*, one row per call,
+    /// written down and read by a person; a recorder is *how often*, aggregated, and read by a graph. A host may reasonably
+    /// want one without the other — a diagnostic run wants numbers and no writes — and a single "observe this" switch would
+    /// have made that impossible to express.
+    #[must_use]
+    pub fn with_metrics(mut self, metrics: Arc<synra_observe::metrics::RingRecorder>) -> Self {
+        self.metrics = Some(metrics);
         self
     }
 
@@ -471,7 +513,14 @@ impl PluginSet {
                 // One budget per plugin rather than per instance: the rate is a property of what the plugin may
                 // spend, and the pool hands out instances freely — a per-instance budget would multiply the allowance
                 // by the instance limit.
-                authority: Authority::new(spec.grants, spec.quota, Arc::new(Mutex::new(Vec::new()))),
+                authority: {
+                    let authority =
+                        Authority::new(spec.grants, spec.quota, Arc::new(Mutex::new(Vec::new())));
+                    match self.metrics.as_ref() {
+                        Some(metrics) => authority.with_metrics(Arc::clone(metrics)),
+                        None => authority,
+                    }
+                },
             },
         );
         Ok(())

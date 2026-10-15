@@ -292,7 +292,9 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
     // This is the one dependency that can refuse. Everything else here is data the daemon reads; an engine that will not
     // start means this host cannot run a plugin at all, and continuing would produce a daemon whose status report says
     // no plugins are loaded for a reason that has nothing to do with what the user installed.
-    let plugins = match crate::runtime::build_set(&shared_db) {
+    // ★ The gate's counters, owned here because this is what can report them.
+    let metrics = Arc::new(synra_observe::metrics::RingRecorder::new());
+    let plugins = match crate::runtime::build_set(&shared_db, &metrics) {
         Ok(set) => Arc::new(Mutex::new(set)),
         Err(error) => {
             eprintln!("synra-daemon: the plugin host could not start: {error}");
@@ -391,6 +393,7 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
         pairing,
         plugins,
         plugin_loads,
+        metrics: Arc::clone(&metrics),
         board: Arc::new(Mutex::new(synra_core::intent::Board::new())),
         // ★ Handed to the runtime so `synra logs --verbose` can raise what the process writes. `None` when logging is
         // not running — a daemon whose log file could not be opened still answers the command, and it must not claim to

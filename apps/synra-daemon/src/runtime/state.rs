@@ -94,6 +94,12 @@ pub struct Runtime {
     /// Held beside the set rather than recomputed, because a report that reloaded every plugin to find out how many were
     /// loaded would be a report that compiles artifacts as a side effect of being asked a question.
     pub plugin_loads: std::sync::Arc<parking_lot::Mutex<crate::runtime::plugins::LoadedSummary>>,
+    /// The gate's counters, which the plugin set writes to and `status` reads.
+    ///
+    /// ★ A field here rather than a recorder inside `build_set`, because a recorder nobody can reach is a metrics
+    /// subsystem nobody can see. This is the handle both ends hold: `PluginSet` writes, and [`Runtime::status_value`]
+    /// reports.
+    pub metrics: std::sync::Arc<synra_observe::metrics::RingRecorder>,
 
     /// The intents this kernel is holding: what was shared, which plugins offered, and what the user chose.
     ///

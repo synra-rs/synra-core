@@ -102,6 +102,7 @@ impl LoadedSummary {
 /// host, so asking is both shorter and harder to get wrong than naming a variant.
 pub fn build_set(
     db: &std::sync::Arc<parking_lot::Mutex<synra_store::SynraDb>>,
+    metrics: &std::sync::Arc<synra_observe::metrics::RingRecorder>,
 ) -> Result<PluginSet, BackendError> {
     let kind = synra_plugin_host::BackendKind::default_for(synra_plugin_host::HostKind::Headless);
     let engine = synra_plugin_host::engine::WasmtimeBackend::new(kind)?;
@@ -140,7 +141,14 @@ pub fn build_set(
         }
     });
 
-    Ok(PluginSet::new(Backend::new(std::sync::Arc::new(engine)), host).with_audit_sink(sink))
+    // ★ And the gate's counters get somewhere to go.
+    //
+    // The recorder is created by the daemon and handed in rather than made here, because the daemon is what can *read* it —
+    // a recorder built inside this function and dropped on return would be a metrics subsystem nobody can see, which is
+    // exactly what these metrics were before there was a producer at all.
+    Ok(PluginSet::new(Backend::new(std::sync::Arc::new(engine)), host)
+        .with_audit_sink(sink)
+        .with_metrics(std::sync::Arc::clone(metrics)))
 }
 
 /// The plugin directories on disk that the database does not know about, recorded as installed and switched off.
