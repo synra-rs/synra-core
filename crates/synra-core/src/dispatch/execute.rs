@@ -60,5 +60,14 @@ pub fn execute(
         action: candidate.planned.action.clone(),
         args_json: candidate.planned.args.to_string(),
     };
-    set.call(plugin_id, &work, execute_budget(), now_ms)
+    // ★ The plugin's own quota decides how long this may run, how many instructions it may use and how much memory it
+    // may hold — not a number chosen here.
+    //
+    // Until this, an execution ran under a fixed five-second timeout, `fuel: None` (no instruction limit at all) and no
+    // memory ceiling, whatever the quota said. `CallBudget::from_quota` is the mapping the contract documents, and the
+    // fallback below is only for the case where the plugin was unloaded between the decision and the call.
+    let budget = set
+        .quota(plugin_id)
+        .map_or_else(execute_budget, |quota| CallBudget::from_quota(&quota));
+    set.call(plugin_id, &work, budget, now_ms)
 }

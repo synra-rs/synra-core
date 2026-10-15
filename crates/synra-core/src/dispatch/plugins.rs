@@ -154,6 +154,17 @@ struct Loaded {
     authority: Authority,
 }
 
+impl Loaded {
+    /// The quota in force for this plugin, which is the degraded one once it has been degraded.
+    ///
+    /// Forwarded rather than stored: the `Budget` is what knows, and asking it is the difference between enforcing
+    /// the number a user set and enforcing the number somebody copied at load time.
+    #[must_use]
+    pub(crate) fn quota(&self) -> synra_plugin_host::quota::Quota {
+        self.authority.quota()
+    }
+}
+
 /// What a plugin may do, for as long as it is loaded.
 ///
 /// # Why the budget and the record are here rather than on the instance
@@ -176,6 +187,17 @@ impl Authority {
         audit: Arc<Mutex<Vec<synra_observe::audit::AuditEntry>>>,
     ) -> Self {
         Self { grants, budget: Arc::new(synra_plugin_host::quota::Budget::new(quota)), audit }
+    }
+
+    /// The quota in force for this plugin, which is the degraded one once it has been degraded.
+    ///
+    /// ★ Why this is read rather than remembered.
+    ///
+    /// Because a plugin's health can change how much it is allowed, and the `Budget` is what knows: asking it is the
+    /// difference between enforcing the number a user set and enforcing the number somebody copied at load time.
+    #[must_use]
+    pub(crate) fn quota(&self) -> synra_plugin_host::quota::Quota {
+        self.budget.quota()
     }
 
     /// The session a host call is authorised against.
@@ -382,6 +404,23 @@ impl PluginSet {
         );
         Ok(())
     }
+
+    /// The quota in force for a loaded plugin.
+    ///
+    /// # ★ Why this accessor exists
+    ///
+    /// Because `CallBudget::from_quota` was written, documented as the mapping — *"Every field is taken from the quota
+    /// rather than chosen here, so the number a user sees in a settings screen is the number the sandbox enforces"* — and
+    /// **production never called it**. Only the scripted backend's `enforcement` and a test did.
+    ///
+    /// The consequence was concrete: `share.execute` ran under a fixed five-second timeout with **no instruction limit at
+    /// all**, and with no memory ceiling, whatever the plugin's quota said. The rates *were* enforced, which is what made
+    /// the gap hard to see — a quota that does something looks like a quota that works.
+    #[must_use]
+    pub fn quota(&self, id: &PluginId) -> Option<synra_plugin_host::quota::Quota> {
+        self.loaded.get(id).map(Loaded::quota)
+    }
+
 
     /// The version a plugin is loaded at.
     #[must_use]
