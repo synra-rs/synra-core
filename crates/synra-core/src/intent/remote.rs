@@ -125,7 +125,7 @@ pub fn cancel_from(envelope: &Envelope) -> Result<Cancel, MessageError> {
 }
 
 /// The envelope a host must send so an action runs somewhere else.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Outbound {
     /// Which device it is for.
     pub to: DeviceId,

@@ -38,7 +38,7 @@ pub struct PlannedAction {
 }
 
 /// One plugin's answer to "can you handle this?".
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IntentCandidate {
     /// Who answered.
     pub plugin_id: PluginId,
@@ -78,7 +78,7 @@ impl IntentCandidate {
 /// Because it is what the *next* decision is made from: a share is matched by asking every plugin that declares a share
 /// handler, a direct call names its plugin already, and a clipboard push is neither. Flattening these into "an action
 /// and its arguments" would lose the fact that decides who gets asked.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum IntentSource {
     /// The operating system's share sheet handed something over.
@@ -169,7 +169,7 @@ impl IntentSource {
 }
 
 /// How much of a user's attention an intent is allowed to need.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum Choice {
     /// Pick a candidate without asking, when one candidate is clearly the answer.
@@ -197,7 +197,7 @@ pub enum Choice {
 /// answer is to install something or share it differently. "A plugin refused" is a fact about a plugin, and the answer
 /// is to look at that plugin. "The other device never answered" is a fact about the network, and the answer is to try
 /// again. One `Failed` state with a message inside would put the burden of telling them apart on whoever renders it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum IntentState {
     /// Asking plugins whether they can handle it.
@@ -364,7 +364,7 @@ pub enum IntentError {
 }
 
 /// An intent, with everything known about it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Intent {
     /// Identifies it for its whole life, and travels with the dispatch.
     pub id: IntentId,

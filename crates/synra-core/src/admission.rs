@@ -32,6 +32,7 @@
 
 use core::fmt;
 
+use serde::{Deserialize, Serialize};
 use synra_capability::{Capability, CapabilitySet};
 use synra_platform::PlatformAction;
 use synra_protocol::session::{IntentInvocation, IntentOutcome};
@@ -125,7 +126,7 @@ impl AdmissionContext {
 ///
 /// Numbered to match the design document's sequence, so a log line or an audit record names the step and a reader can
 /// find it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum AdmissionStep {
     /// The sender is not a paired device.
@@ -173,7 +174,7 @@ impl fmt::Display for AdmissionStep {
 }
 
 /// Why an intent was refused.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error, Serialize, Deserialize)]
 #[error("the intent was refused at step {step}: {detail}")]
 pub struct AdmissionRefusal {
     /// Which check refused it.
