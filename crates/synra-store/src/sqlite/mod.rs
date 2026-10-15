@@ -36,6 +36,7 @@ mod identities;
 mod migrations;
 mod pairing;
 mod plugins;
+mod storage;
 mod settings;
 
 pub use migrations::migration_versions;

@@ -206,6 +206,37 @@ pub const MIGRATIONS: &[Migration] = &[
             "ALTER TABLE paired_devices ADD COLUMN last_address TEXT",
         ],
     },
+    Migration {
+        version: 8,
+        name: "plugin-storage",
+        statements: &[
+            // ★ What a plugin keeps between runs, which until now was nothing at all.
+            //
+            // The WIT interface has declared `storage-get`/`set`/`delete`/`keys`/`quota` since it was written, the
+            // capability catalogue has `storage:local:read` and `storage:local:write`, and every host in the repository
+            // answered all five with `notImplemented` — so a plugin that wanted to remember a setting had to ask the user
+            // for it again on every run. This is the table that makes the capability mean something.
+            //
+            // The primary key is the pair, so a plugin's key space is its own and a `set` is an upsert. Nothing about the
+            // *value* is constrained: it is whatever the plugin serialised, because the kernel has no business parsing
+            // it — and a kernel that validated a plugin's private format would be one that had to change when the plugin
+            // did.
+            //
+            // `ON DELETE CASCADE` on the plugin row, so removing a plugin removes what it stored. The alternative is a
+            // table that grows for ever with the leavings of things nobody has installed, and no query that could
+            // attribute them to anything once the row above is gone.
+            "CREATE TABLE plugin_storage (
+                plugin_id    TEXT NOT NULL REFERENCES plugins(plugin_id) ON DELETE CASCADE,
+                key          TEXT NOT NULL,
+                value        TEXT NOT NULL,
+                updated_ms   INTEGER NOT NULL,
+                PRIMARY KEY (plugin_id, key)
+            )",
+            // Listing a plugin's keys is the one read that is not by primary key, and it is on a path a settings screen
+            // takes. Without this it is a scan of every plugin's storage to find one plugin's.
+            "CREATE INDEX plugin_storage_by_key ON plugin_storage(plugin_id, key)",
+        ],
+    },
 ];
 
 /// The schema version this build expects.
