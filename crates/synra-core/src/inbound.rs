@@ -490,6 +490,47 @@ fn proposed_name(envelope: &synra_protocol::envelope::Envelope) -> Result<String
 
 use crate::Inbound;
 
+/// Decides what a dialler's token means, using this device's own record of the pairing.
+///
+/// # ★ Why this is a function over a database rather than code inside the handshake closure
+///
+/// The handshake takes a closure, and the closure it was given answered `Unknown` unconditionally — which made every link
+/// untrusted, every device list empty, and `send` refuse every device by name. The reasoning it needed is two steps: find
+/// the token this device stored for the dialler, then decide what the presented token means. Neither step needs a socket,
+/// so neither belongs inside a closure the handshake only calls once.
+///
+/// [`crate::peer::pairing_state`] is the second step. This is the first, plus the error policy between them.
+///
+/// # ★ It lived in the daemon until the listener moved, and the two always travelled together
+///
+/// A listener that accepts a connection has to answer "do I trust this peer", and the answer comes from the store. Leaving
+/// the read behind would have made the library's listener take a closure it cannot implement, which is the shape of
+/// dependency that keeps a second host from reusing the first's work.
+///
+/// # Why a database that cannot be read answers `Stale` rather than `Current`
+///
+/// Because the only safe direction to fail in is the one that asks the user to pair again. `Current` is what lets a link
+/// carry business messages, so a lookup that could not run must not produce it — and `Stale` is the honest description of
+/// a device whose record this build cannot read.
+#[must_use]
+pub fn pairing_state_for(
+    db: &synra_store::SynraDb,
+    device_id: synra_protocol::ids::DeviceId,
+    presented: Option<&synra_protocol::handshake::LinkToken>,
+) -> synra_protocol::handshake::PairingState {
+    let stored = match db.link_token_for(&device_id.to_string()) {
+        Ok(stored) => stored,
+        Err(error) => {
+            // Said out loud rather than swallowed: a device that cannot read its own pairings will refuse every peer, and
+            // the reason is the only thing that distinguishes that from "nobody has paired with us".
+            eprintln!("synra: the pairing record could not be read: {error}");
+            return synra_protocol::handshake::PairingState::Stale;
+        }
+    };
+
+    crate::peer::pairing_state(stored.as_deref(), presented)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -798,45 +839,4 @@ mod tests {
             };
             assert!(!answer.accepted);
     }
-}
-
-/// Decides what a dialler's token means, using this device's own record of the pairing.
-///
-/// # ★ Why this is a function over a database rather than code inside the handshake closure
-///
-/// The handshake takes a closure, and the closure it was given answered `Unknown` unconditionally — which made every link
-/// untrusted, every device list empty, and `send` refuse every device by name. The reasoning it needed is two steps: find
-/// the token this device stored for the dialler, then decide what the presented token means. Neither step needs a socket,
-/// so neither belongs inside a closure the handshake only calls once.
-///
-/// [`crate::peer::pairing_state`] is the second step. This is the first, plus the error policy between them.
-///
-/// # ★ It lived in the daemon until the listener moved, and the two always travelled together
-///
-/// A listener that accepts a connection has to answer "do I trust this peer", and the answer comes from the store. Leaving
-/// the read behind would have made the library's listener take a closure it cannot implement, which is the shape of
-/// dependency that keeps a second host from reusing the first's work.
-///
-/// # Why a database that cannot be read answers `Stale` rather than `Current`
-///
-/// Because the only safe direction to fail in is the one that asks the user to pair again. `Current` is what lets a link
-/// carry business messages, so a lookup that could not run must not produce it — and `Stale` is the honest description of
-/// a device whose record this build cannot read.
-#[must_use]
-pub fn pairing_state_for(
-    db: &synra_store::SynraDb,
-    device_id: synra_protocol::ids::DeviceId,
-    presented: Option<&synra_protocol::handshake::LinkToken>,
-) -> synra_protocol::handshake::PairingState {
-    let stored = match db.link_token_for(&device_id.to_string()) {
-        Ok(stored) => stored,
-        Err(error) => {
-            // Said out loud rather than swallowed: a device that cannot read its own pairings will refuse every peer, and
-            // the reason is the only thing that distinguishes that from "nobody has paired with us".
-            eprintln!("synra: the pairing record could not be read: {error}");
-            return synra_protocol::handshake::PairingState::Stale;
-        }
-    };
-
-    crate::peer::pairing_state(stored.as_deref(), presented)
 }

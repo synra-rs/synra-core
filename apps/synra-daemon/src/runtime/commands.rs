@@ -351,7 +351,7 @@ impl Kernel for Runtime {
         plugin_id: Option<&str>,
         target: Option<&str>,
     ) -> Result<serde_json::Value, Refusal> {
-        crate::runtime::intent::decide(
+        let decided = crate::runtime::intent::decide(
             &self.plugins,
             &self.board,
             self.identity.device_id,
@@ -359,8 +359,25 @@ impl Kernel for Runtime {
             plugin_id,
             target,
             synra_store::sqlite::now_ms(),
-        )
+        )?;
+
+        // ★ The one place an intent is put on a link, and the reason the library does not do it.
+        //
+        // `decide` builds the envelope for a remote target and cannot send it: `synra-core` has no transport, and
+        // `worker`'s doc makes the same argument for storage. So the host sends it — and sending is the whole of what was
+        // missing, because `INTENT_INVOKE` had a name, a catalogue entry, an automatic-ack entry and a place in the
+        // kernel-event list, and no sender anywhere in the repository.
+        //
+        // The order matters: the intent is already `Dispatching` with this request identifier, so a send that fails leaves
+        // a recorded request the far side may still have received. Reporting the failure and leaving the state alone is
+        // the honest pair — un-dispatching it would claim the message did not arrive when it may have.
+        if let Some(outbound) = &decided.outbound {
+            self.send_outbound(outbound)?;
+        }
+
+        Ok(decided.to_json())
     }
+
 
     fn intent_cancel(&self, intent: &str) -> Result<serde_json::Value, Refusal> {
         crate::runtime::intent::cancel(&self.board, intent, "the user cancelled it")
@@ -594,4 +611,43 @@ impl Kernel for Runtime {
             "reason": written.reason,
         }))
     }
+}
+
+
+/// What this host does that the kernel trait has no place for.
+impl Runtime {
+        /// Puts an intent's envelope on a link to the device it names.
+        ///
+        /// # Errors
+        ///
+        /// [`Refusal`] naming what the user can act on: the device has never been seen on this network, or the link could not
+        /// be established.
+        fn send_outbound(&self, outbound: &synra_core::intent::remote::Outbound) -> Result<(), Refusal> {
+            let now = synra_store::sqlite::now_ms();
+            // Resolve and read the address under the lock; dial outside it, for the reason `send_text` gives — a `dial` blocks
+            // for as long as a connection takes, and a host guard living across it would make a devices listing wait for a
+            // network.
+            let address = {
+                let host = self.host.lock();
+                host.address_of(outbound.to).ok_or_else(|| {
+                    Refusal::new(
+                        ErrorCode::DeviceOffline,
+                        format!(
+                            "{} cannot run this: it has not been seen on this network, so there is nowhere to send it",
+                            outbound.to
+                        ),
+                    )
+                })?
+            };
+
+            let mut host = self.host.lock();
+            let mut link = host
+                .dial(address, None, synra_core::reading_millis(now))
+                .map_err(|error| refusal_of(&error))?;
+            host.send(&mut link, &outbound.envelope).map_err(|error| refusal_of(&error))?;
+            drop(host);
+            let _ = link.bye("intent dispatched");
+
+            Ok(())
+        }
 }

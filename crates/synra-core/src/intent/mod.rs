@@ -31,6 +31,7 @@
 //! clock, a socket or a guest — and the sequence is where the bugs are, not the plumbing.
 
 pub mod board;
+pub mod remote;
 pub mod types;
 
 #[cfg(test)]

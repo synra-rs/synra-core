@@ -145,6 +145,32 @@ pub struct Decided {
     pub error: Option<String>,
     /// What stage the intent ended at.
     pub state: &'static str,
+    /// The envelope a host must send, when the action runs on another device.
+    ///
+    /// ★ Why the library builds this and does not send it
+    ///
+    /// Because this crate has no transport and should not grow one — `worker`'s doc makes the same argument for storage
+    /// ("this crate knows nothing about storage ... the caller owns the write"). Which link, and how, is the host's
+    /// business; *what* to send is not, because the event name, the addressing and the payload shape have to be right and
+    /// a host is not the only thing that will want to ask.
+    ///
+    /// ★ And why `ok` is then `false` rather than a third value
+    ///
+    /// Because there is no third value in the field. When this is `Some`, the intent is `dispatching`: nothing has run
+    /// yet and its outcome arrives later as an `INTENT_RESULT`. A caller must branch on this field before reading `ok`,
+    /// and [`Decided::is_dispatched`] is what says so without inspecting a string.
+    pub outbound: Option<crate::intent::remote::Outbound>,
+}
+
+impl Decided {
+    /// Whether the action was handed to another device rather than run here.
+    ///
+    /// A method rather than a comparison on `state`, because the state is a string for a JSON field and a caller that
+    /// compared it to `"dispatching"` would be one keystroke from comparing it to nothing at all.
+    #[must_use]
+    pub const fn is_dispatched(&self) -> bool {
+        self.outbound.is_some()
+    }
 }
 
 /// An intent's state after a move that produces nothing else.
@@ -228,6 +254,12 @@ impl Decided {
             "result": self.result,
             "error": self.error,
             "state": self.state,
+            // ★ Present only when the action was handed to another device.
+            //
+            // Without it, `"ok": false` on a dispatched intent reads as "it did not work" — and it did not *not* work, it
+            // has not happened yet. The field is the qualification, and it is emitted next to `ok` rather than instead of
+            // it so a client that only knows the old shape still reads a state it can act on.
+            "dispatchedTo": self.outbound.as_ref().map(|outbound| outbound.to.to_string()),
         })
     }
 }
@@ -466,14 +498,65 @@ pub fn decide(
 
     // ★ Only a target that is **this** device runs here.
     //
-    // The board's `confirm` produces a request id because the ordinary dispatch is an envelope to another machine —
-    // "the candidate and the envelope id the caller must send under". Sending is not implemented in this build, and
-    // pretending otherwise would run a user's action on the machine they shared *from* rather than the one they chose.
-    if target != Some(local_device) {
-        return Err(RouteError::new(
-            synra_protocol::ErrorCode::Unsupported,
-            "running an action on another device is not implemented in this build",
-        ));
+    // The board's `confirm` produces a request id because the ordinary dispatch is an envelope to another machine — "the
+    // candidate and the envelope id the caller must send under". A target that is not this device therefore produces that
+    // envelope, and **not** a local call: running it here would be doing the user's action on the machine they shared
+    // *from* rather than the one they chose.
+    //
+    // ★ This used to refuse, and the refusal was honest while nothing could send.
+    //
+    // The messenger existed and nobody dispatched with it: `INTENT_INVOKE` was in the catalogue, in the automatic-ack
+    // table and in `inbound`'s kernel-event list, with **no sender and no receiver anywhere in the repository**. The board
+    // already had both halves of the idempotency the design asks for — `confirm` reuses a request id rather than minting
+    // a new one, and `recall` looks an arriving request up by its origin. What was missing was exactly this: build the
+    // message, and hand it to a host that can put it on a link.
+    if let Some(device) = target.filter(|device| *device != local_device) {
+        // ★ The state and the trace are read from the board, never invented.
+        //
+        // The first version of this branch built a `Dispatching` by hand to get its name, which needed a candidate that
+        // does not exist — a fabricated value standing in for the real one, in the one place whose whole purpose is that
+        // nothing is fabricated. `confirm` has already moved the intent into `Dispatching` with the candidate it chose,
+        // so the board is asked what it holds.
+        let (trace, state) = {
+            let intents = board.lock();
+            let found = intents
+                .get(id)
+                .ok_or_else(|| RouteError::new(synra_protocol::ErrorCode::InvalidArgument, "this kernel has no such intent"))?;
+            let answer = (found.trace, state_name(&found.state));
+            // Released rather than left to the end of the block: the board is shared with every other connection, and the
+            // envelope below is built while holding nothing.
+            drop(intents);
+            answer
+        };
+        let envelope = crate::intent::remote::invoke(
+            local_device,
+            device,
+            &crate::intent::remote::Invoke {
+                plugin_id: candidate.plugin_id.clone(),
+                plugin_version: candidate.plugin_version.clone(),
+                action: candidate.planned.action.clone(),
+                // The plugin's own arguments, not the share: this is what the user was shown when they chose.
+                args: candidate.planned.args.clone(),
+            },
+            trace,
+            now_ms,
+        )
+        .map_err(|error| {
+            RouteError::new(synra_protocol::ErrorCode::Internal, error.to_string())
+        })?;
+
+        return Ok(Decided {
+            intent_id: id,
+            request_id,
+            plugin_id: candidate.plugin_id,
+            action: candidate.planned.action,
+            // Nothing ran, and nothing failed: it is in flight. `is_dispatched` is what a caller branches on.
+            ok: false,
+            result: String::new(),
+            error: None,
+            state,
+            outbound: Some(crate::intent::remote::Outbound { to: device, request_id, envelope }),
+        });
     }
 
     // ★ The call itself. `execute` is the only function in the system that runs a plugin's action, and it is reached
@@ -506,6 +589,8 @@ pub fn decide(
         result,
         error,
         state: state_name(&state),
+        // It ran here, so there is nothing to send.
+        outbound: None,
     })
 }
 

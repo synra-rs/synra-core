@@ -72,9 +72,15 @@ pub(super) fn decide(
     plugin_id: Option<&str>,
     target: Option<&str>,
     now_ms: i64,
-) -> Result<serde_json::Value, Refusal> {
+) -> Result<orchestrate::Decided, Refusal> {
+    // ★ The typed answer, not its JSON.
+    //
+    // This rendered to `serde_json::Value` like its neighbours, and that was fine while a decision could only run here:
+    // the answer was the whole outcome. It is not fine now — a remote decision's outcome is an **envelope the host has to
+    // send**, and rendering it to JSON threw the envelope away one line before anything could put it on a link. The
+    // caller renders it for the wire after it has used what only the type carries.
     orchestrate::decide(plugins, board, local_device, intent, plugin_id, target, now_ms)
-        .map(|answer| answer.to_json()).map_err(as_refusal)
+        .map_err(as_refusal)
 }
 
 /// Abandons an intent.
@@ -288,8 +294,9 @@ mod tests {
         let routed = dispatch(&plugins, &board, &item(), 1_000).expect("routed");
         let intent = routed["intent"].as_str().expect("an id").to_owned();
 
+        // The shim hands back the typed answer now, so a test about the rendered shape renders it.
         let answer =
-            decide(&plugins, &board, local_device(), &intent, None, None, 2_000).expect("decided");
+            decide(&plugins, &board, local_device(), &intent, None, None, 2_000).expect("decided").to_json();
 
         assert_eq!(answer["ok"], true, "{answer}");
         assert_eq!(answer["pluginId"], "@acme/opener");
@@ -357,11 +364,66 @@ mod tests {
             Some(&local_device().to_string()),
             3_000,
         )
-        .expect("aimed and run");
+        .expect("aimed and run")
+        .to_json();
 
         assert_eq!(answer["ok"], true, "{answer}");
         assert_eq!(answer["state"], "succeeded", "{answer}");
         assert_eq!(answer["result"], "opened");
+    }
+
+    #[test]
+    fn a_share_aimed_at_another_device_produces_an_envelope_instead_of_a_refusal() {
+        // ★ This used to refuse, and the refusal was honest while nothing could send.
+        //
+        // `INTENT_INVOKE` was in the catalogue, in the automatic-ack table and in `inbound`'s kernel-event list, with no
+        // sender and no receiver anywhere in the repository. The board already had both halves of the idempotency the
+        // design asks for — `confirm` reuses a request id rather than minting a new one, and `recall` looks an arriving
+        // request up by its origin — so what was missing was exactly this: build the message and hand it to a host.
+        //
+        // The other direction matters just as much, and is what the second half asserts: a remote target must **not**
+        // run the plugin here. Running it would be doing the user's action on the machine they shared *from* rather than
+        // the one they chose, and from the outside that looks identical to success.
+        let plugins = set_that_accepts_without_a_place("@acme/opener");
+        let board = Arc::new(Mutex::new(synra_core::intent::Board::new()));
+        let routed = dispatch(&plugins, &board, &item(), 1_000).expect("routed");
+        let intent = routed["intent"].as_str().expect("an id").to_owned();
+        let phone = "00000000-0000-4000-8000-0000000000ff";
+
+        let decided = decide(
+            &plugins,
+            &board,
+            local_device(),
+            &intent,
+            None,
+            Some(phone),
+            2_000,
+        )
+        .expect("dispatched rather than refused");
+        let answer = decided.to_json();
+
+        assert_eq!(answer["state"], "dispatching", "{answer}");
+        assert_eq!(answer["dispatchedTo"], phone, "{answer}");
+        // ★ Nothing ran, and nothing failed. `ok` is false because no outcome exists yet, and `dispatchedTo` beside it is
+        // what stops that being read as a failure.
+        assert_eq!(answer["ok"], false, "{answer}");
+        assert_eq!(answer["result"], "", "{answer}");
+        assert_eq!(answer["error"], serde_json::Value::Null, "{answer}");
+
+        // The envelope is for the device the user chose, carries the event the far side listens for, and carries the
+        // plugin's own arguments — not the share.
+        let outbound = decided.outbound.as_ref().expect("an envelope to send");
+        assert_eq!(outbound.to.to_string(), phone);
+        assert_eq!(outbound.envelope.event.as_str(), "_synra.intent.invoke");
+        assert_eq!(outbound.request_id, decided.request_id, "the id a resend is recognised by");
+        let payload = synra_core::intent::remote::invoke_from(&outbound.envelope)
+            .expect("a readable invocation");
+        assert_eq!(payload.action, "open");
+        assert_eq!(payload.args, serde_json::json!({ "url": "https://example.com" }));
+
+        // And the plugin did not run: its scripted backend would have answered "opened" had it been called.
+        let snapshot = snapshot(&board, &intent).expect("a snapshot");
+        assert_eq!(snapshot["state"], "dispatching", "and it stays in flight: {snapshot}");
     }
 
     #[test]
