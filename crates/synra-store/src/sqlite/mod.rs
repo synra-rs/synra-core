@@ -40,6 +40,7 @@ mod settings;
 
 pub use migrations::migration_versions;
 pub use pairing::Paired;
+pub use settings::ConfigChange;
 
 #[cfg(test)]
 mod tests;
@@ -89,6 +90,19 @@ pub enum DbError {
     /// A row could not be turned into a type.
     #[error(transparent)]
     Row(#[from] RowError),
+
+    /// A value could not be turned into the JSON text a column holds.
+    ///
+    /// # Why this is a distinct variant rather than a [`DbError::Statement`]
+    ///
+    /// Because it is refused **before** the statement runs, and it is this crate's own doing rather than SQLite's. A
+    /// caller that matched only on [`DbError::Statement`] would see a config write that failed for a reason no statement
+    /// explains — which is how a missing setting becomes a support question.
+    #[error("could not write a value as JSON: {why}")]
+    NotJson {
+        /// What `serde_json` said.
+        why: String,
+    },
 }
 
 /// The kernel's database.
