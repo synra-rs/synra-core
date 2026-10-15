@@ -5,7 +5,7 @@ use synra_protocol::handshake::LinkToken;
 use synra_protocol::ids::DeviceId;
 
 use crate::discovery::{Absorbed, DiscoveryTable};
-use crate::identity::Identity;
+use crate::identity::{Identity, check_display_name};
 use crate::peer::{Flags, LocalPeer};
 use crate::sessions::{SessionKey, SessionRegistry};
 
@@ -108,18 +108,23 @@ impl Host {
     ///
     /// # Errors
     ///
-    /// [`HostError::Unchanged`] never — the method succeeds — but the name is validated here rather than at the call
-    /// site so that a host cannot be made to announce a name that [`Identity::rename`] would have refused. Returns
-    /// `HostError` so a future invariant (a name that a peer's UI cannot render, say) has somewhere to go without
-    /// changing every caller's signature.
+    /// [`HostError::Unnameable`] when [`check_display_name`] refuses it — which is the *same* check
+    /// [`Identity::rename`] makes, not a stricter one. Two rules here would mean a name the identity accepts and the
+    /// host refuses, so a rename would succeed and then leave the two copies disagreeing — the exact fault this method
+    /// exists to remove.
+    ///
+    /// # Why the *checked* name is stored rather than the one handed in
+    ///
+    /// Because [`check_display_name`] trims before it validates, so `" padded "` is a name and its checked form is
+    /// `"padded"`. [`Identity::rename`] stores the checked form; storing the original here would leave the two copies
+    /// differing by exactly the whitespace — which is the fault this method exists to prevent, introduced by the fix
+    /// for it.
     pub fn rename_self(&mut self, name: &str) -> Result<(), HostError> {
-        if !name.chars().any(char::is_alphanumeric) || name.trim() != name || name.is_empty() {
-            return Err(HostError::Unnameable {
-                name: name.chars().take(24).collect(),
-            });
-        }
-        self.identity.display_name = name.to_owned();
-        self.local.display_name = name.to_owned();
+        let checked = check_display_name(name).map_err(|_| HostError::Unnameable {
+            name: name.chars().take(24).collect(),
+        })?;
+        self.identity.display_name = checked.clone();
+        self.local.display_name = checked;
         Ok(())
     }
 

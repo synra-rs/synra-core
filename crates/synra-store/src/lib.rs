@@ -45,7 +45,9 @@ pub use db::{Health, Migration, MigrationOutcome, SchemaError, SchemaState, late
 pub use records::{
     ConfigRow, DeviceRow, IdentityRow, PluginGrantRow, PluginRow, RowError, SeenDeviceRow, columns,
 };
-pub use sqlite::{DbError, SynraDb, migration_versions};
+// `Paired` is here because `SynraDb::pair_device` takes one: a public method whose argument type is not exported is
+// a method no caller outside this crate can call at all.
+pub use sqlite::{DbError, Paired, SynraDb, migration_versions};
 pub use paths::{DB_FILE_NAME, PathError, Paths, is_within, sanitise_component};
 pub use sandbox::{CACHE, FILES, PluginDataRoot, SandboxMeta, SUBDIRECTORIES};
 pub use secrets::{
