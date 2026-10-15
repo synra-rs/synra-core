@@ -25,20 +25,15 @@
 
 #![cfg(feature = "wasm-runtime")]
 
-use std::sync::Arc;
 
-use parking_lot::Mutex;
 
 use wasmtime::StoreContextMut;
 use wasmtime::component::{Linker, LinkerInstance};
 
+use super::session::LinkerSession;
 use super::wasmtime_backend::StoreData;
-use synra_capability::CapabilitySet;
-use synra_observe::audit::AuditEntry;
-use synra_protocol::ids::PluginId;
 
-use crate::host_calls::{CallError, Host, HostCalls};
-use crate::quota::Budget;
+use crate::host_calls::{CallError, HostCalls};
 use crate::host_surface;
 
 /// What the guest is told when a call is refused.
@@ -477,58 +472,6 @@ fn json_string(value: &str) -> String {
     out.push('"');
     out
 }
-
-/// What one instance's host calls are made through.
-///
-/// # Why the session lives on the store
-///
-/// Because a host function receives a `StoreContextMut` and nothing else: the session has to be reachable from the
-/// store, and putting it there is what makes "the call is checked against *this* plugin's grants" true by construction
-/// rather than by a lookup that could find the wrong plugin.
-///
-/// # Why the host is an `Arc` here and a borrow in [`HostCalls`]
-///
-/// Because a `Store` owns its data and may be moved between threads, so a reference into a caller's frame is a
-/// reference it cannot carry. The kernel hands out an `Arc<dyn Host>` and the store holds a clone of it, which is the
-/// same sharing an `Arc<Kernel>` already is; the borrow is taken per call, for as long as the check runs.
-pub struct LinkerSession {
-    /// The plugin these calls are made on behalf of.
-    pub plugin: PluginId,
-    /// What it holds.
-    pub grants: CapabilitySet,
-    /// The budget its calls are counted against.
-    pub budget: Arc<Budget>,
-    /// What it did, in the order it did it.
-    pub audit: Mutex<Vec<AuditEntry>>,
-    /// The host the effects reach.
-    pub host: Arc<dyn Host>,
-}
-
-impl LinkerSession {
-    /// A session for a plugin.
-    #[must_use]
-    pub fn new(plugin: PluginId, grants: CapabilitySet, budget: Arc<Budget>, host: Arc<dyn Host>) -> Self {
-        Self { plugin, grants, budget, audit: Mutex::new(Vec::new()), host }
-    }
-
-    /// What the plugin did, in the order it did it.
-    #[must_use]
-    pub fn recorded(&self) -> Vec<AuditEntry> {
-        self.audit.lock().clone()
-    }
-}
-
-impl std::fmt::Debug for LinkerSession {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("LinkerSession")
-            .field("plugin", &self.plugin)
-            .field("grants", &self.grants.len())
-            .field("audited", &self.audit.lock().len())
-            .finish_non_exhaustive()
-    }
-}
-
 #[cfg(test)]
 #[path = "linker_tests.rs"]
 mod tests;

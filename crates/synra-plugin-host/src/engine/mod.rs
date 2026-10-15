@@ -26,6 +26,7 @@
 pub mod cache;
 pub mod executor;
 pub mod scripted;
+pub mod session;
 pub mod types;
 
 #[cfg(feature = "wasm-runtime")]
@@ -38,6 +39,7 @@ pub use executor::{
     EPOCH_PERIOD, Epoch, EpochTicker, ExecutorRefusal, MAX_THREADS, ThreadPool, WasmExecutor,
 };
 pub use scripted::{ScriptError, Scripted, ScriptedArtifact, ScriptedBackend, ScriptedInstance, digest_of};
+pub use session::LinkerSession;
 pub use types::{
     Backend, BackendError, BackendKind, CallBudget, CallOutcome, CompiledArtifact, Enforcement, HostKind,
     PluginInstance, WasmBackend, Work,

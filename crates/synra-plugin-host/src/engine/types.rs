@@ -495,6 +495,32 @@ pub trait PluginInstance: Send {
     fn deadline_epoch(&self) -> Option<u64> {
         None
     }
+
+    /// Hands this instance the session a host call is authorised against.
+    ///
+    /// # ★ Why this is a setter rather than a parameter of `instantiate`
+    ///
+    /// Because the session is **per call**, not per instance, and the pieces it needs — which plugin, what it was
+    /// granted, which budget, which host — are held by the caller that knows the plugin, not by the backend that knows
+    /// the engine. Threading them through `instantiate` would make every backend's signature carry four arguments it
+    /// does not read, for a value only the Wasm backend can use.
+    ///
+    /// # Why the default does nothing
+    ///
+    /// Because a backend with no host functions to authorise has nothing to install it into. The scripted backend is
+    /// the case: it answers from a table and never reaches a guest, so a session is not something it can be given. A
+    /// default is right here rather than a required method, because the alternative is every such backend writing an
+    /// empty body to satisfy a compiler.
+    ///
+    /// # The invariant this exists to keep
+    ///
+    /// An instance that has **not** been given a session refuses every host call — see `linker::run`, which answers a
+    /// refusal rather than running a function ungated. So a caller that forgets to call this gets a plugin that cannot
+    /// call the host, not a plugin that can call it without a check. That is the safe direction for the omission.
+    fn set_session(&mut self, session: crate::engine::session::LinkerSession) {
+        // Named rather than `_`, so a backend that overrides this knows what it is being handed.
+        let _ = session;
+    }
 }
 
 /// A backend shared by everything that uses it.

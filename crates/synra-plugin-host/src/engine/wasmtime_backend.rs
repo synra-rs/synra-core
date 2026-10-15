@@ -254,6 +254,21 @@ impl PluginInstance for EngineInstance {
         self.kind
     }
 
+    /// Installs the session the linker checks every host call against.
+    ///
+    /// # ★ What this changes in production
+    ///
+    /// Everything. `instantiate` leaves `session: None`, and `linker::run` refuses **every** host call when there is no
+    /// session — so before this method was called by anyone, the capability gate never ran: no plugin could reach a host
+    /// function at all, and nothing was audited. The gate is the mechanism the whole capability model rests on, and it
+    /// was inert.
+    ///
+    /// The session goes into the store's own data, which is where the linker reads it from. `LinkerSession` holds
+    /// `Arc`s, so moving it in is a pointer move.
+    fn set_session(&mut self, session: crate::engine::session::LinkerSession) {
+        self.store.data_mut().session = Some(Box::new(session));
+    }
+
     fn memory_bytes(&self) -> u64 {
         // What the limiter has been told about, which is the number the budget was enforced against. A value read from
         // the guest's own memory would be the thing being measured rather than the measurement.

@@ -63,6 +63,13 @@ pub const MAX_THREADS: usize = 64;
 ///
 /// An observer is how an engine says "when the epoch moves, move this too", so there is one counter to advance and the
 /// engine cannot be left behind by an advance that forgot about it.
+/// Something to run whenever the epoch moves, given the new value.
+///
+/// A named alias rather than the type written out in the field, because `clippy::type_complexity` is right about one
+/// thing: `Arc<Mutex<Vec<Arc<dyn Fn(u64) + Send + Sync>>>>` is a sentence nobody parses on the first read, and the name
+/// is the part that says why it is nested this way — shared, locked, many, and callable from the ticker's thread.
+type Observer = Arc<dyn Fn(u64) + Send + Sync>;
+
 #[derive(Clone)]
 pub struct Epoch {
     current: Arc<AtomicU64>,
@@ -70,7 +77,7 @@ pub struct Epoch {
     ///
     /// Behind the same lock as the push, and never called while it is held — an observer that registered another
     /// observer would otherwise deadlock a thread that is holding the lock its own registration needs.
-    observers: Arc<Mutex<Vec<Arc<dyn Fn(u64) + Send + Sync>>>>,
+    observers: Arc<Mutex<Vec<Observer>>>,
 }
 
 impl std::fmt::Debug for Epoch {
