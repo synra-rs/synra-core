@@ -482,7 +482,19 @@ mod tests {
         fn send_file(&self, _to: &str, _path: &str) -> Result<serde_json::Value, Refusal> {
             self.answer("sendFile")
         }
-        fn plugins(&self) -> Result<serde_json::Value, Refusal> {
+        /// Refused: this double answers nothing about routing.
+    ///
+    /// ★ A double that returned an empty candidate list would be worse than this: "nothing can handle it" and "this is
+    /// not implemented here" are different facts, and a test that could not tell them apart would be asserting about the
+    /// double rather than about the code.
+    fn intent_dispatch(&self, _mime: &str, _text: &str) -> Result<serde_json::Value, Refusal> {
+        Err(Refusal::new(
+            synra_protocol::ErrorCode::Internal,
+            "this kernel does not route intents",
+        ))
+    }
+
+    fn plugins(&self) -> Result<serde_json::Value, Refusal> {
             self.answer("plugins")
         }
         fn logs(

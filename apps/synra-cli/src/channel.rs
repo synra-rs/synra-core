@@ -114,6 +114,13 @@ pub fn question_for(
             shape,
         }),
         Command::Plugin(_) => plugin_request().map(|request| Question { request, shape }),
+        Command::Share(args) => Some(Question {
+            request: Request::IntentDispatch {
+                mime: args.mime.clone(),
+                text: args.text.clone(),
+            },
+            shape,
+        }),
         // The two commands that do not need a running kernel.
         Command::Doctor(_) | Command::Db(_) => None,
     }

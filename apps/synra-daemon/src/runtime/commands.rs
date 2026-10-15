@@ -280,6 +280,29 @@ impl Kernel for Runtime {
         self.logs_value(lines, verbose, trace)
     }
 
+    /// Routes a share: asks the plugins, and reports what offered.
+    ///
+    /// \u2605 The method that makes the kernel do the thing the product is for. Everything it calls existed and was tested;
+    /// what was missing was a way in, so the matcher had no production caller and a share that arrived became a file.
+    fn intent_dispatch(&self, mime: &str, text: &str) -> Result<serde_json::Value, Refusal> {
+        // ★ The origin is filled in here rather than accepted from the caller. A client on this machine's own socket is
+        // not a device, so it has no identifier to send — and one it made up would be an identifier the kernel then had
+        // to trust. Which device this is, is something only the kernel knows.
+        let item = synra_protocol::inbound::ShareItem {
+            from: self.identity.device_id,
+            mime: mime.to_owned(),
+            text: Some(text.to_owned()),
+            transfers: Vec::new(),
+            context_id: None,
+        };
+        crate::runtime::intent::dispatch(
+            &self.plugins,
+            &self.board,
+            &item,
+            synra_store::sqlite::now_ms(),
+        )
+    }
+
     /// Asks a device to pair, and waits for its user.
     ///
     /// # Why the host lock is released before the request is sent

@@ -76,10 +76,34 @@ pub enum Command {
     Plugin(PluginArgs),
     /// Show the kernel's log.
     Logs(LogsArgs),
+    /// Hand something to the kernel to route.
+    Share(ShareArgs),
     /// Check that this machine can run the kernel.
     Doctor(DoctorArgs),
     /// Read the database directly.
     Db(DbArgs),
+}
+
+/// Options for `share`.
+///
+/// # Why this is its own group rather than a flag on `send`
+///
+/// Because the two are opposites. `send` names a device and delivers to it; `share` names nothing, and the kernel asks
+/// every plugin which one can handle it. A flag on `send` would suggest the destination is a detail of the same act, and
+/// it is the whole difference.
+#[derive(Debug, Args)]
+pub struct ShareArgs {
+    /// What to route: a link, a line of text, a path.
+    #[arg(value_name = "TEXT")]
+    pub text: String,
+
+    /// What it is, for a plugin that cares.
+    ///
+    /// Defaults to `text/plain`, which is what a bare argument is. A link is `text/uri-list`, and passing that is how a
+    /// caller says so rather than the kernel guessing from the contents \u2014 a string that merely looks like a URL is not
+    /// one, and a plugin that opened it would be acting on a guess.
+    #[arg(long, value_name = "MIME", default_value = "text/plain")]
+    pub mime: String,
 }
 
 /// Options for `devices`.
@@ -341,6 +365,7 @@ mod tests {
             vec!["synra", "logs"],
             vec!["synra", "doctor"],
             vec!["synra", "db", "dump"],
+                vec!["synra", "share", "https://example.com"],
         ] {
             assert!(parse(&args).is_ok(), "{args:?} should parse");
         }
@@ -669,6 +694,27 @@ mod tests {
         }
     }
 
+    #[test]
+    fn share_asks_the_kernel_to_route_rather_than_to_send() {
+        // \u2605 The two are opposites and the difference is the whole feature: `send` names a device and delivers to it,
+        // `share` names nothing and asks every plugin which one can handle it. A `share` that quietly became a `send`
+        // would look identical from the command line and do something else entirely.
+        let Command::Share(args) = parsed(&["synra", "share", "https://example.com"]).command else {
+            panic!("share is a command");
+        };
+        assert_eq!(args.text, "https://example.com");
+        // The default is `text/plain`, which is what a bare argument is. A link is `text/uri-list`, and the caller says
+        // so rather than the kernel guessing from the contents.
+        assert_eq!(args.mime, "text/plain");
+
+        let Command::Share(args) =
+            parsed(&["synra", "share", "--mime", "text/uri-list", "https://example.com"]).command
+        else {
+            panic!("share is a command");
+        };
+        assert_eq!(args.mime, "text/uri-list");
+    }
+
     // ── The main.rs bound ─────────────────────────────────────────────────────────────────────────
 
     #[test]
@@ -680,6 +726,6 @@ mod tests {
         // Counted rather than named, so adding a command without adding it here is a failure — and the count is what
         // makes the list above (`every_documented_command_exists`) meaningful: a command that parses but is not on the
         // command surface would be one clap never dispatches to.
-        assert_eq!(Cli::command().get_subcommands().count(), 8);
+        assert_eq!(Cli::command().get_subcommands().count(), 9);
     }
 }

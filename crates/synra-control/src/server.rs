@@ -126,6 +126,26 @@ pub trait Kernel {
     /// As [`Kernel::status`].
     fn plugins(&self) -> Result<serde_json::Value, Refusal>;
 
+    /// Hands the kernel something to route.
+    ///
+    /// # ★ Why this is the method that makes the kernel do its job
+    ///
+    /// Because routing is what the product is: something arrives — a link, a file, a line of text — and a plugin that
+    /// can act on it is found, offered to the user, and run. `synra-core` implements every part of that and **nothing
+    /// could reach it**: the control protocol had no intent request, so the matcher had no production caller, and a share
+    /// that arrived became a file in an inbox rather than an action.
+    ///
+    /// # What the answer carries
+    ///
+    /// The candidates the plugins offered, plus the pass's own report — how many were asked, how many declined, and
+    /// which of them misbehaved. Those together are what distinguish "nothing is installed" from "everything crashed",
+    /// which look identical from a candidate list alone.
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal`] when the item cannot be read into the shape a plugin is asked about.
+    fn intent_dispatch(&self, mime: &str, text: &str) -> Result<serde_json::Value, Refusal>;
+
     /// The tail of the kernel's log.
     ///
     /// # Errors
@@ -299,6 +319,7 @@ impl Server {
             Request::SendText { to, text } => kernel.send_text(to, text),
             Request::SendFile { to, path } => kernel.send_file(to, path),
             Request::Plugins => kernel.plugins(),
+            Request::IntentDispatch { mime, text } => kernel.intent_dispatch(mime, text),
             Request::Logs { lines, verbose, trace } => kernel.logs(*lines, *verbose, trace.as_deref()),
             Request::Pair { device } => kernel.pair(device),
             Request::PairAnswer { request_id, accepted } => kernel.pair_answer(request_id, *accepted),
@@ -379,7 +400,19 @@ mod tests {
         fn send_file(&self, _to: &str, _path: &str) -> Result<serde_json::Value, Refusal> {
             self.send_file.clone()
         }
-        fn plugins(&self) -> Result<serde_json::Value, Refusal> {
+        /// Refused: this double answers nothing about routing.
+    ///
+    /// ★ A double that returned an empty candidate list would be worse than this: "nothing can handle it" and "this is
+    /// not implemented here" are different facts, and a test that could not tell them apart would be asserting about the
+    /// double rather than about the code.
+    fn intent_dispatch(&self, _mime: &str, _text: &str) -> Result<serde_json::Value, Refusal> {
+        Err(Refusal::new(
+            synra_protocol::ErrorCode::Internal,
+            "this kernel does not route intents",
+        ))
+    }
+
+    fn plugins(&self) -> Result<serde_json::Value, Refusal> {
             self.plugins.clone()
         }
         fn logs(

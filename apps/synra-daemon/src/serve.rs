@@ -287,6 +287,7 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
         pairing,
         plugins,
         plugin_loads,
+        board: Arc::new(parking_lot::Mutex::new(synra_core::intent::Board::new())),
         // ★ Handed to the runtime so `synra logs --verbose` can raise what the process writes. `None` when logging is
         // not running — a daemon whose log file could not be opened still answers the command, and it must not claim to
         // have raised anything.

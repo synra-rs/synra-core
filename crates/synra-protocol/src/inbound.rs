@@ -618,7 +618,15 @@ pub struct DeviceSnapshot {
 }
 
 /// A shared item, as it arrived from a peer.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// # Why this is serialisable
+///
+/// Because a plugin is handed this as JSON: `can-handle` receives the item as text, and the shape it is parsed from has
+/// to be the shape the rest of the system holds. A second, hand-written serialisation for the plugin boundary would be a
+/// second definition of what a share is, and the two would drift — a plugin would be asked about a different object from
+/// the one the kernel routed.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ShareItem {
     /// Which device shared it.
     pub from: crate::ids::DeviceId,

@@ -77,6 +77,7 @@ fn runtime(dir: &Path) -> Runtime {
         plugin_loads: std::sync::Arc::new(parking_lot::Mutex::new(
             crate::runtime::LoadedSummary::default(),
         )),
+        board: std::sync::Arc::new(parking_lot::Mutex::new(synra_core::intent::Board::new())),
         // ★ A real verbosity rather than `None`, so a test can assert that `logs --verbose` actually raised it. `None`
         // is the state of a daemon whose log file could not be opened, and a fixture that used it would make every
         // assertion about raising vacuously true.

@@ -95,6 +95,16 @@ pub struct Runtime {
     /// loaded would be a report that compiles artifacts as a side effect of being asked a question.
     pub plugin_loads: std::sync::Arc<parking_lot::Mutex<crate::runtime::plugins::LoadedSummary>>,
 
+    /// The intents this kernel is holding: what was shared, which plugins offered, and what the user chose.
+    ///
+    /// # \u2605 Why the runtime holds it
+    ///
+    /// Because it is the thing the product is. Something arrives, every plugin is asked whether it can handle it, the
+    /// candidates are offered to the user, and one is run \u2014 and a board is what holds that state between the request
+    /// that raised it and the decision that answers it. Without it here there is nowhere for an intent to live, which is
+    /// why the matcher had no production caller at all.
+    pub board: std::sync::Arc<parking_lot::Mutex<synra_core::intent::Board>>,
+
     /// What the logger is currently willing to write, and how long a raise lasts.
     ///
     /// # ★ Why the runtime holds this

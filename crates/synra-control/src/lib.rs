@@ -176,6 +176,29 @@ pub enum Request {
     /// The installed plugins.
     Plugins,
 
+    /// Hands the kernel something to route.
+    ///
+    /// # ★ Why this request had to exist
+    ///
+    /// Because the matcher — the component that asks every plugin "can you handle this?" — had **no production caller at
+    /// all**. `synra-core` implements it, tests it, and nothing could reach it: the control protocol had no intent
+    /// request, the CLI had no command, and the daemon's transport writes an inbound share to an inbox and reports that
+    /// nothing was delivered. A share arriving became a file, never an action, and the design document calls this
+    /// routing "the kernel's most central orchestration".
+    ///
+    /// # Why this carries content rather than a `ShareItem`
+    ///
+    /// Because a `ShareItem` says which device shared it, and a caller on this machine's own socket is not a device: the
+    /// only place that knows which device this is, is the kernel. So the caller sends what was shared and the kernel
+    /// supplies the origin, rather than the caller inventing an identifier for itself that the kernel would then have to
+    /// trust.
+    IntentDispatch {
+        /// The MIME type. `text/uri-list` for a link, `text/plain` for a sentence.
+        mime: String,
+        /// The content.
+        text: String,
+    },
+
     /// The tail of the kernel's log.
     Logs {
         /// How many lines.
@@ -250,6 +273,7 @@ impl Request {
             Self::SendText { .. } => "sendText",
             Self::SendFile { .. } => "sendFile",
             Self::Plugins => "plugins",
+                Self::IntentDispatch { .. } => "intentDispatch",
             Self::Logs { .. } => "logs",
             Self::Pair { .. } => "pair",
             Self::PairAnswer { .. } => "pairAnswer",
