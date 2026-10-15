@@ -848,6 +848,44 @@ mod tests {
     }
 
     #[test]
+    fn a_frame_the_decoder_refuses_ends_the_link() {
+        // ★ A1 says a structural problem closes the link. The decoder side of that was already tested
+        // (`frame.rs`: an unknown kind poisons, and a poisoned decoder refuses further use). What was missing is the
+        // other half: that the **link** stops, rather than carrying on in a state where every later read fails for a
+        // reason that has nothing to do with what the caller did.
+        //
+        // Without this, the sentence in the design document was supported by a code reading and not by a test — which is
+        // the same gap `code review + test` is written to close.
+        let (a, b) = connected();
+        let mut a = a;
+
+        // ★ The bytes are written straight onto the socket rather than through `send_frame`, and that is the point.
+        // `send_frame` refuses this frame first — the encoder validates the kind and body pair and answers
+        // `BodyKindMismatch` — so a test built on the sender could only ever prove that the *encoder* is careful.
+        // A peer is not the encoder: it is whatever is on the other end, so the only honest way to test the receiving
+        // half is to produce bytes no compliant sender would.
+        //
+        // The layout is the documented one: `u32 BE length` (4 = kind + flags + two body bytes), then an unknown
+        // kind byte `0xff`, then flags, then a two-byte body.
+        use std::io::Write;
+        a.write_all(&[0x00, 0x00, 0x00, 0x04, 0xff, 0x00, b'{', b'}'])
+            .expect("writes");
+
+        let mut _sender = link(a, PEER, LOCAL);
+        let mut receiver = link(b, LOCAL, PEER);
+
+        let first = receiver.receive();
+        assert!(
+            matches!(first, Err(LinkError::Frame(_)) | Err(LinkError::Unexpected { .. })),
+            "an unknown frame kind was accepted: {first:?}"
+        );
+
+        // And the link does not come back: a second read is refused rather than returning whatever happens to be next.
+        let second = receiver.receive();
+        assert!(second.is_err(), "the link carried on after a refused frame: {second:?}");
+    }
+
+    #[test]
     fn a_bye_ends_the_link() {
         // The peer saying goodbye is the ordinary end, and a caller reads it as closed rather than as a fault.
         let (a, b) = connected();
