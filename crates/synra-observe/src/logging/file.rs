@@ -21,7 +21,7 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// The name of the file being written.
 pub const LOG_FILE_NAME: &str = "synra.log";
@@ -152,10 +152,4 @@ impl core::fmt::Debug for RotatingFile {
             .field("keep", &self.keep)
             .finish()
     }
-}
-
-/// Whether a directory holds a log a reader could open.
-#[must_use]
-pub fn exists(directory: &Path) -> bool {
-    directory.join(LOG_FILE_NAME).is_file()
 }

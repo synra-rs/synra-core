@@ -145,6 +145,27 @@ impl CommandOutcome {
 /// Everything else is a question, and [`crate::channel`] is what turns one into a request and the answer into output.
 #[must_use]
 pub fn dispatch(cli: &Cli) -> CommandOutcome {
+    // ★ A flag that cannot work says so, rather than returning something that looks like an answer.
+    //
+    // `--follow` is parsed and was then never read: the command sent an ordinary `logs` request, printed the tail, and
+    // exited. A user who asked to follow spent the rest of their time believing they were watching a live log while
+    // looking at a snapshot — and the failure is invisible, because a snapshot of a quiet log and a live log with
+    // nothing happening are the same output.
+    //
+    // Streaming needs a protocol that keeps a connection open and pushes lines. `Request` is one request per connection,
+    // so this is not a wiring gap but a missing feature, and saying which is the honest answer. The alternative —
+    // looping here and re-asking every second — would be a `--follow` that silently polls, which is a different promise
+    // from the one the flag makes.
+    if let Command::Logs(args) = &cli.command
+        && args.follow
+    {
+        return CommandOutcome::Failed(
+            "`--follow` is not implemented yet: the control protocol answers one request per connection, so there is \
+             no stream to follow. Run `synra logs` again to see newer lines."
+                .to_owned(),
+        );
+    }
+
     let question =
         match crate::channel::question_for(&cli.command, cli.output, || plugin_request(&cli.command))
         {
@@ -250,6 +271,29 @@ mod tests {
             data_root_from(Some(std::ffi::OsString::from("/custom/synra"))),
             PathBuf::from("/custom/synra")
         );
+    }
+
+    #[test]
+    fn following_the_log_is_refused_rather_than_answered_with_a_snapshot() {
+        // ★ The flag parses and used to be ignored. The command sent an ordinary `logs` request, printed the tail and
+        // exited — so a user who asked to follow believed they were watching a live log while looking at a snapshot, and
+        // nothing in the output said otherwise. A snapshot of a quiet log and a live log with nothing happening are the
+        // same screen, which is what made it invisible.
+        //
+        // Refusing is the honest answer until streaming exists. The assertion is on the message as well as the variant,
+        // because `Failed` without a reason sends the user looking for a kernel that is not running.
+        let outcome = dispatch(&cli(&["synra", "logs", "--follow"]));
+
+        match outcome {
+            CommandOutcome::Failed(why) => {
+                assert!(why.contains("--follow"), "the message should name the flag: {why}");
+                assert!(
+                    why.contains("not implemented"),
+                    "the message should say it is unbuilt rather than broken: {why}"
+                );
+            }
+            other => panic!("following should be refused, got {other:?}"),
+        }
     }
 
     #[test]
