@@ -161,6 +161,39 @@ fn the_debug_rendering_names_the_plugin_and_counts_the_grants() {
 }
 
 #[test]
+fn a_session_can_record_into_a_buffer_its_caller_keeps() {
+    // ★ The property the whole audit trail rests on: the entries have to outlive the instance that produced them.
+    //
+    // The instance owns its session and the session owns its record, so a `Vec` of its own would take the record with it
+    // when the store is dropped — and an audit that dies with the thing it is about is not an audit. Sharing the handle
+    // is what lets the party that keeps the instance drain the entries into the kernel's ring.
+    //
+    // Asserted through the handle the caller kept, rather than through `recorded()`: a test that read the session's own
+    // view would pass against an implementation that copied the entries instead of sharing the buffer.
+    let audit = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let session = LinkerSession::with_audit(
+        plugin(),
+        CapabilitySet::new(),
+        Arc::new(Budget::new(Quota::default())),
+        Arc::new(Silent),
+        Arc::clone(&audit),
+    );
+
+    // What a host call would do, from the outside.
+    session.audit.lock().push(synra_observe::audit::AuditEntry::new(
+        1,
+        plugin(),
+        synra_capability::Capability::parse("log:info").expect("a capability"),
+        synra_observe::audit::AuditOutcome::Allowed,
+        Some(1),
+    ));
+
+    let drained = std::mem::take(&mut *audit.lock());
+    assert_eq!(drained.len(), 1, "the caller's handle saw nothing");
+    assert_eq!(session.recorded().len(), 0, "draining took the entry with it");
+}
+
+#[test]
 fn the_session_type_exists_without_an_engine() {
     // ★ The assertion this file exists for. `LinkerSession` used to be declared in `linker.rs`, which is behind the
     // `wasm-runtime` feature — so in a build with no engine, the type that says what a plugin may do did not exist.

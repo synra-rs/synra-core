@@ -43,21 +43,36 @@ pub struct LinkerSession {
     pub budget: Arc<Budget>,
     /// What it did, in the order it did it.
     ///
-    /// ★ Still a buffer of its own, and that is deliberate rather than finished. For the audit trail to be worth
-    /// anything these entries have to outlive the instance that made them — they belong in the kernel's ring, which
-    /// outlives the plugin. That is a shared handle rather than a `Vec`, and it is **not done**: nothing constructs a
-    /// session in production yet (see `PluginInstance::set_session`), so the shape that sharing should take is a
-    /// question for the step that has a caller for it rather than a guess made here.
-    pub audit: Mutex<Vec<AuditEntry>>,
+    /// ★ A shared handle rather than a buffer of its own, which is what makes the audit reachable at all. The entries
+    /// belong to the kernel's ring — which outlives the instance that produced them — so the party that owns the
+    /// instance keeps the other handle and drains it after each call. With a plain `Vec` the record would die with the
+    /// store, which is the same as having none: the whole point of an audit trail is that it survives the thing it is
+    /// about.
+    pub audit: Arc<Mutex<Vec<AuditEntry>>>,
     /// The host the effects reach.
     pub host: Arc<dyn Host>,
 }
 
 impl LinkerSession {
-    /// A session for a plugin.
+    /// A session that keeps its own record.
     #[must_use]
     pub fn new(plugin: PluginId, grants: CapabilitySet, budget: Arc<Budget>, host: Arc<dyn Host>) -> Self {
-        Self { plugin, grants, budget, audit: Mutex::new(Vec::new()), host }
+        Self::with_audit(plugin, grants, budget, host, Arc::new(Mutex::new(Vec::new())))
+    }
+
+    /// A session whose record is shared with the caller that keeps the instance.
+    ///
+    /// This is the constructor a host uses: it holds the other handle and drains it, so the record of what a plugin did
+    /// outlives the instance that did it.
+    #[must_use]
+    pub fn with_audit(
+        plugin: PluginId,
+        grants: CapabilitySet,
+        budget: Arc<Budget>,
+        host: Arc<dyn Host>,
+        audit: Arc<Mutex<Vec<AuditEntry>>>,
+    ) -> Self {
+        Self { plugin, grants, budget, audit, host }
     }
 
     /// What the plugin did, in the order it did it.
