@@ -1,0 +1,19 @@
+# Detached from the workspace on purpose. A spike is written to be thrown away, and listing it in the members list
+# would make every `cargo check --workspace` depend on a directory the design document calls disposable.
+[workspace]
+
+[package]
+name = "spike-wasmtime-android"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# The same version and the same feature set `crates/synra-plugin-host` asks for. A spike that pinned a different
+# wasmtime, or a different subset of its features, would answer a question nobody asked.
+[dependencies]
+wasmtime = { version = "38", default-features = false, features = [
+  "component-model",
+  "cranelift",
+  "runtime",
+  "std",
+] }

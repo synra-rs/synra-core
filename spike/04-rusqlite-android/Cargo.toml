@@ -1,0 +1,15 @@
+# Detached from the workspace on purpose. See 03-wasmtime-android/Cargo.toml for why.
+[workspace]
+
+[package]
+name = "spike-rusqlite-android"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# The same version and the same `bundled` the kernel store uses. `bundled` is the part under test: it compiles SQLite
+# from C source at build time, so this spike is really asking whether a **C cross-compiler** exists for the target.
+# `rusqlite` without `bundled` would link the platform's own SQLite and would pass here while proving nothing about
+# the configuration that ships.
+[dependencies]
+rusqlite = { version = "0.40", features = ["bundled"] }
