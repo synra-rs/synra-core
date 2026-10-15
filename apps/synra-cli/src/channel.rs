@@ -380,7 +380,7 @@ pub fn transport_failure(error: &synra_control::SocketError) -> crate::session::
 mod tests {
     use super::*;
     use crate::args::{
-        Command, DbAction, DbArgs, DevicesArgs, IntentAction, LogsArgs, OutputFormat, PairArgs, SendArgs,
+        Command, DbAction, DbArgs, DevicesArgs, LogsArgs, OutputFormat, PairArgs, SendArgs,
     };
 
     fn devices_args(all: bool) -> DevicesArgs {
@@ -533,7 +533,7 @@ mod tests {
     #[test]
     fn each_answer_to_a_prompt_becomes_its_own_request() {
         // ★ The mapping, rather than the parsing. Three verbs that all reached `IntentSnapshot` would parse, print
-        // something plausible, and never decide or cancel anything \u2014 and no argument test would notice.
+        // something plausible, and never decide or cancel anything — and no argument test would notice.
         let ask = |action: crate::args::IntentAction| {
             question_for(
                 &Command::Intent(crate::args::IntentArgs { action }),

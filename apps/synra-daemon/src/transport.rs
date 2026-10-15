@@ -72,12 +72,16 @@ pub fn serve(
     stop: &Arc<AtomicBool>,
     data_dir: &Path,
     desk: &Arc<synra_core::pairing::PairingDesk>,
+    router: &Arc<crate::runtime::intent::Router>,
 ) {
     // Owned, because each connection is handed to its own thread and a thread cannot borrow the caller's stack.
     let data_dir = data_dir.to_path_buf();
     // Cloned per connection below, because the desk is shared: a prompt raised on one connection is answered by a user
     // who is not on that connection at all.
     let shared_desk = Arc::clone(desk);
+    // Cloned per connection like the desk, and for the same reason: a share arriving on one connection is routed with the
+    // kernel's plugins and intents, not with a per-connection copy of them.
+    let shared_router = Arc::clone(router);
     // ★ Non-blocking, so the loop comes round often enough to notice the stop flag. Set once rather than per iteration:
     // it is a property of the socket, and re-setting it fifty times a second would be a syscall per poll for nothing.
     match host.lock().listen_nonblocking() {
@@ -104,10 +108,11 @@ pub fn serve(
                 // Each connection gets its own copy of the path, because a thread cannot borrow the loop's.
                 let inbox_root = data_dir.clone();
                 let desk = Arc::clone(&shared_desk);
+                let router = Arc::clone(&shared_router);
                 // A thread per connection, because a link's lifetime is a peer's to decide. Nothing joins it: a link that
                 // ended is one whose thread returns, and one that is still open is doing useful work.
                 std::thread::spawn(move || {
-                    let served = handle(&host, stream, &inbox_root, &desk);
+                    let served = handle(&host, stream, &inbox_root, &desk, &router);
                     if let Some(ended) = &served.ended {
                         let who = served
                             .peer
@@ -139,8 +144,9 @@ pub fn handle(
     stream: std::net::TcpStream,
     data_dir: &Path,
     desk: &Arc<synra_core::pairing::PairingDesk>,
+    router: &Arc<crate::runtime::intent::Router>,
 ) -> Served {
-    handle_within(host, stream, data_dir, synra_protocol::limits::HELLO_TIMEOUT, desk)
+    handle_within(host, stream, data_dir, synra_protocol::limits::HELLO_TIMEOUT, desk, router)
 }
 
 /// Handshakes on a connection with a chosen deadline for the exchange.
@@ -159,6 +165,7 @@ pub fn handle_within(
     data_dir: &Path,
     timeout: Duration,
     desk: &Arc<synra_core::pairing::PairingDesk>,
+    router: &Arc<crate::runtime::intent::Router>,
 ) -> Served {
     // ★ Read before the handshake consumes the stream, and kept as text. It is the one fact about the requester this side
     // *observed* rather than was told: a prompt shows the name the device chose, and the address is what lets a user
@@ -214,13 +221,35 @@ pub fn handle_within(
     loop {
         match inbox.absorb(&mut link, synra_store::sqlite::now_ms(), PATIENCE, desk, &peer_address) {
             Ok(decision) => match decision {
-                Decision::Delivered { event } => {
+                Decision::Delivered { event, share } => {
                     // ★ Recorded as well as reported. A message this kernel received has arrived, and a log that looked
                     // the same whether it arrived or was lost in the network would be one a user cannot investigate with.
                     events.push(event.clone());
-                    eprintln!(
-                        "synra-daemon: {peer} sent {event} — no event bus is wired up, so it was not delivered",
-                    );
+                    // ★ And routed, which is what a share is *for*.
+                    //
+                    // This used to end at the line below: a peer's shared text was reported and dropped, so a share could
+                    // arrive and nothing would ask a plugin whether it could handle it. The design calls this routing the
+                    // kernel's most central orchestration, and until here the inbound half of it did not exist.
+                    match share {
+                        Some(item) => {
+                            match router.route(&item, synra_store::sqlite::now_ms()) {
+                                Ok(routed) => eprintln!(
+                                    "synra-daemon: {peer} shared something — {} plugin(s) offered",
+                                    routed.get("offered").and_then(serde_json::Value::as_u64).unwrap_or(0)
+                                ),
+                                // A routing failure is reported and does not end the link: the message arrived, and
+                                // closing the connection would take down a transfer for a reason the peer cannot see.
+                                Err(refusal) => eprintln!(
+                                    "synra-daemon: {peer}'s share could not be routed: {refusal}"
+                                ),
+                            }
+                        }
+                        // Not a share, so there is still no event bus to deliver it to — and saying so is the honest
+                        // answer rather than an empty one.
+                        None => eprintln!(
+                            "synra-daemon: {peer} sent {event} — nothing is wired up to deliver it",
+                        ),
+                    }
                 }
                 Decision::Ignored => {}
                 Decision::Pairing { answer, request } => {
@@ -348,6 +377,30 @@ mod tests {
     /// A desk for a test connection, with the protocol's own pairing window.
     ///
     /// Fresh per call, so one test's prompt cannot appear in another's.
+    /// A router over an in-memory database and no plugins.
+    ///
+    /// The connection tests are about the handshake, the transfer path and the pairing desk; a share arriving is not what
+    /// they exercise, so the plugins a real router would hold are absent. What matters is that routing has somewhere to
+    /// go — a connection handler with no router would have to drop a share silently, which is the defect this option
+    /// exists to remove.
+    fn test_router() -> Arc<crate::runtime::intent::Router> {
+        let mut db = synra_store::SynraDb::open_in_memory().expect("a database");
+        db.migrate().expect("migrates");
+        let set = synra_core::dispatch::PluginSet::new(
+            synra_plugin_host::Backend::new(Arc::new(
+                synra_plugin_host::ScriptedBackend::new(),
+            )),
+            Arc::new(crate::runtime::plugin_host::KernelHost::new(
+                Arc::new(Mutex::new(db)),
+                "0.1.0-test",
+            )),
+        );
+        Arc::new(crate::runtime::intent::Router::new(
+            Arc::new(Mutex::new(set)),
+            Arc::new(Mutex::new(synra_core::intent::Board::new())),
+        ))
+    }
+
     fn test_desk() -> Arc<synra_core::pairing::PairingDesk> {
         Arc::new(synra_core::pairing::PairingDesk::new(
             DeviceId::new(),
@@ -564,6 +617,7 @@ mod tests {
                 inbox.path(),
                 Duration::from_secs(5),
                 &test_desk(),
+                &test_router(),
             );
                     }
                     Ok(None) => {}
@@ -623,6 +677,7 @@ mod tests {
                 inbox.path(),
                 Duration::from_millis(500),
                 &test_desk(),
+                &test_router(),
             );
 
         assert!(served.ended.is_some(), "a non-peer should be reported: {served:?}");
@@ -657,6 +712,7 @@ mod tests {
                 inbox.path(),
                 Duration::from_millis(300),
                 &test_desk(),
+                &test_router(),
             );
         let elapsed = started.elapsed();
 

@@ -225,7 +225,7 @@ pub enum Request {
         /// # Why this is here now, and was not before
         ///
         /// Because `Board` could not answer the question. A candidate whose plugin suggested no device settles into
-        /// `Choosing` \u2014 which *is* "where should this run?" \u2014 and no method advanced it: `choose` put a targetless
+        /// `Choosing` — which *is* "where should this run?" — and no method advanced it: `choose` put a targetless
         /// candidate straight back into `Choosing`, and `confirm` refuses anything that is not `Confirming`. The field was
         /// left out rather than accepted and ignored.
         ///

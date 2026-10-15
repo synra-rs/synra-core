@@ -309,8 +309,8 @@ impl Kernel for Runtime {
 
     /// Applies the user's answer, and runs what they chose.
     ///
-    /// ★ The one place in the daemon where a plugin's action actually runs. Everything before it \u2014 the matching pass,
-    /// the board's states, the prompt \u2014 is a question; this is the answer, and it happens only for the plugin the user
+    /// ★ The one place in the daemon where a plugin's action actually runs. Everything before it — the matching pass,
+    /// the board's states, the prompt — is a question; this is the answer, and it happens only for the plugin the user
     /// picked.
     fn intent_decide(
         &self,

@@ -204,6 +204,15 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let board = Arc::new(parking_lot::Mutex::new(synra_core::intent::Board::new()));
+    // ★ What an inbound share is routed with, built here because this is where all three exist.
+    //
+    // Without it the transport could receive a share and had nothing to ask: a peer's shared text was reported and
+    // dropped, so the routing the design calls the kernel's most central orchestration had no inbound half.
+    let router = Arc::new(crate::runtime::intent::Router::new(
+        Arc::clone(&plugins),
+        Arc::clone(&board),
+    ));
     let plugin_loads = {
         // ★ Before loading anything: record the plugin directories the database does not know about.
         //
@@ -318,7 +327,7 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
         // The runtime's own desk, not a second one: a prompt raised by the transport must be the prompt a control command
         // answers, and two desks would mean a user answering a request the waiting connection never hears about.
         let desk = Arc::clone(&runtime.pairing);
-        std::thread::spawn(move || crate::transport::serve(&peers, &stop, &data_dir, &desk));
+        std::thread::spawn(move || crate::transport::serve(&peers, &stop, &data_dir, &desk, &router));
     }
 
     // ★ Discovery runs on its own thread and the control loop only reads what it learned. `serve_one` blocks and the

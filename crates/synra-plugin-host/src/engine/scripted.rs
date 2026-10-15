@@ -163,7 +163,7 @@ struct Shared {
 ///
 /// # ★ Why this is not `Work`'s `Display`
 ///
-/// Because `Display` is `interface.function` \u2014 `share.execute` \u2014 which is the right label for a log line and the wrong
+/// Because `Display` is `interface.function` — `share.execute` — which is the right label for a log line and the wrong
 /// key for a fixture. Two calls to `share.execute` with different actions, or two `can-handle` calls about different
 /// shares, collapsed onto one entry, so a script could not say what it was an answer *to* and a test could not tell
 /// whether the arguments it expected were the ones sent.

@@ -617,7 +617,7 @@ fn waiting_for_a_place(mut board: Board) -> (Board, IntentId) {
 fn aiming_answers_the_question_a_targetless_candidate_asks() {
     // ★ The state that could not be advanced.
     //
-    // A candidate that named no device settles into `Choosing` \u2014 which is the question "where should this run?" \u2014 and
+    // A candidate that named no device settles into `Choosing` — which is the question "where should this run?" — and
     // nothing answered it: `choose` puts a targetless candidate straight back into `Choosing`, and `confirm` refuses
     // anything that is not `Confirming`. So an action could be proposed and never performed.
     let (mut board, id) = waiting_for_a_place(board());
@@ -626,7 +626,7 @@ fn aiming_answers_the_question_a_targetless_candidate_asks() {
     let state = board.aim(id, place).expect("the question is answerable");
 
     assert_eq!(state.kind(), "confirming");
-    // And it is now confirmable, which is what "the question was answered" means \u2014 a state name alone would pass for a
+    // And it is now confirmable, which is what "the question was answered" means — a state name alone would pass for a
     // transition that led nowhere.
     let (confirmed, _) = board.confirm(id).expect("and the intent can move on");
     assert_eq!(confirmed.plugin_id, plugin("@acme/opener"));
@@ -650,7 +650,7 @@ fn aiming_is_refused_while_the_user_is_choosing_between_plugins() {
     // ★ The two questions share one state, so the method has to tell them apart by the candidate count.
     //
     // With two candidates the question is "which plugin", and attaching a device to one the user has not picked would
-    // answer a question they were not asked \u2014 by silently choosing for them.
+    // answer a question they were not asked — by silently choosing for them.
     let mut board = board();
     let (id, _, _) = board.raise(share(), Choice::AlwaysAsk, None, None, NOW);
     let _ = board.offer(id, candidate("@acme/one", "open", None));

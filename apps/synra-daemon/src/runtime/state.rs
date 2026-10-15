@@ -100,7 +100,7 @@ pub struct Runtime {
     /// # ★ Why the runtime holds it
     ///
     /// Because it is the thing the product is. Something arrives, every plugin is asked whether it can handle it, the
-    /// candidates are offered to the user, and one is run \u2014 and a board is what holds that state between the request
+    /// candidates are offered to the user, and one is run — and a board is what holds that state between the request
     /// that raised it and the decision that answers it. Without it here there is nowhere for an intent to live, which is
     /// why the matcher had no production caller at all.
     pub board: std::sync::Arc<parking_lot::Mutex<synra_core::intent::Board>>,

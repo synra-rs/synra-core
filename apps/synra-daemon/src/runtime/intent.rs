@@ -24,6 +24,47 @@ use synra_core::dispatch::{Matcher, PluginSet};
 use synra_core::intent::{Board, IntentSource};
 use synra_protocol::inbound::ShareItem;
 
+/// Everything an inbound share is routed with.
+///
+/// # ★ Why these travel together
+///
+/// Because routing needs both and they are only useful together: the plugins to ask and the board to hold the answers.
+/// Passing them as two arguments through the transport would be two chances to pass the wrong one, and the connection
+/// handler has no business knowing which is which.
+///
+/// ★ It does **not** hold this device's identifier, though an earlier version did. Deciding an intent needs to know which
+/// device is local — that is how "run it here" is told from "send it somewhere" — but *routing* only asks the plugins and
+/// writes the answers down, and a field nothing reads is a field that will be read wrongly later. The identifier lives
+/// where the decision is made, which is the control protocol's `intent_decide`.
+pub struct Router {
+    plugins: Arc<Mutex<PluginSet>>,
+    board: Arc<Mutex<Board>>,
+}
+
+impl Router {
+    /// A router over the daemon's own plugins and intents.
+    #[must_use]
+    pub fn new(plugins: Arc<Mutex<PluginSet>>, board: Arc<Mutex<Board>>) -> Self {
+        Self { plugins, board }
+    }
+
+    /// Routes a share that arrived from a peer.
+    ///
+    /// The same call `intent_dispatch` makes, because a share from another device and one from this machine's own share
+    /// sheet are the same event with a different origin — and two paths would be two places for the rules to differ.
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal`] when the item cannot be serialised into the shape a plugin is asked about.
+    pub fn route(
+        &self,
+        item: &ShareItem,
+        now_ms: i64,
+    ) -> Result<serde_json::Value, Refusal> {
+        dispatch(&self.plugins, &self.board, item, now_ms)
+    }
+}
+
 /// Routes a share and reports what the plugins said.
 ///
 /// # Errors
@@ -142,7 +183,7 @@ pub(super) fn snapshot(board: &Arc<Mutex<Board>>, intent: &str) -> Result<serde_
 /// # ★ Why this is the one place an action happens
 ///
 /// Because everything before it is a question. The matching pass asks every plugin whether it can handle a share and
-/// produces candidates; this is where the answer becomes an action \u2014 and only for the plugin the user picked, which is
+/// produces candidates; this is where the answer becomes an action — and only for the plugin the user picked, which is
 /// what stops "what can handle this?" from running third-party code as a side effect.
 ///
 /// # Errors
@@ -162,7 +203,7 @@ pub(super) fn decide(
 
     // ★ The choice is resolved against the board's own list, not accepted from the caller.
     //
-    // `Board::choose` checks that the plugin and action were actually offered \u2014 "a choice arrives from an interface, and
+    // `Board::choose` checks that the plugin and action were actually offered — "a choice arrives from an interface, and
     // acting on one that was never shown would run something the user did not choose". Looking the action up from the
     // board rather than taking it from the client also means a client sends what the user clicked (a plugin) rather than
     // a hand-built action string, which is one fewer thing for it to get wrong.
@@ -227,7 +268,7 @@ pub(super) fn decide(
 
     // ★ Only a target that is **this** device runs here.
     //
-    // The board's `confirm` produces a request id because the ordinary dispatch is an envelope to another machine \u2014
+    // The board's `confirm` produces a request id because the ordinary dispatch is an envelope to another machine —
     // "the candidate and the envelope id the caller must send under". Sending is not implemented in this build, and
     // pretending otherwise would run a user's action on the machine they shared *from* rather than the one they chose.
     if target != Some(local_device) {
@@ -323,7 +364,7 @@ fn refuse_intent(error: &synra_core::intent::IntentError) -> Refusal {
 /// # Why this is not `IntentState::candidates()`
 ///
 /// Because that method answers "what is the user choosing **between**", and it returns an empty slice once the board has
-/// settled on one \u2014 `Confirming` holds a single candidate rather than a list. A snapshot built from it alone showed a
+/// settled on one — `Confirming` holds a single candidate rather than a list. A snapshot built from it alone showed a
 /// share that had been routed successfully as having no candidates at all, which is precisely the fact a prompt needs.
 /// The states are listed here rather than defaulted, so a state added later has to be considered.
 fn candidates_of(board: &Board, id: synra_protocol::ids::IntentId) -> Vec<serde_json::Value> {
@@ -345,13 +386,13 @@ fn candidates_of(board: &Board, id: synra_protocol::ids::IntentId) -> Vec<serde_
         .iter()
         .map(|candidate| {
             // ★ The title and detail as well as the identifiers: a prompt is built from these, and a client that only
-            // received `(plugin, action)` would have to invent the sentence a user reads \u2014 which is the plugin's own
+            // received `(plugin, action)` would have to invent the sentence a user reads — which is the plugin's own
             // description of what it will do, not something a host can write for it.
             serde_json::json!({
                 "pluginId": candidate.plugin_id.as_str(),
                 "pluginVersion": candidate.plugin_version,
                 "action": candidate.planned.action,
-                // The plugin's own arguments, so a client can show what would be acted on \u2014 the URL a link candidate
+                // The plugin's own arguments, so a client can show what would be acted on — the URL a link candidate
                 // would open, rather than only the sentence describing it.
                 "args": candidate.planned.args,
                 "title": candidate.title,
@@ -401,7 +442,7 @@ mod tests {
             &synra_plugin_host::Work::CanHandle { item_json: item_json() },
             // ★ The shape a real plugin answers with, taken from the deserialiser rather than invented. The first
             // version of this fixture said `pluginId` and `requiredCaps`, and the pass recorded the plugin as
-            // **misbehaved** with "can-handle returned missing field `handled`" \u2014 which is the code refusing a payload
+            // **misbehaved** with "can-handle returned missing field `handled`" — which is the code refusing a payload
             // no plugin would send. A fixture that had been accepted would have proved nothing about plugins.
             //
             // The plugin does not name itself: the host knows which plugin answered, and a plugin that could claim to be
@@ -412,8 +453,8 @@ mod tests {
                     "action": "open",
                     "title": "Open the link",
                     "required": [],
-                    // ★ A target, because without one the board settles the intent into `Choosing` \u2014 the question
-                    // "where should this run?" \u2014 and no method on `Board` answers it. `choose` re-enters `Choosing` for a
+                    // ★ A target, because without one the board settles the intent into `Choosing` — the question
+                    // "where should this run?" — and no method on `Board` answers it. `choose` re-enters `Choosing` for a
                     // candidate with no target and `confirm` refuses anything that is not `Confirming`, so an intent in
                     // that state cannot be advanced at all. This fixture names this device so the decide path is
                     // reachable; the gap is recorded rather than worked around in production code.
@@ -480,8 +521,8 @@ mod tests {
 
     /// A set whose `can-handle` answers without suggesting a device.
     ///
-    /// ★ The case that used to be unreachable. A candidate with no target settles into `Choosing` \u2014 the question
-    /// "where should this run?" \u2014 and before `Board::aim` there was no method that answered it, so an action could be
+    /// ★ The case that used to be unreachable. A candidate with no target settles into `Choosing` — the question
+    /// "where should this run?" — and before `Board::aim` there was no method that answered it, so an action could be
     /// proposed here and never performed.
     fn set_that_accepts_without_a_place(plugin: &str) -> Arc<Mutex<PluginSet>> {
         let backend = synra_plugin_host::ScriptedBackend::new();
@@ -571,7 +612,7 @@ mod tests {
         // ★ The end of the line: a share becomes an action.
         //
         // Every test before this one stops at "a candidate was produced". This is the only place in the system where a
-        // plugin's action actually runs, and the assertion is on what the plugin was asked to do \u2014 not on the state
+        // plugin's action actually runs, and the assertion is on what the plugin was asked to do — not on the state
         // name, which would pass for an implementation that never called anything.
         let plugins = set_that_accepts("@acme/opener");
         let board = Arc::new(Mutex::new(synra_core::intent::Board::new()));

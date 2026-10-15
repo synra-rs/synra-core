@@ -446,7 +446,7 @@ mod tests {
     /// double rather than about the code.
     fn intent_snapshot(&self, _intent: &str) -> Result<serde_json::Value, Refusal> {
         Err(Refusal::new(
-            synra_protocol::ErrorCode::Internal,
+            ErrorCode::Internal,
             "this kernel does not route intents",
         ))
     }
@@ -458,21 +458,21 @@ mod tests {
         _target: Option<&str>,
     ) -> Result<serde_json::Value, Refusal> {
         Err(Refusal::new(
-            synra_protocol::ErrorCode::Internal,
+            ErrorCode::Internal,
             "this kernel does not route intents",
         ))
     }
 
     fn intent_cancel(&self, _intent: &str) -> Result<serde_json::Value, Refusal> {
         Err(Refusal::new(
-            synra_protocol::ErrorCode::Internal,
+            ErrorCode::Internal,
             "this kernel does not route intents",
         ))
     }
 
     fn intent_dispatch(&self, _mime: &str, _text: &str) -> Result<serde_json::Value, Refusal> {
         Err(Refusal::new(
-            synra_protocol::ErrorCode::Internal,
+            ErrorCode::Internal,
             "this kernel does not route intents",
         ))
     }

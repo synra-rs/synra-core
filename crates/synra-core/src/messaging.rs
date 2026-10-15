@@ -110,6 +110,46 @@ pub enum MessageError {
     /// back: the other person's attention.
     #[error("this device cannot ask to pair: {0}")]
     InvalidProfile(&'static str),
+
+    /// The envelope does not carry a readable text message.
+    ///
+    /// # Why this is not a protocol error
+    ///
+    /// Because a peer can send a well-formed envelope whose payload is not the shape this event promises — a different
+    /// version, a plugin's own event that happens to share the name, a hand-built message. None of those is a broken
+    /// connection, and reporting one as a framing error would close a link that is working.
+    #[error("the message could not be read: {why}")]
+    Unreadable {
+        /// What was wrong with it.
+        why: String,
+    },
+}
+
+/// Reads the text out of an envelope that carries one.
+///
+/// # ★ Why this exists
+///
+/// Because [`text_to`] had no counterpart. A text message could be **written and sent**, and nothing in the tree could
+/// read one back: the payload stayed a `RawValue`, the receiver knew only the event's name, and `inbound`'s built-in
+/// parser returned a `ClipboardText` with an empty string and a freshly minted device id because it ignores payloads
+/// entirely. A sender with no receiver is half a feature, and this is the other half.
+///
+/// # What it does not check
+///
+/// Whether the sender is who the payload claims. `from_device_id` is inside the body and a peer can put anything there;
+/// the envelope's own `from` is what the handshake established. A caller deciding *who sent this* must use the envelope,
+/// and this function returning the body's claim unexamined is why it is named `text_from` rather than `sender_of`.
+///
+/// # Errors
+///
+/// [`MessageError::Unreadable`] when there is no payload, when it is not JSON, or when it is not a `ClipboardText`.
+pub fn text_from(envelope: &Envelope) -> Result<ClipboardText, MessageError> {
+    let payload = envelope.payload.as_deref().ok_or_else(|| MessageError::Unreadable {
+        why: "the envelope carries no payload".to_owned(),
+    })?;
+    serde_json::from_str(payload.get()).map_err(|error| MessageError::Unreadable {
+        why: error.to_string(),
+    })
 }
 
 /// Builds the envelope that carries text to a device.

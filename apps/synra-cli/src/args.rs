@@ -102,7 +102,7 @@ pub struct ShareArgs {
     /// What it is, for a plugin that cares.
     ///
     /// Defaults to `text/plain`, which is what a bare argument is. A link is `text/uri-list`, and passing that is how a
-    /// caller says so rather than the kernel guessing from the contents \u2014 a string that merely looks like a URL is not
+    /// caller says so rather than the kernel guessing from the contents — a string that merely looks like a URL is not
     /// one, and a plugin that opened it would be acting on a guess.
     #[arg(long, value_name = "MIME", default_value = "text/plain")]
     pub mime: String,
@@ -770,7 +770,7 @@ mod tests {
     #[test]
     fn the_three_answers_to_a_prompt_each_parse() {
         // ★ `share` prints an identifier and these are the commands that spend it. Before them, routing could be
-        // started from the command line and never finished there \u2014 the identifier was a value with no second command.
+        // started from the command line and never finished there — the identifier was a value with no second command.
         let Command::Intent(args) =
             parsed(&["synra", "intent", "show", "01a140ce-0000-7000-8000-000000000000"]).command
         else {
@@ -781,7 +781,7 @@ mod tests {
         let Command::Intent(args) = parsed(&["synra", "intent", "decide", "abc"]).command else {
             panic!("intent is a command");
         };
-        // Both optional: omitting them is the ordinary case \u2014 one plugin claimed the share and named where to run it.
+        // Both optional: omitting them is the ordinary case — one plugin claimed the share and named where to run it.
         assert!(matches!(
             args.action,
             IntentAction::Decide { plugin: None, target: None, .. }

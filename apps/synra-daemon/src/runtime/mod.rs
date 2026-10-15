@@ -21,8 +21,8 @@
 
 mod commands;
 mod devices;
-mod intent;
-mod plugin_host;
+pub mod intent;
+pub(crate) mod plugin_host;
 mod plugins;
 mod refusals;
 mod reports;

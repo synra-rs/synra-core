@@ -38,6 +38,36 @@ pub const INBOX_DIR: &str = "inbox";
 /// almost complete. The connection as a whole is bounded by the process that owns it, not by this.
 const TRANSFER_PATIENCE: std::time::Duration = std::time::Duration::from_secs(120);
 
+/// The shared item an envelope carries, when it carries one.
+///
+/// # ★ Why the event name is not enough
+///
+/// Because `_synra.clipboard.received` is how a peer's shared text arrives, and everything a plugin is asked about — the
+/// text, the mime, which device sent it — is in the body. The daemon reported the name and dropped the body, so a share
+/// could arrive and be announced while nothing could act on it.
+///
+/// # Why a body that cannot be read is `None` rather than an error
+///
+/// Because a peer may send a well-formed envelope this build cannot interpret, and that is not a broken link: the frame
+/// was delivered, the connection is working, and there is simply nothing here to route. Returning an error would make the
+/// caller close a link over a message it merely did not understand.
+fn share_of(envelope: &synra_protocol::envelope::Envelope) -> Option<synra_protocol::inbound::ShareItem> {
+    if envelope.event.as_str() != synra_protocol::event::builtin::CLIPBOARD_RECEIVED {
+        return None;
+    }
+    // ★ The device in the payload is the sender's **claim**; the envelope's own `from` is what the handshake established.
+    // The claim is dropped rather than trusted, so a peer cannot attribute its share to another device.
+    let text = synra_core::text_from(envelope).ok()?;
+    Some(synra_protocol::inbound::ShareItem {
+        from: envelope.from,
+        mime: text.mime,
+        text: Some(text.text),
+        // A text message carries no transfer, and an id invented here would name a transfer that does not exist.
+        transfers: Vec::new(),
+        context_id: None,
+    })
+}
+
 /// What to do with a message that arrived on an inbound connection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -79,6 +109,18 @@ pub enum Decision {
     Delivered {
         /// The event the message carried.
         event: String,
+        /// What was shared, when the message was a share this kernel can route.
+        ///
+        /// ★ Why the payload travels after all.
+        ///
+        /// This variant carried the event's **name** alone, which was right for its original purpose — reporting that
+        /// something arrived — and wrong for the one that matters: a peer's shared text is precisely what the router
+        /// needs, and everything else about it (the mime, which device sent it) is in the body. A name is not enough to
+        /// ask a plugin "can you handle this?", so the share was reported and dropped.
+        ///
+        /// `None` for a message that is not a share, and for one whose body could not be read. The two are the same to
+        /// the caller: there is nothing to route.
+        share: Option<synra_protocol::inbound::ShareItem>,
     },
     /// A pairing request this kernel has an opinion about, and the answer to send back.
     ///
@@ -256,7 +298,10 @@ impl Inbox {
                 if envelope.event.as_str() == synra_protocol::event::events::PAIR_REQUEST {
                     return Ok(self.pairing_request(&envelope, pairing, peer_address));
                 }
-                return Ok(Decision::Delivered { event: envelope.event.as_str().to_owned() });
+                return Ok(Decision::Delivered {
+                    event: envelope.event.as_str().to_owned(),
+                    share: share_of(&envelope),
+                });
             }
             let name = proposed_name(&envelope)?;
             let destination = self.destination_for(&name);
@@ -306,7 +351,11 @@ impl Inbox {
             }
             // A message the transfer has nothing to do with, while a transfer *is* in progress: reported so it is not lost
             // between two files.
-            Received::Ignored => Ok(Decision::Delivered { event: "unknown".to_owned() }),
+            Received::Ignored => Ok(Decision::Delivered {
+                event: "unknown".to_owned(),
+                // Nothing was recognised, so there is nothing to route.
+                share: None,
+            }),
             // `Received` is `#[non_exhaustive]`, so a variant this build does not know is treated as a message it has
             // nothing to do with rather than as a reason to fail the connection.
             _ => Ok(Decision::Ignored),
@@ -535,6 +584,99 @@ mod tests {
     /// A local device id for a request addressed to us.
     fn local() -> synra_protocol::ids::DeviceId {
         "01a139a9-8f3c-72ce-9c96-2b2c81f14551".parse().expect("a valid device id")
+    }
+
+    /// A text-message envelope, which is how a peer shares something.
+    fn share_envelope(payload: &str, from: &str) -> synra_protocol::envelope::Envelope {
+        let spec = synra_protocol::envelope::OutboundSpec {
+            event: synra_protocol::event::EventName::parse(
+                synra_protocol::event::builtin::CLIPBOARD_RECEIVED,
+            )
+            .expect("a valid event name"),
+            target: local(),
+            from: from.parse().expect("a valid device id"),
+            trace_id: TraceId::new(),
+            sent_at_ms: 1_000,
+            ttl_ms: None,
+        };
+        let raw =
+            serde_json::value::RawValue::from_string(payload.to_owned()).expect("valid json");
+        synra_protocol::envelope::Envelope::outbound(spec, Some(&raw))
+            .expect("valid json")
+    }
+
+    #[test]
+    fn a_shared_message_becomes_a_share_the_router_can_ask_about() {
+        // ★ The payload, which used to be dropped.
+        //
+        // `Decision::Delivered` carried the event's **name** and nothing else, so a peer's shared text arrived, was
+        // reported, and could not be routed: a plugin is asked about the text, the mime and the sender, and all three are
+        // in the body.
+        let envelope = share_envelope(
+            &serde_json::json!({
+                "text": "https://example.com",
+                "mime": "text/plain",
+                "fromDeviceId": "01a139a9-8f3c-72ce-9c96-2b2c81f14552",
+            })
+            .to_string(),
+            "01a139a9-8f3c-72ce-9c96-2b2c81f14552",
+        );
+
+        let share = share_of(&envelope).expect("a message is a share");
+
+        assert_eq!(share.text.as_deref(), Some("https://example.com"));
+        assert_eq!(share.mime, "text/plain");
+        // A text message carries no transfer, and an id invented here would name a transfer that does not exist.
+        assert!(share.transfers.is_empty());
+    }
+
+    #[test]
+    fn a_share_is_attributed_to_the_envelope_rather_than_to_its_own_body() {
+        // ★ The body's `fromDeviceId` is a **claim**; the envelope's `from` is what the handshake established.
+        //
+        // Taking the body's word would let a peer attribute its share to another device — so a prompt would name the wrong
+        // machine, and a plugin deciding "did this come from the device I trust" would be answered by the sender.
+        let envelope = share_envelope(
+            &serde_json::json!({
+                "text": "hello",
+                "mime": "text/plain",
+                // A different device from the one that actually sent it.
+                "fromDeviceId": "01a139a9-0000-7000-8000-0000000000ff",
+            })
+            .to_string(),
+            "01a139a9-8f3c-72ce-9c96-2b2c81f14552",
+        );
+
+        let share = share_of(&envelope).expect("a message is a share");
+
+        assert_eq!(share.from.to_string(), "01a139a9-8f3c-72ce-9c96-2b2c81f14552");
+    }
+
+    #[test]
+    fn a_message_that_is_not_a_share_routes_nothing() {
+        // A pairing request is answered by the desk, and an event this build does not know is reported. Neither is a
+        // share, and asking plugins about one would be asking them about something no user shared.
+        assert!(share_of(&pair_envelope(&request_json("Phone"))).is_none());
+
+        // And a share whose body cannot be read is `None` rather than an error: the frame arrived and the link is
+        // working, so closing it over a message this build merely cannot interpret would be worse than dropping it.
+        let unreadable = share_envelope("\"not an object\"", "01a139a9-8f3c-72ce-9c96-2b2c81f14552");
+        assert!(share_of(&unreadable).is_none());
+        // Including one with no payload at all.
+        let spec = synra_protocol::envelope::OutboundSpec {
+            event: synra_protocol::event::EventName::parse(
+                synra_protocol::event::builtin::CLIPBOARD_RECEIVED,
+            )
+            .expect("a valid event name"),
+            target: local(),
+            from: "01a139a9-8f3c-72ce-9c96-2b2c81f14552".parse().expect("a device id"),
+            trace_id: TraceId::new(),
+            sent_at_ms: 1_000,
+            ttl_ms: None,
+        };
+        let none: Option<&serde_json::value::RawValue> = None;
+        let empty = synra_protocol::envelope::Envelope::outbound(spec, none).expect("builds");
+        assert!(share_of(&empty).is_none());
     }
 
     /// A pairing request envelope, with the payload spelled as the wire spells it.

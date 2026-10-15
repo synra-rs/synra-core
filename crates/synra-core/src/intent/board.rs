@@ -307,8 +307,8 @@ impl Board {
     ///
     /// # ★ Why this method had to exist
     ///
-    /// Because `Choosing` is reached for **two different questions** \u2014 "which plugin?" when several claimed the share,
-    /// and "where?" when the one that claimed it named no device \u2014 and only the first had a method. A targetless
+    /// Because `Choosing` is reached for **two different questions** — "which plugin?" when several claimed the share,
+    /// and "where?" when the one that claimed it named no device — and only the first had a method. A targetless
     /// candidate left the intent in a state nothing could advance: `choose` puts a candidate with no suggested target
     /// straight back into `Choosing`, and `confirm` refuses anything that is not `Confirming`. The intent was reachable
     /// and could not be moved, which meant an action could be proposed and never performed.
@@ -316,7 +316,7 @@ impl Board {
     /// # Why this refuses an ambiguous choice rather than taking the first candidate
     ///
     /// Because with two candidates the question being asked is "which plugin", and attaching a device to one the user has
-    /// not picked would answer a question they were not asked \u2014 and would do it by silently choosing for them. Which is
+    /// not picked would answer a question they were not asked — and would do it by silently choosing for them. Which is
     /// also why the two questions sharing one state is a weakness rather than a design: the state alone does not say what
     /// is being asked, so this method has to infer it from the candidate count.
     ///

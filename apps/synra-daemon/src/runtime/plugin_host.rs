@@ -36,7 +36,7 @@ use synra_plugin_host::host_calls::{CallError, Host};
 use synra_protocol::ids::PluginId;
 
 /// The daemon's answer to a plugin's host calls.
-pub(super) struct KernelHost {
+pub(crate) struct KernelHost {
     /// The database, for the two questions that are answered from what is recorded: which capabilities the user granted,
     /// and what the interface was configured with.
     db: Arc<Mutex<synra_store::SynraDb>>,
@@ -47,7 +47,7 @@ pub(super) struct KernelHost {
 impl KernelHost {
     /// A host over the daemon's own state.
     #[must_use]
-    pub(super) fn new(db: Arc<Mutex<synra_store::SynraDb>>, version: impl Into<String>) -> Self {
+    pub(crate) fn new(db: Arc<Mutex<synra_store::SynraDb>>, version: impl Into<String>) -> Self {
         Self { db, version: version.into() }
     }
 
