@@ -114,10 +114,10 @@ impl synra_plugin_host::host_calls::Host for Refusing {
     ) -> Result<Vec<String>, synra_plugin_host::host_calls::CallError> {
         refuse()
     }
-    fn storage_quota(
+    fn storage_used(
         &self,
         _p: &PluginId,
-    ) -> Result<(u64, u64), synra_plugin_host::host_calls::CallError> {
+    ) -> Result<u64, synra_plugin_host::host_calls::CallError> {
         refuse()
     }
     fn secret_get(

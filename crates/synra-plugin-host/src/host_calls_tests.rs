@@ -27,6 +27,12 @@ struct Stub {
     devices: Vec<(String, String, String)>,
     /// Whether a secret is held, so `secret-get` has something to find.
     secret: Option<String>,
+    /// How many bytes its storage is holding, which the quota check reads.
+    ///
+    /// Settable rather than derived from what `storage-set` was asked to write, because the number that matters is what
+    /// the *store* holds — and this double has no store. A value the test chooses is what lets the arithmetic be checked
+    /// without one.
+    storage_bytes: u64,
 }
 
 impl Stub {
@@ -38,6 +44,11 @@ impl Stub {
                 .collect(),
             ..Self::default()
         }
+    }
+
+    /// A stub whose storage already holds this much.
+    fn using(bytes: u64) -> Self {
+        Self { storage_bytes: bytes, ..Self::default() }
     }
 
     /// Everything the host was asked, as bare function names.
@@ -113,9 +124,9 @@ impl Host for Stub {
         self.record("storage-keys", prefix.unwrap_or(""));
         Ok(vec![format!("{}one", prefix.unwrap_or("")), format!("{}two", prefix.unwrap_or(""))])
     }
-    fn storage_quota(&self, _plugin: &PluginId) -> Result<(u64, u64), CallError> {
-        self.record("storage-quota", "");
-        Ok((128, 1_024))
+    fn storage_used(&self, _plugin: &PluginId) -> Result<u64, CallError> {
+        self.record("storage-used", "");
+        Ok(self.storage_bytes)
     }
 
     fn secret_get(&self, _plugin: &PluginId, key: &str) -> Result<Option<String>, CallError> {
@@ -759,16 +770,78 @@ fn an_absent_key_is_a_not_found_error_rather_than_a_host_failure() {
 
 #[test]
 fn a_storage_quota_is_a_pair_of_numbers_a_plugin_can_read() {
-    let host = Stub::default();
+    // ★ Usage from the host, the ceiling from the quota — and this test used to check neither.
+    //
+    // It asserted `[128,1024]`, which was the *stub's* two constants: the double answered `storage_quota` with a canned
+    // pair, so the test verified that a number the double made up came back out. Two real numbers replaced it, and the
+    // assertion is now about where each one comes from — a plugin reading its quota is reading its own usage and the
+    // kernel's decision about its ceiling.
+    let host = Stub::using(128);
     let grants = granted(&["storage:local:read"]);
-    let budget = budget();
+    // A quota with a ceiling a person can read, so the assertion names the value rather than the default.
+    let mut quota = Quota::default();
+    quota.max_storage_bytes = 1_024;
+    let budget = Budget::new(quota);
     let mut audit = Vec::new();
     let mut calls = session(&host, &grants, &budget, &mut audit);
 
     let answer = calls.call("synra:plugin/host#storage-quota", "").expect("a quota");
-    assert_eq!(answer, "[128,1024]");
+    assert_eq!(answer, "[128,1024]", "the host's usage and the quota's ceiling");
     let parsed: serde_json::Value = serde_json::from_str(&answer).expect("valid JSON");
     assert_eq!(parsed, serde_json::json!([128, 1024]));
+}
+
+#[test]
+fn a_write_that_would_exceed_the_quota_is_refused_before_it_is_stored() {
+    // ★ The one shape of enforcement that does not enforce anything is the check placed *after* the write.
+    //
+    // A plugin that kept writing would keep growing past its ceiling while being told each time that it had. So this
+    // asserts both halves: the refusal, and that the host was **never asked to write**.
+    let host = Stub::using(1_000);
+    let grants = granted(&["storage:local:write"]);
+    let mut quota = Quota::default();
+    quota.max_storage_bytes = 1_010;
+    let budget = Budget::new(quota);
+    let mut audit = Vec::new();
+    let mut calls = session(&host, &grants, &budget, &mut audit);
+
+    // Eleven bytes onto a thousand, with nothing replaced: over by one.
+    let refused = calls
+        .call("synra:plugin/host#storage-set", r#"{"key":"fresh","value":"0123456789a"}"#)
+        .expect_err("over the quota");
+
+    assert_eq!(refused.code, CallError::QUOTA_EXCEEDED, "{refused:?}");
+    // ★ And it says so with a code of its own rather than `rateLimited`: a plugin told it is going too fast would wait and
+    // try the same thing again, when what it needs to do is store less.
+    assert!(
+        !host.called().contains(&"storage-set".to_owned()),
+        "the host was not asked to write: {:?}",
+        host.called()
+    );
+}
+
+#[test]
+fn a_write_that_replaces_a_larger_value_is_measured_by_the_difference() {
+    // ★ The arithmetic is `used - replaced + new`, not `used + new`.
+    //
+    // A plugin rewriting a key with a shorter value is *shrinking* its storage, and a check that ignored what it replaced
+    // would refuse a write that makes the situation better — the shape of limit that punishes tidying up.
+    //
+    // `known` is the key the stub holds, and it answers with `"a value"` — seven bytes.
+    let host = Stub::using(12);
+    let grants = granted(&["storage:local:write"]);
+    let mut quota = Quota::default();
+    quota.max_storage_bytes = 12;
+    let budget = Budget::new(quota);
+    let mut audit = Vec::new();
+    let mut calls = session(&host, &grants, &budget, &mut audit);
+
+    // Already at the ceiling, and the write is smaller than what it replaces: 12 - 7 + 5 = 10, which fits.
+    calls
+        .call("synra:plugin/host#storage-set", r#"{"key":"known","value":"short"}"#)
+        .expect("a smaller value fits");
+
+    assert!(host.called().contains(&"storage-set".to_owned()), "and the host wrote it");
 }
 
 #[test]

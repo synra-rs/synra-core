@@ -58,6 +58,15 @@ impl CallError {
     pub const CAPABILITY_DENIED: &'static str = "capabilityDenied";
     /// The plugin called faster than its rate limit allows.
     pub const RATE_LIMITED: &'static str = "rateLimited";
+    /// The call would put the plugin over one of its quotas.
+    ///
+    /// # ★ Why this is not `rateLimited`
+    ///
+    /// Because a plugin's next step is different. A rate limit is about *how often* and its answer is to wait; a quota is
+    /// about *how much* and its answer is to store less — retrying a quota overrun changes nothing. The design names this
+    /// failure `PluginQuotaExceeded` in its own vocabulary, and folding it into the frequency code would tell a plugin to
+    /// sleep when it should be tidying up.
+    pub const QUOTA_EXCEEDED: &'static str = "quotaExceeded";
     /// The argument is not what the function takes.
     pub const BAD_ARGUMENT: &'static str = "badArgument";
     /// The host could not do it, for a reason that is not the plugin's fault.
@@ -168,8 +177,16 @@ pub trait Host: Send + Sync {
     fn storage_delete(&self, plugin: &PluginId, key: &str) -> Result<(), CallError>;
     /// Every key under a prefix, or every key when there is none.
     fn storage_keys(&self, plugin: &PluginId, prefix: Option<&str>) -> Result<Vec<String>, CallError>;
-    /// How much storage the plugin is using, and how much it may.
-    fn storage_quota(&self, plugin: &PluginId) -> Result<(u64, u64), CallError>;
+    /// How many bytes the plugin's storage is holding.
+    ///
+    /// # ★ Why usage and not a `(used, allowed)` pair
+    ///
+    /// Because the *allowed* half is not the host's to know. A plugin's storage ceiling is part of its quota, the quota is
+    /// what [`CallBudget`] was built from, and this layer already holds that budget — so a host that reported its own
+    /// limit would be a **second source** for a number the kernel has already decided. The first version of this method
+    /// took that shape, and the two would have disagreed the first time a plugin's quota was tightened or a host was built
+    /// with a different limit.
+    fn storage_used(&self, plugin: &PluginId) -> Result<u64, CallError>;
 
     /// Read a secret from the OS keychain.
     fn secret_get(&self, plugin: &PluginId, key: &str) -> Result<Option<String>, CallError>;
@@ -544,6 +561,23 @@ impl<'a> HostCalls<'a> {
             "storage-set" => {
                 let parsed: KeyValue = serde_json::from_str(argument)
                     .map_err(|error| CallError::new(CallError::BAD_ARGUMENT, error.to_string()))?;
+                // ★ The quota is checked **before** the write, and against what the total would become.
+                //
+                // Checking after would mean the value is already stored when the call is refused, so a plugin that kept
+                // writing would keep growing past its ceiling while being told each time that it had — the one shape of
+                // enforcement that does not enforce anything.
+                //
+                // The growth is the value's own length because a write **replaces**: a plugin rewriting a key with a
+                // larger value grows by the difference, and one rewriting it with a smaller value does not grow at all.
+                // That is why this is `used - replaced + new` rather than `used + new`.
+                let used = host.storage_used(plugin)?;
+                let replaced = host
+                    .storage_get(plugin, &parsed.key)?
+                    .map_or(0, |previous| previous.len() as u64);
+                let after = used.saturating_sub(replaced).saturating_add(parsed.value.len() as u64);
+                if let Err(refusal) = self.budget.check_storage(after) {
+                    return Err(CallError::new(CallError::QUOTA_EXCEEDED, refusal.to_string()));
+                }
                 host.storage_set(plugin, &parsed.key, &parsed.value)?;
                 Ok(String::new())
             }
@@ -556,7 +590,10 @@ impl<'a> HostCalls<'a> {
                 Ok(json_array(&host.storage_keys(plugin, prefix)?))
             }
             "storage-quota" => {
-                let (used, allowed) = host.storage_quota(plugin)?;
+                // Usage from the host, the ceiling from the quota. The plugin gets the pair it was promised, and neither
+                // half is a copy of the other's number.
+                let used = host.storage_used(plugin)?;
+                let allowed = self.budget.quota().max_storage_bytes;
                 Ok(format!("[{used},{allowed}]"))
             }
 

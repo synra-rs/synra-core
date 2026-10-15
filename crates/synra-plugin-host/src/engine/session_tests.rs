@@ -69,8 +69,8 @@ impl Host for Silent {
     fn storage_keys(&self, _p: &PluginId, _prefix: Option<&str>) -> Result<Vec<String>, CallError> {
         Err(CallError::new(CallError::NOT_IMPLEMENTED, "no host"))
     }
-    fn storage_quota(&self, _p: &PluginId) -> Result<(u64, u64), CallError> {
-        Err(CallError::new(CallError::NOT_IMPLEMENTED, "no host"))
+    fn storage_used(&self, _p: &PluginId) -> Result<u64, CallError> {
+        Err(CallError::new(CallError::NOT_IMPLEMENTED, "this double has no storage"))
     }
     fn secret_get(&self, _p: &PluginId, _k: &str) -> Result<Option<String>, CallError> {
         Err(CallError::new(CallError::NOT_IMPLEMENTED, "no host"))

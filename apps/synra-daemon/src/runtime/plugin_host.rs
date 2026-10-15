@@ -101,13 +101,24 @@ impl KernelHost {
 /// One code, one sentence, naming the group rather than the function: a plugin author who reads "storage is not
 /// implemented in this build" knows to design around it, and one who reads "storage-get failed" does not.
 fn not_implemented(group: &str) -> CallError {
-    // ★ The code comes from `CallError` rather than being spelled here. This host invented `"NOT_IMPLEMENTED"` \u2014
-    // upper case with an underscore, when every code the contract defines is camelCase \u2014 so a plugin branching on
-    // the documented spelling would have matched nothing.
+    // ★ The code comes from `CallError` rather than being spelled here. This host invented `"NOT_IMPLEMENTED"` — upper
+    // case with an underscore, when every code the contract defines is camelCase — so a plugin branching on the documented
+    // spelling would have matched nothing.
     CallError::new(
         CallError::NOT_IMPLEMENTED,
         format!("this host does not implement {group}"),
     )
+}
+
+/// A store failure, as the plugin sees it.
+///
+/// # Why `hostFailed` rather than something more specific
+///
+/// Because the plugin did nothing wrong: a locked database or a full disk is the host's problem, and the code tells the
+/// plugin not to retry the same call in a loop. The underlying message goes in the sentence, where a log line can use it
+/// even though a plugin cannot act on it.
+fn failed(what: &str, error: &impl std::fmt::Display) -> CallError {
+    CallError::new(CallError::HOST_FAILED, format!("could not {what}: {error}"))
 }
 
 impl Host for KernelHost {
@@ -205,24 +216,45 @@ impl Host for KernelHost {
         Err(not_implemented("device broadcasts"))
     }
 
-    fn storage_get(&self, _p: &PluginId, _k: &str) -> Result<Option<String>, CallError> {
-        Err(not_implemented("plugin storage"))
+    fn storage_get(&self, plugin: &PluginId, key: &str) -> Result<Option<String>, CallError> {
+        self.db
+            .lock()
+            .storage_get(plugin.as_str(), key)
+            .map_err(|error| failed("read the plugin's storage", &error))
     }
 
-    fn storage_set(&self, _p: &PluginId, _k: &str, _v: &str) -> Result<(), CallError> {
-        Err(not_implemented("plugin storage"))
+    fn storage_set(&self, plugin: &PluginId, key: &str, value: &str) -> Result<(), CallError> {
+        // ★ The quota is **not** checked here, and that is deliberate.
+        //
+        // A plugin's storage ceiling is part of its quota, the quota is what the call budget in `HostCalls` was built
+        // from, and that layer checks it before this is reached. A second check here would need a limit this host does not
+        // have — and a host that invented one would be the second source that the trait's `storage_used` exists to avoid.
+        self.db
+            .lock()
+            .storage_set(plugin.as_str(), key, value, synra_store::sqlite::now_ms())
+            .map_err(|error| failed("write the plugin's storage", &error))
     }
 
-    fn storage_delete(&self, _p: &PluginId, _k: &str) -> Result<(), CallError> {
-        Err(not_implemented("plugin storage"))
+    fn storage_delete(&self, plugin: &PluginId, key: &str) -> Result<(), CallError> {
+        self.db
+            .lock()
+            .storage_delete(plugin.as_str(), key)
+            .map_err(|error| failed("remove the plugin's storage", &error))?;
+        Ok(())
     }
 
-    fn storage_keys(&self, _p: &PluginId, _prefix: Option<&str>) -> Result<Vec<String>, CallError> {
-        Err(not_implemented("plugin storage"))
+    fn storage_keys(&self, plugin: &PluginId, prefix: Option<&str>) -> Result<Vec<String>, CallError> {
+        self.db
+            .lock()
+            .storage_keys(plugin.as_str(), prefix)
+            .map_err(|error| failed("list the plugin's storage", &error))
     }
 
-    fn storage_quota(&self, _p: &PluginId) -> Result<(u64, u64), CallError> {
-        Err(not_implemented("plugin storage"))
+    fn storage_used(&self, plugin: &PluginId) -> Result<u64, CallError> {
+        self.db
+            .lock()
+            .storage_used_bytes(plugin.as_str())
+            .map_err(|error| failed("measure the plugin's storage", &error))
     }
 
     fn secret_get(&self, _p: &PluginId, _k: &str) -> Result<Option<String>, CallError> {
@@ -382,7 +414,6 @@ mod tests {
         for refusal in [
             host.event_emit(&plugin, "x", "{}"),
             host.device_send(&plugin, "d", "x", "{}"),
-            host.storage_get(&plugin, "k").map(|_| ()),
             host.secret_get(&plugin, "k").map(|_| ()),
             host.fetch(&plugin, "{}").map(|_| ()),
             host.transfer_status(&plugin, "t").map(|_| ()),
@@ -395,6 +426,17 @@ mod tests {
             // implementation spelling it wrong.
             assert_eq!(error.code, synra_plugin_host::host_calls::CallError::NOT_IMPLEMENTED, "{error:?}");
         }
+
+        // ★ Storage is **not** in that list any more, and its absence is the point: it was the largest group in it, and a
+        // plugin could not persist a byte. Asserted positively here, so that removing it from the loop cannot be mistaken
+        // for removing the feature.
+        assert_eq!(host.storage_get(&plugin, "k").expect("reads"), None, "an empty store reads as absent");
+        host.storage_set(&plugin, "k", "v").expect("writes");
+        assert_eq!(host.storage_get(&plugin, "k").expect("reads").as_deref(), Some("v"));
+        assert_eq!(host.storage_used(&plugin).expect("measures"), 1);
+        assert_eq!(host.storage_keys(&plugin, None).expect("lists"), vec!["k".to_owned()]);
+        host.storage_delete(&plugin, "k").expect("removes");
+        assert_eq!(host.storage_used(&plugin).expect("measures"), 0);
     }
 
 #[test]
