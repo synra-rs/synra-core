@@ -311,6 +311,46 @@ impl PluginRow {
     }
 }
 
+/// One capability's decision, as `plugin_grants` holds it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginGrantRow {
+    /// The capability.
+    pub capability: String,
+    /// Whether the user allowed it.
+    pub granted: bool,
+    /// When the decision was made.
+    pub decided_ms: i64,
+    /// The manifest it was made against.
+    ///
+    /// Carried rather than recomputed because the whole purpose is to notice that the manifest has *changed* since — and
+    /// recomputing it from the current manifest would compare the manifest against itself and always agree. An upgrade
+    /// whose digest differs is a request for consent again, and a caller cannot detect that from the capability list: a
+    /// plugin that declares a capability the user had already refused looks unchanged from the list.
+    pub manifest_digest: String,
+}
+
+impl PluginGrantRow {
+    /// Builds a row from the columns `plugin_grants` declares, in its order.
+    ///
+    /// # Errors
+    ///
+    /// [`RowError`] when a `NOT NULL` column is empty or the `granted` column holds something other than 0 or 1.
+    pub fn from_columns(
+        capability: Option<&str>,
+        granted: Option<i64>,
+        decided_ms: Option<i64>,
+        manifest_digest: Option<&str>,
+    ) -> Result<Self, RowError> {
+        Ok(Self {
+            capability: required(capability, "capability")?.to_owned(),
+            granted: to_bool(granted, "granted")?,
+            decided_ms: required(decided_ms, "decided_ms")?,
+            manifest_digest: required(manifest_digest, "manifest_digest")?.to_owned(),
+        })
+    }
+}
+
 /// One setting, as the `config` table holds it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConfigRow {
@@ -437,6 +477,10 @@ pub mod columns {
 
     /// The `config` columns, in the order `ConfigRow::from_columns` takes them.
     pub const CONFIG: &[&str] = &["key", "value", "updated_ms"];
+
+    /// The `plugin_grants` columns, in the order `PluginGrantRow::from_columns` takes them.
+    pub const PLUGIN_GRANT: &[&str] =
+        &["capability", "granted", "decided_ms", "manifest_digest"];
 }
 
 #[cfg(test)]

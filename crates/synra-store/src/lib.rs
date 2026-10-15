@@ -43,7 +43,7 @@ pub mod secrets;
 
 pub use db::{Health, Migration, MigrationOutcome, SchemaError, SchemaState, latest_version};
 pub use records::{
-    ConfigRow, DeviceRow, IdentityRow, PluginRow, RowError, SeenDeviceRow, columns,
+    ConfigRow, DeviceRow, IdentityRow, PluginGrantRow, PluginRow, RowError, SeenDeviceRow, columns,
 };
 pub use sqlite::{DbError, SynraDb, migration_versions};
 pub use paths::{DB_FILE_NAME, PathError, Paths, is_within, sanitise_component};
