@@ -74,6 +74,11 @@ fn run(state: &mut StoreData, import_name: &str, argument: &str) -> Answer {
     // The audit lock is held across the call rather than around the record, because a record has to be written even
     // when the call does nothing: the entry is what says the plugin asked.
     let mut audit = session.audit.lock();
+    // ★ The purity rule, read off the store rather than assumed.
+    //
+    // `Work::allows_side_effects` answers whether the call now running may act, and the backend records the answer before
+    // it dispatches. Without this the field existed and nothing read it, which is the same as not having it: a plugin's
+    // `can-handle` could send, write, open and fetch to its grants' content, for every share the user then cancelled.
     let mut calls = HostCalls::new(
         session.host.as_ref(),
         session.plugin.clone(),
@@ -81,6 +86,9 @@ fn run(state: &mut StoreData, import_name: &str, argument: &str) -> Answer {
         &session.budget,
         &mut audit,
     );
+    if !state.side_effects {
+        calls = calls.pure();
+    }
     let answer = match calls.call(import_name, argument) {
         Ok(answer) => Answer::Ok(answer),
         Err(error) => Answer::Denied(error),

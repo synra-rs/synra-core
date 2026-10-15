@@ -75,6 +75,15 @@ impl CallError {
     /// which is a different fact from "this build has no such feature at all".
     pub const NOT_IMPLEMENTED: &'static str = "notImplemented";
 
+    /// The call would have a side effect, and this one may not.
+    ///
+    /// # ★ Why this is not `capabilityDenied`
+    ///
+    /// Because the plugin **holds** the capability \u2014 that is why the gate let the call through to this check. What it
+    /// may not do is exercise it *here*, during a pure matching pass. Reporting `capabilityDenied` would send a user to a
+    /// settings screen to grant something they already granted.
+    pub const SIDE_EFFECT_NOT_ALLOWED: &'static str = "sideEffectNotAllowed";
+
     /// A refusal.
     #[must_use]
     pub fn new(code: &'static str, message: impl Into<String>) -> Self {
@@ -290,6 +299,17 @@ pub struct HostCalls<'a> {
     grants: &'a CapabilitySet,
     budget: &'a Budget,
     audit: &'a mut Vec<AuditEntry>,
+    /// Whether the call now running may have side effects.
+    ///
+    /// ★ `share.can-handle` is a pure function by contract, and the contract is enforced here rather than trusted.
+    ///
+    /// It runs for **every** plugin the router asks, before a user has chosen anything — so a plugin that wrote a file,
+    /// opened a browser or sent a message there would have done it for every share the user then cancelled. A plugin
+    /// cannot be relied on to keep that promise, and it should not have to be: the host is what makes it true.
+    ///
+    /// See [`Work::allows_side_effects`](crate::Work::allows_side_effects), which answers the question and — until this
+    /// field existed — was never asked.
+    side_effects: bool,
 }
 
 impl std::fmt::Debug for HostCalls<'_> {
@@ -317,7 +337,7 @@ impl<'a> HostCalls<'a> {
         budget: &'a Budget,
         audit: &'a mut Vec<AuditEntry>,
     ) -> Self {
-        Self { host, plugin, grants, budget, audit }
+        Self { host, plugin, grants, budget, audit, side_effects: true }
     }
 
     /// Which plugin.
@@ -419,6 +439,23 @@ impl<'a> HostCalls<'a> {
         result
     }
 
+    /// A session that refuses the calls a pure function may not make.
+    ///
+    /// # ★ Why this is a separate constructor rather than a field a caller sets
+    ///
+    /// Because forgetting to set it would silently grant a plugin the side effects `can-handle` is not allowed to have,
+    /// and the whole reason this exists is that the enforcement was missing once already. A constructor makes the
+    /// question unskippable: a caller building host calls for a `can-handle` pass must say so, and the permissive one is
+    /// named for what it is.
+    ///
+    /// The permissive default on [`HostCalls::new`] is for the calls that *are* allowed to act — `share.execute`,
+    /// `lifecycle.*`, `actions.invoke` and the rest.
+    #[must_use]
+    pub fn pure(mut self) -> Self {
+        self.side_effects = false;
+        self
+    }
+
     /// Performs the call, with the gate and the rate limit already passed.
     fn run(&self, import_name: &str, argument: &str) -> CallResult {
         // The capability a call is audited against, which is the one the gate names — the audit record is *about* the
@@ -426,6 +463,15 @@ impl<'a> HostCalls<'a> {
         let function = import_name.rsplit_once('#').map_or(import_name, |(_, name)| name);
         let host = self.host;
         let plugin = &self.plugin;
+
+        // ★ The purity rule, before anything else. A `can-handle` pass asks every plugin about every share before a
+        // user has chosen; a plugin that acted here would have acted on shares the user then cancelled.
+        if !self.side_effects && Self::ACTION_SHAPED.contains(&function) {
+            return Err(CallError::new(
+                CallError::SIDE_EFFECT_NOT_ALLOWED,
+                format!("`{function}` cannot be called while matching: `share.can-handle` is a pure function"),
+            ));
+        }
 
         match function {
             // ── Ungated: read-only facts ──────────────────────────────────────────────────────────────
@@ -603,7 +649,45 @@ impl<'a> HostCalls<'a> {
         }
     }
 
-    /// Refuses an event a plugin may not emit.
+    /// The host functions that change something outside the plugin.
+///
+/// # ★ Why this list exists, and why it is written by hand
+///
+/// Because "side effect" is not a property the gate table records. The generated table says which *capability* a function
+/// needs; whether the function merely reads or actually acts is a judgement about what it does, and only a reader of the
+/// contract can make it.
+///
+/// The list is written with that in mind: it holds the functions whose whole purpose is an effect on the world — sending,
+/// writing, opening, fetching, transferring, invoking. What is deliberately **absent** is as important as what is here:
+/// `log` records a line in the kernel's own log, `event-subscribe` keeps a pattern, `env-*` reads a fact, `storage-get`
+/// and `secret-get` read. None of those is something a user would be surprised to learn happened while a share was being
+/// matched, and refusing them would break plugins that legitimately log or look up their own settings during matching.
+///
+/// It is an associated constant rather than a free one because that is where it landed when it was written; the
+/// substance is unchanged. It is checked against the contract by a test, so a function added to the WIT file is either listed here or fails the
+/// suite — which is the only thing that keeps a hand-written list honest.
+const ACTION_SHAPED: &'static [&'static str] = &[
+    "event-emit",
+    "device-send",
+    "device-broadcast",
+    "storage-set",
+    "storage-delete",
+    "secret-set",
+    "secret-delete",
+    "network-fetch",
+    "network-websocket",
+    "transfer-send",
+    "platform-open-url",
+    "platform-open-path",
+    "platform-reveal-path",
+    "platform-simulate-keys",
+    "platform-notify",
+    "platform-write-clipboard",
+    "action-declare",
+    "action-invoke",
+];
+
+/// Refuses an event a plugin may not emit.
 ///
 /// # ★ Why this exists, and why it is here
 ///

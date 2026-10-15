@@ -46,61 +46,61 @@ impl Host for Silent {
         Ok(())
     }
     fn event_emit(&self, _plugin: &PluginId, _event: &str, _payload: &str) -> Result<(), CallError> {
-        Err(CallError::new("NOT_IMPLEMENTED", "no host"))
+        Err(CallError::new(CallError::NOT_IMPLEMENTED, "no host"))
     }
     fn devices(&self) -> Vec<(String, String, String)> {
         Vec::new()
     }
     fn device_send(&self, _p: &PluginId, _t: &str, _e: &str, _pl: &str) -> Result<(), CallError> {
-        Err(CallError::new("NOT_IMPLEMENTED", "no host"))
+        Err(CallError::new(CallError::NOT_IMPLEMENTED, "no host"))
     }
     fn device_broadcast(&self, _p: &PluginId, _e: &str, _pl: &str) -> Result<(), CallError> {
-        Err(CallError::new("NOT_IMPLEMENTED", "no host"))
+        Err(CallError::new(CallError::NOT_IMPLEMENTED, "no host"))
     }
     fn storage_get(&self, _p: &PluginId, _k: &str) -> Result<Option<String>, CallError> {
-        Err(CallError::new("NOT_IMPLEMENTED", "no host"))
+        Err(CallError::new(CallError::NOT_IMPLEMENTED, "no host"))
     }
     fn storage_set(&self, _p: &PluginId, _k: &str, _v: &str) -> Result<(), CallError> {
-        Err(CallError::new("NOT_IMPLEMENTED", "no host"))
+        Err(CallError::new(CallError::NOT_IMPLEMENTED, "no host"))
     }
     fn storage_delete(&self, _p: &PluginId, _k: &str) -> Result<(), CallError> {
-        Err(CallError::new("NOT_IMPLEMENTED", "no host"))
+        Err(CallError::new(CallError::NOT_IMPLEMENTED, "no host"))
     }
     fn storage_keys(&self, _p: &PluginId, _prefix: Option<&str>) -> Result<Vec<String>, CallError> {
-        Err(CallError::new("NOT_IMPLEMENTED", "no host"))
+        Err(CallError::new(CallError::NOT_IMPLEMENTED, "no host"))
     }
     fn storage_quota(&self, _p: &PluginId) -> Result<(u64, u64), CallError> {
-        Err(CallError::new("NOT_IMPLEMENTED", "no host"))
+        Err(CallError::new(CallError::NOT_IMPLEMENTED, "no host"))
     }
     fn secret_get(&self, _p: &PluginId, _k: &str) -> Result<Option<String>, CallError> {
-        Err(CallError::new("NOT_IMPLEMENTED", "no host"))
+        Err(CallError::new(CallError::NOT_IMPLEMENTED, "no host"))
     }
     fn secret_set(&self, _p: &PluginId, _k: &str, _v: &str) -> Result<(), CallError> {
-        Err(CallError::new("NOT_IMPLEMENTED", "no host"))
+        Err(CallError::new(CallError::NOT_IMPLEMENTED, "no host"))
     }
     fn secret_delete(&self, _p: &PluginId, _k: &str) -> Result<(), CallError> {
-        Err(CallError::new("NOT_IMPLEMENTED", "no host"))
+        Err(CallError::new(CallError::NOT_IMPLEMENTED, "no host"))
     }
     fn fetch(&self, _p: &PluginId, _request_json: &str) -> Result<String, CallError> {
-        Err(CallError::new("NOT_IMPLEMENTED", "no host"))
+        Err(CallError::new(CallError::NOT_IMPLEMENTED, "no host"))
     }
     fn transfer_send(&self, _p: &PluginId, _k: &str, _t: &str, _m: &str) -> Result<String, CallError> {
-        Err(CallError::new("NOT_IMPLEMENTED", "no host"))
+        Err(CallError::new(CallError::NOT_IMPLEMENTED, "no host"))
     }
     fn transfer_status(&self, _p: &PluginId, _id: &str) -> Result<String, CallError> {
-        Err(CallError::new("NOT_IMPLEMENTED", "no host"))
+        Err(CallError::new(CallError::NOT_IMPLEMENTED, "no host"))
     }
     fn platform(&self, _p: &PluginId, _a: &str, _arg: &str) -> Result<Option<String>, CallError> {
-        Err(CallError::new("NOT_IMPLEMENTED", "no host"))
+        Err(CallError::new(CallError::NOT_IMPLEMENTED, "no host"))
     }
     fn action_declare(&self, _p: &PluginId, _n: &str, _s: &str) -> Result<(), CallError> {
-        Err(CallError::new("NOT_IMPLEMENTED", "no host"))
+        Err(CallError::new(CallError::NOT_IMPLEMENTED, "no host"))
     }
     fn action_list(&self, _p: &PluginId) -> Result<String, CallError> {
-        Err(CallError::new("NOT_IMPLEMENTED", "no host"))
+        Err(CallError::new(CallError::NOT_IMPLEMENTED, "no host"))
     }
     fn action_invoke(&self, _p: &PluginId, _t: &str, _n: &str, _a: &str) -> Result<String, CallError> {
-        Err(CallError::new("NOT_IMPLEMENTED", "no host"))
+        Err(CallError::new(CallError::NOT_IMPLEMENTED, "no host"))
     }
 }
 

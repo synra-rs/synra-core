@@ -190,6 +190,22 @@ pub(crate) struct StoreData {
     /// `None` for an instance the host built without a session, which is the only way a host function can be reached
     /// without a gate — and the answer there is a refusal rather than a call.
     pub(crate) session: Option<Box<dyn std::any::Any + Send + Sync>>,
+    /// Whether the call now running is allowed to have side effects.
+    ///
+    /// ★ Why the *call* decides this rather than the plugin or its grants.
+    ///
+    /// `share.can-handle` runs for **every** plugin the router asks, before a user has chosen anything, and the contract
+    /// says it is a pure function. A plugin that wrote a file, opened a browser or sent a message there would have done it
+    /// for every share the user then cancelled.
+    ///
+    /// `Work::allows_side_effects` already answers the question — `false` for `CanHandle`, `true` for everything else —
+    /// and **nothing called it**. Its doc says "the host is what makes that true, by running it with a context whose
+    /// action-shaped calls are refused", and no such context existed: a plugin's `can-handle` could call `device-send`,
+    /// `platform-open-url`, `secret-set` or anything else its grants allowed, during the matching pass.
+    ///
+    /// Set before every call rather than at instantiation, because the same instance is asked `can-handle` first and
+    /// `execute` afterwards: the answer belongs to the call, not to the store.
+    pub(crate) side_effects: bool,
 }
 
 impl wasmtime::ResourceLimiter for StoreData {
@@ -319,6 +335,9 @@ impl PluginInstance for EngineInstance {
             self.ceiling = ceiling;
         }
         self.store.data_mut().memory_refused = false;
+
+        // ★ The purity rule, set per call. See `StoreData::side_effects`.
+        self.store.data_mut().side_effects = work.allows_side_effects();
 
         match self.dispatch(work) {
             Ok(outcome) => Ok(outcome),
@@ -721,6 +740,9 @@ impl WasmBackend for WasmtimeBackend {
                 // number a hostile allocation is measured against.
                 ceiling: INSTANTIATION_CEILING,
                 memory_refused: false,
+            // Conservative in the permissive direction for construction only: `call` sets this before dispatching, and an
+            // instance that never dispatched is one no guest code ran in.
+            side_effects: true,
                 session: None,
                 limits: StoreLimitsBuilder::new().memory_size(INSTANTIATION_CEILING).build(),
             },
