@@ -408,6 +408,56 @@ fn what_the_engine_claims_it_enforces_is_what_it_does() {
     );
 }
 
+/// ★ An engine built with no executor must still have something advancing its epoch.
+///
+/// `WasmtimeBackend::new` used to be `with_epoch(kind, Epoch::new())` — a fresh counter that no thread ever moved. The
+/// store was told "your deadline is tick N" and the counter stayed at zero, so the wall-clock layer armed a deadline
+/// that could not arrive. This is the test for the private-epoch half of that: the counter has to move on its own.
+#[test]
+fn an_engine_with_its_own_epoch_advances_it() {
+    let backend = WasmtimeBackend::new(BackendKind::WasmtimeCranelift).expect("an engine");
+
+    // A tick is 10ms and the ticker starts its first one immediately, so three periods is ample. The loop is a bound on
+    // flakiness rather than a sleep: a loaded machine may take longer, and failing on a slow machine would make this
+    // test report the machine rather than the code.
+    let mut moved = false;
+    for _ in 0..40 {
+        if backend.epoch().now() > 0 {
+            moved = true;
+            break;
+        }
+        std::thread::sleep(crate::engine::executor::EPOCH_PERIOD);
+    }
+
+    assert!(
+        moved,
+        "the epoch is still at {} — a private epoch nothing advances is a deadline that never arrives",
+        backend.epoch().now()
+    );
+}
+
+/// ★ The epoch has to be joined to the engine, not merely held beside it.
+///
+/// `Epoch` is the counter a ticker moves. A wasmtime deadline is measured against the engine's **own** counter, which
+/// moves only when `Engine::increment_epoch` is called — and nothing called it. So an engine could hold a perfectly
+/// lively epoch and still never time a guest out, which is what "it holds the epoch" was mistaken for.
+///
+/// The assertion is on the observer count because that is the only externally visible trace of the join. It is not a
+/// statement about internals for its own sake: an engine with zero observers is an engine the ticker cannot reach, and
+/// that is the exact condition that made this layer inert.
+#[test]
+fn an_engine_sharing_an_epoch_is_joined_to_it() {
+    let executor = WasmExecutor::start(2, 4).expect("an executor");
+    let backend = WasmtimeBackend::with_epoch(BackendKind::WasmtimeCranelift, executor.epoch().clone())
+        .expect("an engine");
+
+    let described = format!("{:?}", backend.epoch());
+    assert!(
+        described.contains("observers: 1"),
+        "the engine is not observing the epoch, so advancing it moves nothing wasmtime measures: {described}"
+    );
+}
+
 #[test]
 fn a_deadline_only_fires_if_the_epoch_advances() {
     // ★ The reason the backend is built with an executor's epoch rather than one of its own. An engine whose counter

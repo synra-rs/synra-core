@@ -46,16 +46,61 @@ pub const MAX_THREADS: usize = 64;
 /// The epoch a running engine checks its deadlines against.
 ///
 /// Cheap to clone — an `Arc` and an atomic — because the store, the ticker and every instance hold one.
-#[derive(Debug, Clone)]
+///
+/// # ★ Why this carries observers
+///
+/// Because the counter alone was never enough, and the gap was invisible from both ends.
+///
+/// [`Epoch::advance`] moved *this* counter. The wasmtime engine has a counter of its own, and it is the one a deadline
+/// is actually measured against — it only moves when `Engine::increment_epoch` is called. Nothing called it: at the time
+/// this was written the name appeared nowhere in the workspace. So the store was told "your deadline is tick 25", the
+/// ticker moved `Epoch` from 0 to 25 over a quarter of a second, and wasmtime's own counter stayed at zero forever. A
+/// guest blocked inside a host call — consuming no instructions, so fuel never runs out — could not be interrupted by
+/// anything, which is the one thing this layer exists to do.
+///
+/// The tests did not catch it because they watched `Epoch::now`, the counter that *was* moving. The seam between the two
+/// counters had no test on either side of it.
+///
+/// An observer is how an engine says "when the epoch moves, move this too", so there is one counter to advance and the
+/// engine cannot be left behind by an advance that forgot about it.
+#[derive(Clone)]
 pub struct Epoch {
     current: Arc<AtomicU64>,
+    /// Called on every advance, with the new value.
+    ///
+    /// Behind the same lock as the push, and never called while it is held — an observer that registered another
+    /// observer would otherwise deadlock a thread that is holding the lock its own registration needs.
+    observers: Arc<Mutex<Vec<Arc<dyn Fn(u64) + Send + Sync>>>>,
+}
+
+impl std::fmt::Debug for Epoch {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The observers are closures, which have no useful `Debug`. Their number is the part a reader needs: a ticker
+        // advancing an epoch with no observers is the shape of the bug this type was changed to make impossible.
+        formatter
+            .debug_struct("Epoch")
+            .field("now", &self.now())
+            .field("observers", &self.observers.lock().len())
+            .finish()
+    }
 }
 
 impl Epoch {
     /// A new epoch at zero.
     #[must_use]
     pub fn new() -> Self {
-        Self { current: Arc::new(AtomicU64::new(0)) }
+        Self { current: Arc::new(AtomicU64::new(0)), observers: Arc::new(Mutex::new(Vec::new())) }
+    }
+
+    /// Registers something to move whenever this epoch moves.
+    ///
+    /// The observer is called with the new value, on the thread that advanced the epoch.
+    pub fn observe(&self, observer: impl Fn(u64) + Send + Sync + 'static) {
+        let mut observers = self.observers.lock();
+        // A no-op if the lock is already held by this thread would be a lost observer, which is the failure being
+        // prevented. `parking_lot::Mutex` is not reentrant, so a caller that reached here from inside an observer would
+        // deadlock rather than lose it — which is why `advance` does not hold the lock while calling them.
+        observers.push(Arc::new(observer));
     }
 
     /// The current value.
@@ -66,7 +111,17 @@ impl Epoch {
 
     /// Advances by one and returns the new value.
     pub fn advance(&self) -> u64 {
-        self.current.fetch_add(1, Ordering::AcqRel).saturating_add(1)
+        let next = self.current.fetch_add(1, Ordering::AcqRel).saturating_add(1);
+
+        // The observers are copied out and the lock released before any of them runs. An observer that called back into
+        // this epoch — registering another, or reading `now` — would deadlock a non-reentrant lock, and the cost of
+        // avoiding it is one `Arc` clone per observer per tick.
+        let observers: Vec<_> = self.observers.lock().clone();
+        for observer in observers {
+            observer(next);
+        }
+
+        next
     }
 
     /// The epoch value that is `after` from now.
@@ -414,6 +469,57 @@ mod tests {
         thread::sleep(EPOCH_PERIOD * 4);
         assert!(executor.epoch().now() > before, "the ticker is not advancing");
         assert!(executor.enforces_timeouts());
+    }
+
+    #[test]
+    fn an_observer_moves_when_the_epoch_does() {
+        // ★ The primitive the engine join is built on. Before `observe` existed, `Epoch` was a counter that only this
+        // crate could see — wasmtime measures its own, and no call ever moved it.
+        let epoch = Epoch::new();
+        let seen = Arc::new(AtomicU64::new(0));
+        {
+            let seen = Arc::clone(&seen);
+            epoch.observe(move |tick| {
+                seen.store(tick, Ordering::Release);
+            });
+        }
+
+        assert_eq!(epoch.advance(), 1);
+        assert_eq!(seen.load(Ordering::Acquire), 1, "the observer did not see the advance");
+        assert_eq!(epoch.advance(), 2);
+        assert_eq!(seen.load(Ordering::Acquire), 2);
+    }
+
+    #[test]
+    fn every_observer_is_called_and_none_needs_the_lock_to_be_free() {
+        // Two properties in one, because they are the same bug seen twice: an observer list where only the first entry
+        // runs, and one where an observer that touches the epoch deadlocks the ticker thread.
+        let epoch = Epoch::new();
+        let first = Arc::new(AtomicU64::new(0));
+        let second = Arc::new(AtomicU64::new(0));
+        {
+            let first = Arc::clone(&first);
+            epoch.observe(move |tick| {
+                first.store(tick, Ordering::Release);
+            });
+        }
+        {
+            // ★ This one reads the epoch it is observing. With the lock held across the notification this would hang
+            // forever, on the thread that advances every timeout in the process — a deadlock that only appears once
+            // something registers a second observer.
+            let second = Arc::clone(&second);
+            let inner = epoch.clone();
+            epoch.observe(move |tick| {
+                // `inner` rather than `epoch`: registering borrows the epoch, so the closure cannot also capture it.
+                second.store(tick + inner.now(), Ordering::Release);
+            });
+        }
+
+        epoch.advance();
+
+        assert_eq!(first.load(Ordering::Acquire), 1, "the first observer did not run");
+        // 1 (the tick) + 1 (the epoch's own value, read from inside the observer).
+        assert_eq!(second.load(Ordering::Acquire), 2, "the second observer did not run");
     }
 
     #[test]

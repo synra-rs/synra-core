@@ -37,7 +37,7 @@ use std::time::Duration;
 use wasmtime::component::{Component, Instance, Linker, Val};
 use wasmtime::{Config, Engine, OptLevel, Store, StoreLimits, StoreLimitsBuilder};
 
-use super::executor::Epoch;
+use super::executor::{Epoch, EpochTicker};
 use super::types::{
     Backend, BackendError, BackendKind, CallBudget, CallOutcome, CompiledArtifact, Enforcement, PluginInstance,
     WasmBackend, Work,
@@ -490,6 +490,16 @@ pub struct WasmtimeBackend {
     /// The epoch deadlines are measured against. Held so a caller can prove the engine it built is the one an
     /// executor's ticker advances, rather than a private counter nothing moves.
     epoch: Epoch,
+    /// The ticker this backend started for itself, when it has no executor to share one with.
+    ///
+    /// `Some` after [`WasmtimeBackend::new`], `None` after [`WasmtimeBackend::with_epoch`] — in the second case the
+    /// caller owns a ticker and this engine is one of its observers. Held rather than leaked because the ticker's thread
+    /// ends when the value is dropped, so an engine that dropped it would be an engine whose deadlines stopped.
+    ///
+    /// Behind an `Arc` because this struct is `Clone` and a ticker owns a thread. A clone must advance the *same* epoch
+    /// — two tickers over one epoch would double the rate, and a clone that started a second one would make the timeout
+    /// it was cloned for arrive twice as fast as the budget asked.
+    ticker: Option<Arc<EpochTicker>>,
 }
 
 impl std::fmt::Debug for WasmtimeBackend {
@@ -505,12 +515,26 @@ impl std::fmt::Debug for WasmtimeBackend {
 impl WasmtimeBackend {
     /// Builds an engine with the security baseline the design document requires.
     ///
+    /// # ★ This starts a ticker, and it did not before
+    ///
+    /// It used to be `Self::with_epoch(kind, Epoch::new())` — an epoch nothing advanced. That is precisely the failure
+    /// the sibling constructor's doc comment calls impossible, committed by the constructor next to it: the wall-clock
+    /// budget armed a deadline on a counter that would never reach it, so a guest that blocked inside a host call ran
+    /// until it finished or forever.
+    ///
+    /// An engine built this way has no executor to share an epoch with, so it brings its own ticker and holds it. The
+    /// ticker stops when the backend is dropped, which is what the ownership is for.
+    ///
     /// # Errors
     ///
     /// [`BackendError::Engine`] when the engine refuses the configuration, which is a build-time problem reported
     /// rather than panicked on.
     pub fn new(kind: BackendKind) -> Result<Self, BackendError> {
-        Self::with_epoch(kind, Epoch::new())
+        let epoch = Epoch::new();
+        let ticker = EpochTicker::start(epoch.clone());
+        let mut backend = Self::with_epoch(kind, epoch)?;
+        backend.ticker = Some(Arc::new(ticker));
+        Ok(backend)
     }
 
     /// Builds an engine that shares an executor's epoch.
@@ -521,6 +545,12 @@ impl WasmtimeBackend {
     /// be an engine whose deadlines never fire — a wall-clock budget that silently does nothing, which is the failure
     /// this whole layer exists to make impossible.
     ///
+    /// # ★ And why the epoch is now *observed* as well as held
+    ///
+    /// Because holding it was not enough. `Epoch::advance` moves that counter; the deadline is measured against
+    /// wasmtime's own, which moves only when `Engine::increment_epoch` is called. Registering the engine here is what
+    /// joins the two, so a ticker that advances the epoch cannot leave the engine behind.
+    ///
     /// # Errors
     ///
     /// As [`WasmtimeBackend::new`].
@@ -528,7 +558,19 @@ impl WasmtimeBackend {
         let engine = Engine::new(&engine_config(kind)).map_err(|error| BackendError::Engine {
             detail: format!("the engine refused its configuration: {error}"),
         })?;
-        Ok(Self { engine, kind, epoch })
+        // ★ The join between the two counters, and the line whose absence made the wall-clock budget inert.
+        //
+        // `Epoch` is what the ticker advances; `Engine::increment_epoch` is what wasmtime measures a deadline against.
+        // Registering here means an advance of one is an advance of the other, so no caller has to remember to do both
+        // — which is exactly what no caller did.
+        //
+        // `Engine` is a handle to shared machinery, so the clone the closure keeps is the same engine, not a copy of it.
+        {
+            let engine = engine.clone();
+            epoch.observe(move |_tick| engine.increment_epoch());
+        }
+
+        Ok(Self { engine, kind, epoch, ticker: None })
     }
 
     /// The engine, for a caller that wants to build something else on it.
