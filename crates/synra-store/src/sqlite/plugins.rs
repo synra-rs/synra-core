@@ -172,6 +172,57 @@ impl SynraDb {
         rows.into_iter().collect::<Result<Vec<PluginGrantRow>, RowError>>().map_err(DbError::from)
     }
 
+    /// Records what the user decided about each capability a plugin declares.
+    ///
+    /// # ★ Why this is the missing writer, and why it lives here
+    ///
+    /// `plugin_grants` had a reader (`plugin_grants`, above) and a row type and a schema and an index — and **no writer
+    /// at all**. Every `INSERT INTO plugin_grants` in the workspace was in a test. So the settings screen showed two
+    /// empty lists, and the loader took the manifest's own declaration as the grant instead, because there was nothing
+    /// else to take.
+    ///
+    /// `decided_ms` and `manifest_digest` are per decision rather than per plugin because both answer "which document
+    /// did the user agree to": a plugin that ships an update adding a capability has a different digest, so the rows
+    /// that predate it are visibly older than the manifest now on disk. That is what makes silent capability growth
+    /// detectable rather than invisible.
+    ///
+    /// Each row is upserted, so a user who changes their mind overwrites the decision rather than accumulating history —
+    /// the audit trail is where "what happened" lives, and this table is the current state.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::Statement`] when a write is refused. A capability string that is not valid is *stored as given*
+    /// rather than validated here: this crate does not own the capability grammar, and a refusal from the wrong layer
+    /// is one the caller cannot act on.
+    pub fn record_grants(
+        &self,
+        plugin_id: &str,
+        decisions: &[(String, bool)],
+        decided_ms: i64,
+        manifest_digest: &str,
+    ) -> Result<usize, DbError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "INSERT INTO plugin_grants (plugin_id, capability, granted, decided_ms, manifest_digest) \
+                 VALUES (?1, ?2, ?3, ?4, ?5) \
+                 ON CONFLICT(plugin_id, capability) DO UPDATE SET \
+                    granted = excluded.granted, \
+                    decided_ms = excluded.decided_ms, \
+                    manifest_digest = excluded.manifest_digest",
+            )
+            .map_err(|error| DbError::Statement { why: error.to_string() })?;
+
+        let mut written = 0usize;
+        for (capability, granted) in decisions {
+            statement
+                .execute(params![plugin_id, capability, i64::from(*granted), decided_ms, manifest_digest])
+                .map_err(|error| DbError::Statement { why: error.to_string() })?;
+            written += 1;
+        }
+        Ok(written)
+    }
+
     // ★ Writing grants is deliberately absent.
     //
     // It needs a delete and inserts to land together, which means a transaction, and a transaction means `&mut self` —
