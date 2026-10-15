@@ -276,8 +276,8 @@ impl Kernel for Runtime {
         self.plugins_value()
     }
 
-    fn logs(&self, lines: usize, verbose: bool) -> Result<serde_json::Value, Refusal> {
-        self.logs_value(lines, verbose)
+    fn logs(&self, lines: usize, verbose: bool, trace: Option<&str>) -> Result<serde_json::Value, Refusal> {
+        self.logs_value(lines, verbose, trace)
     }
 
     /// Asks a device to pair, and waits for its user.

@@ -694,7 +694,7 @@ fn the_plugins_come_back_in_a_stable_order() {
 #[test]
 fn a_fresh_installation_has_no_log_and_that_is_not_an_error() {
     let dir = TempDir::new("logs-empty");
-    let value = runtime(dir.path()).logs(10, false).expect("logs");
+    let value = runtime(dir.path()).logs(10, false, None).expect("logs");
     assert_eq!(value["lines"].as_array().map(Vec::len), Some(0));
     assert!(value["source"].is_null());
 }
@@ -706,7 +706,7 @@ fn the_tail_is_the_last_lines_in_order() {
     std::fs::create_dir_all(&log_dir).expect("the log directory");
     std::fs::write(log_dir.join("kernel.log"), "one\ntwo\nthree\nfour\n").expect("a log");
 
-    let value = runtime(dir.path()).logs(2, false).expect("logs");
+    let value = runtime(dir.path()).logs(2, false, None).expect("logs");
     let lines: Vec<&str> = value["lines"]
         .as_array()
         .expect("a list")
@@ -726,7 +726,7 @@ fn asking_for_more_lines_than_exist_gives_everything() {
     std::fs::create_dir_all(&log_dir).expect("the log directory");
     std::fs::write(log_dir.join("kernel.log"), "one\ntwo\n").expect("a log");
 
-    let value = runtime(dir.path()).logs(1_000, false).expect("logs");
+    let value = runtime(dir.path()).logs(1_000, false, None).expect("logs");
     assert_eq!(value["lines"].as_array().map(Vec::len), Some(2));
 }
 
@@ -752,6 +752,50 @@ fn the_log_reader_and_the_log_writer_agree_on_the_directory() {
 }
 
 #[test]
+fn a_trace_filter_keeps_only_the_lines_that_mention_it() {
+    // ★ The half of `--trace` that did not exist. The CLI carried the flag, the flag parsed, and the id was thrown away
+    // before it reached the request — so this filter had nothing to filter on and the command returned everything. A
+    // user following one action got the whole log and no sign that their filter had been ignored.
+    let dir = TempDir::new("logs-trace");
+    let log_dir = dir.path().join("logs");
+    std::fs::create_dir_all(&log_dir).expect("the log directory");
+    std::fs::write(
+        log_dir.join("kernel.log"),
+        "INFO started trace_id=trace-1\n\
+         DEBUG detail trace_id=trace-2\n\
+         INFO finished trace_id=trace-1\n\
+         INFO unrelated\n",
+    )
+    .expect("a log");
+
+    // A trace filter widens the level — a trace's lines are the debug ones — and then keeps only its own.
+    let only = runtime(dir.path()).logs(10, true, Some("trace-1")).expect("logs");
+    let lines: Vec<&str> = only["lines"]
+        .as_array()
+        .expect("a list")
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+    assert_eq!(lines.len(), 2, "expected the two trace-1 lines, got {lines:?}");
+    assert!(lines.iter().all(|line| line.contains("trace-1")), "{lines:?}");
+
+    // The other trace is not in there, which is what makes this a filter rather than a substring coincidence.
+    assert!(!lines.iter().any(|line| line.contains("trace-2")), "{lines:?}");
+
+    // ★ And the id is echoed, so a caller can tell "this trace has no lines" from "the filter was dropped on the way
+    // here" — the exact confusion the discarded id produced.
+    assert_eq!(only["trace"].as_str(), Some("trace-1"));
+
+    // An id nothing matches is an empty list rather than every line, which is the failure the old code produced.
+    let none = runtime(dir.path()).logs(10, true, Some("trace-does-not-exist")).expect("logs");
+    assert_eq!(none["lines"].as_array().map(Vec::len), Some(0));
+
+    // And no filter still returns everything, so the field's absence is not a filter of its own.
+    let all = runtime(dir.path()).logs(10, true, None).expect("logs");
+    assert_eq!(all["lines"].as_array().map(Vec::len), Some(4));
+}
+
+#[test]
 fn debug_lines_are_hidden_unless_they_are_asked_for() {
     // The level is in the line, and filtering here keeps the daemon from needing an index of its own log.
     let dir = TempDir::new("logs-verbose");
@@ -765,9 +809,9 @@ fn debug_lines_are_hidden_unless_they_are_asked_for() {
 
     // Quiet hides `DEBUG` and `TRACE`, and keeps everything else — two `INFO` lines out of three. A filter that kept
     // only `INFO` would hide warnings and errors, which are the lines a user is actually looking for.
-    let quiet = runtime(dir.path()).logs(10, false).expect("logs");
+    let quiet = runtime(dir.path()).logs(10, false, None).expect("logs");
     assert_eq!(quiet["lines"].as_array().map(Vec::len), Some(2));
-    let verbose = runtime(dir.path()).logs(10, true).expect("logs");
+    let verbose = runtime(dir.path()).logs(10, true, None).expect("logs");
     assert_eq!(verbose["lines"].as_array().map(Vec::len), Some(3));
 
     // And the shape the real log has, where a timestamp comes first — the case the naive `contains(" DEBUG ")` did
@@ -777,7 +821,7 @@ fn debug_lines_are_hidden_unless_they_are_asked_for() {
         "2026-01-01T00:00:00Z INFO started\n2026-01-01T00:00:01Z DEBUG detail\n",
     )
     .expect("a log");
-    let stamped = runtime(dir.path()).logs(10, false).expect("logs");
+    let stamped = runtime(dir.path()).logs(10, false, None).expect("logs");
     let lines: Vec<&str> = stamped["lines"]
         .as_array()
         .expect("a list")
@@ -821,7 +865,7 @@ fn the_newest_log_file_is_the_one_read() {
     std::thread::sleep(std::time::Duration::from_millis(20));
     std::fs::write(log_dir.join("b-new.log"), "new\n").expect("a log");
 
-    let value = runtime(dir.path()).logs(10, false).expect("logs");
+    let value = runtime(dir.path()).logs(10, false, None).expect("logs");
     let lines: Vec<&str> = value["lines"]
         .as_array()
         .expect("a list")

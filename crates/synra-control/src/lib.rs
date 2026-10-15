@@ -182,6 +182,21 @@ pub enum Request {
         lines: usize,
         /// Whether to include debug-level lines.
         verbose: bool,
+        /// Show only the lines for one trace, when the caller asked for one.
+        ///
+        /// # ★ Why this is a field and not a `--verbose` in disguise
+        ///
+        /// Because the CLI used to translate `--trace <id>` into `verbose: true` and **throw the id away**. The flag
+        /// parsed, the command ran, the output looked plausible, and the filter the user asked for did not exist — the
+        /// worst shape a broken flag can take, because nothing about the result says so.
+        ///
+        /// A trace is one user action's group of steps (`TraceContext`), and the id is what a person pastes out of a bug
+        /// report to find the rest of it. Filtering is by substring on the rendered line, because the line format
+        /// belongs to the logger and the daemon keeps no index of its own log — the same reason the level filter reads
+        /// the level out of the text.
+        ///
+        /// `None` means "every trace", which is what a caller who did not ask for one gets.
+        trace: Option<String>,
     },
 
     /// Asks a device to pair.
@@ -506,7 +521,7 @@ mod tests {
             Request::SendText { to: "dev_a".to_owned(), text: "hi".to_owned() },
             Request::SendFile { to: "dev_a".to_owned(), path: "/tmp/a".to_owned() },
             Request::Plugins,
-            Request::Logs { lines: 50, verbose: true },
+            Request::Logs { lines: 50, verbose: true, trace: None },
         ];
         for request in requests {
             assert_eq!(round_trip(&request), request, "{}", request.kind());
@@ -586,7 +601,7 @@ mod tests {
 
     #[test]
     fn a_message_split_across_three_reads_is_assembled() {
-        let bytes = encode(&Request::Logs { lines: 10, verbose: false }).expect("encodes");
+        let bytes = encode(&Request::Logs { lines: 10, verbose: false, trace: None }).expect("encodes");
         let third = bytes.len() / 3;
         let mut decoder = Decoder::new();
         decoder.push(&bytes[..third]);
@@ -594,7 +609,7 @@ mod tests {
         decoder.push(&bytes[third * 2..]);
         assert_eq!(
             decoder.next_message::<Request>().expect("no error"),
-            Some(Request::Logs { lines: 10, verbose: false })
+            Some(Request::Logs { lines: 10, verbose: false, trace: None })
         );
     }
 
@@ -738,7 +753,7 @@ mod tests {
             Request::Status,
             Request::Devices { include_unpaired: false, scan_ms: None },
             Request::Plugins,
-            Request::Logs { lines: 1, verbose: false },
+            Request::Logs { lines: 1, verbose: false, trace: None },
         ] {
             assert!(!request.is_handshake(), "{}", request.kind());
         }
@@ -754,7 +769,7 @@ mod tests {
             Request::SendText { to: String::new(), text: String::new() },
             Request::SendFile { to: String::new(), path: String::new() },
             Request::Plugins,
-            Request::Logs { lines: 1, verbose: false },
+            Request::Logs { lines: 1, verbose: false, trace: None },
         ];
         let mut names: Vec<&str> = requests.iter().map(Request::kind).collect();
         names.sort_unstable();

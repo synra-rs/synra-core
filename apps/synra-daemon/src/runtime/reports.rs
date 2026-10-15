@@ -149,7 +149,12 @@ impl Runtime {
     /// The log directory is what the kernel writes to, and a file there may be rotated or absent. Reading the newest
     /// file is the useful answer for a user asking "what happened", and reporting that there is none is the honest one
     /// for a fresh installation.
-    pub(super) fn logs_value(&self, lines: usize, verbose: bool) -> Result<serde_json::Value, Refusal> {
+    pub(super) fn logs_value(
+        &self,
+        lines: usize,
+        verbose: bool,
+        trace: Option<&str>,
+    ) -> Result<serde_json::Value, Refusal> {
         // The log lives in the cache directory beside the data directory, which is where `Paths` puts it.
         let log_dir = self.data_dir.join("logs");
         let Some(newest) = newest_file(&log_dir) else {
@@ -170,9 +175,19 @@ impl Runtime {
         // was wrong: a line may begin with the level — `DEBUG detail` — and then there is no space before it. What
         // follows the level is a space or the end of the line, and a line has a timestamp in front of it in the real
         // log, which is why the token is found by splitting rather than by position.
+        //
+        // ★ The trace filter is a substring test, and the difference from the level filter is deliberate. A level is a
+        // fixed vocabulary in a known position, so a token match is exact and cheap. A trace id is an opaque string that
+        // appears wherever the logger chose to render it — as a span field, or inside a message a plugin wrote — so
+        // there is no position to anchor on, and a token match would find nothing.
+        //
+        // The two filters compose: `--trace` asks for the wide level filter because a trace's lines are the debug ones,
+        // and a caller who passes both gets the intersection, which is what "the lines for this trace, including debug"
+        // means.
         let wanted: Vec<&str> = text
             .lines()
             .filter(|line| verbose || !is_debug_or_trace(line))
+            .filter(|line| trace.is_none_or(|id| line.contains(id)))
             .collect();
         let start = wanted.len().saturating_sub(lines);
         let tail: &[&str] = wanted.get(start..).unwrap_or(&[]);
@@ -181,6 +196,9 @@ impl Runtime {
             "lines": tail,
             "source": newest.to_string_lossy(),
             "total": wanted.len(),
+            // Echoed so a caller can tell "this trace has no lines" from "the filter was dropped on the way here" —
+            // the exact confusion the CLI's old `--trace` produced by discarding the id.
+            "trace": trace,
         }))
     }
 }

@@ -131,7 +131,7 @@ pub trait Kernel {
     /// # Errors
     ///
     /// As [`Kernel::status`].
-    fn logs(&self, lines: usize, verbose: bool) -> Result<serde_json::Value, Refusal>;
+    fn logs(&self, lines: usize, verbose: bool, trace: Option<&str>) -> Result<serde_json::Value, Refusal>;
 
     /// Asks a device to pair, and waits for the other user's answer.
     ///
@@ -299,7 +299,7 @@ impl Server {
             Request::SendText { to, text } => kernel.send_text(to, text),
             Request::SendFile { to, path } => kernel.send_file(to, path),
             Request::Plugins => kernel.plugins(),
-            Request::Logs { lines, verbose } => kernel.logs(*lines, *verbose),
+            Request::Logs { lines, verbose, trace } => kernel.logs(*lines, *verbose, trace.as_deref()),
             Request::Pair { device } => kernel.pair(device),
             Request::PairAnswer { request_id, accepted } => kernel.pair_answer(request_id, *accepted),
             // Answered above, and unreachable here. Written as a refusal rather than a `panic!` because a handler that
@@ -382,7 +382,12 @@ mod tests {
         fn plugins(&self) -> Result<serde_json::Value, Refusal> {
             self.plugins.clone()
         }
-        fn logs(&self, lines: usize, verbose: bool) -> Result<serde_json::Value, Refusal> {
+        fn logs(
+            &self,
+            lines: usize,
+            verbose: bool,
+            _trace: Option<&str>,
+        ) -> Result<serde_json::Value, Refusal> {
             self.asked.borrow_mut().push((false, lines, verbose));
             self.logs.clone()
         }
@@ -508,7 +513,7 @@ mod tests {
             &[
                 hello(),
                 Request::Devices { include_unpaired: true, scan_ms: Some(750) },
-                Request::Logs { lines: 25, verbose: true },
+                Request::Logs { lines: 25, verbose: true, trace: None },
             ],
         );
         assert_eq!(responses[1], Response::ok(serde_json::json!({"devices": []})));
@@ -533,7 +538,7 @@ mod tests {
                 Request::SendText { to: "dev_a".to_owned(), text: "hi".to_owned() },
                 Request::SendFile { to: "dev_a".to_owned(), path: "/tmp/a".to_owned() },
                 Request::Plugins,
-                Request::Logs { lines: 10, verbose: false },
+                Request::Logs { lines: 10, verbose: false, trace: None },
             ],
         );
         assert_eq!(state, SessionState::Open);
@@ -567,7 +572,7 @@ mod tests {
         // leave the client with a framing error for the message it never received.
         let (responses, state) = run(
             &Fake::refusing(ErrorCode::DeviceOffline),
-            &[hello(), Request::Status, Request::Plugins, Request::Logs { lines: 1, verbose: false }],
+            &[hello(), Request::Status, Request::Plugins, Request::Logs { lines: 1, verbose: false, trace: None }],
         );
         assert_eq!(state, SessionState::Open);
         assert_eq!(responses.len(), 4);

@@ -485,7 +485,12 @@ mod tests {
         fn plugins(&self) -> Result<serde_json::Value, Refusal> {
             self.answer("plugins")
         }
-        fn logs(&self, _lines: usize, _verbose: bool) -> Result<serde_json::Value, Refusal> {
+        fn logs(
+            &self,
+            _lines: usize,
+            _verbose: bool,
+            _trace: Option<&str>,
+        ) -> Result<serde_json::Value, Refusal> {
             self.answer("logs")
         }
         fn pair(&self, _device: &str) -> Result<serde_json::Value, Refusal> {
@@ -648,7 +653,7 @@ mod tests {
             (Request::Status, "status"),
             (Request::Devices { include_unpaired: true, scan_ms: None }, "devices"),
             (Request::Plugins, "plugins"),
-            (Request::Logs { lines: 5, verbose: false }, "logs"),
+            (Request::Logs { lines: 5, verbose: false, trace: None }, "logs"),
         ] {
             assert_eq!(
                 client.ask(&request).expect("asks"),

@@ -106,6 +106,10 @@ pub fn question_for(
                 // `--verbose` widens the filter, and `--trace` needs the wide one too: the lines that mention a trace id
                 // are the debug ones, so a trace filter without it would find nothing.
                 verbose: args.verbose || args.trace.is_some(),
+                // ★ Passed through rather than folded into `verbose`. It used to be folded in — the id was dropped and
+                // the command answered as if `--verbose` had been given, so a user asking to follow one action got every
+                // line in the log and no indication that their filter had been ignored.
+                trace: args.trace.clone(),
             },
             shape,
         }),
@@ -429,16 +433,29 @@ mod tests {
         // Off by a default is the silent failure here: `--lines 5` arriving as the default would print the wrong amount
         // and look like an answer.
         let question = question_for(&Command::Logs(logs_args(25, None, false)), None, || None).expect("a question");
-        assert_eq!(question.request, Request::Logs { lines: 25, verbose: false });
+        assert_eq!(question.request, Request::Logs { lines: 25, verbose: false, trace: None });
     }
 
     #[test]
-    fn a_trace_filter_asks_for_the_verbose_log() {
-        // A user filtering by a trace id wants the lines that mention it, and those are the debug ones — so the request
-        // asks for everything and the filter is applied to what comes back.
+    fn a_trace_filter_carries_the_id_and_asks_for_the_verbose_log() {
+        // ★ This test used to assert only `verbose: true`, and its comment said "the filter is applied to what comes
+        // back". Nothing applied it: the id was dropped in this very function, so `--trace` returned the whole log and
+        // the user had no way to tell that their filter had been ignored.
+        //
+        // The id is carried now, and that is the half of the assertion that would have caught it.
         let question = question_for(&Command::Logs(logs_args(10, Some("trace-1"), false)), None, || None)
-        .expect("a question");
-        assert_eq!(question.request, Request::Logs { lines: 10, verbose: true });
+            .expect("a question");
+        match question.request {
+            Request::Logs { lines, verbose, trace } => {
+                assert_eq!(lines, 10);
+                // Widened, because a trace's lines are the debug ones.
+                assert!(verbose, "a trace filter needs the verbose log to have anything to filter");
+                // ★ And carried. Without this the filter has nothing to match on and the daemon answers with
+                // everything, which is what used to happen.
+                assert_eq!(trace.as_deref(), Some("trace-1"), "the trace id was dropped on the way to the request");
+            }
+            other => panic!("expected a logs request, got {other:?}"),
+        }
     }
 
     #[test]
