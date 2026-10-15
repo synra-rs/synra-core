@@ -556,7 +556,20 @@ impl WasmBackend for WasmtimeBackend {
     }
 
     fn enforcement(&self) -> Enforcement {
-        Enforcement::full()
+        // ★ Not `Enforcement::full()`, which is what this returned and what it must not return.
+        //
+        // `full()` sets `precompile: true`. This backend does not implement `WasmBackend::precompile`, so it inherits
+        // the trait default, which returns `BackendError::BackendUnavailable`. Nothing in the workspace overrides it —
+        // `grep 'fn precompile'` finds the default and no implementor.
+        //
+        // So `full()` here was a claim about a capability that does not exist. `Enforcement` is what a caller reads to
+        // decide whether a budget can be honoured, and a caller told "precompilation is available" would go on to ask
+        // for it and get an error it had already been told could not happen. The three limits that *are* enforced are
+        // real — fuel, epoch and memory are applied in `apply_budget` — so only the fourth is corrected here.
+        //
+        // ★ The test that covered this (`the_engine_reports_that_it_enforces_every_limit`) asserted that the constant
+        // equals the constant. It could not have caught the difference, which is how the claim survived.
+        Enforcement { precompile: false, ..Enforcement::full() }
     }
 
     fn engine_version(&self) -> &str {

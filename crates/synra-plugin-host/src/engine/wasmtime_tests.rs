@@ -381,6 +381,33 @@ fn the_engine_reports_that_it_enforces_every_limit() {
     assert!(backend.describe().contains("wasmtime-cranelift"));
 }
 
+/// ★ The claim that `enforcement()` makes has to be checked against what the backend can *do*.
+///
+/// The test above asserted that four booleans on a struct the backend itself returned were `true`. That is a statement
+/// about a constant, not about the engine, so it passed while `precompile` claimed a capability no backend implements —
+/// `WasmBackend::precompile` has a default returning `BackendUnavailable`, and `grep 'fn precompile'` finds no override
+/// anywhere in the workspace.
+///
+/// This test ties the flag to the behaviour: whatever `enforcement()` reports as available must actually answer.
+#[test]
+fn what_the_engine_claims_it_enforces_is_what_it_does() {
+    let backend = WasmtimeBackend::new(BackendKind::WasmtimeCranelift).expect("an engine");
+    let enforcement = backend.enforcement();
+
+    // The three limits are applied in `apply_budget`, so they are claimed and are real.
+    assert!(enforcement.fuel && enforcement.epoch && enforcement.memory, "{enforcement:?}");
+
+    // Precompilation is the one that is not implemented, so it must not be claimed. This is the assertion that would
+    // have caught the false claim: it fails the moment the flag and the method disagree.
+    let precompiled = backend.precompile(b"\0asm", "a-plugin");
+    assert_eq!(
+        enforcement.precompile,
+        precompiled.is_ok(),
+        "enforcement() says precompile is {}, and the call answers {precompiled:?}",
+        enforcement.precompile
+    );
+}
+
 #[test]
 fn a_deadline_only_fires_if_the_epoch_advances() {
     // ★ The reason the backend is built with an executor's epoch rather than one of its own. An engine whose counter
