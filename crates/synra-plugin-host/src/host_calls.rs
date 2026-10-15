@@ -63,6 +63,18 @@ impl CallError {
     /// The host could not do it, for a reason that is not the plugin's fault.
     pub const HOST_FAILED: &'static str = "hostFailed";
 
+    /// The host does not implement this at all.
+    ///
+    /// # ★ Why this is a code and not silence
+    ///
+    /// Because the difference between "not implemented here" and "you are not allowed" is the difference between a plugin
+    /// hiding a feature and a user hunting for a permission they already granted. A host that cannot do something must
+    /// say so in a way a plugin can branch on.
+    ///
+    /// It exists because a code was needed and none of the others fit: `hostFailed` says the host tried and could not,
+    /// which is a different fact from "this build has no such feature at all".
+    pub const NOT_IMPLEMENTED: &'static str = "notImplemented";
+
     /// A refusal.
     #[must_use]
     pub fn new(code: &'static str, message: impl Into<String>) -> Self {
@@ -441,12 +453,21 @@ impl<'a> HostCalls<'a> {
                 Ok(String::new())
             }
             "event-subscribe" => {
-                // The subscription is the host's callback table rather than a host-observable object: a Wasm sandbox
-                // has no such thing, so what this answers is that the pattern was recorded.
-                if argument.is_empty() {
-                    return Err(CallError::new(CallError::BAD_ARGUMENT, "a subscription needs a pattern"));
-                }
-                Ok(String::new())
+                // ★ This used to answer `Ok("")`, with a comment saying "what this answers is that the pattern was
+                // recorded". **Nothing was recorded.** There is no callback table, and the `Host` trait this would have
+                // to tell has no method for it — so the call validated its argument, returned success, and left the
+                // plugin believing it was subscribed.
+                //
+                // That is worse than a refusal in a way a plugin cannot detect: a subscriber that never receives an
+                // event has no way to tell "nothing has happened yet" from "this host cannot deliver anything", and the
+                // audit trail would show a granted capability being used successfully for a feature that does not
+                // exist. Design [09](09-plugin-system.md) §4 says the subscription is a guest-export callback table,
+                // which is a contract change rather than a line here — so until that exists, this refuses.
+                let _ = argument;
+                Err(CallError::new(
+                    CallError::NOT_IMPLEMENTED,
+                    "this host has no callback table, so it cannot deliver events to a plugin",
+                ))
             }
 
             // ── Devices ───────────────────────────────────────────────────────────────────────────────

@@ -82,9 +82,12 @@ impl KernelHost {
 /// One code, one sentence, naming the group rather than the function: a plugin author who reads "storage is not
 /// implemented in this build" knows to design around it, and one who reads "storage-get failed" does not.
 fn not_implemented(group: &str) -> CallError {
+    // ★ The code comes from `CallError` rather than being spelled here. This host invented `"NOT_IMPLEMENTED"` \u2014
+    // upper case with an underscore, when every code the contract defines is camelCase \u2014 so a plugin branching on
+    // the documented spelling would have matched nothing.
     CallError::new(
-        "NOT_IMPLEMENTED",
-        &format!("this host does not implement {group}"),
+        CallError::NOT_IMPLEMENTED,
+        format!("this host does not implement {group}"),
     )
 }
 
@@ -310,7 +313,11 @@ mod tests {
             host.action_list(&plugin).map(|_| ()),
         ] {
             let error = refusal.expect_err("this build does not implement it");
-            assert_eq!(error.code, "NOT_IMPLEMENTED", "{error:?}");
+            // ★ Read from the contract rather than spelled here. This assertion used to compare against the literal
+            // `"NOT_IMPLEMENTED"`, which this host had invented — upper case with an underscore, when every code the
+            // contract defines is camelCase. A test that asserts the implementation's own spelling cannot catch the
+            // implementation spelling it wrong.
+            assert_eq!(error.code, synra_plugin_host::host_calls::CallError::NOT_IMPLEMENTED, "{error:?}");
         }
     }
 

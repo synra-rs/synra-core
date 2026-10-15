@@ -276,14 +276,51 @@ fn every_function_in_the_contract_reaches_the_host_rather_than_an_unknown_functi
         }
     }
 
-    // The two deliberate refusals: this build has no WebSocket, and the stub holds no secret — which is `notFound`
-    // rather than a failure, because an absent secret is an ordinary answer.
+    // The deliberate refusals: this host has no callback table, so it cannot deliver events to a plugin; it has no
+    // WebSocket; and the stub holds no secret — which is `notFound` rather than a failure, because an absent secret is an
+    // ordinary answer.
     assert_eq!(
         refusals,
         vec![
+            ("event-subscribe".to_owned(), CallError::NOT_IMPLEMENTED),
             ("network-websocket".to_owned(), CallError::HOST_FAILED),
             ("secret-get".to_owned(), "notFound"),
         ]
+    );
+}
+
+#[test]
+fn subscribing_to_events_is_refused_rather_than_reported_as_recorded() {
+    // ★ This call used to answer `Ok("")` — success — with a comment saying "what this answers is that the pattern was
+    // recorded". **Nothing was recorded**: there is no callback table, and the design's own answer is a guest-export
+    // callback table, which is a contract change rather than a line here.
+    //
+    // The failure a plugin could not detect is the point. A subscriber that never receives an event cannot tell "nothing
+    // has happened yet" from "this host delivers nothing", so a plugin would ship a feature that silently does nothing
+    // and its author would have no way to find out.
+    let host = Stub::with_devices(&[]);
+    let grants = all_capabilities();
+    let budget = budget();
+    let mut audit = Vec::new();
+    let mut calls = session(&host, &grants, &budget, &mut audit);
+
+    let refused = calls
+        .call("synra:plugin/host#event-subscribe", "a.*")
+        .expect_err("a subscription that cannot be kept is not a success");
+
+    assert_eq!(refused.code, CallError::NOT_IMPLEMENTED);
+    // And the audit says the honest thing: the capability was **held** — the gate let the call through — and the
+    // operation itself failed. `Denied` would say the user had not granted it, which would send them looking for a
+    // permission they already gave.
+    assert!(
+        audit
+            .iter()
+            .any(|entry| entry.outcome == AuditOutcome::Failed),
+        "a call the gate allowed and the host could not do is recorded as failed: {audit:?}"
+    );
+    assert!(
+        !audit.iter().any(|entry| entry.outcome == AuditOutcome::Denied),
+        "nothing was denied: {audit:?}"
     );
 }
 
