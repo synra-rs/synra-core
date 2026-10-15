@@ -25,7 +25,8 @@ use std::path::PathBuf;
 use crate::args::{Cli, Command, OutputFormat};
 use crate::doctor::DoctorReport;
 use synra_control::{Client, Request};
-use synra_observe::doctor::{HostFacts, ProbeTargets};
+use synra_observe::diagnostics::{BundlePlan, BundleSources};
+use synra_observe::doctor::{HostFacts, ProbeReport, ProbeTargets, run_probes};
 use synra_store::Paths;
 
 /// The environment variable that moves the data directory.
@@ -250,7 +251,26 @@ fn doctor_outcome(format: Option<OutputFormat>, args: &crate::args::DoctorArgs) 
         listen_port: 0,
         discovery_port: 0,
     };
-    let report = DoctorReport::run(&targets, &HostFacts::default());
+
+    // ★ The probes run **once**, and the bundle and the report are two views of the same run.
+    //
+    // `DoctorReport::run` used to call `run_probes` and discard the raw report, keeping only the flattened lines — which was
+    // right while nothing else wanted the results. A bundle wants them, and running the probes twice would mean a bundle
+    // whose probe section could disagree with the report printed beside it.
+    let raw = run_probes(&targets, &HostFacts::default());
+    let report = DoctorReport::from_probe_report(&raw, paths.data_dir());
+
+    // ★ `--bundle` used to be parsed and then never read.
+    //
+    // The argument existed, the parser had a test asserting it was parsed, and `doctor_outcome` looked only at
+    // `failures_only` — so `synra doctor --bundle /tmp/d.json` printed its report and wrote no file, without an error. A flag
+    // that looks supported and does nothing is worse than one that is refused, because the user has no way to tell.
+    if let Some(destination) = args.bundle.as_deref() {
+        return match write_bundle(destination, &raw) {
+            Ok(lines) => CommandOutcome::Lines(lines),
+            Err(why) => CommandOutcome::Failed(why),
+        };
+    }
 
     match format {
         // A report that could not be serialised is a failure rather than a silent fallback to prose: a script that
@@ -271,6 +291,55 @@ fn doctor_outcome(format: Option<OutputFormat>, args: &crate::args::DoctorArgs) 
         },
         _ => CommandOutcome::Lines(report.lines(args.failures_only)),
     }
+}
+
+/// Writes a diagnostic bundle, and answers with what went into it.
+///
+/// # Why this is the first production caller of `BundlePlan`
+///
+/// Because the whole bundle subsystem — the plan, the sections, the two redaction passes, the digest, the exclusions list
+/// carried inside the file — was written, tested and reachable from nothing. `BundlePlan::plan` appeared only in its own
+/// tests and proptests, so the redaction that exists to stop a credential leaving the machine had never run on a machine.
+/// This is where it does.
+///
+/// # What goes in, and what the file says about what did not
+///
+/// The probe results, because that is what this command has. Nothing else is filled in from an assumption: a device list
+/// this command cannot read is **absent** rather than empty, and the bundle carries the list of sections that are never
+/// included (`excludes`) so a maintainer reading the file sees the same promise the consent screen would have shown.
+///
+/// # Errors
+///
+/// A sentence naming what went wrong — the bundle could not be assembled, or the destination could not be written. A
+/// refusal rather than a silent success, because the caller asked for a file and the only two honest answers are the path
+/// or the reason there is none.
+fn write_bundle(destination: &str, raw: &ProbeReport) -> Result<Vec<String>, String> {
+    let sources = BundleSources {
+        probes: Some(raw.results.clone()),
+        ..BundleSources::default()
+    };
+    let plan = BundlePlan::plan(
+        sources,
+        synra_store::sqlite::now_ms(),
+        PathBuf::from(destination),
+    );
+
+    let rendered = plan
+        .render()
+        .map_err(|error| format!("the bundle could not be assembled: {error}"))?;
+
+    std::fs::write(plan.destination(), &rendered)
+        .map_err(|error| format!("`{destination}` could not be written: {error}"))?;
+
+    let mut lines = vec![format!("wrote {} bytes to {destination}", rendered.len())];
+    // The sections that went in, and the ones that never do — the same two lists the file itself carries.
+    for (name, because) in plan.inclusions() {
+        lines.push(format!("  included: {name} ({because})"));
+    }
+    for excluded in plan.excludes() {
+        lines.push(format!("  never included: {excluded}"));
+    }
+    Ok(lines)
 }
 
 // `no_kernel` used to live here: every command but `doctor` printed "no kernel is reachable". It is gone because the
@@ -447,6 +516,71 @@ mod tests {
                 );
             }
             other => panic!("expected JSON, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_bundle_flag_writes_the_file_it_names() {
+        // ★ The flag that used to do nothing.
+        //
+        // `--bundle` was parsed, had a test asserting it was parsed, and `doctor_outcome` read only `failures_only` — so a
+        // user asking for a file got a report and no file, with no error. This runs the command the way the user does and
+        // reads what landed on disk.
+        let directory = std::env::temp_dir().join(format!("synra-bundle-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).expect("a temporary directory");
+        let destination = directory.join("bundle.json");
+        let destination_text = destination.to_string_lossy().to_string();
+
+        let outcome = dispatch(&cli(&["synra", "doctor", "--bundle", &destination_text]));
+
+        match outcome {
+            CommandOutcome::Lines(lines) => {
+                assert!(lines[0].contains("wrote"), "the answer says what it did: {lines:?}");
+                assert!(lines[0].contains("bundle.json"), "and where: {lines:?}");
+            }
+            other => panic!("expected lines, got {other:?}"),
+        }
+
+        let written = std::fs::read_to_string(&destination).expect("the file the user asked for");
+        let parsed: serde_json::Value = serde_json::from_str(&written).expect("a JSON bundle");
+        // The probes are the section this command has, and they are in it.
+        let sections = parsed["sections"].as_array().expect("a section list");
+        assert!(
+            sections.iter().any(|section| section.as_str() == Some("probes")),
+            "the probes went in: {sections:?}"
+        );
+        assert!(parsed["probes"].is_array(), "with their results");
+
+        // ★ And the file carries the list of what is never included, so a maintainer reads the same promise the consent
+        // screen would have shown rather than having to trust that it said so.
+        let excluded = parsed["excluded"].as_array().expect("an exclusion list");
+        assert!(!excluded.is_empty(), "the exclusions are in the file: {excluded:?}");
+
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn a_bundle_that_cannot_be_written_is_refused_rather_than_silently_skipped() {
+        // ★ The other half of honouring a flag: when it cannot be honoured, say so. A command that printed its report and
+        // wrote nothing would be the state this replaced.
+        let destination = std::env::temp_dir()
+            .join("synra-no-such-directory-here")
+            .join("nested")
+            .join("bundle.json");
+
+        let outcome = dispatch(&cli(&[
+            "synra",
+            "doctor",
+            "--bundle",
+            &destination.to_string_lossy(),
+        ]));
+
+        match outcome {
+            CommandOutcome::Failed(why) => {
+                assert!(why.contains("could not be written"), "{why}");
+            }
+            other => panic!("expected a refusal, got {other:?}"),
         }
     }
 
