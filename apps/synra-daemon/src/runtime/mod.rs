@@ -26,7 +26,9 @@ mod refusals;
 mod reports;
 mod state;
 
-pub use plugins::{LoadedSummary, Refused, build_set, load_installed};
+pub use plugins::{
+    Discovered, LoadedSummary, Refused, build_set, load_installed, record_discovered_plugins,
+};
 pub use state::{Runtime, now_ms};
 
 #[cfg(test)]

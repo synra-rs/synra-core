@@ -43,6 +43,13 @@ pub const EPOCH_PERIOD: Duration = Duration::from_millis(10);
 /// asking for a thousand threads is a caller with a bug that would otherwise become a thousand stacks.
 pub const MAX_THREADS: usize = 64;
 
+/// Something to run whenever the epoch moves, given the new value.
+///
+/// A named alias rather than the type written out in the field, because `clippy::type_complexity` is right about one
+/// thing: `Arc<Mutex<Vec<Arc<dyn Fn(u64) + Send + Sync>>>>` is a sentence nobody parses on the first read, and the name
+/// is the part that says why it is nested this way — shared, locked, many, and callable from the ticker's thread.
+type Observer = Arc<dyn Fn(u64) + Send + Sync>;
+
 /// The epoch a running engine checks its deadlines against.
 ///
 /// Cheap to clone — an `Arc` and an atomic — because the store, the ticker and every instance hold one.
@@ -63,13 +70,6 @@ pub const MAX_THREADS: usize = 64;
 ///
 /// An observer is how an engine says "when the epoch moves, move this too", so there is one counter to advance and the
 /// engine cannot be left behind by an advance that forgot about it.
-/// Something to run whenever the epoch moves, given the new value.
-///
-/// A named alias rather than the type written out in the field, because `clippy::type_complexity` is right about one
-/// thing: `Arc<Mutex<Vec<Arc<dyn Fn(u64) + Send + Sync>>>>` is a sentence nobody parses on the first read, and the name
-/// is the part that says why it is nested this way — shared, locked, many, and callable from the ticker's thread.
-type Observer = Arc<dyn Fn(u64) + Send + Sync>;
-
 #[derive(Clone)]
 pub struct Epoch {
     current: Arc<AtomicU64>,

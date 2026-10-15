@@ -196,6 +196,31 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
         }
     };
     let plugin_loads = {
+        // ★ Before loading anything: record the plugin directories the database does not know about.
+        //
+        // This is the step that was missing entirely. `insert_plugin` had no production caller, so `db.plugins()` was
+        // always empty, so `load_installed` below always loaded nothing — whatever was on disk. The daemon had no
+        // plugins and no way to get one.
+        //
+        // It records and does not trust: a directory that exists is a plugin that is *installed*, which is a different
+        // statement from one the user has approved. See `record_discovered_plugins`.
+        for discovered in crate::runtime::record_discovered_plugins(
+            &db,
+            std::path::Path::new(&plan.plugins_dir),
+            // The runtime clock is `u64` and the database stamps `i64`; saturating rather than `as`, the same direction
+            // as the crash-report stamp below — a clock problem should let the daemon run, not refuse to start.
+            i64::try_from(now_ms()).unwrap_or(i64::MAX),
+        ) {
+            match discovered.problem {
+                // Printed rather than skipped: a directory that looks like a plugin and is not one is the difference
+                // between "nothing is installed" and "the installation is half-copied", and only one needs acting on.
+                Some(problem) => {
+                    eprintln!("synra-daemon: {} was not recorded: {problem}", discovered.plugin_id);
+                }
+                None => println!("synra-daemon: {} is installed and switched off", discovered.plugin_id),
+            }
+        }
+
         // ★ The guard is scoped to the load and nothing else. It is held while third-party artifacts compile, which is
         // the point of the lock — but not while the refusals are printed, because printing is not something another
         // thread should be waiting behind.

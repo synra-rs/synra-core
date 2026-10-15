@@ -106,6 +106,134 @@ pub fn build_set() -> Result<PluginSet, BackendError> {
     Ok(PluginSet::new(Backend::new(std::sync::Arc::new(engine))))
 }
 
+/// The plugin directories on disk that the database does not know about, recorded as installed and switched off.
+///
+/// # ★ Why this exists: the subsystem had no way in
+///
+/// A plugin could not reach the database in production at all. The only writer of a `plugins` row was
+/// `SynraDb::insert_plugin`, and every caller of it was a test — so `load_installed` read `db.plugins()` and always got
+/// an empty list. Nothing was broken in a way anyone could see; the daemon simply had no plugins, forever, whatever was
+/// on disk. The same hole is why `plugin_grants` has no writer and why `set_plugin_trusted` is test-only: they are steps
+/// of a lifecycle whose first step was missing.
+///
+/// This is the first step, in the narrowest form that is honest about consent: **a directory that exists is recorded,
+/// and is neither enabled nor trusted.** Dropping a directory on disk is not a decision by anybody, so it must not be
+/// one — `should_run` is `enabled && trusted`, and this writes neither. What it does is make the plugin *visible*: it
+/// appears in `plugins_list`, a user can see what it asks for, and the enable/consent steps have a row to act on.
+///
+/// # Why it does not trust, and why that is the whole point
+///
+/// Because the alternative — trusting whatever is found in the directory — would make the directory a privilege
+/// boundary, and this daemon's plugin directory is writable by anything running as the user. The design's consent step
+/// exists so that installing and approving are two acts, and collapsing them here would remove the only gate that is
+/// currently within reach.
+///
+/// # Why the manifest is parsed rather than assumed
+///
+/// A directory that is not a plugin — a stray file, a half-copied install, a build's output — must not become a row.
+/// The parse is the whole test, and a directory that fails it is reported so the reason is not silent.
+pub fn record_discovered_plugins(
+    db: &synra_store::SynraDb,
+    plugins_dir: &Path,
+    now_ms: i64,
+) -> Vec<Discovered> {
+    let mut found = Vec::new();
+    let Ok(entries) = std::fs::read_dir(plugins_dir) else {
+        // A plugins directory that does not exist yet is an installation with nothing installed, which is the ordinary
+        // state of a fresh one. Reporting it would make every first run print a warning.
+        return found;
+    };
+
+    // ★ Two levels, because a plugin identifier contains a slash.
+    //
+    // `load_one` resolves a plugin as `plugins_dir.join(plugin_id)`, and ids are `@scope/name` — so `@acme/hello` lives
+    // at `plugins/@acme/hello/`. A scan that looked only at direct children would see `@acme`, find no manifest in it,
+    // and report a perfectly good installation as broken. That is not a hypothetical: it is what the first version of
+    // this function did, and the test that caught it is `discovering_a_plugin_twice_records_it_once`.
+    //
+    // A directory counts as a plugin when it **contains a manifest**, and its identifier is its path relative to the
+    // plugins directory. That is the same rule `load_one` uses, so the two cannot disagree about which directory a
+    // plugin is.
+    let mut candidates: Vec<(String, std::path::PathBuf)> = Vec::new();
+    for scope in entries.flatten() {
+        let scope_path = scope.path();
+        if !scope_path.is_dir() {
+            continue;
+        }
+        let Some(scope_name) = scope_path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+
+        let mut inner = std::fs::read_dir(&scope_path).ok();
+        let mut had_child_directory = false;
+        if let Some(entries) = inner.as_mut() {
+            for child in entries.flatten() {
+                let child_path = child.path();
+                if !child_path.is_dir() {
+                    continue;
+                }
+                had_child_directory = true;
+                if let Some(child_name) = child_path.file_name().and_then(|name| name.to_str()) {
+                    candidates.push((format!("{scope_name}/{child_name}"), child_path));
+                }
+            }
+        }
+
+        // A direct child with a manifest is a plugin too: an id without a scope is legal, and the layout should not
+        // have to be either-or.
+        if scope_path.join("manifest.json").is_file() {
+            candidates.push((scope_name.to_owned(), scope_path.clone()));
+        } else if !had_child_directory {
+            // A directory with no manifest and nothing under it is not a plugin and is not a scope: it is a stray or
+            // half-copied entry, and a user needs to be told which of those two situations they are in.
+            candidates.push((scope_name.to_owned(), scope_path));
+        }
+    }
+
+    for (plugin_id, path) in candidates {
+        // Already known: the database is the record, and re-reading the manifest on every start would make the daemon
+        // the thing that decides what a plugin declares rather than what the user approved.
+        if db.plugin_is_installed(&plugin_id).unwrap_or(false) {
+            continue;
+        }
+
+        let Ok(text) = std::fs::read_to_string(path.join("manifest.json")) else {
+            found.push(Discovered {
+                plugin_id,
+                problem: Some("no manifest.json".to_owned()),
+            });
+            continue;
+        };
+        if serde_json::from_str::<synra_plugin_api::Manifest>(&text).is_err() {
+            found.push(Discovered {
+                plugin_id,
+                problem: Some("the manifest is not readable".to_owned()),
+            });
+            continue;
+        }
+
+        match db.insert_plugin(&plugin_id, false, false, "installed", now_ms, now_ms) {
+            Ok(()) => found.push(Discovered { plugin_id, problem: None }),
+            Err(error) => found.push(Discovered { plugin_id, problem: Some(error.to_string()) }),
+        }
+    }
+
+    found
+}
+
+/// One plugin directory the daemon looked at, and what came of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Discovered {
+    /// The directory's name, which is the plugin's identifier.
+    pub plugin_id: String,
+    /// Why it was not recorded, when it was not.
+    ///
+    /// `None` means a row now exists. A reason is reported rather than dropped because a directory that looks like a
+    /// plugin and is not one is the difference between "the user has nothing installed" and "the user's installation is
+    /// half-copied", and only one of those needs acting on.
+    pub problem: Option<String>,
+}
+
 /// Loads every plugin the database says should run.
 ///
 /// A row that is not [`synra_store::PluginRow::should_run`] is not loaded and not refused: the user switched it off or
