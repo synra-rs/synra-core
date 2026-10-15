@@ -19,6 +19,11 @@ parking_lot.workspace = true
 synra-observe = { path = "../../crates/synra-observe" }
 synra-platform = { path = "../../crates/synra-platform" }
 synra-control = { path = "../../crates/synra-control" }
+# The kernel holds the plugin seam but not an engine, so the host brings one. This is the only dependency here that
+# compiles Wasmtime, and it is here on purpose: a daemon that cannot run a plugin is not the kernel's windowless form.
+synra-plugin-host = { path = "../../crates/synra-plugin-host", features = ["wasm-runtime"] }
+synra-plugin-api = { path = "../../crates/synra-plugin-api" }
+synra-capability = { path = "../../crates/synra-capability" }
 
 clap = { workspace = true }
 serde.workspace = true

@@ -83,6 +83,16 @@ pub use engine::{
     Backend, BackendError, BackendKind, CallBudget, CallOutcome, CompiledArtifact, CompileCache, Enforcement, Epoch,
     EpochTicker, ExecutorRefusal, HostKind, PluginInstance, Scripted, ScriptedBackend, WasmBackend, WasmExecutor, Work,
 };
+/// The compiled form's own import and export tables, and a way to share a built engine.
+///
+/// # Why this is behind a feature rather than a plain re-export
+///
+/// Because there is no compiled artifact to describe until the engine exists, and `EngineArtifact` is a Wasmtime type.
+/// A consumer that wants to check what a component imports reaches this when it has an engine, and reaches
+/// [`undeclared_imports`] when it does not — the second being the static answer available from the contract, and the
+/// first the factual one.
+#[cfg(feature = "wasm-runtime")]
+pub use engine::{EngineArtifact, shared};
 pub use host_surface::{
     HostGate, CAPABILITIES, EXPORTED_INTERFACES, HOST_FUNCTIONS, HOST_INTERFACE, PACKAGE, PACKAGE_VERSION,
     gate, gated, is_declared_capability, permits, provided, provides, required_capabilities, undeclared_imports,

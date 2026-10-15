@@ -44,4 +44,8 @@ pub use types::{
 };
 
 #[cfg(feature = "wasm-runtime")]
-pub use wasmtime_backend::WasmtimeBackend;
+// ★ `EngineArtifact` is re-exported rather than left to `wasmtime_backend`'s own module because its `imports` and
+// `exports` read the component's own type rather than a manifest — which is the difference between a claim and a fact,
+// and is what an import check has to be built on. Reachable is the difference between that being available and being
+// written twice.
+pub use wasmtime_backend::{EngineArtifact, WasmtimeBackend, shared};

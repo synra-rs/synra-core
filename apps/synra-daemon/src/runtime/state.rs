@@ -67,6 +67,26 @@ pub struct Runtime {
     /// on the socket, and the command that answers one arrives on the control channel. The desk is what they share, so it
     /// lives in the process's state rather than inside the loop that happens to create it.
     pub pairing: std::sync::Arc<synra_core::pairing::PairingDesk>,
+
+    /// The plugins this daemon can ask, behind its own lock.
+    ///
+    /// # Why it is behind a lock of its own rather than inside [`Runtime::host`]
+    ///
+    /// Because the two have nothing to do with each other and very different costs. Holding the peer registry blocks a
+    /// socket read; holding a Wasm instance blocks on third-party code that has a fuel limit and a clock and can still
+    /// take the whole budget. One lock for both would mean a plugin stalling every device listing.
+    ///
+    /// # Why the engine is here rather than in the kernel
+    ///
+    /// Because the engine is a host's decision, and this is a host. The kernel holds a handle; this holds the thing the
+    /// handle refers to.
+    pub plugins: std::sync::Arc<parking_lot::Mutex<synra_core::dispatch::PluginSet>>,
+
+    /// What the last load pass did, kept so a status report can say what actually happened.
+    ///
+    /// Held beside the set rather than recomputed, because a report that reloaded every plugin to find out how many were
+    /// loaded would be a report that compiles artifacts as a side effect of being asked a question.
+    pub plugin_loads: std::sync::Arc<parking_lot::Mutex<crate::runtime::plugins::LoadedSummary>>,
 }
 
 impl std::fmt::Debug for Runtime {
@@ -81,6 +101,7 @@ impl std::fmt::Debug for Runtime {
             .field("discovery_port", &self.discovery_port)
             .field("started_at_ms", &self.started_at_ms)
             .field("db", &"SynraDb")
+            .field("plugins_loaded", &self.plugin_loads.lock().len())
             .finish()
     }
 }

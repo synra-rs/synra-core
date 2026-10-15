@@ -424,7 +424,6 @@ pub fn parameter_names(function: &str) -> Vec<String> {
         "device-send" => &["target", "event", "payload"],
         "storage-set" | "secret-set" => &["key", "value"],
         "transfer-send" => &["kind", "target", "meta-json"],
-        "platform-notify" => &["title", "body"],
         "action-declare" => &["name", "schema-json"],
         "action-invoke" => &["target-plugin", "name", "args-json"],
         _ => &[],

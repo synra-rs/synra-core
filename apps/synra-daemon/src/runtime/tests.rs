@@ -62,6 +62,14 @@ fn runtime(dir: &Path) -> Runtime {
             local_id,
             synra_protocol::session::SessionTimeouts::default().pairing,
         )),
+        // A scripted engine rather than a real one: these tests are about what the daemon *reports*, and a unit test
+        // that compiles Wasmtime to assert a JSON field would be a slower version of the same test.
+        plugins: std::sync::Arc::new(parking_lot::Mutex::new(synra_core::dispatch::PluginSet::new(
+            synra_plugin_host::Backend::new(std::sync::Arc::new(synra_plugin_host::ScriptedBackend::new())),
+        ))),
+        plugin_loads: std::sync::Arc::new(parking_lot::Mutex::new(
+            crate::runtime::LoadedSummary::default(),
+        )),
     }
 }
 
@@ -405,6 +413,175 @@ fn an_empty_plugins_table_is_an_empty_list() {
     assert_eq!(value["plugins"].as_array().map(Vec::len), Some(0));
     // And it says nothing is loaded, so a client does not present an installed plugin as one that is running.
     assert_eq!(value["loaded"], false);
+    assert_eq!(value["loadedCount"], 0);
+}
+
+/// Writes a plugin directory the loader will accept: a manifest and a component.
+///
+/// The manifest carries every field [`synra_plugin_api::Manifest`] requires, because the loader parses the real type
+/// rather than a `Value` — a fixture that left one out would be refused for a missing field and the refusal would read
+/// as a loader bug.
+fn manifest_json(id: &str, capabilities: &str, runtime: &str) -> String {
+    format!(
+        r#"{{"id": "{id}", "version": "1.2.3", "title": "Fixture",
+            "publisher": {{"id": "@acme"}},
+            "sdk": {{"min": "0.1.0"}},
+            "wit": "synra:plugin",
+            "capabilities": [{capabilities}],
+            "runtime": {runtime}}}"#
+    )
+}
+
+/// Writes a plugin directory the loader will accept: a manifest and a component.
+fn write_plugin(plugins_dir: &Path, id: &str, capability: &str) {
+    let directory = plugins_dir.join(id);
+    std::fs::create_dir_all(&directory).expect("a plugin directory");
+    let runtime = r#"{"headless": {"artifact": "plugin.wasm", "stateful": false}}"#;
+    std::fs::write(directory.join("manifest.json"), manifest_json(id, capability, runtime)).expect("a manifest");
+    // The bytes have the WebAssembly header, because the loader's engine refuses anything else — and a fixture that
+    // dodged that check would be testing a path no plugin takes.
+    std::fs::write(directory.join("plugin.wasm"), b"\0asm\x01\0\0\0").expect("an artifact");
+}
+
+/// A loader over a scripted engine, so a test can load without compiling Wasmtime.
+fn loader() -> (synra_core::dispatch::PluginSet, synra_plugin_host::ScriptedBackend) {
+    let backend = synra_plugin_host::ScriptedBackend::new();
+    let set = synra_core::dispatch::PluginSet::new(synra_plugin_host::Backend::new(std::sync::Arc::new(
+        backend.clone(),
+    )));
+    (set, backend)
+}
+
+#[test]
+fn an_enabled_and_trusted_plugin_is_actually_loaded() {
+    // ★ This is the test the hardcoded `"loaded": false` made impossible to write. Before the load pass existed there
+    // was no code path from a database row to a compiled component, so there was nothing here to assert.
+    let dir = TempDir::new("load-one");
+    let runtime = runtime(dir.path());
+    write_plugin(&runtime.plugins_dir, "@acme/hello", r#"{"cap": "log:info"}"#);
+    install(&runtime, "@acme/hello", 1, 1);
+
+    let (mut set, _backend) = loader();
+    let summary = crate::runtime::load_installed(&mut set, &runtime.db, &runtime.plugins_dir);
+
+    assert_eq!(summary.len(), 1, "the one plugin that should run did; refused: {:?}", summary.refused);
+    assert!(summary.contains(&synra_protocol::ids::PluginId::try_from("@acme/hello".to_owned()).expect("an id")));
+    assert!(summary.refused.is_empty(), "nothing was refused: {:?}", summary.refused);
+}
+
+#[test]
+fn a_plugin_the_user_never_trusted_is_not_loaded_and_not_refused() {
+    // `should_run` is `enabled && trusted`, so an untrusted plugin is a decision the user has not made yet. Reporting
+    // it as a refusal would put a plugin author on a bug report for a plugin that has not been approved for anything.
+    let dir = TempDir::new("load-untrusted");
+    let runtime = runtime(dir.path());
+    write_plugin(&runtime.plugins_dir, "@acme/hello", r#"{"cap": "net:fetch:*"}"#);
+    install(&runtime, "@acme/hello", 1, 0);
+
+    let (mut set, _backend) = loader();
+    let summary = crate::runtime::load_installed(&mut set, &runtime.db, &runtime.plugins_dir);
+
+    assert!(summary.is_empty(), "an untrusted plugin is not loadable");
+    assert!(summary.refused.is_empty(), "and untrusted is not a failure: {:?}", summary.refused);
+}
+
+#[test]
+fn one_broken_plugin_does_not_stop_the_others() {
+    // ★ A machine with three plugins and one missing artifact must still run the other two. A loader that stopped at the
+    // first failure would turn a plugin's problem into the kernel refusing to start.
+    let dir = TempDir::new("load-broken");
+    let runtime = runtime(dir.path());
+    write_plugin(&runtime.plugins_dir, "@acme/good", r#"{"cap": "log:info"}"#);
+    // The broken one has a manifest and no artifact.
+    let broken = runtime.plugins_dir.join("@acme/broken");
+    std::fs::create_dir_all(&broken).expect("a plugin directory");
+    std::fs::write(
+        broken.join("manifest.json"),
+        manifest_json(
+            "@acme/broken",
+            "",
+            r#"{"headless": {"artifact": "plugin.wasm", "stateful": false}}"#,
+        ),
+    )
+    .expect("a manifest");
+    install(&runtime, "@acme/broken", 1, 1);
+    install(&runtime, "@acme/good", 1, 1);
+
+    let (mut set, _backend) = loader();
+    let summary = crate::runtime::load_installed(&mut set, &runtime.db, &runtime.plugins_dir);
+
+    assert_eq!(summary.len(), 1, "the working plugin loaded");
+    assert_eq!(summary.refused.len(), 1, "and the broken one is accounted for");
+    assert_eq!(summary.refused[0].plugin_id, "@acme/broken");
+    assert!(
+        summary.refused[0].reason.contains("artifact"),
+        "the reason names what is wrong: {}",
+        summary.refused[0].reason
+    );
+}
+
+#[test]
+fn a_ui_only_plugin_is_refused_rather_than_loaded_because_it_has_no_headless_half() {
+    // A UI plugin is a working plugin that does not run here — its interface is served by the shell. Calling that a
+    // failure would be wrong, and calling it loaded would be a lie, so it is named as what it is.
+    let dir = TempDir::new("load-ui-only");
+    let runtime = runtime(dir.path());
+    let directory = runtime.plugins_dir.join("@acme/ui-only");
+    std::fs::create_dir_all(&directory).expect("a plugin directory");
+    std::fs::write(
+        directory.join("manifest.json"),
+        manifest_json("@acme/ui-only", "", r#"{"ui": {"artifact": "dist", "entry": "index.html"}}"#),
+    )
+    .expect("a manifest");
+    install(&runtime, "@acme/ui-only", 1, 1);
+
+    let (mut set, _backend) = loader();
+    let summary = crate::runtime::load_installed(&mut set, &runtime.db, &runtime.plugins_dir);
+
+    assert!(summary.is_empty());
+    assert_eq!(summary.refused.len(), 1);
+    assert!(summary.refused[0].reason.contains("headless"), "{}", summary.refused[0].reason);
+}
+
+#[test]
+fn the_report_says_what_was_loaded_and_not_a_constant() {
+    // ★ The assertion that would have caught the hardcoded `false`: after a load pass that loaded something, the report
+    // has to say so. A field that cannot change with the system's state is decoration.
+    let dir = TempDir::new("load-report");
+    let runtime = runtime(dir.path());
+    write_plugin(&runtime.plugins_dir, "@acme/hello", r#"{"cap": "log:info"}"#);
+    install(&runtime, "@acme/hello", 1, 1);
+
+    let (mut set, _backend) = loader();
+    let summary = crate::runtime::load_installed(&mut set, &runtime.db, &runtime.plugins_dir);
+    *runtime.plugin_loads.lock() = summary;
+
+    let value = runtime.plugins().expect("plugins");
+    assert_eq!(value["loaded"], true, "something is askable now");
+    assert_eq!(value["loadedCount"], 1);
+    assert_eq!(value["loadedIds"][0], "@acme/hello");
+    assert_eq!(value["notLoaded"].as_array().map(Vec::len), Some(0));
+}
+
+#[test]
+fn the_report_names_a_plugin_it_could_not_load() {
+    // A user with one broken plugin can act on the reason; a user told only "nothing is loaded" cannot.
+    let dir = TempDir::new("load-report-refused");
+    let runtime = runtime(dir.path());
+    install(&runtime, "@acme/absent", 1, 1);
+
+    let (mut set, _backend) = loader();
+    let summary = crate::runtime::load_installed(&mut set, &runtime.db, &runtime.plugins_dir);
+    assert_eq!(summary.refused.len(), 1, "the fixture has a row and no directory");
+    *runtime.plugin_loads.lock() = summary;
+
+    let value = runtime.plugins().expect("plugins");
+    assert_eq!(value["loaded"], false, "nothing loaded, and it says so");
+    assert_eq!(value["notLoaded"][0]["id"], "@acme/absent");
+    assert!(
+        value["notLoaded"][0]["reason"].as_str().is_some_and(|reason| reason.contains("manifest")),
+        "and the reason says what is missing: {value}"
+    );
 }
 
 #[test]

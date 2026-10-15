@@ -48,7 +48,7 @@ use super::types::{
 /// The engine's version is the crate's: `wasmtime` is pinned in `Cargo.toml`, so a change to it is a change to the
 /// build rather than to a runtime value. A cache entry a rebuild cannot use is a miss, which is a recompilation and
 /// not a crash.
-pub const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub(crate) const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// How much host stack a wasm frame may use, in bytes.
 const MAX_WASM_STACK: usize = 512 * 1024;
@@ -74,7 +74,7 @@ const INSTANTIATION_CEILING: usize = 16 * 1024 * 1024;
 ///
 /// Every option here is one that decides what a guest may cost the host.
 #[must_use]
-pub fn engine_config(kind: BackendKind) -> Config {
+pub(crate) fn engine_config(kind: BackendKind) -> Config {
     let mut config = Config::new();
 
     // ── The component model, which is what the contract is written in ──
@@ -227,7 +227,7 @@ impl wasmtime::ResourceLimiter for StoreData {
 }
 
 /// One instantiated plugin.
-pub struct EngineInstance {
+pub(crate) struct EngineInstance {
     store: Store<StoreData>,
     instance: Instance,
     kind: BackendKind,
@@ -387,7 +387,7 @@ fn ticks_for(timeout: Duration) -> u64 {
 /// `wit/synra-plugin.wit` cannot leave this behind. The separator is `@` between the interface and its version and `/`
 /// between the package and the interface, which is the component model's own grammar rather than a choice made here.
 #[must_use]
-pub fn interface_name(interface: &str) -> String {
+pub(crate) fn interface_name(interface: &str) -> String {
     format!(
         "{}/{interface}@{}",
         crate::host_surface::PACKAGE,
@@ -397,7 +397,7 @@ pub fn interface_name(interface: &str) -> String {
 
 /// The fully flattened name of a function, for a component that exports its interface that way.
 #[must_use]
-pub fn export_name(interface: &str, function: &str) -> String {
+pub(crate) fn export_name(interface: &str, function: &str) -> String {
     format!("{}#{function}", interface_name(interface))
 }
 

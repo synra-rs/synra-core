@@ -142,6 +142,34 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
         local_id,
         synra_protocol::session::SessionTimeouts::default().pairing,
     ));
+    // ★ The plugin host is built **before** the runtime, and its failure ends the daemon.
+    //
+    // This is the one dependency that can refuse. Everything else here is data the daemon reads; an engine that will not
+    // start means this host cannot run a plugin at all, and continuing would produce a daemon whose status report says
+    // no plugins are loaded for a reason that has nothing to do with what the user installed.
+    let plugins = match crate::runtime::build_set() {
+        Ok(set) => Arc::new(parking_lot::Mutex::new(set)),
+        Err(error) => {
+            eprintln!("synra-daemon: the plugin host could not start: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let plugin_loads = {
+        // ★ The guard is scoped to the load and nothing else. It is held while third-party artifacts compile, which is
+        // the point of the lock — but not while the refusals are printed, because printing is not something another
+        // thread should be waiting behind.
+        let summary = {
+            let mut set = plugins.lock();
+            crate::runtime::load_installed(&mut set, &db, std::path::Path::new(&plan.plugins_dir))
+        };
+        // ★ Printed, because a plugin that failed to load is invisible otherwise and a silent skip is how a broken
+        // plugin becomes a support question months later.
+        for refused in &summary.refused {
+            eprintln!("synra-daemon: {} was not loaded: {}", refused.plugin_id, refused.reason);
+        }
+        Arc::new(parking_lot::Mutex::new(summary))
+    };
+
     let runtime = Runtime {
         version: env!("CARGO_PKG_VERSION").to_owned(),
         data_dir: std::path::PathBuf::from(&plan.data_dir),
@@ -155,6 +183,8 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
         scan_until_ms: Arc::clone(&scan_until_ms),
         db,
         pairing,
+        plugins,
+        plugin_loads,
     };
 
     let listener = match Listener::bind(&runtime.data_dir) {

@@ -21,10 +21,12 @@
 
 mod commands;
 mod devices;
+mod plugins;
 mod refusals;
 mod reports;
 mod state;
 
+pub use plugins::{LoadedSummary, Refused, build_set, load_installed};
 pub use state::{Runtime, now_ms};
 
 #[cfg(test)]

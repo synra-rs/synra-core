@@ -94,11 +94,38 @@ impl Runtime {
             }));
         }
 
+        // ★ Reported rather than assumed, and no longer a constant.
+        //
+        // This used to be a hardcoded `"loaded": false` with a comment saying the kernel had loaded nothing. That was
+        // true when it was written, and it stayed true — which is the problem with a constant that is right: it cannot
+        // report the day it stops being right, so the day a plugin host was wired up, this line would have kept telling
+        // users their installed plugins were not running.
+        //
+        // What it reports now is what the load pass actually did, including which plugins it could not load and why.
+        // A user with one broken plugin can act on that; a user told only "nothing is loaded" cannot.
+        // ★ Copied out under a short lock rather than held across the JSON.
+        //
+        // The summary is four small values, and holding the guard while building a `serde_json::Value` would keep every
+        // other thread that wants to load a plugin out for the length of a serialization — which is exactly the class
+        // of bug this lint exists to catch, and the reason it is denied in this workspace rather than warned about.
+        let (loaded_count, loaded_ids, refusals) = {
+            let loads = self.plugin_loads.lock();
+            let ids: Vec<String> = loads.loaded.iter().map(ToString::to_string).collect();
+            let refusals: Vec<serde_json::Value> = loads
+                .refused
+                .iter()
+                .map(|refused| serde_json::json!({"id": refused.plugin_id, "reason": refused.reason}))
+                .collect();
+            (loads.len(), ids, refusals)
+        };
+
         Ok(serde_json::json!({
             "plugins": installed,
-            // ★ `false`, so a client does not present an installed plugin as one that is running. The kernel has loaded
-            // nothing: there is no Wasm host wired to this daemon yet.
-            "loaded": false,
+            // Whether anything is askable right now, which is what a client means by "running".
+            "loaded": loaded_count > 0,
+            "loadedCount": loaded_count,
+            "loadedIds": loaded_ids,
+            "notLoaded": refusals,
         }))
     }
 
