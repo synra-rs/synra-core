@@ -499,6 +499,33 @@ mod tests {
     }
 
     #[test]
+    fn a_container_in_a_public_struct_field_is_a_violation() {
+        // ★ The branch in `public_fn_or_field` that handles a struct field, and the reason it needs this test.
+        //
+        // The comment there has said for a while that "a *braced* struct with a container field is a different thing and
+        // is still reported: `pub struct Wrapper { pub inner: BTreeMap<..> }` hands the container out by name". Nothing
+        // checked that. `STABILITY.md` then listed "a public struct whose fields are public" as a rule this tool
+        // enforces, which is a stronger claim than the code makes and is not what this test shows either — what it
+        // shows is that a public **field naming a container** is reported.
+        //
+        // The field line is indented in real source, and `check` trims each line before matching, so the `pub ` prefix
+        // is reachable. This test writes the indentation in so that a future change to the trimming shows up here.
+        let source = "pub struct Wrapper {\n    pub inner: BTreeMap<String, u32>,\n}";
+        let violations = check_stable(source);
+        assert!(
+            violations.iter().any(|violation| matches!(violation, Violation::ConcreteContainer { container, .. } if container == "BTreeMap")),
+            "a container in a public field was not reported: {violations:?}"
+        );
+
+        // And a public field that names no container is not a violation of *this* rule: the field being public is not
+        // what it checks. `STABILITY.md` used to claim otherwise.
+        assert!(
+            check_stable("pub struct Plain {\n    pub count: u32,\n}").is_empty(),
+            "a public field naming no container was reported, which is a rule this tool does not implement"
+        );
+    }
+
+    #[test]
     fn a_private_signature_is_not_checked() {
         // The rule is about the promise, and a private function is not one.
         assert!(check_stable("fn devices(&self) -> HashMap<String, Device> {").is_empty());

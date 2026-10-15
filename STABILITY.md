@@ -82,10 +82,10 @@ sentence; the third-party error is kept in a `details` string, where it is usefu
 
 ## What is checked, and how
 
-### The hot paths allocate nothing
+### The hot paths allocate nothing — ★ two of them, and the other three have budgets
 
-`crates/synra-core/tests/hot_paths.rs` installs an allocation counter and asserts that decoding a frame, matching a
-capability, running the gate and routing an event allocate **zero**.
+`crates/synra-core/tests/hot_paths.rs` and `crates/synra-protocol/tests/hot_path_alloc.rs` install an allocation counter
+and assert that decoding a frame and matching a capability allocate **zero**.
 
 An allocation on a per-frame path is a lock, a branch and a possible failure inside the allocator, multiplied by the
 frame rate. A benchmark would catch it eventually and flakily; a count is exact.
@@ -93,16 +93,54 @@ frame rate. A benchmark would catch it eventually and flakily; a count is exact.
 The assertion is deliberately about the *refusals* too — a capability that does not match and an event with no
 subscriber. Those are the paths a hostile peer drives, and they are the ones a naive implementation allocates on.
 
+★ **The measured numbers, and a correction.** This paragraph used to say that decoding a frame, matching a capability,
+running the gate and routing an event all allocate zero. That was never checked. The counters were installed and read
+zero because **nothing had declared the counting allocator as a `#[global_allocator]`** — a counter that is never
+installed reads zero for everything, so every assertion passed. Installing it produced:
+
+| path | allocations |
+| --- | --- |
+| decoding a frame (whole, one read) | 0 |
+| decoding a heartbeat | 0 |
+| matching a capability | 0 — **was 2** |
+| a refused capability match | 0 |
+| an ungated host call | 0 — **was 3** |
+| routing an event | 2 |
+| a gated host call | 1 |
+| a lookup that misses | 5 |
+
+Capability matching was the one worth fixing and is fixed: it built two `Vec`s per call to line up a pattern against a
+candidate, on a path that runs for every permission check in the system. Those are `SmallVec`s now, and the ungated host
+call fell from three to one with it.
+
+The remaining three are asserted **at their measured cost** rather than at zero, and their test names say so
+(`routing_an_event_stays_within_its_budget`). Removing those allocations means changing a public enum's payload
+(`RouteOutcome`) and pre-parsing a static table — design changes that deserve their own pass, not a quiet edit inside a
+test that was failing. Asserting the measured value makes them real regression guards: a change that makes any of them
+allocate **more** fails, with the number in the message.
+
+Both files also carry a **positive control** — a test requiring a count greater than zero from an allocation that
+certainly happens. Without one, a counter that reads zero for everything satisfies every assertion as readily as a
+correct counter does, which is exactly how this went unnoticed.
+
 ### The public API is checked by reading the source
 
 `tools/api-guard` reads every file of every stable and semi-stable crate and reports the rules above where they are
 broken:
 
-* a concrete container type in a public signature;
-* a public struct whose fields are public;
+* a concrete container type in a public signature, **including in a public struct field** — this is the rule that covers
+  a braced struct like `pub struct Wrapper { pub inner: BTreeMap<..> }`, which hands the container out by name;
 * an enum a consumer must match on that is missing `#[non_exhaustive]`, and an internal enum that has it and so
   suppresses the compiler's own exhaustiveness check;
 * a public error variant holding a third-party type.
+
+★ This list used to contain a separate line: "a public struct whose fields are public". **No such rule exists.** There
+is no `Violation` variant for a public field, and the scanner reports a public field only when the field **names one of
+the forbidden containers** — which is the check above, not a check on field visibility. The line described a stricter
+rule than the tool implements, and a reader trusting it would believe that `pub struct S { pub count: u32 }` is
+reported. It is not, and whether it *should* be is a separate question: a public field on a stable crate is a promise
+about the struct's layout, but banning it outright would also ban a struct that is deliberately a plain data carrier.
+That decision has not been made, so the honest entry is the rule that exists.
 
 It is a text pass rather than a compiled one, deliberately: `cargo public-api` is not installed everywhere, and a check
 that cannot run is a check nobody runs. What a text pass cannot catch — a re-exported type, a signature that got longer
