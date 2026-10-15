@@ -19,6 +19,7 @@ members = [
   "apps/synra-cli",
   "tools/api-guard",
   "tools/guards",
+  "tools/matrix",
   "tools/synra-plugin-cli",
   "tools/wit-codegen",
   "apps/synra-daemon",
