@@ -70,9 +70,12 @@ fn collect_loop(
     }
 
     while !supervisor.is_shutting_down() {
-        let removed = crate::runtime::intents::collect(&db.lock(), INTENT_RETENTION_MS);
-        if removed > 0 {
-            println!("collected {removed} finished intent(s)");
+        let (intents, devices) = crate::runtime::intents::sweep(&db.lock(), INTENT_RETENTION_MS);
+        if intents > 0 {
+            println!("collected {intents} finished intent(s)");
+        }
+        if devices > 0 {
+            println!("forgot {devices} device(s) heard from long ago");
         }
         if !sleep_until_shutdown(supervisor, every) {
             return;
@@ -660,6 +663,42 @@ mod tests {
         assert!(!waited, "the wait was cut short");
         assert!(elapsed < Duration::from_secs(5), "and it did not wait out the thirty seconds: {elapsed:?}");
         assert!(shutdown.join().is_ok());
+    }
+
+    #[test]
+    fn the_schedule_forgets_devices_beyond_the_ceiling_too() {
+        // ★ The other half of the sweep, and the one table in the design's GC section that genuinely fills up: the discovery
+        // thread writes it, and a kernel on a shared network hears a new device every few minutes.
+        let (db, supervisor) = world();
+        for index in 0..(crate::runtime::intents::SEEN_DEVICE_CEILING + 3) {
+            let sighting = synra_store::Seen {
+                device_id: format!("{index:08}-0000-4000-8000-000000000000"),
+                display_name: format!("device {index}"),
+                platform: "linux".to_owned(),
+                seen_at_ms: 1_000 + i64::try_from(index).unwrap_or(0),
+                source: "broadcast".to_owned(),
+            };
+            db.lock().record_seen_device(&sighting).expect("heard");
+        }
+        assert_eq!(db.lock().seen_devices().expect("listed").len(), 503);
+
+        let running = {
+            let db = Arc::clone(&db);
+            let supervisor = Arc::clone(&supervisor);
+            std::thread::spawn(move || {
+                collect_loop(&db, &supervisor, Duration::from_millis(1), Duration::from_millis(5));
+            })
+        };
+
+        std::thread::sleep(Duration::from_millis(80));
+        assert_eq!(
+            db.lock().seen_devices().expect("listed").len(),
+            crate::runtime::intents::SEEN_DEVICE_CEILING,
+            "the ceiling held"
+        );
+
+        let _ = supervisor.begin_shutdown();
+        assert!(running.join().is_ok());
     }
 
     #[test]

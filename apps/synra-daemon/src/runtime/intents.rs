@@ -130,6 +130,37 @@ impl Runtime {
     }
 }
 
+/// How many devices merely *heard from* are kept.
+///
+/// The design's storage table gives this row a ceiling ("keep the most recent 500", `17 §6`). It is the one GC target in
+/// that section which genuinely fills up: the table is written by the discovery thread, and a kernel on a shared network —
+/// an office, a café, a train — hears a new device every few minutes for as long as it runs.
+pub(crate) const SEEN_DEVICE_CEILING: usize = 500;
+
+/// The whole sweep: finished intents past their retention, and devices heard from beyond the ceiling.
+///
+/// # Returns
+///
+/// `(intents, devices)` removed, so the caller can report what it did.
+///
+/// # Why both are here rather than two schedules
+///
+/// Because they are the same decision — "what is no longer worth keeping" — and two timers would be two places to change
+/// when that decision changes. The database is the only thing either needs, which is what lets this run on a thread that
+/// cannot hold the runtime.
+#[must_use]
+pub(crate) fn sweep(db: &synra_store::SynraDb, intent_retention_ms: i64) -> (usize, usize) {
+    let intents = collect(db, intent_retention_ms);
+    let devices = match db.forget_seen_devices_beyond(SEEN_DEVICE_CEILING) {
+        Ok(removed) => removed,
+        Err(error) => {
+            tracing::error!("devices heard from could not be collected: {error}");
+            0
+        }
+    };
+    (intents, devices)
+}
+
 /// The retention sweep, over a database rather than a runtime.
 ///
 /// # ★ Why this is a free function and not only a method

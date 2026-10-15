@@ -89,8 +89,7 @@ impl SynraDb {
     /// # Errors
     ///
     /// As [`SynraDb::paired_devices`].
-    pub fn seen_devices(&self) -> Result<Vec<SeenDeviceRow>, DbError> {
-        let sql = format!(
+    pub fn seen_devices(&self) -> Result<Vec<SeenDeviceRow>, DbError> {        let sql = format!(
             "SELECT {} FROM devices_seen ORDER BY last_seen_ms DESC, device_id",
             crate::records::columns::SEEN_DEVICE.join(", ")
         );
@@ -114,5 +113,41 @@ impl SynraDb {
             .map_err(|error| DbError::Statement { why: error.to_string() })?;
 
         rows.into_iter().collect::<Result<Vec<SeenDeviceRow>, RowError>>().map_err(DbError::from)
+    }
+
+    /// Forgets all but the most recently heard `keep` devices.
+    ///
+    /// # Returns
+    ///
+    /// How many rows were removed, so a caller can report what it did rather than claim it did something.
+    ///
+    /// # Why this table needs a ceiling at all
+    ///
+    /// Because discovery announces every machine on the network, and a kernel that listens on a shared network — an office,
+    /// a café, a train — hears a new device every few minutes for as long as it runs. The design gives it a retention
+    /// ("keep the most recent 500", `17 §6`) and until this nothing enforced it, so the table was the one GC target in that
+    /// section that was actually filling up.
+    ///
+    /// # Why the ordering is `last_seen_ms` and then the identifier
+    ///
+    /// Because two devices heard in the same millisecond have to be ordered *somehow* that does not depend on the order
+    /// SQLite happens to return them: without the tie-break, which of the pair is kept could differ between two runs of the
+    /// same sweep, and a test could not assert anything about it.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::Statement`] when the delete is refused.
+    pub fn forget_seen_devices_beyond(&self, keep: usize) -> Result<usize, DbError> {
+        // The subquery names what to keep and the delete removes everything else. Written as `NOT IN` rather than as a
+        // comparison against a timestamp because "the most recent N" is not a threshold: a device heard at the same moment
+        // as another may be inside the window or outside it depending on the count, and a timestamp cutoff cannot say so.
+        self.connection
+            .execute(
+                "DELETE FROM devices_seen WHERE device_id NOT IN ( \
+                     SELECT device_id FROM devices_seen ORDER BY last_seen_ms DESC, device_id LIMIT ?1 \
+                 )",
+                params![i64::try_from(keep).unwrap_or(i64::MAX)],
+            )
+            .map_err(|error| DbError::Statement { why: error.to_string() })
     }
 }
