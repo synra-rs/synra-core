@@ -449,6 +449,7 @@ impl<'a> HostCalls<'a> {
             "event-emit" => {
                 let parsed: EventArguments = serde_json::from_str(argument)
                     .map_err(|error| CallError::new(CallError::BAD_ARGUMENT, error.to_string()))?;
+                Self::check_emittable(plugin, &parsed.event)?;
                 host.event_emit(plugin, &parsed.event, &parsed.payload)?;
                 Ok(String::new())
             }
@@ -475,12 +476,14 @@ impl<'a> HostCalls<'a> {
             "device-send" => {
                 let parsed: SendArguments = serde_json::from_str(argument)
                     .map_err(|error| CallError::new(CallError::BAD_ARGUMENT, error.to_string()))?;
+                Self::check_emittable(plugin, &parsed.event)?;
                 host.device_send(plugin, &parsed.target, &parsed.event, &parsed.payload)?;
                 Ok(String::new())
             }
             "device-broadcast" => {
                 let parsed: EventArguments = serde_json::from_str(argument)
                     .map_err(|error| CallError::new(CallError::BAD_ARGUMENT, error.to_string()))?;
+                Self::check_emittable(plugin, &parsed.event)?;
                 host.device_broadcast(plugin, &parsed.event, &parsed.payload)?;
                 Ok(String::new())
             }
@@ -600,7 +603,37 @@ impl<'a> HostCalls<'a> {
         }
     }
 
-    /// Writes one audit record.
+    /// Refuses an event a plugin may not emit.
+///
+/// # ★ Why this exists, and why it is here
+///
+/// Because `EventName::check_emittable_by` was written, tested and documented as the enforcement point — its own doc says
+/// *"The host calls this on every outbound plugin event. It is the difference between 'plugins have their own namespace'
+/// being true and it being a sentence in a document"* — and **the host did not call it**. Every one of its call sites was
+/// in its own test module.
+///
+/// So the two things it exists to stop were both allowed:
+///
+/// * a plugin emitting another plugin's event (`_plugin.<other>/something`), which is one plugin speaking as another;
+/// * a plugin emitting a host event (`_synra.device.changed`), which is a plugin telling the kernel, and every other
+///   plugin, that something happened that did not.
+///
+/// Both are the "forged events" threat design [11](11-design-principles.md) lists. Nothing was delivered to a plugin in
+/// this build, so there was no live exploit — and that is exactly why the check belongs here, in the host, before
+/// delivery exists rather than after.
+///
+/// # Errors
+///
+/// [`CallError::BAD_ARGUMENT`] naming the owner when the event belongs to another plugin, and the same when it is a host
+/// event a plugin may not send. A name that is not a well-formed event at all is refused for that reason instead.
+fn check_emittable(plugin: &PluginId, event: &str) -> Result<(), CallError> {
+    let name = synra_protocol::event::EventName::parse(event)
+        .map_err(|error| CallError::new(CallError::BAD_ARGUMENT, error.to_string()))?;
+    name.check_emittable_by(&plugin.wire_slug())
+        .map_err(|error| CallError::new(CallError::BAD_ARGUMENT, error.to_string()))
+}
+
+/// Writes one audit record.
     fn record(&mut self, import_name: &str, outcome: AuditOutcome, elapsed_ms: Option<u64>) {
         // ★ A capability that cannot be parsed is recorded as `log:*`... no: it is *not* recorded under a capability
         // the plugin does not hold. The gate table is generated from the contract and every string in it is a

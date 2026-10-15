@@ -241,10 +241,10 @@ fn every_function_in_the_contract_reaches_the_host_rather_than_an_unknown_functi
     // signature should name a standard container — which is why `implemented` answers with pairs.
     let arguments = std::collections::BTreeMap::from([
         ("log", r#"{"level":"info","message":"hello"}"#),
-        ("event-emit", r#"{"event":"a.b","payload":"{}"}"#),
+        ("event-emit", r#"{"event":"_plugin.chat.something","payload":"{}"}"#),
         ("event-subscribe", "a.*"),
-        ("device-send", r#"{"target":"device-a","event":"a.b","payload":"{}"}"#),
-        ("device-broadcast", r#"{"event":"a.b","payload":"{}"}"#),
+        ("device-send", r#"{"target":"device-a","event":"_plugin.chat.something","payload":"{}"}"#),
+        ("device-broadcast", r#"{"event":"_plugin.chat.something","payload":"{}"}"#),
         ("storage-get", "known"),
         ("storage-set", r#"{"key":"k","value":"v"}"#),
         ("storage-delete", "k"),
@@ -322,6 +322,66 @@ fn subscribing_to_events_is_refused_rather_than_reported_as_recorded() {
         !audit.iter().any(|entry| entry.outcome == AuditOutcome::Denied),
         "nothing was denied: {audit:?}"
     );
+}
+
+#[test]
+fn a_plugin_cannot_emit_an_event_in_another_plugins_namespace() {
+    // ★ One plugin speaking as another.
+    //
+    // `EventName::check_emittable_by` was written, tested and documented as the enforcement point \u2014 its own doc says
+    // "The host calls this on every outbound plugin event. It is the difference between 'plugins have their own
+    // namespace' being true and it being a sentence in a document" \u2014 and **the host did not call it**. Every call site
+    // was in its own test module, so a plugin could emit `_plugin.notes.something` and every subscriber would believe it
+    // came from `notes`.
+    let host = Stub::with_devices(&[]);
+    let grants = all_capabilities();
+    let budget = budget();
+    let mut audit = Vec::new();
+    let mut calls = session(&host, &grants, &budget, &mut audit);
+
+    let refused = calls
+        .call(
+            "synra:plugin/host#event-emit",
+            r#"{"event":"_plugin.notes.something","payload":"{}"}"#,
+        )
+        .expect_err("another plugin's namespace is not this plugin's to use");
+
+    assert_eq!(refused.code, CallError::BAD_ARGUMENT);
+    // The message names whose namespace it is, because "bad argument" alone does not tell an author what to change.
+    assert!(refused.message.contains("notes"), "{}", refused.message);
+}
+
+#[test]
+fn a_plugin_cannot_emit_a_host_event() {
+    // ★ The other half, and the more dangerous one: a plugin telling the kernel, and every other plugin, that
+    // something happened that did not. `_synra.device.changed` is the kernel's own statement about the device list.
+    let host = Stub::with_devices(&[]);
+    let grants = all_capabilities();
+    let budget = budget();
+    let mut audit = Vec::new();
+    let mut calls = session(&host, &grants, &budget, &mut audit);
+
+    for event in ["_synra.device.changed", "device.hello", "synra.internal.anything"] {
+        let refused = calls
+            .call(
+                "synra:plugin/host#event-emit",
+                &format!(r#"{{"event":"{event}","payload":"{{}}"}}"#),
+            )
+            .expect_err("a host event is not a plugin's to emit");
+
+        assert_eq!(refused.code, CallError::BAD_ARGUMENT, "{event}");
+        // And it names the event, so an author reading the refusal knows which call to change rather than guessing
+        // among the several an event-emitting plugin makes.
+        assert!(refused.message.contains(event), "{}", refused.message);
+        // ★ The capability is not the reason, and the message must not suggest it is: the plugin holds
+        // `event:emit:*`, which is what let this call reach the check at all. What it lacks is a namespace, and
+        // sending an author to look for a permission they already have is the failure this distinction avoids.
+        assert!(
+            !refused.message.contains("capability") && !refused.message.contains("permission"),
+            "{}",
+            refused.message
+        );
+    }
 }
 
 #[test]
@@ -682,7 +742,7 @@ fn a_returned_value_that_is_empty_becomes_the_json_null_the_glue_expects() {
     let mut audit = Vec::new();
     let mut calls = session(&host, &grants, &budget, &mut audit);
     assert_eq!(
-        calls.call("synra:plugin/host#event-emit", r#"{"event":"a.b","payload":"{}"}"#),
+        calls.call("synra:plugin/host#event-emit", r#"{"event":"_plugin.chat.something","payload":"{}"}"#),
         Ok("null".to_owned())
     );
 }
