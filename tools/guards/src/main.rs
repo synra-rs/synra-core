@@ -21,7 +21,8 @@
 //! 5. a host function bypassing the capability gate.
 //!
 //! It also runs the MSRV check, because `rust-version` in `Cargo.toml` is a promise and an unchecked promise is a
-//! number somebody typed.
+//! number somebody typed — and builds the **sibling app**, because this workspace and that one are separate repositories
+//! and a change to a `pub` signature here has twice left that one unable to build while everything here stayed green.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -90,8 +91,13 @@ fn main() -> std::process::ExitCode {
     }
 
     println!();
-    if failures == 0 && check_msrv(&root) {
-        println!("{} guard(s) passed", guards().len());
+    // Two checks outside the list, because each needs three answers rather than two — `ok`, `SKIP` with a reason, and
+    // `FAIL` — and the `Guard` shape has no room for the middle one.
+    let app_ok = check_sibling_app(&root);
+    let msrv_ok = check_msrv(&root);
+
+    if failures == 0 && app_ok && msrv_ok {
+        println!("{} guard(s) passed", guards().len() + 2);
         std::process::ExitCode::SUCCESS
     }
     else {
@@ -99,6 +105,82 @@ fn main() -> std::process::ExitCode {
             println!("{failures} guard(s) failed");
         }
         std::process::ExitCode::FAILURE
+    }
+}
+
+/// The sibling app, built against this crate's public API.
+///
+/// # ★ Why this is a guard and not a line in a document
+///
+/// Because it was a line in a document, and the rule was broken anyway. `synra-rust-app` is a **separate workspace** that
+/// depends on this one by path, so nothing here compiles it — and twice now a change to a `pub` signature in this
+/// workspace left the app unable to build while every check in this workspace stayed green:
+///
+/// 1. `PluginSet::new` gained a host argument, and the app's `main.rs` kept calling it with one;
+/// 2. `orchestrate::cancel` gained a `local_device` argument, and the app's intent commands kept calling it with three.
+///
+/// The second lasted three rounds. Both were invisible for the same reason: the two workspaces are separate, so the only
+/// thing that could have noticed was a person remembering to look — which is exactly the kind of check this tool exists to
+/// replace. A rule that depends on memory has now failed twice.
+///
+/// # Why `--no-default-features`
+///
+/// Because the default feature pulls in the Tauri shell, which needs a webview toolchain to build and is present on a
+/// developer's machine and not on a CI box. What this checks is the **API**, and the library and the binary compile
+/// without the shell — which is where both breaks were.
+///
+/// # The three answers
+///
+/// `ok`, `SKIP` with a reason, and `FAIL`. A core-only clone has no app to break and says so; "I could not check" is not
+/// "I checked and it is fine", and a guard that conflates them is one people learn to ignore.
+///
+/// # What it costs
+///
+/// A build of the app, which is the most expensive thing in this tool by a wide margin — seconds against an already-built
+/// target, minutes against a cold one. That is the price of the only check that has ever caught this class of mistake, and
+/// it is paid on every `cargo run -p guards`. If it ever becomes the reason somebody stops running the guards, the honest
+/// change is to make it opt-in and say so here, not to delete it and go back to remembering.
+fn check_sibling_app(root: &Path) -> bool {
+    let Some(app) = root.parent().map(|parent| parent.join("synra-rust-app").join("src-tauri")) else {
+        println!("SKIP  the sibling app is not checked out, so nothing is built against this API");
+        return true;
+    };
+    if !app.join("Cargo.toml").is_file() {
+        println!("SKIP  no sibling app at {} — a core-only clone has no app to break", app.display());
+        return true;
+    }
+
+    let output = Command::new("cargo")
+        .arg("build")
+        .arg("--no-default-features")
+        .current_dir(&app)
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => {
+            println!("ok    the sibling app builds against this crate's public API");
+            true
+        }
+        Ok(output) => {
+            println!("FAIL  the sibling app no longer builds against this crate's public API");
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            // The `error[...]` lines name the call that no longer fits, which is the whole answer: a reader needs the
+            // signature and the site, not the whole transcript.
+            for line in stderr
+                .lines()
+                .filter(|line| line.starts_with("error") && !line.contains("could not compile"))
+                .take(6)
+            {
+                println!("        {line}");
+            }
+            false
+        }
+        Err(error) => {
+            // Cargo missing is not the app failing to build. Reported as a skip for the same reason the MSRV check
+            // reports a missing component as one: a guard that cries wolf is one people learn to ignore.
+            println!("SKIP  cargo could not be launched to build the sibling app: {error}");
+            true
+        }
     }
 }
 
