@@ -25,11 +25,13 @@
 
 pub mod execute;
 pub mod matching;
+pub mod orchestrate;
 pub mod plugins;
 
 #[cfg(test)]
 mod tests;
 
 pub use execute::{EXECUTE_BUDGET_MS, execute, execute_budget};
+pub use orchestrate::{RouteError, Router};
 pub use matching::{MatchReport, Matcher};
 pub use plugins::{PluginSet, PluginSetError, PluginSpec};

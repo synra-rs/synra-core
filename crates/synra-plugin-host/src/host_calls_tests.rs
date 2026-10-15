@@ -325,7 +325,6 @@ fn subscribing_to_events_is_refused_rather_than_reported_as_recorded() {
 }
 
 #[test]
-#[test]
 fn work_carries_whether_it_may_act() {
     // ★ The decision the store is given per call.
     //
@@ -347,6 +346,7 @@ fn work_carries_whether_it_may_act() {
     }
 }
 
+#[test]
 fn every_action_shaped_name_is_one_the_contract_declares() {
     // ★ What keeps a hand-written list honest.
     //
