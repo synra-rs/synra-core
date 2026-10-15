@@ -28,7 +28,6 @@
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use parking_lot::Mutex;
@@ -64,13 +63,14 @@ pub struct Served {
 
 /// Serves inbound connections until asked to stop.
 ///
-/// # Why the stop flag is shared rather than owned
+/// # Why the cancellation is passed in rather than owned
 ///
-/// Because the daemon's shutdown is a flag its `Ctrl-C` handler sets, and a listener that ignored it would keep a socket
-/// bound until the process was killed — so a restart would fail to bind for as long as the old process lingered.
+/// Because a listener that ignored a stop request would keep a socket bound until the process was killed — so a restart
+/// would fail to bind for as long as the old process lingered. Handing in the token is also what lets this run under
+/// [`crate::supervisor::run_task`], whose contract is that the work returns once the token is cancelled.
 pub fn serve(
     host: &Arc<Mutex<Host>>,
-    stop: &Arc<AtomicBool>,
+    cancel: &crate::supervisor::Cancellation,
     data_dir: &Path,
     desk: &Arc<crate::pairing::PairingDesk>,
     router: &Arc<crate::dispatch::orchestrate::Router>,
@@ -93,12 +93,11 @@ pub fn serve(
         }
     }
 
-    // ★ `stop` here is the daemon's "keep running" flag — `beating` is *set* to `false` when the loop should end, so the
-    // condition is `load()` and not `!load()`. The first version had it inverted, and the loop therefore exited on its
-    // first check and never accepted anything: a device that bound its port, announced it, and silently refused every
-    // connection. The name is what misled me, and the parameter is now documented rather than renamed because every
-    // other reader of the flag calls it the same thing.
-    while stop.load(Ordering::Relaxed) {
+    // ★ This was an `Arc<AtomicBool>` named `stop` that meant "keep running", and the name cost a round: the first
+    // version wrote `while !stop.load(..)`, so the loop exited on its first check and never accepted anything — a device
+    // that bound its port, announced it, and silently refused every connection. It is a token now, and a token is one-way,
+    // so the polarity cannot be got wrong: `is_cancelled` is `false` until somebody asks.
+    while !cancel.is_cancelled() {
         // ★ One critical section, and it is a queue pop. The guard is dropped before the thread is spawned, because the
         // handshake happens there — see the module docs for why the two cannot be one step.
         let taken = { host.lock().try_accept() };

@@ -10,7 +10,6 @@
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::AtomicI64;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use synra_control::Listener;
 
@@ -312,22 +311,46 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
     };
     println!("control socket {}", listener.path().display());
 
-    // ★ The stop flag is created **before** the threads that read it. The first version created it after the discovery
-    // worker and before the transport loop, which happened to work for one and not the other — an ordering that is a
-    // latent bug rather than a design, so the flag now comes first and everything that watches it starts below.
-    let beating = Arc::new(AtomicBool::new(true));
+    // ★ The supervisor owns the two long-lived services, and it is what a stop request goes through.
+    //
+    // Both used to be bare `std::thread::spawn` beside a process-wide `Arc<AtomicBool>` hand-called `beating`. Two things
+    // were wrong with that and this round is about both.
+    //
+    // The first is that `synra_core::supervisor` — registration, cancellation tokens, restart policy, a record per task, a
+    // shutdown report — was **fully implemented, fully tested, and run by nothing**: `run_task`, the one function that
+    // actually runs a supervised task, had no caller outside its own tests. The daemon is where the kernel's long-lived
+    // work lives, so the daemon is where that stops being true.
+    //
+    // The second is smaller and was a real bug waiting: the flag was named `stop` and meant "keep running", and the first
+    // version of the listener read `while !stop.load(..)` — so it exited on its first check and silently refused every
+    // connection. A cancellation token is one-way, so that polarity cannot be got wrong.
+    let supervisor = Arc::new(synra_core::supervisor::Supervisor::new(synra_store::sqlite::now_ms()));
+    for service in ["transport.accept", "discovery.udp"] {
+        // Reported rather than fatal: `TaskSpec::service` is `Ordinary` criticality, so a task that will not register is a
+        // capability this run does not have, not a reason to refuse to serve.
+        if let Err(error) = supervisor.register(synra_core::supervisor::TaskSpec::service(service)) {
+            eprintln!("synra-daemon: {service} could not be registered: {error}");
+        }
+    }
 
     // ★ The transport listener runs on its own thread for the same reason discovery does: taking a connection is cheap but
     // a handshake is not, and the control socket serves one client at a time. Each accepted connection is handed to its
     // own thread, so a peer that is slow to say `Hello` delays nothing.
     if runtime.host.lock().listen_nonblocking().is_ok() {
         let peers = Arc::clone(&runtime.host);
-        let stop = Arc::clone(&beating);
         let data_dir = runtime.data_dir.clone();
         // The runtime's own desk, not a second one: a prompt raised by the transport must be the prompt a control command
         // answers, and two desks would mean a user answering a request the waiting connection never hears about.
         let desk = Arc::clone(&runtime.pairing);
-        std::thread::spawn(move || crate::transport::serve(&peers, &stop, &data_dir, &desk, &router));
+        let id = synra_core::supervisor::TaskId::new("transport.accept");
+        // The token is the loop's stop condition, so cancelling the task *is* stopping the listener — there is no second
+        // flag for the two to disagree about.
+        if let Err(error) = synra_core::supervisor::run_task(&supervisor, &id, move |token| {
+            synra_core::listener::serve(&peers, token, &data_dir, &desk, &router);
+            Ok(())
+        }) {
+            eprintln!("synra-daemon: the transport listener did not start: {error}");
+        }
     }
 
     // ★ Discovery runs on its own thread and the control loop only reads what it learned. `serve_one` blocks and the
@@ -337,17 +360,16 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
         let service = Arc::clone(discovery);
         let peers = Arc::clone(&runtime.host);
         let deadline = Arc::clone(&scan_until_ms);
-        // ★ Cloned into the thread because the closure outlives this function — it runs for the process's lifetime, and a
+        // ★ Cloned into the closure because it outlives this function — it runs for the process's lifetime, and a
         // borrowed `shared_db` would make that impossible to express.
         let remembered = Arc::clone(&shared_db);
-        // ★ The thread runs for the process's lifetime and is not joined. Nothing needs to end it early: the loop reads a
-        // deadline that expires on its own, and the process is what stops it. There is no join handle to keep either —
-        // dropping one detaches the thread, which is exactly what is wanted.
-        std::thread::spawn(move || {
+        let id = synra_core::supervisor::TaskId::new("discovery.udp");
+        if let Err(error) = synra_core::supervisor::run_task(&supervisor, &id, move |token| {
             synra_core::worker::run_recording(
                 &service,
                 &peers,
                 &deadline,
+                token,
                 synra_store::sqlite::now_ms,
                 // ★ What discovery heard is written down here, because before this nothing wrote `devices_seen` at all —
                 // the table existed, the reader existed, and every start of the app showed the same empty list.
@@ -371,20 +393,23 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
                     }
                 },
             );
-        });
+            Ok(())
+        }) {
+            eprintln!("synra-daemon: discovery did not start: {error}");
+        }
     }
 
     // ★ The heartbeat runs on its own thread because the accept loop blocks. A refresh done from the loop would only
     // happen when a client connected — so a daemon nobody was talking to would look dead after the stale window, and the
     // next start would reclaim a directory a live daemon is serving.
     let heartbeat = {
-        let stop = Arc::clone(&beating);
+        let supervisor = Arc::clone(&supervisor);
         let lock_path = plan.lock_path();
-        std::thread::spawn(move || heartbeat_loop(&stop, &lock_path))
+        std::thread::spawn(move || heartbeat_loop(&supervisor, &lock_path))
     };
 
     let mut code = ExitCode::SUCCESS;
-    while !stop_requested(&beating) {
+    while !supervisor.is_shutting_down() {
         if let Err(error) = listener.serve_one(&runtime) {
             // One client's failure is not the daemon's. A transport error is reported and the loop continues, because a
             // daemon that exited on a malformed connection would be one any local process could stop.
@@ -393,34 +418,33 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
         }
     }
 
-    beating.store(false, Ordering::Relaxed);
+    // ★ Asked through the supervisor rather than by setting a flag, so the two services stop the way they were started:
+    // the token they were given is cancelled, and the stop order is the reverse of registration.
+    let _ = supervisor.begin_shutdown();
     let _ = heartbeat.join();
     code
 }
 
-/// Whether the process has been asked to stop.
-///
-/// # Why a flag rather than a signal handler
-///
-/// A signal handler needs either `unsafe` or a crate, and this workspace forbids the first. What is checked instead is
-/// whether the **claim still belongs to this process** — so a `synra-daemon` replaced by a newer one, or a claim removed
-/// by hand, stops this one rather than leaving two daemons serving one data directory. Ctrl-C ends the process, and the
-/// claim it leaves behind is what the next start reads as an unclean shutdown.
-fn stop_requested(beating: &AtomicBool) -> bool {
-    // The heartbeat thread clears the flag when the claim stops being refreshable, which is the one condition under
-    // which continuing would be worse than stopping.
-    !beating.load(Ordering::Relaxed)
-}
 
 /// Refreshes the claim on an interval until asked to stop.
+///
+/// # ★ Why this asks the supervisor to stop rather than setting a flag
+///
+/// Because there is one shutdown path now. The loop used to clear a process-wide `AtomicBool` that four other places read,
+/// which meant "the claim is gone" and "the user pressed Ctrl-C" and "a task failed" all arrived as the same unlabelled
+/// event — and the transport loop had already been written with the polarity backwards once, which is what an untyped
+/// boolean shared by five readers invites.
+///
+/// [`Supervisor::begin_shutdown`] is that one path: it cancels every task's token, and the two services stop because the
+/// token they were given is cancelled, not because somebody remembered to look at a flag.
 ///
 /// # Why the claim is re-read rather than held
 ///
 /// The file is the source of truth, and a copy held in memory would go stale the moment anything else touched it — which
 /// is exactly the condition this loop exists to notice. Re-reading costs one small file per interval and makes "does
 /// this process still own the directory" a question about the directory rather than about a copy of it.
-fn heartbeat_loop(beating: &AtomicBool, lock_path: &std::path::Path) {
-    while beating.load(Ordering::Relaxed) {
+fn heartbeat_loop(supervisor: &Arc<synra_core::supervisor::Supervisor>, lock_path: &std::path::Path) {
+    while !supervisor.is_shutting_down() {
         std::thread::sleep(std::time::Duration::from_millis(HEARTBEAT_MS));
 
         let current = match ClaimFile::read(lock_path) {
@@ -431,7 +455,7 @@ fn heartbeat_loop(beating: &AtomicBool, lock_path: &std::path::Path) {
             Ok(ClaimFile::Absent) => continue,
             Err(error) => {
                 eprintln!("synra-daemon: the claim could not be read, stopping: {error}");
-                beating.store(false, Ordering::Relaxed);
+                let _ = supervisor.begin_shutdown();
                 return;
             }
         };
@@ -444,13 +468,13 @@ fn heartbeat_loop(beating: &AtomicBool, lock_path: &std::path::Path) {
                 "synra-daemon: the claim now names process {}, stopping",
                 current.owner.pid
             );
-            beating.store(false, Ordering::Relaxed);
+            let _ = supervisor.begin_shutdown();
             return;
         }
 
         if let Err(error) = refresh_claim(lock_path, &current, now_ms()) {
             eprintln!("synra-daemon: the claim could not be refreshed, stopping: {error}");
-            beating.store(false, Ordering::Relaxed);
+            let _ = supervisor.begin_shutdown();
             return;
         }
     }

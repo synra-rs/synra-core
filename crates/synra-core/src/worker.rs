@@ -347,9 +347,10 @@ pub fn run(
     service: &Arc<Mutex<DiscoveryService>>,
     host: &Arc<Mutex<Host>>,
     on_demand: &Arc<AtomicI64>,
+    cancel: &crate::supervisor::Cancellation,
     now_ms: impl Fn() -> i64 + Send + 'static,
 ) {
-    run_recording(service, host, on_demand, now_ms, |_| {});
+    run_recording(service, host, on_demand, cancel, now_ms, |_| {});
 }
 
 /// [`run`], which hands every candidate it has just heard to a callback.
@@ -370,10 +371,20 @@ pub fn run_recording(
     service: &Arc<Mutex<DiscoveryService>>,
     host: &Arc<Mutex<Host>>,
     on_demand: &Arc<AtomicI64>,
+    cancel: &crate::supervisor::Cancellation,
     now_ms: impl Fn() -> i64 + Send + 'static,
     heard: impl Fn(&[crate::discovery::Candidate]) + Send + 'static,
 ) {
-    loop {
+    // ★ The loop stops now, and its own doc used to say it could not.
+    //
+    // It read: "there is no stop flag ... the thread's work is *inbound*, so ending it early would only be to save a thread
+    // on a process that is exiting anyway". That was true of a worker nobody supervised. A worker run under
+    // [`crate::supervisor::run_task`] is *given* a token and is required to honour it — a closure that ignores one leaves a
+    // thread running after the supervisor has recorded the task as stopped, which is a report that lies.
+    //
+    // The check is at the top rather than after the sleep: a stop request that arrives while the loop is asleep is seen on
+    // the next turn, and `POLL_INTERVAL` is the longest anything waits.
+    while !cancel.is_cancelled() {
         let now = Instant::now();
         let wall = now_ms();
 
@@ -421,7 +432,12 @@ pub fn is_visible(table: &DiscoveryTable, now_ms: i64) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use parking_lot::Mutex;
+
     use super::*;
+    use crate::supervisor::Cancellation;
     use crate::identity::Identity;
     use crate::peer::{Flags, LocalPeer};
     use synra_protocol::handshake::PROTOCOL_VERSION;
@@ -481,6 +497,33 @@ mod tests {
             next_query: Instant::now(),
             interval,
         }
+    }
+
+
+    #[test]
+    fn the_worker_returns_when_it_is_cancelled() {
+        // ★ The loop stops when it is cancelled, which its own doc said it could not do.
+        //
+        // It read: "there is no stop flag ... the thread's work is *inbound*, so ending it early would only be to save a
+        // thread on a process that is exiting anyway". That was true of a worker run by a bare `std::thread::spawn` on a
+        // process that was going away. Under `supervisor::run_task` the worker is *given* a token and is required to honour
+        // it — and a closure that ignores one leaves a thread running after the supervisor has recorded the task as
+        // stopped, which is a shutdown report that lies about what is still running.
+        //
+        // The only wait is the loop's own poll interval, so this is about the token rather than about a timeout.
+        let service = Arc::new(Mutex::new(service(A, Duration::from_secs(30))));
+        let peers = Arc::new(Mutex::new(host(A, "Laptop")));
+        let deadline = Arc::new(std::sync::atomic::AtomicI64::new(0));
+        let cancel = Cancellation::new();
+
+        let worker = std::thread::spawn({
+            let cancel = cancel.clone();
+            move || run_recording(&service, &peers, &deadline, &cancel, || 0, |_| {})
+        });
+
+        cancel.cancel();
+
+        assert!(worker.join().is_ok(), "the worker returned rather than looping for ever");
     }
 
     // ── Tick ──────────────────────────────────────────────────────────────────────────────────────
