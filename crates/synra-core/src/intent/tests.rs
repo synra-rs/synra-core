@@ -663,3 +663,37 @@ fn aiming_is_refused_while_the_user_is_choosing_between_plugins() {
     // And the intent is untouched: a refusal that had already moved the state would be worse than one that had not.
     assert_eq!(board.get(id).map(|intent| intent.state.kind()), Some("choosing"));
 }
+
+#[test]
+fn aiming_cannot_replace_a_device_the_plugin_already_chose() {
+    // ★ The authority hole the candidate-count inference left open.
+    //
+    // A candidate that suggested a device is one whose plugin answered *where*; the intent reaches `Choosing` only because
+    // the user's setting asked them to confirm **which** plugin. `aim` used to accept a device there regardless \u2014 so a
+    // caller could attach its own, and a share the plugin meant for a phone would run on this laptop.
+    let place = DeviceId::new();
+    let mut board = board();
+    let (id, _, _) = board.raise(share(), Choice::AlwaysAsk, None, None, NOW);
+    let _ = board.offer(id, candidate("@acme/opener", "open", Some(place)));
+    let _ = board.settle(id, after_window());
+
+    // The same device it already named: there is nothing to answer.
+    assert!(board.aim(id, place).is_err(), "the question was already answered");
+    // And a different one: the caller does not get to overrule the plugin.
+    assert!(
+        board.aim(id, DeviceId::new()).is_err(),
+        "a caller may not replace the device the candidate suggested"
+    );
+    // The intent is untouched, so a refusal did not half-apply.
+    assert_eq!(board.get(id).map(|intent| intent.state.kind()), Some("choosing"));
+}
+
+#[test]
+fn aiming_still_works_when_the_plugin_named_nothing() {
+    // The other side of the same rule, so the refusal above is not just "aim never works".
+    let (mut board, id) = waiting_for_a_place(board());
+    let place = DeviceId::new();
+
+    assert!(board.aim(id, place).is_ok());
+    assert_eq!(board.get(id).map(|intent| intent.state.kind()), Some("confirming"));
+}

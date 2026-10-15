@@ -343,6 +343,23 @@ impl Board {
                 });
             }
         };
+        // ★ And it must not already have answered the question itself.
+        //
+        // A candidate that suggested a device is one whose plugin said *where*; the intent is in `Choosing` only because
+        // the user's setting asked them to confirm **which** plugin (`Choice::AlwaysAsk`, or more than one claimant
+        // earlier in the pass). Letting a caller aim there would replace the plugin's own suggestion with a device the
+        // caller chose — so a share the plugin meant to send to a phone could be run on this laptop, by a client that
+        // answered a question nobody asked it.
+        if let Some(suggested) = candidate.suggested_target {
+            return Err(IntentError::WrongState {
+                attempted: "aim",
+                current: if suggested == target {
+                    "the candidate already suggested that device, so nothing needs answering"
+                } else {
+                    "the candidate already suggested a device, so the question is which plugin rather than which device"
+                },
+            });
+        }
         let _ = self.set_state(id, IntentState::Confirming { candidate, target });
         self.intents
             .get(&id)
