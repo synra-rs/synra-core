@@ -594,6 +594,165 @@ pub fn decide(
     })
 }
 
+/// Runs an action another device asked for, and builds the answer to send back.
+///
+/// # ★ The receiving half, which is three of the design's four pieces
+///
+/// Doc 07 names them: *"send the message, run the plugin locally on receipt, reply with the result, and be idempotent by
+/// request identifier."* The first landed in the round that made `decide` dispatch; this is the other three.
+///
+/// # Returns
+///
+/// `Some(envelope)` — the `INTENT_RESULT` to send back — or `None` when there is **nothing to answer yet**: the same
+/// request arrived twice and the first copy is still running. Answering then would report an outcome that does not exist,
+/// and the first run will answer on its own.
+///
+/// # The idempotency, and why it is not implemented here
+///
+/// Because it already is, and in the right place. `Board::raise` takes the origin and the request identifier and looks
+/// for an intent this request already raised **before creating anything** — "the failure this exists to prevent, and the
+/// one a 'did we already do this' check placed *after* creation cannot prevent". So a resent `INTENT_INVOKE` gets the
+/// first attempt's intent, `created` is `false`, and the action does not run a second time. A handler that kept its own
+/// cache would be a second answer to "have I seen this", and the two would disagree the first time one of them was
+/// cleared.
+///
+/// # Errors
+///
+/// [`RouteError`] when the envelope is not an invocation this build can read, or when the plugin it names cannot be run.
+pub fn accept_remote(
+    plugins: &Arc<Mutex<PluginSet>>,
+    board: &Arc<Mutex<Board>>,
+    local_device: synra_protocol::ids::DeviceId,
+    envelope: &synra_protocol::envelope::Envelope,
+    now_ms: i64,
+) -> Result<Option<synra_protocol::envelope::Envelope>, RouteError> {
+    let asked = crate::intent::remote::invoke_from(envelope).map_err(|error| {
+        RouteError::new(synra_protocol::ErrorCode::InvalidArgument, error.to_string())
+    })?;
+
+    // The origin is the envelope's sender rather than anything the payload claims: a payload that named its own origin
+    // would let one device send another's request, and the idempotency key would be the sender's to forge.
+    let origin = envelope.from;
+    // ★ The source is `Direct`, which is what makes this a dispatch rather than a share: the sender already named the
+    // plugin and the action, so there is nothing to match and `raise` puts it straight into `Dispatching`.
+    // Moved rather than cloned: `asked` is the parsed payload and nothing below this line uses it again.
+    let source = IntentSource::Direct {
+        plugin_id: asked.plugin_id,
+        action: asked.action,
+        params: asked.args,
+        target: local_device,
+    };
+
+    let (id, trace, created) = board.lock().raise(
+        source,
+        crate::intent::Choice::default(),
+        Some(origin),
+        Some(envelope.request_id),
+        now_ms,
+    );
+
+    if !created {
+        // ★ The same request, arriving again. Either it is already over — in which case the answer is the recorded one,
+        // because a sender whose reply was lost is entitled to the outcome rather than to a second execution — or it is
+        // still running, in which case there is nothing truthful to say yet.
+        let concluded = {
+            let intents = board.lock();
+            let found = intents.get(id).map(|intent| intent.state.clone());
+            drop(intents);
+            found
+        };
+        return match concluded {
+            Some(crate::intent::IntentState::Succeeded { result, elapsed_ms }) => {
+                Ok(Some(answer(origin, trace, envelope, &crate::intent::remote::InvokeResult {
+                    ok: true,
+                    result: result.as_str().unwrap_or_default().to_owned(),
+                    error: None,
+                    elapsed_ms,
+                }, now_ms)?))
+            }
+            Some(crate::intent::IntentState::Failed { error, elapsed_ms }) => {
+                Ok(Some(answer(origin, trace, envelope, &crate::intent::remote::InvokeResult {
+                    ok: false,
+                    result: String::new(),
+                    error: Some(error.to_string()),
+                    elapsed_ms,
+                }, now_ms)?))
+            }
+            // Still in flight, or ended some other way with nothing to report as an outcome. The first copy answers.
+            _ => Ok(None),
+        };
+    }
+
+    // The candidate the board built from the sender's own naming, read rather than reconstructed: a receiver that built
+    // its own would be running an action of its choosing on a request it was asked to run.
+    let candidate = {
+        let intents = board.lock();
+        let found = intents.get(id).and_then(|intent| match &intent.state {
+            crate::intent::IntentState::Dispatching { candidate, .. } => Some(candidate.clone()),
+            _ => None,
+        });
+        drop(intents);
+        found
+    };
+    let Some(candidate) = candidate else {
+        return Err(RouteError::new(
+            synra_protocol::ErrorCode::Internal,
+            "the request was raised but no candidate was recorded for it",
+        ));
+    };
+
+    let started_ms = now_ms.max(0) as u64;
+    let outcome = {
+        let mut set = plugins.lock();
+        crate::dispatch::execute(&mut set, &candidate.plugin_id, &candidate, started_ms)
+    };
+
+    let (ok, result, error) = match outcome {
+        Ok(synra_plugin_host::CallOutcome::Ok(payload)) => (true, payload, None),
+        Ok(other) => (false, other.as_str().to_owned(), None),
+        Err(failure) => (false, String::new(), Some(failure.to_string())),
+    };
+    let elapsed_ms = u64::try_from(synra_store::sqlite::now_ms().saturating_sub(now_ms)).unwrap_or(0);
+    board
+        .lock()
+        .conclude(id, ok, &result, error.as_deref().map(synra_error), elapsed_ms)
+        .map_err(|refusal| refuse_intent(&refusal))?;
+
+    Ok(Some(answer(
+        origin,
+        trace,
+        envelope,
+        &crate::intent::remote::InvokeResult {
+            ok,
+            result,
+            error,
+            elapsed_ms,
+        },
+        now_ms,
+    )?))
+}
+
+/// The envelope that answers an invocation.
+///
+/// # ★ Why the reply is addressed from the envelope rather than from this device
+///
+/// Because this function is given the request and not the local identity. The sender is `envelope.from`, and the answer
+/// goes back exactly there — a reply addressed anywhere else is one the other side never correlates, and the request
+/// identifier it carries is the same one, which is what the sender's `recall` looks up.
+fn answer(
+    to: synra_protocol::ids::DeviceId,
+    trace: synra_protocol::ids::TraceId,
+    request: &synra_protocol::envelope::Envelope,
+    payload: &crate::intent::remote::InvokeResult,
+    now_ms: i64,
+) -> Result<synra_protocol::envelope::Envelope, RouteError> {
+    let mut envelope = crate::intent::remote::result(request.target, to, payload, trace, now_ms)
+        .map_err(|error| RouteError::new(synra_protocol::ErrorCode::Internal, error.to_string()))?;
+    // ★ The answer carries the request it answers, so the sender can correlate it even if it sent several at once.
+    envelope.reply_to = Some(request.request_id);
+    Ok(envelope)
+}
+
 /// Abandons an intent.
 ///
 /// # Errors

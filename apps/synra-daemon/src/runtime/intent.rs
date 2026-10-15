@@ -372,6 +372,105 @@ mod tests {
         assert_eq!(answer["result"], "opened");
     }
 
+    /// An invocation, as the sending half of this build builds one.
+    ///
+    /// Built with the library's own constructor rather than by hand, because a fixture that spelled the payload itself
+    /// would be a second definition of the shape — and the two would drift the first time either changed.
+    fn invocation(request: synra_protocol::ids::RequestId) -> synra_protocol::envelope::Envelope {
+        let mut envelope = synra_core::intent::remote::invoke(
+            local_device(),
+            "0e5a1c34-0000-4000-8000-0000000000ff".parse().expect("a device id"),
+            &synra_core::intent::remote::Invoke {
+                plugin_id: synra_protocol::ids::PluginId::try_from("@acme/opener".to_owned())
+                    .expect("a plugin id"),
+                plugin_version: "1.0.0".to_owned(),
+                action: "open".to_owned(),
+                args: serde_json::json!({ "url": "https://example.com" }),
+            },
+            synra_protocol::ids::TraceId::new(),
+            1_000,
+        )
+        .expect("an envelope");
+        // The identifier is the sender's, and it is what a resend is recognised by.
+        envelope.request_id = request;
+        envelope
+    }
+
+    #[test]
+    fn a_request_from_another_device_runs_here_and_answers_with_the_outcome() {
+        // ★ The other three of the design's four pieces.
+        //
+        // Doc 07: "send the message, run the plugin locally on receipt, reply with the result, and be idempotent by
+        // request identifier". Sending landed a round ago; this is the receiving end — and the assertion that matters is
+        // that the action actually ran, because a handler that answered `ok` without running anything would look
+        // identical from the sender's side.
+        let plugins = set_that_accepts("@acme/opener");
+        let board = Arc::new(Mutex::new(synra_core::intent::Board::new()));
+        let request = synra_protocol::ids::RequestId::new();
+
+        let answer = synra_core::dispatch::orchestrate::accept_remote(&plugins, &board, local_device(), &invocation(request), 2_000)
+            .expect("handled")
+            .expect("an answer to send");
+
+        assert_eq!(answer.event.as_str(), "_synra.intent.result");
+        assert_eq!(answer.target, local_device(), "it goes back to whoever asked");
+        assert_eq!(answer.reply_to, Some(request), "and it says which request it answers");
+        let payload = synra_core::intent::remote::result_from(&answer).expect("a readable result");
+        assert!(payload.ok, "{payload:?}");
+        assert_eq!(payload.result, "opened", "the plugin ran, and its answer came back");
+    }
+
+    #[test]
+    fn the_same_request_twice_runs_once_and_answers_twice() {
+        // ★ The fourth piece, and the one whose failure is worst.
+        //
+        // A sender whose answer was lost resends. If the resend ran the action again, a user's action would happen twice —
+        // and the second time is invisible from the sender, which sees one success. The board's `raise` is where this is
+        // prevented, before anything is created, so a handler with its own cache would be a second answer to "have I seen
+        // this" and the two would disagree the first time one was cleared.
+        let plugins = set_that_accepts("@acme/opener");
+        let board = Arc::new(Mutex::new(synra_core::intent::Board::new()));
+        let request = synra_protocol::ids::RequestId::new();
+
+        let first = synra_core::dispatch::orchestrate::accept_remote(&plugins, &board, local_device(), &invocation(request), 2_000)
+            .expect("handled")
+            .expect("an answer");
+        let second = synra_core::dispatch::orchestrate::accept_remote(&plugins, &board, local_device(), &invocation(request), 3_000)
+            .expect("handled")
+            .expect("an answer again");
+
+        // ★ The structural fact first, because it is the one that says whether the resend was recognised at all.
+        //
+        // `len` and not `live`: the first copy **concluded**, so it is no longer live, and a count of live intents would be
+        // zero whether the resend was recognised or not — the shape of assertion that passes for the wrong reason, which is
+        // what the first version of this test wrote.
+        assert_eq!(board.lock().len(), 1, "one request is one intent");
+
+        // And both answers carry the same outcome. `ok`/`result`/`error` are compared rather than the whole struct, because
+        // `elapsed_ms` is derived from the **real** wall clock while `now_ms` here is a fixture value — so the two calls
+        // cannot agree on it unless the second is answered from the record, and a test that asserted on it would be
+        // asserting on how fast the machine is.
+        let first = synra_core::intent::remote::result_from(&first).expect("a result");
+        let second = synra_core::intent::remote::result_from(&second).expect("a result");
+        assert_eq!(first.ok, second.ok, "{first:?} vs {second:?}");
+        assert_eq!(first.result, second.result, "{first:?} vs {second:?}");
+        assert_eq!(first.error, second.error, "{first:?} vs {second:?}");
+    }
+
+    #[test]
+    fn an_invocation_this_build_cannot_read_is_refused_rather_than_guessed_at() {
+        // A payload that will not parse must not become a default: the default would name a plugin nobody chose and run
+        // an action nobody asked for.
+        let plugins = set_that_accepts("@acme/opener");
+        let board = Arc::new(Mutex::new(synra_core::intent::Board::new()));
+        let mut empty = invocation(synra_protocol::ids::RequestId::new());
+        empty.payload = None;
+
+        let refused = synra_core::dispatch::orchestrate::accept_remote(&plugins, &board, local_device(), &empty, 2_000);
+
+        assert!(refused.is_err(), "an unreadable invocation is not a request");
+    }
+
     #[test]
     fn a_share_aimed_at_another_device_produces_an_envelope_instead_of_a_refusal() {
         // ★ This used to refuse, and the refusal was honest while nothing could send.
