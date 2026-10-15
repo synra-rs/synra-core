@@ -779,8 +779,7 @@ fn a_storage_quota_is_a_pair_of_numbers_a_plugin_can_read() {
     let host = Stub::using(128);
     let grants = granted(&["storage:local:read"]);
     // A quota with a ceiling a person can read, so the assertion names the value rather than the default.
-    let mut quota = Quota::default();
-    quota.max_storage_bytes = 1_024;
+    let quota = Quota { max_storage_bytes: 1_024, ..Quota::default() };
     let budget = Budget::new(quota);
     let mut audit = Vec::new();
     let mut calls = session(&host, &grants, &budget, &mut audit);
@@ -799,8 +798,7 @@ fn a_write_that_would_exceed_the_quota_is_refused_before_it_is_stored() {
     // asserts both halves: the refusal, and that the host was **never asked to write**.
     let host = Stub::using(1_000);
     let grants = granted(&["storage:local:write"]);
-    let mut quota = Quota::default();
-    quota.max_storage_bytes = 1_010;
+    let quota = Quota { max_storage_bytes: 1_010, ..Quota::default() };
     let budget = Budget::new(quota);
     let mut audit = Vec::new();
     let mut calls = session(&host, &grants, &budget, &mut audit);
@@ -830,8 +828,7 @@ fn a_write_that_replaces_a_larger_value_is_measured_by_the_difference() {
     // `known` is the key the stub holds, and it answers with `"a value"` — seven bytes.
     let host = Stub::using(12);
     let grants = granted(&["storage:local:write"]);
-    let mut quota = Quota::default();
-    quota.max_storage_bytes = 12;
+    let quota = Quota { max_storage_bytes: 12, ..Quota::default() };
     let budget = Budget::new(quota);
     let mut audit = Vec::new();
     let mut calls = session(&host, &grants, &budget, &mut audit);

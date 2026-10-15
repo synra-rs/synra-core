@@ -128,7 +128,8 @@ impl Runtime {
     /// A method rather than a public field so every call site has to say it is holding the lock. A field would let one
     /// command lock it in a function and use it in another, and the guard's scope is exactly what decides whether the
     /// discovery thread's write waits behind a device listing.
-    #[must_use]
+    // ★ No `#[must_use]`: the return type already carries it, and a second one with no message adds nothing a reader
+    // can act on. The rule this accessor exists for is written above, which is where it belongs.
     pub fn db(&self) -> parking_lot::MutexGuard<'_, synra_store::SynraDb> {
         self.db.lock()
     }

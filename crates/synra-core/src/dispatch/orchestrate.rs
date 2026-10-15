@@ -306,7 +306,7 @@ pub struct Router {
 impl Router {
     /// A router over the daemon's own plugins and intents.
     #[must_use]
-    pub fn new(plugins: Arc<Mutex<PluginSet>>, board: Arc<Mutex<Board>>) -> Self {
+    pub const fn new(plugins: Arc<Mutex<PluginSet>>, board: Arc<Mutex<Board>>) -> Self {
         Self { plugins, board }
     }
 
@@ -903,7 +903,7 @@ fn parse_intent(text: &str) -> Result<synra_protocol::ids::IntentId, RouteError>
 /// attempt and the state — and re-wording it here would be a second description of the same state machine, free to
 /// disagree with the first.
 fn refuse_intent(error: &crate::intent::IntentError) -> RouteError {
-    RouteError::new(synra_protocol::ErrorCode::InvalidArgument, &error.to_string())
+    RouteError::new(synra_protocol::ErrorCode::InvalidArgument, error.to_string())
 }
 
 /// The candidates the board is holding for an intent.

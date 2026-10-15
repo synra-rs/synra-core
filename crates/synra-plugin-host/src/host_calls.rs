@@ -468,7 +468,7 @@ impl<'a> HostCalls<'a> {
     /// The permissive default on [`HostCalls::new`] is for the calls that *are* allowed to act — `share.execute`,
     /// `lifecycle.*`, `actions.invoke` and the rest.
     #[must_use]
-    pub fn pure(mut self) -> Self {
+    pub const fn pure(mut self) -> Self {
         self.side_effects = false;
         self
     }

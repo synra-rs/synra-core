@@ -154,13 +154,13 @@ fn unwrap_mapped(address: IpAddr) -> IpAddr {
 
 /// The mask for a prefix length.
 #[must_use]
-fn mask32(bits: u8) -> u32 {
+const fn mask32(bits: u8) -> u32 {
     if bits == 0 { 0 } else { u32::MAX << (32 - bits) }
 }
 
 /// The mask for a prefix length.
 #[must_use]
-fn mask128(bits: u8) -> u128 {
+const fn mask128(bits: u8) -> u128 {
     if bits == 0 { 0 } else { u128::MAX << (128 - bits) }
 }
 
@@ -226,7 +226,7 @@ impl IpPolicy {
 
 /// Whether an address is in a private IPv4 range.
 #[must_use]
-fn is_private_v4(address: IpAddr) -> bool {
+const fn is_private_v4(address: IpAddr) -> bool {
     let IpAddr::V4(v4) = address else {
         return false;
     };
@@ -235,7 +235,7 @@ fn is_private_v4(address: IpAddr) -> bool {
 
 /// Whether an address is link-local, in either family.
 #[must_use]
-fn is_link_local(address: IpAddr) -> bool {
+const fn is_link_local(address: IpAddr) -> bool {
     match address {
         // 169.254.0.0/16. Not `is_link_local` on `Ipv4Addr` alone because the whole reason this branch exists is that the
         // range is the cloud metadata service, and it deserves to be visible in the code that refuses it.
@@ -246,7 +246,7 @@ fn is_link_local(address: IpAddr) -> bool {
 
 /// Whether an address is an IPv6 unique-local address (`fc00::/7`).
 #[must_use]
-fn is_unique_local(address: IpAddr) -> bool {
+const fn is_unique_local(address: IpAddr) -> bool {
     match address {
         IpAddr::V6(v6) => v6.segments()[0] & 0xfe00 == 0xfc00,
         IpAddr::V4(_) => false,
@@ -315,14 +315,14 @@ impl NetworkGuard {
     /// A builder rather than a default, because the insecure scheme is a decision a host makes and the design's default is
     /// `https` only.
     #[must_use]
-    pub fn allowing_insecure(mut self, allow: bool) -> Self {
+    pub const fn allowing_insecure(mut self, allow: bool) -> Self {
         self.allow_insecure = allow;
         self
     }
 
     /// The same guard, with a different redirect limit.
     #[must_use]
-    pub fn with_max_redirects(mut self, hops: u8) -> Self {
+    pub const fn with_max_redirects(mut self, hops: u8) -> Self {
         self.max_redirects = hops;
         self
     }

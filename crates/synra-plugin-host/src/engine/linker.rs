@@ -164,22 +164,20 @@ fn define_shapes(instance: &mut LinkerInstance<'_, StoreData>) -> anyhow::Result
     }
 
     // ── Shape 2: `() -> bool` ──
-    for function in ["env-dark-mode"] {
-        let import = import_name(function);
-        instance.func_wrap(function, move |mut caller: StoreContextMut<'_, StoreData>, (): ()| {
-            let answer = run(caller.data_mut(), &import, "");
-            Ok((answer.into_text() == "true",))
-        })?;
-    }
+    let function = "env-dark-mode";
+    let import = import_name(function);
+    instance.func_wrap(function, move |mut caller: StoreContextMut<'_, StoreData>, (): ()| {
+        let answer = run(caller.data_mut(), &import, "");
+        Ok((answer.into_text() == "true",))
+    })?;
 
     // ── Shape 3: `(string) -> bool` — the permission question ──
-    for function in ["env-can"] {
-        let import = import_name(function);
-        instance.func_wrap(function, move |mut caller: StoreContextMut<'_, StoreData>, (argument,): (String,)| {
-            let answer = run(caller.data_mut(), &import, &argument);
-            Ok((answer.into_text() == "true",))
-        })?;
-    }
+    let function = "env-can";
+    let import = import_name(function);
+    instance.func_wrap(function, move |mut caller: StoreContextMut<'_, StoreData>, (argument,): (String,)| {
+        let answer = run(caller.data_mut(), &import, &argument);
+        Ok((answer.into_text() == "true",))
+    })?;
 
     // ── Shape 4: `() -> list<string>` — the two lists, which the host answers with JSON ──
     for function in ["platform-capabilities", "device-list"] {
@@ -192,14 +190,13 @@ fn define_shapes(instance: &mut LinkerInstance<'_, StoreData>) -> anyhow::Result
     }
 
     // ── Shape 4b: `() -> tuple<u64, u64>` — the storage report, whose second number is the quota ──
-    for function in ["storage-quota"] {
-        let import = import_name(function);
-        instance.func_wrap(function, move |mut caller: StoreContextMut<'_, StoreData>, (): ()| {
-            let answer = run(caller.data_mut(), &import, "");
-            let (used, allowed) = parse_pair(&answer.into_text());
-            Ok((used, allowed))
-        })?;
-    }
+    let function = "storage-quota";
+    let import = import_name(function);
+    instance.func_wrap(function, move |mut caller: StoreContextMut<'_, StoreData>, (): ()| {
+        let answer = run(caller.data_mut(), &import, "");
+        let (used, allowed) = parse_pair(&answer.into_text());
+        Ok((used, allowed))
+    })?;
 
     // ── Shape 5: `(string) -> string` — the questions with nothing to fail ──
     for function in ["storage-keys", "action-list"] {
@@ -253,92 +250,86 @@ fn define_shapes(instance: &mut LinkerInstance<'_, StoreData>) -> anyhow::Result
     }
 
     // ── Shape 8: `(string, string, string) -> outcome` ──
-    for function in ["transfer-send"] {
-        let import = import_name(function);
-        // The closure owns the name as well as the import, because `arguments_json` needs it to look the parameter
-        // names up: a `move` closure cannot borrow the loop's `&'static str` and still be `'static`.
-        let named = function.to_owned();
-        instance.func_wrap(
-            function,
-            move |mut caller: StoreContextMut<'_, StoreData>,
-                  (first, second, third): (String, String, String)| {
-                let argument = arguments_json(&named, &[first.as_str(), second.as_str(), third.as_str()]);
-                let answer = run(caller.data_mut(), &import, &argument);
-                let refused = answer.was_refused();
-                Ok((outcome_of(answer), refused))
-            },
-        )?;
-    }
+    let function = "transfer-send";
+    let import = import_name(function);
+    // The closure owns the name as well as the import, because `arguments_json` needs it to look the parameter
+    // names up: a `move` closure cannot borrow the loop's `&'static str` and still be `'static`.
+    let named = function.to_owned();
+    instance.func_wrap(
+        function,
+        move |mut caller: StoreContextMut<'_, StoreData>,
+              (first, second, third): (String, String, String)| {
+            let argument = arguments_json(&named, &[first.as_str(), second.as_str(), third.as_str()]);
+            let answer = run(caller.data_mut(), &import, &argument);
+            let refused = answer.was_refused();
+            Ok((outcome_of(answer), refused))
+        },
+    )?;
 
     // ── Shape 9: `(log-level, string, option<string>) -> ()` and the clipboard read ──
     //
     // The log level is a WIT `enum`, which crosses as a `u32` index, and an `option<string>` crosses as a variant —
     // both are why these two are their own shapes rather than being folded into the ones above.
-    for function in ["log"] {
-        let import = import_name(function);
-        instance.func_wrap(
-            function,
-            move |mut caller: StoreContextMut<'_, StoreData>,
-                  (level, message, context): (u32, String, Option<String>)| {
-                let argument = log_json(level, &message, context.as_deref());
-                let _ = run(caller.data_mut(), &import, &argument);
-                Ok(())
-            },
-        )?;
-    }
-    for function in ["platform-read-clipboard"] {
-        let import = import_name(function);
-        instance.func_wrap(function, move |mut caller: StoreContextMut<'_, StoreData>, (): ()| {
-            let answer = run(caller.data_mut(), &import, "");
-            let refused = answer.was_refused();
-            Ok((outcome_of(answer), refused))
-        })?;
-    }
+    let function = "log";
+    let import = import_name(function);
+    instance.func_wrap(
+        function,
+        move |mut caller: StoreContextMut<'_, StoreData>,
+              (level, message, context): (u32, String, Option<String>)| {
+            let argument = log_json(level, &message, context.as_deref());
+            let _ = run(caller.data_mut(), &import, &argument);
+            Ok(())
+        },
+    )?;
+    let function = "platform-read-clipboard";
+    let import = import_name(function);
+    instance.func_wrap(function, move |mut caller: StoreContextMut<'_, StoreData>, (): ()| {
+        let answer = run(caller.data_mut(), &import, "");
+        let refused = answer.was_refused();
+        Ok((outcome_of(answer), refused))
+    })?;
 
     // ── The two functions the contract declares with a shape of their own ──
     //
     // `platform-notify` takes a title and a body, and `action-invoke` takes a plugin, a name and arguments; both are
     // three strings, which is shape 8's type but *not* its field names — so they are defined with their own JSON.
-    for function in ["platform-notify"] {
-        let import = import_name(function);
-        instance.func_wrap(function, move |mut caller: StoreContextMut<'_, StoreData>, (title, body): (String, String)| {
+    let function = "platform-notify";
+    let import = import_name(function);
+    instance.func_wrap(function, move |mut caller: StoreContextMut<'_, StoreData>, (title, body): (String, String)| {
+        let argument = format!(
+            "{{\"title\":{},\"body\":{}}}",
+            json_string(&title),
+            json_string(&body)
+        );
+        let answer = run(caller.data_mut(), &import, &argument);
+        let refused = answer.was_refused();
+        Ok((outcome_of(answer), refused))
+    })?;
+    let function = "action-declare";
+    let import = import_name(function);
+    instance.func_wrap(function, move |mut caller: StoreContextMut<'_, StoreData>, (name, schema): (String, String)| {
+        let argument = format!("{{\"name\":{},\"schema\":{}}}", json_string(&name), json_string(&schema));
+        let answer = run(caller.data_mut(), &import, &argument);
+        let refused = answer.was_refused();
+        Ok((outcome_of(answer), refused))
+    })?;
+    let function = "action-invoke";
+    let import = import_name(function);
+    instance.func_wrap(
+        function,
+        move |mut caller: StoreContextMut<'_, StoreData>,
+              (plugin, name, arguments): (String, String, String)| {
             let argument = format!(
-                "{{\"title\":{},\"body\":{}}}",
-                json_string(&title),
-                json_string(&body)
+                "{{\"plugin\":{},\"name\":{},\"args\":{}}}",
+                json_string(&plugin),
+                json_string(&name),
+                json_string(&arguments)
             );
             let answer = run(caller.data_mut(), &import, &argument);
             let refused = answer.was_refused();
             Ok((outcome_of(answer), refused))
-        })?;
-    }
-    for function in ["action-declare"] {
-        let import = import_name(function);
-        instance.func_wrap(function, move |mut caller: StoreContextMut<'_, StoreData>, (name, schema): (String, String)| {
-            let argument = format!("{{\"name\":{},\"schema\":{}}}", json_string(&name), json_string(&schema));
-            let answer = run(caller.data_mut(), &import, &argument);
-            let refused = answer.was_refused();
-            Ok((outcome_of(answer), refused))
-        })?;
-    }
-    for function in ["action-invoke"] {
-        let import = import_name(function);
-        instance.func_wrap(
-            function,
-            move |mut caller: StoreContextMut<'_, StoreData>,
-                  (plugin, name, arguments): (String, String, String)| {
-                let argument = format!(
-                    "{{\"plugin\":{},\"name\":{},\"args\":{}}}",
-                    json_string(&plugin),
-                    json_string(&name),
-                    json_string(&arguments)
-                );
-                let answer = run(caller.data_mut(), &import, &argument);
-                let refused = answer.was_refused();
-                Ok((outcome_of(answer), refused))
-            },
-        )?;
-    }
+        },
+    )?;
 
     Ok(())
 }
