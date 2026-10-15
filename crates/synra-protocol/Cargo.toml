@@ -27,6 +27,10 @@ thiserror.workspace = true
 proptest.workspace = true
 rstest.workspace = true
 serde_json.workspace = true
+# The counting allocator behind `tests/hot_path_alloc.rs`. It is a separate crate because a `GlobalAlloc`
+# implementation is `unsafe` and this workspace `forbid`s unsafe code — which no local `allow` can relax, so the one
+# place the exception can be stated is a crate of its own.
+synra-testkit-alloc = { path = "../synra-testkit-alloc" }
 
 [lints]
 workspace = true

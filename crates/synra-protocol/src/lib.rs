@@ -33,8 +33,12 @@
 //! 3. **Unknown fields are rejected; unknown events are not.** An envelope with an extra field is a
 //!    protocol violation (`deny_unknown_fields`). An event name nobody recognises is recorded and
 //!    ignored — a newer peer may legitimately know more.
-//! 4. **Hot paths do not allocate.** Frame decoding, envelope parsing, event routing and capability
-//!    matching are asserted allocation-free in tests.
+//! 4. **Hot paths avoid the heap.** Event-name matching and every refusal path are asserted
+//!    allocation-free. ★ Frame decoding is **not**: `FrameDecoder` reallocates its 8 KiB scratch
+//!    buffer every time it drains, so a frame costs one allocation. That was measured, not
+//!    assumed — the number and its cause are in `tests/hot_path_alloc.rs`, and the test asserts it
+//!    so decoding cannot quietly get worse. This line used to say the hot paths "are asserted
+//!    allocation-free in tests" while no such test existed anywhere in the repository.
 //! 5. **Payloads are transferred, not inspected.** The kernel routes a payload without understanding
 //!    it, so `Envelope::payload` is a `RawValue`.
 //! 6. **Every field has a producer and a consumer.** A field that appears in the type and never on
