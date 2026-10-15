@@ -94,6 +94,22 @@ pub struct Runtime {
     /// Held beside the set rather than recomputed, because a report that reloaded every plugin to find out how many were
     /// loaded would be a report that compiles artifacts as a side effect of being asked a question.
     pub plugin_loads: std::sync::Arc<parking_lot::Mutex<crate::runtime::plugins::LoadedSummary>>,
+
+    /// What the logger is currently willing to write, and how long a raise lasts.
+    ///
+    /// # ★ Why the runtime holds this
+    ///
+    /// Because `synra logs --verbose` and `--trace` had **nothing behind them**. The subscriber was built with a fixed
+    /// level and `tracing` allows one subscriber per process, so no debug line could ever be written; the CLI asked for
+    /// debug lines, the file had none, and the command quietly answered with the same lines as the default.
+    ///
+    /// `Verbosity` already held the rule — a configured level, an override, and a window after which the override
+    /// lapses — and had no production caller at all. This is the field that gives it one: the answer to "show me
+    /// everything" is to make the process start writing everything, for a bounded while.
+    ///
+    /// `None` when logging is not running, which is a state worth distinguishing: a daemon whose log file could not be
+    /// opened still answers the command, and it must not claim to have raised anything.
+    pub verbosity: Option<std::sync::Arc<synra_observe::logging::Verbosity>>,
 }
 
 impl Runtime {

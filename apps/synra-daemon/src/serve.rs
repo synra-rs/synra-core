@@ -165,11 +165,11 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
     // diagnostic file is still a host that can move a file between two machines, and refusing to start over it would
     // trade the user's actual work for its record.
     //
-    // ★ `Info`, which is `LogLevel::is_persisted`'s own answer to what belongs on disk. The consequence is worth
-    // stating rather than leaving as a surprise: `synra logs --verbose` filters DEBUG and TRACE lines out of this file,
-    // and at `Info` there are none to find, so `--verbose` currently shows the same lines as the default. Making it show
-    // more means writing debug lines during a bounded window, which is what `logging::Verbosity` and `VERBOSE_WINDOW`
-    // exist for and what is not wired yet.
+    // ★ `Info`, which is `LogLevel::is_persisted`'s own answer to what belongs on disk, and the level the process
+    // **starts** at rather than the level it is stuck with. A raise is what `synra logs --verbose` does now: the guard's
+    // `verbosity()` goes into the runtime, and a request for more raises what is written for a bounded window, so a
+    // forgotten flag does not leave a debug log running for a week. Before that, `with_max_level` fixed the level for
+    // the life of the process and `--verbose` filtered DEBUG out of a file that could never contain any.
     //
     // The guard is held for the life of `serve`, which is what keeps the file open and flushes it on shutdown.
     let _log = match synra_observe::logging::init(
@@ -182,6 +182,8 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
             None
         }
     };
+    // Taken before the guard moves into `_log`, because the runtime needs it and the guard is what keeps the file open.
+    let log_verbosity = _log.as_ref().map(|guard| guard.verbosity());
 
     // ★ The plugin host is built **before** the runtime, and its failure ends the daemon.
     //
@@ -279,6 +281,10 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
         pairing,
         plugins,
         plugin_loads,
+        // ★ Handed to the runtime so `synra logs --verbose` can raise what the process writes. `None` when logging is
+        // not running — a daemon whose log file could not be opened still answers the command, and it must not claim to
+        // have raised anything.
+        verbosity: log_verbosity,
     };
 
     let listener = match Listener::bind(&runtime.data_dir) {

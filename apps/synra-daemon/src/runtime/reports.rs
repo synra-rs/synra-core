@@ -154,6 +154,33 @@ impl Runtime {
         verbose: bool,
         trace: Option<&str>,
     ) -> Result<serde_json::Value, Refusal> {
+        // ★ Asking to see more is what turns more on.
+        //
+        // The subscriber is built with a fixed level and `tracing` allows one subscriber per process, so a line that was
+        // never written cannot be filtered back into existence. The honest answer to `--verbose` is therefore to raise
+        // what the process writes from now on, for a bounded window — and to say so, because the first read will
+        // legitimately contain no debug lines and a user who was not told would conclude the flag does nothing (which is
+        // exactly what it did before this existed).
+        //
+        // A trace filter raises further than `--verbose` does: asking to follow one identifier is a narrower and more
+        // deliberate request than asking for everything.
+        let wanted = if trace.is_some() {
+            Some(synra_observe::logging::LogLevel::Trace)
+        } else if verbose {
+            Some(synra_observe::logging::LogLevel::Debug)
+        } else {
+            None
+        };
+        let mut raised = false;
+        let mut effective = None;
+        if let Some(verbosity) = self.verbosity.as_ref() {
+            if let Some(level) = wanted {
+                verbosity.raise_for_a_while(level);
+                raised = true;
+            }
+            effective = Some(verbosity.effective().as_str());
+        }
+
         // The log lives in the cache directory beside the data directory, which is where `Paths` puts it.
         let log_dir = self.data_dir.join("logs");
 
@@ -169,6 +196,10 @@ impl Runtime {
             // Echoed so a caller can tell "this trace has no lines" from "the filter was dropped on the way here" —
             // the exact confusion the CLI's old `--trace` produced by discarding the id.
             "trace": trace,
+            // What this request did to the logger, so a caller can explain an empty result rather than leaving the user
+            // to guess whether the flag is wired at all.
+            "raised": raised,
+            "level": effective,
         }))
     }
 }

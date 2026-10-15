@@ -69,6 +69,12 @@ fn runtime(dir: &Path) -> Runtime {
         plugin_loads: std::sync::Arc::new(parking_lot::Mutex::new(
             crate::runtime::LoadedSummary::default(),
         )),
+        // ★ A real verbosity rather than `None`, so a test can assert that `logs --verbose` actually raised it. `None`
+        // is the state of a daemon whose log file could not be opened, and a fixture that used it would make every
+        // assertion about raising vacuously true.
+        verbosity: Some(std::sync::Arc::new(synra_observe::logging::Verbosity::new(
+            synra_observe::logging::LogLevel::Info,
+        ))),
     }
 }
 
@@ -461,6 +467,68 @@ fn discovering_does_not_overwrite_a_decision_the_user_has_made() {
     let rows = runtime.db().plugins().expect("rows");
     let row = rows.first().expect("the row the user's decision is in");
     assert!(row.enabled && row.trusted, "the user's decision survived: {row:?}");
+}
+
+#[test]
+fn asking_for_verbose_logs_raises_what_the_daemon_writes() {
+    // ★ `--verbose` used to be a promise with nothing behind it. The subscriber was built with a fixed level and
+    // `tracing` allows one subscriber per process, so no debug line could ever be written — the CLI asked for debug
+    // lines, the file had none, and the command answered with the same lines as the default. Nothing failed; the flag
+    // simply did nothing.
+    //
+    // The assertion is on the **logger's own state**, because that is what decides whether a debug line is written at
+    // all. Reading the answer's `lines` could not distinguish "the flag is wired" from "the file happens to have
+    // debug lines in it from some earlier run".
+    let dir = TempDir::new("logs-raise-verbose");
+    let runtime = runtime(dir.path());
+    let verbosity = runtime.verbosity.as_ref().expect("a fixture with a logger").clone();
+
+    assert_eq!(verbosity.effective(), synra_observe::logging::LogLevel::Info, "the configured level");
+    assert!(!verbosity.is_raised());
+
+    // A plain read asks for nothing and must not change the level: a command that quietly made the log verbose would
+    // fill a disk on a machine nobody is watching.
+    let plain = runtime.logs_value(10, false, None).expect("an answer");
+    assert_eq!(plain["raised"], false);
+    assert_eq!(verbosity.effective(), synra_observe::logging::LogLevel::Info, "a plain read changed nothing");
+
+    let answer = runtime.logs_value(10, true, None).expect("an answer");
+    assert_eq!(answer["raised"], true, "the raise has to be reported: {answer}");
+    assert_eq!(answer["level"], "debug");
+    assert_eq!(
+        verbosity.effective(),
+        synra_observe::logging::LogLevel::Debug,
+        "the logger itself has to change, not just the answer"
+    );
+    assert!(verbosity.remaining().is_some(), "and it has to lapse, or a flag left on fills the disk");
+}
+
+#[test]
+fn a_trace_filter_asks_for_more_than_verbose_does() {
+    // Following one identifier is narrower and more deliberate than asking for everything, so it is worth more detail.
+    // Both are bounded by the same window.
+    let dir = TempDir::new("logs-raise-trace");
+    let runtime = runtime(dir.path());
+    let verbosity = runtime.verbosity.as_ref().expect("a fixture with a logger").clone();
+
+    let answer = runtime.logs_value(10, false, Some("abc")).expect("an answer");
+    assert_eq!(answer["raised"], true);
+    assert_eq!(answer["level"], "trace", "a trace filter raises further than --verbose: {answer}");
+    assert_eq!(verbosity.effective(), synra_observe::logging::LogLevel::Trace);
+}
+
+#[test]
+fn a_daemon_with_no_log_does_not_claim_to_have_raised_anything() {
+    // ★ `None` is the state of a daemon whose log file could not be opened. It still answers the command — a host that
+    // cannot write a diagnostic file is still a host — and it must not report a raise it did not perform. This is the
+    // one case where the difference between "did it" and "said it did" is the whole assertion.
+    let dir = TempDir::new("logs-no-logger");
+    let mut runtime = runtime(dir.path());
+    runtime.verbosity = None;
+
+    let answer = runtime.logs_value(10, true, None).expect("an answer");
+    assert_eq!(answer["raised"], false, "{answer}");
+    assert_eq!(answer["level"], serde_json::Value::Null, "and it says it has no level to report: {answer}");
 }
 
 #[test]
