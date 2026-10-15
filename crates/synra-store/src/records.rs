@@ -210,6 +210,7 @@ pub struct SeenDeviceRow {
 }
 
 impl SeenDeviceRow {
+
     /// Builds a row from the columns `devices_seen` declares, in its order.
     ///
     /// # Errors
@@ -232,6 +233,96 @@ impl SeenDeviceRow {
             source: required(source, "source")?.to_owned(),
         })
     }
+}
+
+/// One intent, as the `intents` table keeps it.
+///
+/// ★ Why the store has this at all, given that nothing wrote it until now.
+///
+/// The table was created by the first migration and then never read or written by any code in either workspace — so an
+/// intent lived only in the kernel's in-memory `Board` and a restart lost every one of them. The design's storage table
+/// gives intents a retention ("24 hours after they finish"), which is a rule about rows, and a rule about rows needs rows.
+/// This is the shape the store keeps, with no opinion about what any of the values mean: `state` and `args` are the
+/// kernel's own spellings, carried as text precisely so that the store does not have to know them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IntentRecord {
+    /// The intent's identifier, as the protocol spells it.
+    pub intent_id: String,
+    /// Which device raised it — this one, or a peer's identifier.
+    pub origin: String,
+    /// The plugin that will answer it.
+    pub plugin_id: String,
+    /// The action, as the plugin named it.
+    pub action: String,
+    /// The arguments, as JSON text.
+    ///
+    /// A string rather than a parsed value, for the reason `source` on [`SeenDeviceRow`] is one: the shape belongs to the
+    /// kernel, and a store that parsed it would need a migration every time an action's arguments changed.
+    pub args: String,
+    /// Where it got to.
+    pub state: String,
+    /// When it was raised.
+    pub created_ms: i64,
+    /// When it last changed.
+    pub updated_ms: i64,
+    /// When it stops being worth keeping, when anything said so.
+    pub expires_ms: Option<i64>,
+}
+
+impl IntentRecord {
+    /// Builds a row from the columns `intents` declares, in its order.
+    ///
+    /// # Why the columns arrive in two groups
+    ///
+    /// Because there are nine of them, and nine positional arguments is a call nobody can read at the call site — which is
+    /// the same reason [`DeviceRow::from_columns`] takes its text and its numbers separately. The split is also the honest
+    /// one: these six are what the intent says and these three are when it said it.
+    ///
+    /// # Errors
+    ///
+    /// [`RowError::Missing`] for a `NOT NULL` column that is empty.
+    pub fn from_columns(text: IntentText<'_>, numbers: IntentNumbers) -> Result<Self, RowError> {
+        Ok(Self {
+            intent_id: required(text.intent_id, "intent_id")?.to_owned(),
+            origin: required(text.origin, "origin")?.to_owned(),
+            plugin_id: required(text.plugin_id, "plugin_id")?.to_owned(),
+            action: required(text.action, "action")?.to_owned(),
+            args: required(text.args, "args")?.to_owned(),
+            state: required(text.state, "state")?.to_owned(),
+            created_ms: required(numbers.created_ms, "created_ms")?,
+            updated_ms: required(numbers.updated_ms, "updated_ms")?,
+            // The one nullable column: an intent nobody gave a deadline to has none.
+            expires_ms: numbers.expires_ms,
+        })
+    }
+}
+
+/// The text columns of an [`IntentRecord`], as they come back from a query.
+#[derive(Debug, Clone, Copy)]
+pub struct IntentText<'a> {
+    /// The intent's identifier.
+    pub intent_id: Option<&'a str>,
+    /// Which device raised it.
+    pub origin: Option<&'a str>,
+    /// The plugin that will answer it.
+    pub plugin_id: Option<&'a str>,
+    /// The action.
+    pub action: Option<&'a str>,
+    /// The arguments, as JSON text.
+    pub args: Option<&'a str>,
+    /// Where it got to.
+    pub state: Option<&'a str>,
+}
+
+/// The numeric columns of an [`IntentRecord`], as they come back from a query.
+#[derive(Debug, Clone, Copy)]
+pub struct IntentNumbers {
+    /// When it was raised.
+    pub created_ms: Option<i64>,
+    /// When it last changed.
+    pub updated_ms: Option<i64>,
+    /// When it stops being worth keeping, when anything said so.
+    pub expires_ms: Option<i64>,
 }
 
 /// The device's own identity.
@@ -470,6 +561,19 @@ pub mod columns {
         // Last, because that is where the migration that added it put it. The read below is positional, so this list
         // and `DeviceRow::from_columns` are one order written twice — and this is the file that says which.
         "last_address",
+    ];
+
+    /// The `intents` columns, in the order `IntentRecord::from_columns` takes them.
+    pub const INTENT: &[&str] = &[
+        "intent_id",
+        "origin",
+        "plugin_id",
+        "action",
+        "args",
+        "state",
+        "created_ms",
+        "updated_ms",
+        "expires_ms",
     ];
 
     /// The `devices_seen` columns, in the order `SeenDeviceRow::from_columns` takes them.

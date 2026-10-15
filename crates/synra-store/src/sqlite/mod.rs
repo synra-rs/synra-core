@@ -33,6 +33,7 @@ use crate::records::RowError;
 
 mod devices;
 mod identities;
+mod intents;
 mod migrations;
 mod pairing;
 mod plugins;
