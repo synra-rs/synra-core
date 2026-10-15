@@ -108,7 +108,7 @@ impl Runtime {
         // The summary is four small values, and holding the guard while building a `serde_json::Value` would keep every
         // other thread that wants to load a plugin out for the length of a serialization — which is exactly the class
         // of bug this lint exists to catch, and the reason it is denied in this workspace rather than warned about.
-        let (loaded_count, loaded_ids, refusals) = {
+        let (loaded_count, loaded_ids, refusals, safe_mode) = {
             let loads = self.plugin_loads.lock();
             let ids: Vec<String> = loads.loaded.iter().map(ToString::to_string).collect();
             let refusals: Vec<serde_json::Value> = loads
@@ -116,7 +116,7 @@ impl Runtime {
                 .iter()
                 .map(|refused| serde_json::json!({"id": refused.plugin_id, "reason": refused.reason}))
                 .collect();
-            (loads.len(), ids, refusals)
+            (loads.len(), ids, refusals, loads.safe_mode.clone())
         };
 
         Ok(serde_json::json!({
@@ -126,6 +126,12 @@ impl Runtime {
             "loadedCount": loaded_count,
             "loadedIds": loaded_ids,
             "notLoaded": refusals,
+            // ★ Why nothing is loaded, when the daemon chose not to start plugins.
+            //
+            // Without this a client sees `loaded: false` with an empty `notLoaded`, which reads as "this machine has no
+            // plugins installed" — the opposite of the truth, and the reading that sends someone to reinstall. `null`
+            // when plugins were allowed to load, so a client can test it rather than guess from an empty string.
+            "safeMode": safe_mode,
         }))
     }
 

@@ -158,14 +158,44 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
         // ★ The guard is scoped to the load and nothing else. It is held while third-party artifacts compile, which is
         // the point of the lock — but not while the refusals are printed, because printing is not something another
         // thread should be waiting behind.
+        //
+        // ★ Safe mode is decided here, before anything is loaded, and it is the only thing that can decide it. The
+        // verdict reads the crash reports the previous runs left behind; a plugin that has crashed this location three
+        // times in a row is not started a fourth time, so the settings screen the user needs to switch it off stays
+        // reachable.
+        //
+        // The log directory comes from `Paths` rather than being joined here, because `Paths` is the one place that
+        // decides where things live — the same reason `plan.rs` routes the data directory through it.
+        let log_dir = synra_store::Paths::new(
+            std::path::PathBuf::from(&plan.data_dir),
+            std::path::PathBuf::from(&plan.data_dir).join("cache"),
+        )
+        .log_dir()
+        .to_path_buf();
+        // `now_ms()` is `u64` because the runtime's clock is, and a crash report is stamped `i64` because it is written
+        // to SQLite. The conversion is saturating rather than `as`: a clock far enough past 2262 to overflow should read
+        // as "the latest possible instant", which makes every report look old and lets the daemon run — the direction
+        // that fails open on a clock problem rather than refusing to start.
+        let now = i64::try_from(now_ms()).unwrap_or(i64::MAX);
+        let verdict = synra_observe::crash::CrashStore::new(&log_dir).verdict(now);
         let summary = {
             let mut set = plugins.lock();
-            crate::runtime::load_installed(&mut set, &db, std::path::Path::new(&plan.plugins_dir))
+            crate::runtime::load_installed(
+                &mut set,
+                &db,
+                std::path::Path::new(&plan.plugins_dir),
+                &verdict,
+            )
         };
         // ★ Printed, because a plugin that failed to load is invisible otherwise and a silent skip is how a broken
         // plugin becomes a support question months later.
         for refused in &summary.refused {
             eprintln!("synra-daemon: {} was not loaded: {}", refused.plugin_id, refused.reason);
+        }
+        // ★ And safe mode is printed for the same reason, louder: the user is looking at a daemon with no plugins and
+        // needs to know it was a decision rather than a failed install.
+        if let Some(why) = &summary.safe_mode {
+            eprintln!("synra-daemon: plugins are not being started. {why}");
         }
         Arc::new(parking_lot::Mutex::new(summary))
     };

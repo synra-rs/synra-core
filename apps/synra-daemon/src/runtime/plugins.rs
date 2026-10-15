@@ -32,6 +32,7 @@ use synra_plugin_host::{Backend, BackendError, InstancePolicy};
 use synra_protocol::ids::PluginId;
 
 use synra_core::dispatch::{PluginSet, PluginSpec};
+use synra_observe::crash::StartupVerdict;
 
 /// How many instances one plugin may have.
 ///
@@ -58,6 +59,12 @@ pub struct LoadedSummary {
     pub loaded: Vec<PluginId>,
     /// What was not, and why.
     pub refused: Vec<Refused>,
+    /// Why nothing was loaded at all, when the daemon chose not to start plugins.
+    ///
+    /// `Some` only in safe mode. It is a separate field rather than an entry in `refused` because the two are different
+    /// statements: `refused` names plugins that failed, and this names a decision the daemon made before looking at any
+    /// of them. Putting it in `refused` would attribute the refusal to a plugin that was never examined.
+    pub safe_mode: Option<String>,
 }
 
 impl LoadedSummary {
@@ -103,12 +110,33 @@ pub fn build_set() -> Result<PluginSet, BackendError> {
 ///
 /// A row that is not [`synra_store::PluginRow::should_run`] is not loaded and not refused: the user switched it off or
 /// never trusted it, and that is a decision already made rather than something that went wrong here.
+///
+/// # ★ Why the verdict is a parameter
+///
+/// Because safe mode has to be able to stop this, and until it was passed in, nothing could.
+/// `StartupVerdict::allows_plugins` existed, was tested, and was **called only from tests** — no plugin-loading path
+/// asked it. So a plugin that crashed on activation three times in a row would crash a fourth and a fifth time, and the
+/// settings screen the user needs to disable it stayed unreachable. The verdict's own doc comment says that reaching
+/// the settings screen is "the only outcome that has to exist"; the code that reaches it did not exist.
+///
+/// Taking the verdict rather than a `bool` is deliberate: a refusal can then say *which* location has been crashing,
+/// which is the sentence a user needs to act on.
 pub fn load_installed(
     set: &mut PluginSet,
     db: &synra_store::SynraDb,
     plugins_dir: &Path,
+    verdict: &StartupVerdict,
 ) -> LoadedSummary {
     let mut summary = LoadedSummary::default();
+
+    if !verdict.allows_plugins() {
+        // Nothing is loaded and nothing is refused per plugin: this is not a fault in any one plugin's artifact, it is
+        // the daemon choosing not to start them at all. Recorded on the summary so the status report can say so instead
+        // of showing an empty list, which would read as "nothing is installed".
+        summary.safe_mode = Some(verdict.explain());
+        return summary;
+    }
+
     let Ok(rows) = db.plugins() else {
         // The table being unreadable is the daemon's problem, and it is reported through its own status line; here it
         // means "nothing could be loaded" rather than "nothing is installed".
