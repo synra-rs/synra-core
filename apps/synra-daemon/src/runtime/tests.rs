@@ -731,6 +731,27 @@ fn asking_for_more_lines_than_exist_gives_everything() {
 }
 
 #[test]
+fn the_log_reader_and_the_log_writer_agree_on_the_directory() {
+    // ★ The failure this catches is silent, which is why it is worth a test of its own.
+    //
+    // Two places decide where the log lives. The writer takes it from `Paths::log_dir()` (`serve.rs`), and the reader
+    // builds `self.data_dir.join("logs")` by hand (`reports.rs`). Today they agree — `Paths` defines `log_dir` as
+    // exactly that join — but the agreement is a coincidence of two independent lines rather than one rule, and if
+    // `Paths` ever moved the log somewhere else the symptom would be `synra logs` returning an empty list forever while
+    // the daemon wrote to a file nobody read. No error, no warning, and the log looks like it is simply quiet.
+    let root = std::path::PathBuf::from("/tmp/synra-agreement");
+    let paths = synra_store::Paths::new(root.clone(), root.join("cache"));
+
+    // The reader's directory, exactly as `logs_value` builds it.
+    let reader = root.join("logs");
+    assert_eq!(
+        paths.log_dir(),
+        reader,
+        "the writer's log directory and the reader's are not the same place, so `synra logs` would always be empty"
+    );
+}
+
+#[test]
 fn debug_lines_are_hidden_unless_they_are_asked_for() {
     // The level is in the line, and filtering here keeps the daemon from needing an index of its own log.
     let dir = TempDir::new("logs-verbose");

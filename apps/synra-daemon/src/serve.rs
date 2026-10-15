@@ -157,6 +157,32 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
     // The daemon's own version, not the observe layer's: the report is about the binary that crashed.
     synra_observe::crash::install_panic_hook(crashes.clone(), env!("CARGO_PKG_VERSION"));
 
+    // ★ And the log itself. Nothing wrote this file before: `synra logs` read a path no code created, so it always
+    // answered "no lines", and the CLI's `--follow` and `--trace` had nothing to filter. The subscriber is installed
+    // here — early, so everything that follows is recorded, including a failure to start the plugin host.
+    //
+    // A failure to open the log is reported and then ignored rather than ending the daemon: a host that cannot write a
+    // diagnostic file is still a host that can move a file between two machines, and refusing to start over it would
+    // trade the user's actual work for its record.
+    //
+    // ★ `Info`, which is `LogLevel::is_persisted`'s own answer to what belongs on disk. The consequence is worth
+    // stating rather than leaving as a surprise: `synra logs --verbose` filters DEBUG and TRACE lines out of this file,
+    // and at `Info` there are none to find, so `--verbose` currently shows the same lines as the default. Making it show
+    // more means writing debug lines during a bounded window, which is what `logging::Verbosity` and `VERBOSE_WINDOW`
+    // exist for and what is not wired yet.
+    //
+    // The guard is held for the life of `serve`, which is what keeps the file open and flushes it on shutdown.
+    let _log = match synra_observe::logging::init(
+        &synra_observe::logging::LogConfig::in_directory(&log_dir)
+            .with_level(synra_observe::logging::LogLevel::Info),
+    ) {
+        Ok(guard) => Some(guard),
+        Err(error) => {
+            eprintln!("synra-daemon: logging is not running: {error}");
+            None
+        }
+    };
+
     // ★ The plugin host is built **before** the runtime, and its failure ends the daemon.
     //
     // This is the one dependency that can refuse. Everything else here is data the daemon reads; an engine that will not

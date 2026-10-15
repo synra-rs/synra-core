@@ -17,6 +17,8 @@ mod level;
 mod verbosity;
 mod stats;
 mod writer;
+mod file;
+mod init;
 
 #[cfg(test)]
 mod tests;
@@ -28,3 +30,5 @@ pub use level::{LogLevel, UnknownLevel};
 pub use stats::LogStats;
 pub use verbosity::{VERBOSE_WINDOW, Verbosity};
 pub use writer::{DEFAULT_REDACTED_FIELDS, RedactingWriter, redact_line};
+pub use file::{DEFAULT_KEEP, DEFAULT_MAX_BYTES, LOG_FILE_NAME, RotatingFile};
+pub use init::{LogConfig, LogError, LogGuard, init, stats_of};

@@ -63,6 +63,25 @@ impl LogLevel {
         matches!(self, Self::Info | Self::Warn | Self::Error)
     }
 
+    /// The `tracing` filter for this level.
+    ///
+    /// # Why a `LevelFilter` and not a `tracing::Level`
+    ///
+    /// Because [`Self::Off`] has no counterpart in `tracing::Level` — a `Level` names a severity that exists, and "log
+    /// nothing" is a filter rather than a severity. `LevelFilter` has `OFF`, so the mapping is total and a caller cannot
+    /// silently get "everything" by asking for nothing.
+    #[must_use]
+    pub const fn to_tracing(self) -> tracing::level_filters::LevelFilter {
+        match self {
+            Self::Trace => tracing::level_filters::LevelFilter::TRACE,
+            Self::Debug => tracing::level_filters::LevelFilter::DEBUG,
+            Self::Info => tracing::level_filters::LevelFilter::INFO,
+            Self::Warn => tracing::level_filters::LevelFilter::WARN,
+            Self::Error => tracing::level_filters::LevelFilter::ERROR,
+            Self::Off => tracing::level_filters::LevelFilter::OFF,
+        }
+    }
+
     /// Whether a message at `message` level is recorded when the threshold is `self`.
     #[must_use]
     pub const fn admits(self, message: Self) -> bool {
