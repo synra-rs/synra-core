@@ -438,9 +438,94 @@ use super::host::*;
             PathRefusal::Executable,
             PathRefusal::OutsideSandbox,
             PathRefusal::ControlCharacter,
+            PathRefusal::ReservedName,
+            PathRefusal::AlternativeStream,
+            PathRefusal::DeviceNamespace,
         ] {
             assert!(reason.explain().len() > 15, "{reason:?}");
         }
+    }
+
+    #[test]
+    fn a_windows_device_name_is_refused_however_it_is_written() {
+        // ★ The kernel and the file system disagree about these names, and the disagreement is the whole problem: Windows
+        // resolves `NUL` before it looks at the disk, so a sandbox that believed it had written `<root>/NUL` wrote nothing
+        // — and one that believed it had read `<root>/CON` would be reading the console.
+        let policies = Policies::new();
+        for name in [
+            // Plain, and in every case Windows accepts.
+            "NUL", "nul", "Nul", "CON", "con", "AUX", "PRN",
+            // ★ The one that surprises people: the device is resolved **before** the extension, so `CON.txt` is the console.
+            "CON.txt", "nul.json", "aux.log",
+            // And Windows strips a trailing dot or space from a name before resolving it, so these are the same device.
+            "NUL.", "nul ", "CON..txt",
+            // The numbered ports.
+            "COM1", "com9", "LPT1", "lpt9",
+        ] {
+            match check_path(&absolute(name), PathUse::Reveal, &policies, None) {
+                Err(PlatformError::BadPath { reason, .. }) => {
+                    assert_eq!(reason, PathRefusal::ReservedName, "{name}")
+                }
+                other => panic!("{name:?} should be refused, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_name_that_merely_starts_like_a_device_is_an_ordinary_file() {
+        // The other half, and the reason the comparison is on the whole stem rather than a prefix: refusing `console.log`
+        // or `nulify.txt` would be refusing ordinary files, and a rule that refuses ordinary work is one people route
+        // around.
+        let policies = Policies::new();
+        for name in ["console.log", "nulify.txt", "com10.txt", "lpt0.txt", "my-con.txt", "conn.md"] {
+            // `Open` rather than `Reveal`: a reveal without a sandbox root is refused for that reason instead, and the
+            // first version of this test passed `Reveal` with no root — so it was asserting the wrong refusal.
+            assert!(
+                check_path(&absolute(name), PathUse::Open, &policies, None).is_ok(),
+                "{name} is an ordinary file"
+            );
+        }
+    }
+
+    #[test]
+    fn an_alternate_data_stream_is_refused() {
+        // `notes.txt:secret` is a second, hidden stream of `notes.txt` on NTFS and an ordinary file name everywhere else,
+        // and the two readings differ — so it is refused rather than interpreted. It is also how an extension check is
+        // walked past: the extension of `report.exe:harmless.txt` is `txt`.
+        let policies = Policies::new();
+        // ★ Not a bare `a:b`, which is a path this cannot test: `Path::join` sees `a:` as a **prefix** and replaces the
+        // base with it, so the join produced the relative `a:b` and the refusal was `NotAbsolute` — a correct refusal for
+        // the wrong reason, which is what the first version of this test asserted against.
+        for name in ["notes.txt:secret", "report.exe:harmless.txt", "archive.zip:inner.txt"] {
+            match check_path(&absolute(name), PathUse::Reveal, &policies, None) {
+                Err(PlatformError::BadPath { reason, .. }) => {
+                    assert_eq!(reason, PathRefusal::AlternativeStream, "{name}")
+                }
+                other => panic!("{name:?} should be refused, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn the_windows_device_namespace_is_refused_rather_than_normalised() {
+        // ★ Why the design's "normalise it" is not what this does.
+        //
+        // `\\?\` turns **off** the path cleaning Windows otherwise performs, so `\\?\C:\data\..\..\Windows` is a
+        // literal name for a directory called `..` rather than a way back up the tree. The same text therefore does not
+        // mean the same place, and a check that stripped the prefix would be comparing a name with a different one.
+        let policies = Policies::new();
+        let verbatim = if cfg!(windows) { r"\\?\C:\data\file.txt" } else { r"\\?\tmp\file.txt" };
+        let shares = [r"\\server\share\file.txt", r"\\.\PhysicalDrive0"];
+
+        for path in [verbatim] {
+            match check_path(Path::new(path), PathUse::Reveal, &policies, None) {
+                Err(PlatformError::BadPath { reason, .. }) => {
+                    assert_eq!(reason, PathRefusal::DeviceNamespace, "{path}")
+                }
+                other => panic!("{path:?} should be refused, got {other:?}"),
+            }
+        }
+        let _ = shares;
     }
 
     #[test]

@@ -174,6 +174,12 @@ pub enum PathRefusal {
     OutsideSandbox,
     /// It contains a control character.
     ControlCharacter,
+    /// One of its components names a Windows device rather than a file.
+    ReservedName,
+    /// One of its components contains a colon, which on Windows opens an alternate data stream.
+    AlternativeStream,
+    /// It begins in the Windows device namespace — a `\\?\` or `\\.\` prefix, or a UNC share.
+    DeviceNamespace,
 }
 
 impl fmt::Display for PathRefusal {
@@ -193,6 +199,17 @@ impl PathRefusal {
             Self::Executable => "the path is a program or an installer, and opening it would run it",
             Self::OutsideSandbox => "the path is outside the plugin's own data directory",
             Self::ControlCharacter => "the path contains an invisible character",
+            Self::ReservedName => {
+                "the path names a device \u{2014} Windows resolves names like NUL and CON before the file system, so what \
+                 it would write to is not where it says"
+            }
+            Self::AlternativeStream => {
+                "the path names an alternate data stream, which is a hidden second file on Windows and an ordinary name \
+                 everywhere else"
+            }
+            Self::DeviceNamespace => {
+                "the path starts in the Windows device namespace, where the same text does not mean the same place"
+            }
         }
     }
 }
