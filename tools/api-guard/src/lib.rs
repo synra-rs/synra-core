@@ -145,6 +145,19 @@ pub const CRATES: &[(&str, Tier)] = &[
     ("synra-ipc", Tier::Internal),
     ("synra-testkit", Tier::Internal),
     ("synra-testkit-alloc", Tier::Internal),
+    // ★ The two that the previous check could not see.
+    //
+    // `every_crate_in_the_workspace_has_a_tier` asserted `CRATES.len() >= 13` and these are the fourteenth and
+    // fifteenth workspace members. They were in neither this table nor `STABILITY.md`, so no rule applied to them and
+    // nothing said so — a crate with no tier is a crate whose public surface may change in any way, in any version,
+    // without anyone having decided that.
+    //
+    // `Internal` for both, and the choice is the conservative one on purpose: `Internal` promises nothing, and moving a
+    // crate **up** the tiers later breaks no one. Declaring one `Stable` before its shape has settled would be a promise
+    // the first breaking change would have to break. `synra-plugin-sdk` is the case worth revisiting — it is what a
+    // plugin author compiles against, so it will want `Stable` once there are authors to break.
+    ("synra-control", Tier::Internal),
+    ("synra-plugin-sdk", Tier::Internal),
 ];
 
 /// The container types a public signature may not name.
@@ -613,9 +626,66 @@ mod tests {
 
     #[test]
     fn every_crate_in_the_workspace_has_a_tier() {
-        // A crate with no tier is one with no rules, and a test in `synra-core` asserts this list against the workspace's
-        // own members so an addition cannot be forgotten.
-        assert!(CRATES.len() >= 13, "only {} crates", CRATES.len());
+        // ★ This test used to assert `CRATES.len() >= 13` and nothing else.
+        //
+        // Its own comment claimed "a test in `synra-core` asserts this list against the workspace's own members so an
+        // addition cannot be forgotten". No such test existed, and the assertion it did make could not fail for the
+        // reason the rule exists: adding a **fifteenth** crate to the workspace while `CRATES` stayed at thirteen kept
+        // `13 >= 13` true. The number was a transcription of the table, not a check on it — and two crates had in fact
+        // gone unclassified behind it.
+        //
+        // It now reads the workspace. A crate under `crates/` is a library with a public surface, so every one of them
+        // has to be classified; a missing entry is a crate with no rules, which is the state this test is for.
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .canonicalize()
+            .unwrap_or_else(|_| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+        let manifest = std::fs::read_to_string(root.join("Cargo.toml"))
+            .unwrap_or_else(|error| panic!("the workspace manifest is unreadable: {error}"));
+
+        // Only the `crates/` members: `apps/` are hosts and `tools/` are development binaries, and neither has a
+        // published surface a caller pins. They are excluded by this rule rather than by being absent from a list,
+        // which is the difference between a decision and an oversight.
+        let listed: Vec<&str> = CRATES.iter().map(|(name, _)| *name).collect();
+        let mut classified = 0usize;
+        let mut unclassified: Vec<String> = Vec::new();
+
+        for line in manifest.lines() {
+            let Some(start) = line.find("\"crates/") else {
+                continue;
+            };
+            let rest = line.get(start + 1..).unwrap_or_default();
+            let Some(end) = rest.find('"') else {
+                continue;
+            };
+            let name = rest.get(..end).unwrap_or_default().trim_start_matches("crates/");
+            if listed.contains(&name) {
+                classified += 1;
+            } else {
+                unclassified.push(name.to_owned());
+            }
+        }
+
+        assert!(
+            classified > 0,
+            "no workspace member under `crates/` matched a tier — the manifest or the table has moved, and this check \
+             would otherwise pass by finding nothing"
+        );
+        assert!(
+            unclassified.is_empty(),
+            "these crates are in the workspace with no tier, which means no rules apply to them: {unclassified:?}"
+        );
+
+        // The other direction: a name in the table that is not a crate is a rule about nothing. Asserted against the
+        // manifest rather than against itself, so a removal from the workspace cannot leave a stale entry behind.
+        for name in &listed {
+            assert!(
+                manifest.contains(&format!("\"crates/{name}\"")),
+                "{name} has a tier but is not a workspace member"
+            );
+        }
+
         let mut names: Vec<&str> = CRATES.iter().map(|(name, _)| *name).collect();
         names.sort_unstable();
         names.dedup();

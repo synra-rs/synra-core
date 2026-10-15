@@ -11,10 +11,20 @@ it. Everything here is in the workspace's `crates/`, plus the two hosts and the 
 | --- | --- | --- | --- | --- |
 | **Stable** | `synra-protocol`, `synra-capability`, `synra-plugin-api` | SemVer. A breaking change needs a major version, an ADR, and a migration note. | yes | the rules below, and `api-guard` |
 | **Semi-stable** | `synra-net`, `synra-store`, `synra-core`, `synra-plugin-host` | SemVer. A **trait** may gain a method in a minor version if that method has a default. | yes | the rules below, and `api-guard` |
-| **Internal** | `synra-observe`, `synra-platform`, `synra-plugin-ui`, `synra-ipc`, `synra-testkit`*, `wit-codegen`, `synra-plugin-cli`, `synra-cli`, `synra-daemon` | No promise. Anything may change in any version. | partly | nothing — and that is the point |
+| **Internal** | `synra-observe`, `synra-platform`, `synra-plugin-ui`, `synra-ipc`, `synra-control`, `synra-plugin-sdk`, `synra-testkit`*, `synra-testkit-alloc`*, `wit-codegen`, `synra-plugin-cli`, `synra-cli`, `synra-daemon` | No promise. Anything may change in any version. | partly | nothing — and that is the point |
 
 \* `synra-testkit` and `synra-testkit-alloc` set `publish = false`: a fixture's API changes whenever a test needs it,
 and a published crate's API is a promise.
+
+★ `synra-control` and `synra-plugin-sdk` were added here and to `api-guard`'s table together, because they had been in
+neither. The check that was meant to catch this asserted `CRATES.len() >= 13` — a transcription of the table rather than
+a comparison against the workspace — so two crates existed with no tier and nothing reported it. The check now reads
+`Cargo.toml` and fails on any crate under `crates/` that is unclassified.
+
+Both are `Internal` on purpose. `Internal` promises nothing, so moving either **up** a tier later breaks no one, while
+declaring one `Stable` before its shape has settled makes the first breaking change a broken promise. `synra-plugin-sdk`
+is the one to revisit: it is what a plugin author compiles against, so it will want `Stable` once there are authors whose
+builds it could break.
 
 ### Why "semi-stable" is a tier and not a fudge
 
