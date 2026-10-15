@@ -430,8 +430,21 @@ mod tests {
 
     #[test]
     fn every_command_the_design_document_lists_exists() {
-        // The table in the design document, as an executable statement. A command in the document and not here is
-        // one the front end calls and the shell does not have.
+        // ★ What this test does and does not check.
+        //
+        // The comment here used to read: "A command in the document and not here is one the front end calls and the shell
+        // does not have." That is the failure worth catching, and this test cannot see it. Both lists below and in the
+        // registry are maintained by hand **in this file**, so the assertion is a hand-written list against a table
+        // written from it — it compares two copies of the same decision, not the decision against the shell.
+        //
+        // The gap it cannot see is real and larger: of the names below, only twelve are registered with Tauri in
+        // `synra-rust-app/src-tauri/src/main.rs`. A front end calling `pairing_request` reaches a command the shell does
+        // not have, which is exactly the sentence above.
+        //
+        // What this test *is* good for is the other direction, and it is worth keeping for that: a name removed from the
+        // registry while the contract still lists it fails here, and the counts must agree. The half about the shell is
+        // checked where the shell is — `synra-rust-app/src/ipc/registration.test.ts` — because a test in this crate
+        // cannot read that file without reaching out of the workspace.
         let documented = [
             // identity
             "identity_get",
