@@ -48,30 +48,60 @@ const EMPTY: &str = r#"
 
 
 
-/// A component whose `activate` runs for ever, in pure arithmetic.
+/// A component whose `deactivate` never returns.
 ///
-/// The loop allocates nothing and calls nothing, so **fuel** is the only thing that can stop it: an epoch check happens
-/// at the engine's safepoints, and a tight arithmetic loop reaches them too, but the instruction counter is what makes
-/// the stop deterministic. This is the fixture that proves the fuel budget is armed.
-const SPINS: &str = r#"
+/// # ★ Why this is `deactivate` and not `activate`
+///
+/// `activate` takes a `string` and returns an `outcome`, so a hand-written `.wat` for it has to implement the canonical
+/// ABI's lowering and lifting by hand: a pointer and a length in, a pointer and a length out, a `realloc` for the host to
+/// write the parameter with, and a `post-return`. That is what the one remaining ignored test in this file is ignored
+/// *for*, and it is the thing a `bindgen!`-generated fixture would fix.
+///
+/// `deactivate` is `func()` — no parameters, no results — so its canonical lift is a core function with no signature at
+/// all, and a hand-written guest can be **four lines**. The instruction budget is a property of the engine rather than of
+/// the interface, so a guest that loops in `deactivate` tests exactly the same limit as one that loops in `activate`, and
+/// it tests it on a real component instead of on a stub.
+///
+/// ★ This fixture replaced one that lifted a loop as `activate` and was therefore never usable — nothing called it, and a
+/// dead fixture is worse than none: it reads as coverage.
+const SPINS_ON_DEACTIVATE: &str = r#"
 (component
   (core module $m
-    (memory (export "memory") 1)
-    (global $next (mut i32) (i32.const 1024))
-    (func (export "realloc") (param $old i32) (param $old-size i32) (param $align i32) (param $new-size i32) (result i32)
-      (local $at i32)
-      (local.set $at (global.get $next))
-      (global.set $next (i32.add (local.get $at) (local.get $new-size)))
-      (local.get $at))
-    (func (export "spin") (param $value i32)
+    (func (export "spin")
       (loop $l
         (br $l))))
   (core instance $i (instantiate $m))
-  (func $activate (param "config-json" u32)
-    (canon lift (core func $i "spin")
-      (memory (core memory $i "memory"))
-      (realloc (core func $i "realloc"))))
-  (instance $lifecycle (export "activate" (func $activate)))
+  (func $deactivate
+    (canon lift (core func $i "spin")))
+  (instance $lifecycle (export "deactivate" (func $deactivate)))
+  (export "synra:plugin/lifecycle@1.0.0" (instance $lifecycle))
+)
+"#;
+
+/// A component whose `deactivate` grows its memory until it is not allowed to.
+///
+/// # Why the guest has to notice the refusal itself
+///
+/// A denied `memory.grow` does **not** trap: it returns -1, because that is what the instruction is defined to do, and the
+/// engine's limiter is answering the question rather than ending the call. So a guest that keeps asking forever is a guest
+/// that loops — which is why this one checks the answer and traps when it is refused. The trap is therefore evidence about
+/// the **limiter**: the only way to reach it is for `memory.grow` to have said no.
+///
+/// The engine records that a refusal happened (`memory_refused`), so the outcome names the ceiling rather than reporting a
+/// generic trap a plugin author could do nothing with.
+const GROWS_UNTIL_REFUSED: &str = r#"
+(component
+  (core module $m
+    (memory (export "memory") 1)
+    (func (export "grow")
+      (loop $l
+        (if (i32.eq (memory.grow (i32.const 1)) (i32.const -1))
+          (then (unreachable)))
+        (br $l))))
+  (core instance $i (instantiate $m))
+  (func $deactivate
+    (canon lift (core func $i "grow")))
+  (instance $lifecycle (export "deactivate" (func $deactivate)))
   (export "synra:plugin/lifecycle@1.0.0" (instance $lifecycle))
 )
 "#;
@@ -303,12 +333,18 @@ fn a_call_to_an_export_the_component_does_not_have_is_a_named_trap() {
 }
 
 #[test]
-#[ignore = "the hand-written fixture does not match the canonical ABI for a `string` parameter and result; the lookup itself now works, and a fixture built by `bindgen!` from the WIT file is what would close this"]
 fn a_guest_that_loops_for_ever_is_stopped_by_its_instruction_budget() {
-    // ★ The sandbox's first promise. A plugin with a `while true` must not be able to hang the kernel, and the
-    // outcome has to be distinguishable from a trap: one is "give it more fuel", the other is "it has a bug".
+    // ★ The sandbox's first promise, against a **real component** rather than a scripted outcome.
+    //
+    // This test used to be `#[ignore]`d: it lifted the looping core function as `activate`, whose `string`/`outcome`
+    // signature meant the hand-written `.wat` had to implement the canonical ABI by hand and did not. `deactivate` is
+    // `func()`, so the same limit is now tested on a guest that really runs — and what is being tested is the engine's
+    // enforcement rather than the kernel's handling of an outcome somebody scripted.
+    //
+    // The distinction matters for exactly the reason the ignored version existed: `Scripted::FuelExhausted` proves what
+    // the kernel does when it is *told* the fuel ran out, and nothing about whether it ever does.
     let (backend, _executor) = backend_and_executor();
-    let artifact = compile(&backend, SPINS, "@acme/spins");
+    let artifact = compile(&backend, SPINS_ON_DEACTIVATE, "@acme/spins");
     let mut instance = instantiate(&backend, artifact.as_ref());
 
     let budget = CallBudget {
@@ -318,9 +354,7 @@ fn a_guest_that_loops_for_ever_is_stopped_by_its_instruction_budget() {
         timeout: None,
         max_memory_growth: None,
     };
-    let outcome = instance
-        .call(&Work::Activate { config_json: "{}".to_owned() }, budget)
-        .expect("a call");
+    let outcome = instance.call(&Work::Deactivate, budget).expect("a call");
 
     match outcome {
         CallOutcome::FuelExhausted { fuel } => assert_eq!(fuel, 100_000),
@@ -328,6 +362,43 @@ fn a_guest_that_loops_for_ever_is_stopped_by_its_instruction_budget() {
     }
     // And the instance survived: one bad call is not a dead plugin, which is what makes the next call possible.
     assert!(instance.call(&Work::Deactivate, CallBudget::unlimited()).is_ok());
+}
+
+#[test]
+fn a_guest_cannot_grow_past_the_ceiling_its_budget_names() {
+    // ★ The sandbox's second promise, against a real component: a plugin that allocates without bound is stopped by the
+    // number the kernel chose rather than by the machine running out.
+    //
+    // The guest asks to grow until it is refused and then traps, so reaching the trap **is** the evidence: `memory.grow`
+    // returns -1 when the limiter says no, and a guest that never hears "no" would loop rather than trap.
+    let (backend, _executor) = backend_and_executor();
+    let artifact = compile(&backend, GROWS_UNTIL_REFUSED, "@acme/greedy");
+    let mut instance = instantiate(&backend, artifact.as_ref());
+
+    let ceiling = 1024 * 1024;
+    let budget = CallBudget {
+        // ★ Fuel has to be granted, and generously, because `None` here is **zero** rather than unlimited: the first
+        // version of this test passed `None` and got `FuelExhausted { fuel: 0 }`, which is the engine being right and the
+        // test being wrong about what it was asking for.
+        //
+        // A million instructions against a guest whose whole job is sixteen `memory.grow`s and a comparison is not a second
+        // limit that could fire — and it cannot quietly become one, because the assertion below is on the outcome: if fuel
+        // ran out the test would fail and say so rather than passing as though memory had been the reason.
+        fuel: Some(1_000_000),
+        timeout: None,
+        max_memory_growth: Some(ceiling),
+    };
+    let outcome = instance.call(&Work::Deactivate, budget).expect("a call");
+
+    match outcome {
+        // ★ The limit is compared to the number the **budget** named, not merely checked for being a memory outcome.
+        //
+        // The engine has a ceiling of its own (`INSTANTIATION_CEILING`, sixteen mebibytes) that exists whether or not
+        // anybody asked for one, so a test that only asserted "it was memory" would pass against an engine that ignored
+        // the budget entirely. Naming the number is what makes this about the budget.
+        CallOutcome::MemoryExceeded { limit } => assert_eq!(limit, ceiling),
+        other => panic!("expected the memory ceiling to end it, got {other:?}"),
+    }
 }
 
 #[test]
