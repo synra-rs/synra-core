@@ -133,7 +133,7 @@ pub struct Outbound {
     ///
     /// The same value, deliberately: the request identifier is what makes a resend idempotent, and a second identifier
     /// for the same message would be a second thing for the two sides to disagree about.
-    pub request_id: synra_protocol::ids::RequestId,
+    pub request_id: RequestId,
     /// What to put on the link.
     pub envelope: Envelope,
 }

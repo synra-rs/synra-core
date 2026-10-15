@@ -433,6 +433,7 @@ pub fn is_visible(table: &DiscoveryTable, now_ms: i64) -> bool {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::sync::atomic::AtomicI64;
 
     use parking_lot::Mutex;
 
@@ -513,7 +514,7 @@ mod tests {
         // The only wait is the loop's own poll interval, so this is about the token rather than about a timeout.
         let service = Arc::new(Mutex::new(service(A, Duration::from_secs(30))));
         let peers = Arc::new(Mutex::new(host(A, "Laptop")));
-        let deadline = Arc::new(std::sync::atomic::AtomicI64::new(0));
+        let deadline = Arc::new(AtomicI64::new(0));
         let cancel = Cancellation::new();
 
         let worker = std::thread::spawn({
