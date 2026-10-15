@@ -4,6 +4,8 @@ use synra_control::Kernel;
 use synra_core::{Host, Identity};
 use synra_protocol::error::ErrorCode;
 
+use synra_store::records::IntentRecord;
+
 use super::{Runtime, now_ms};
 
 /// A temporary directory that removes itself.
@@ -1426,7 +1428,7 @@ fn a_document_that_cannot_be_read_is_skipped_rather_than_fatal() {
     // A second intent whose document is not an intent at all, written behind the daemon's back.
     let good = db.lock().load_intents().expect("loaded").remove(0);
     db.lock()
-        .save_intent(&synra_store::records::IntentRecord {
+        .save_intent(&IntentRecord {
             intent_id: "01a14199-f364-7612-af4f-000000000001".to_owned(),
             state: "matching".to_owned(),
             created_ms: 2_000,
@@ -1441,4 +1443,89 @@ fn a_document_that_cannot_be_read_is_skipped_rather_than_fatal() {
     assert_eq!(second.restore_intents(), 1, "the readable one");
     assert!(second.intent_snapshot(&id).is_ok(), "and the daemon started anyway");
     let _ = good;
+}
+
+// ── Forgetting what is finished ───────────────────────────────────────────────────────────────────
+
+/// A stored intent, ready for the sweep.
+fn stored(id: &str, state: &str, at_ms: i64) -> IntentRecord {
+    IntentRecord {
+        intent_id: id.to_owned(),
+        state: state.to_owned(),
+        created_ms: at_ms,
+        updated_ms: at_ms,
+        origin_device: None,
+        request_id: None,
+        document: "{}".to_owned(),
+    }
+}
+
+#[test]
+fn the_sweep_forgets_a_finished_intent_that_is_old_enough() {
+    // ★ The rule the design gives intents: twenty-four hours after they finish. Before this ran nowhere, so a device
+    // raising intents for months carried every one of them.
+    let dir = TempDir::new("gc-old");
+    let (runtime, db) = runtime_shared(dir.path());
+    let long_ago = store_time() - (48 * 60 * 60 * 1_000);
+    db.lock().save_intent(&stored("finished", "succeeded", long_ago)).expect("stored");
+
+    let removed = runtime.collect_intents(24 * 60 * 60 * 1_000);
+
+    assert_eq!(removed, 1);
+    assert_eq!(db.lock().intent_count().expect("counted"), 0);
+}
+
+#[test]
+fn the_sweep_keeps_work_that_is_still_running() {
+    // ★ The half that matters more. An intent that has been running for two days is not old data — it is something a user
+    // asked for, and a sweep that collected it would lose it without telling anyone.
+    let dir = TempDir::new("gc-running");
+    let (runtime, db) = runtime_shared(dir.path());
+    let long_ago = store_time() - (48 * 60 * 60 * 1_000);
+    db.lock().save_intent(&stored("running", "dispatching", long_ago)).expect("stored");
+
+    assert_eq!(runtime.collect_intents(24 * 60 * 60 * 1_000), 0);
+    assert_eq!(runtime.board.lock().len(), 0, "and it was never on the board either");
+    assert_eq!(db.lock().intent_count().expect("counted"), 1, "still there, still running");
+}
+
+#[test]
+fn the_sweep_keeps_an_intent_that_finished_recently() {
+    // Twenty-four hours is a retention, not a "collect anything finished" rule: a result the user may still be reading must
+    // survive the sweep.
+    let dir = TempDir::new("gc-recent");
+    let (runtime, db) = runtime_shared(dir.path());
+    let an_hour_ago = store_time() - (60 * 60 * 1_000);
+    db.lock().save_intent(&stored("recent", "succeeded", an_hour_ago)).expect("stored");
+
+    assert_eq!(runtime.collect_intents(24 * 60 * 60 * 1_000), 0);
+    assert_eq!(db.lock().intent_count().expect("counted"), 1);
+}
+
+#[test]
+fn the_sweep_does_not_touch_what_a_plugin_stored() {
+    // ★ The design's first requirement for GC: user data is never deleted. `plugin_storage` is where a plugin's own values
+    // live, and a sweep that reached it would destroy work the user cannot get back.
+    let dir = TempDir::new("gc-storage");
+    let (runtime, db) = runtime_shared(dir.path());
+    db.lock().insert_plugin("@acme/notes", true, true, "healthy", 1, 1).expect("a plugin row");
+    db.lock().storage_set("@acme/notes", "draft", "the user's words", 1_000).expect("stored");
+    let long_ago = store_time() - (48 * 60 * 60 * 1_000);
+    db.lock().save_intent(&stored("finished", "succeeded", long_ago)).expect("stored");
+
+    assert_eq!(runtime.collect_intents(24 * 60 * 60 * 1_000), 1, "the intent went");
+
+    assert_eq!(
+        db.lock().storage_get("@acme/notes", "draft").expect("read").as_deref(),
+        Some("the user's words"),
+        "and the plugin's data stayed"
+    );
+}
+
+/// The wall clock, as the store spells it.
+///
+/// The daemon reads a `u64` and every column in the store is an `i64`, so a test that wants "an hour ago" has to convert —
+/// and the conversion is the part that matters: `now_ms` is what the *daemon* answers, not what a row holds.
+fn store_time() -> i64 {
+    i64::try_from(now_ms()).unwrap_or(i64::MAX)
 }

@@ -7,7 +7,7 @@
 //! `TcpListener` that reads a request line and writes a response — enough to prove the request went where it was sent and
 //! that the answer came back, without a dependency that would need the network to fetch.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -43,7 +43,7 @@ impl Server {
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { break };
                 let _ = counted.fetch_add(1, Ordering::Relaxed);
-                let first = read_request_line(&stream);
+                let first = read_request(&stream);
                 let response = reply(&first);
                 let mut stream = stream;
                 let _ = stream.write_all(response.as_bytes());
@@ -69,19 +69,46 @@ impl Server {
     }
 }
 
-/// Reads up to the blank line, and returns the request line.
-fn read_request_line(stream: &TcpStream) -> String {
+/// Reads the request line, **and the body**, and returns the line.
+///
+/// # ★ Why the body has to be read, and why this was a flake rather than a detail
+///
+/// The first version drained the headers and answered immediately, leaving whatever body the client was still writing
+/// unread. The client then wrote into a socket this side had already answered and closed — an intermittent connection
+/// reset, which surfaced as `a_method_that_is_not_a_read_sends_its_body` failing about twice in twelve runs under parallel
+/// load, and never when the suite ran alone.
+///
+/// A well-behaved HTTP/1.1 server reads the request it was sent before answering it. The test server now does, which is
+/// also what makes the test about the *client* rather than about a race the test itself created.
+fn read_request(stream: &TcpStream) -> String {
     let mut reader = BufReader::new(stream);
     let mut first = String::new();
     let _ = reader.read_line(&mut first);
-    // Drain the headers, so the client is not left writing into a socket nobody reads.
+
+    // The headers, to find out how much body is coming.
+    let mut length = 0usize;
     let mut line = String::new();
-    while let Ok(read) = reader.read_line(&mut line) {
-        if read == 0 || line == "\r\n" || line == "\n" {
-            break;
-        }
+    loop {
         line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => {
+                if line == "\r\n" || line == "\n" {
+                    break;
+                }
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse().unwrap_or(0);
+                }
+            }
+            Err(_) => break,
+        }
     }
+
+    if length > 0 {
+        let mut body = vec![0u8; length];
+        let _ = reader.read_exact(&mut body);
+    }
+
     first.trim_end().to_owned()
 }
 

@@ -10,7 +10,9 @@
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::AtomicI64;
+use std::time::{Duration, Instant};
 
+use parking_lot::Mutex;
 use synra_control::Listener;
 
 use crate::args::{ClaimFile, refresh_claim};
@@ -21,6 +23,82 @@ use crate::runtime::{Runtime, now_ms};
 /// Read from the daemon's own constant rather than written here, because the stale-after window and the interval are two
 /// halves of one decision: an interval that outlived the window would make a healthy daemon look dead to the next start.
 const HEARTBEAT_MS: u64 = crate::HEARTBEAT_INTERVAL_MS;
+
+/// How long a finished intent is kept, in milliseconds.
+///
+/// Twenty-four hours, from the design's storage table (`17 §6`: "finished, then cleaned after 24 hours"). Long enough that
+/// a user can still read what happened yesterday, short enough that a device raising intents for months does not carry all
+/// of them.
+const INTENT_RETENTION_MS: i64 = 24 * 60 * 60 * 1_000;
+
+/// How often the retention sweep runs.
+///
+/// An hour, as the design's `GcTask` says.
+const GC_INTERVAL: Duration = Duration::from_secs(60 * 60);
+
+/// How long the first sweep waits after start-up.
+///
+/// ★ Not zero, and the reason is the design's own requirement that GC runs when the daemon is *idle*.
+///
+/// A daemon that has just started is migrating the database, reading plugin manifests and claiming the directory — and a
+/// retention sweep beside them would be IO nobody asked for at the one moment the kernel is already busy. A minute is long
+/// enough for start-up to finish and short enough that a daemon restarted often still collects.
+const GC_FIRST_DELAY: Duration = Duration::from_secs(60);
+
+/// Runs the retention sweep on a schedule, for as long as the daemon serves.
+///
+/// # Why this is a thread of its own
+///
+/// For the reason the heartbeat is: the accept loop blocks on a client, so a sweep done from there would happen only when
+/// somebody connected — and a daemon nobody talks to would never collect anything. It also must not hold the `Runtime`,
+/// which the accept loop owns on its stack, so it is given the database handle and the two durations it needs.
+///
+/// # Why the durations are parameters and the constants are the caller's
+///
+/// Because a test that waited an hour to see whether the sweep ran would not be a test. The schedule is decided where the
+/// daemon is built and passed in, so the same loop can be driven with milliseconds.
+fn collect_loop(
+    db: &Arc<Mutex<synra_store::SynraDb>>,
+    supervisor: &Arc<synra_core::supervisor::Supervisor>,
+    first_delay: Duration,
+    every: Duration,
+) {
+    // ★ The first wait is interruptible in slices, so a daemon asked to stop during its first minute does not take the
+    // whole minute to notice. The heartbeat loop has the same shape for the same reason.
+    if !sleep_until_shutdown(supervisor, first_delay) {
+        return;
+    }
+
+    while !supervisor.is_shutting_down() {
+        let removed = crate::runtime::intents::collect(&db.lock(), INTENT_RETENTION_MS);
+        if removed > 0 {
+            println!("collected {removed} finished intent(s)");
+        }
+        if !sleep_until_shutdown(supervisor, every) {
+            return;
+        }
+    }
+}
+
+/// Waits, unless the daemon is asked to stop first.
+///
+/// # Returns
+///
+/// `false` when the wait was cut short by a shutdown, so the caller can stop rather than carry on for another interval.
+fn sleep_until_shutdown(
+    supervisor: &Arc<synra_core::supervisor::Supervisor>,
+    total: Duration,
+) -> bool {
+    const SLICE: Duration = Duration::from_millis(250);
+    let deadline = Instant::now() + total;
+    while Instant::now() < deadline {
+        if supervisor.is_shutting_down() {
+            return false;
+        }
+        std::thread::sleep(SLICE.min(deadline.saturating_duration_since(Instant::now())));
+    }
+    !supervisor.is_shutting_down()
+}
 
 /// Binds the control socket and serves until interrupted.
 ///
@@ -124,7 +202,7 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
                 Ok(address) => println!("discovery on {address}"),
                 Err(error) => eprintln!("synra-daemon: {error}"),
             }
-            Some(Arc::new(parking_lot::Mutex::new(service)))
+            Some(Arc::new(Mutex::new(service)))
         }
         Err(error) => {
             // Not fatal, and said out loud: a user whose device cannot be found needs to know why, and "discovery is not
@@ -189,7 +267,7 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
     // The host a plugin's calls reach reads two things from it — which capabilities the user granted, and what the
     // interface was configured with — so the handle has to exist first. It used to be wrapped much later, which is part
     // of why the host had nothing to be built from and no session was ever installed.
-    let shared_db = Arc::new(parking_lot::Mutex::new(db));
+    let shared_db = Arc::new(Mutex::new(db));
 
     // ★ The plugin host is built **before** the runtime, and its failure ends the daemon.
     //
@@ -197,13 +275,13 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
     // start means this host cannot run a plugin at all, and continuing would produce a daemon whose status report says
     // no plugins are loaded for a reason that has nothing to do with what the user installed.
     let plugins = match crate::runtime::build_set(Arc::clone(&shared_db)) {
-        Ok(set) => Arc::new(parking_lot::Mutex::new(set)),
+        Ok(set) => Arc::new(Mutex::new(set)),
         Err(error) => {
             eprintln!("synra-daemon: the plugin host could not start: {error}");
             return ExitCode::FAILURE;
         }
     };
-    let board = Arc::new(parking_lot::Mutex::new(synra_core::intent::Board::new()));
+    let board = Arc::new(Mutex::new(synra_core::intent::Board::new()));
     // ★ What an inbound share is routed with, built here because this is where all three exist.
     //
     // Without it the transport could receive a share and had nothing to ask: a peer's shared text was reported and
@@ -272,7 +350,7 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
         if let Some(why) = &summary.safe_mode {
             eprintln!("synra-daemon: plugins are not being started. {why}");
         }
-        Arc::new(parking_lot::Mutex::new(summary))
+        Arc::new(Mutex::new(summary))
     };
 
     // ★ Wrapped before the runtime is built, because two things need it and only one of them is the runtime.
@@ -288,14 +366,14 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
         discovery_port: plan.discovery_port,
         started_at_ms: now_ms(),
         identity,
-        host: Arc::new(parking_lot::Mutex::new(host)),
+        host: Arc::new(Mutex::new(host)),
         discovery: discovery.clone(),
         scan_until_ms: Arc::clone(&scan_until_ms),
         db: Arc::clone(&shared_db),
         pairing,
         plugins,
         plugin_loads,
-        board: Arc::new(parking_lot::Mutex::new(synra_core::intent::Board::new())),
+        board: Arc::new(Mutex::new(synra_core::intent::Board::new())),
         // ★ Handed to the runtime so `synra logs --verbose` can raise what the process writes. `None` when logging is
         // not running — a daemon whose log file could not be opened still answers the command, and it must not claim to
         // have raised anything.
@@ -419,6 +497,17 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
         std::thread::spawn(move || heartbeat_loop(&supervisor, &lock_path))
     };
 
+    // ★ The retention sweep, which until this ran nowhere.
+    //
+    // `collect_intents` was written with the rule it implements and no caller: nothing removed a finished intent, so the
+    // table the design gives a 24-hour retention to kept everything for ever. A rule with no runner is a sentence in a
+    // document.
+    let collector = {
+        let supervisor = Arc::clone(&supervisor);
+        let db = Arc::clone(&shared_db);
+        std::thread::spawn(move || collect_loop(&db, &supervisor, GC_FIRST_DELAY, GC_INTERVAL))
+    };
+
     let mut code = ExitCode::SUCCESS;
     while !supervisor.is_shutting_down() {
         if let Err(error) = listener.serve_one(&runtime) {
@@ -433,6 +522,9 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
     // the token they were given is cancelled, and the stop order is the reverse of registration.
     let _ = supervisor.begin_shutdown();
     let _ = heartbeat.join();
+    // ★ Joined for the reason the heartbeat is: a sweep interrupted mid-delete is a row removed and a count never reported,
+    // and the shutdown report the supervisor keeps would be missing the task that was still running.
+    let _ = collector.join();
     code
 }
 
@@ -456,7 +548,7 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
 /// this process still own the directory" a question about the directory rather than about a copy of it.
 fn heartbeat_loop(supervisor: &Arc<synra_core::supervisor::Supervisor>, lock_path: &std::path::Path) {
     while !supervisor.is_shutting_down() {
-        std::thread::sleep(std::time::Duration::from_millis(HEARTBEAT_MS));
+        std::thread::sleep(Duration::from_millis(HEARTBEAT_MS));
 
         let current = match ClaimFile::read(lock_path) {
             Ok(ClaimFile::Found(lock)) => lock,
@@ -488,5 +580,109 @@ fn heartbeat_loop(supervisor: &Arc<synra_core::supervisor::Supervisor>, lock_pat
             let _ = supervisor.begin_shutdown();
             return;
         }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use parking_lot::Mutex;
+
+    use super::{collect_loop, sleep_until_shutdown};
+
+    /// A migrated database, and a supervisor that is not shutting down.
+    fn world() -> (Arc<Mutex<synra_store::SynraDb>>, Arc<synra_core::supervisor::Supervisor>) {
+        let mut db = synra_store::SynraDb::open_in_memory().expect("opens");
+        db.migrate().expect("migrates");
+        (
+            Arc::new(Mutex::new(db)),
+            Arc::new(synra_core::supervisor::Supervisor::new(1_000)),
+        )
+    }
+
+    fn stored(id: &str, state: &str, at_ms: i64) -> synra_store::records::IntentRecord {
+        synra_store::records::IntentRecord {
+            intent_id: id.to_owned(),
+            state: state.to_owned(),
+            created_ms: at_ms,
+            updated_ms: at_ms,
+            origin_device: None,
+            request_id: None,
+            document: "{}".to_owned(),
+        }
+    }
+
+    #[test]
+    fn the_sweep_runs_on_its_schedule() {
+        // ★ The schedule is the whole of what this function is, so it is what the test drives — with milliseconds rather
+        // than the hour the daemon uses. A loop that never ran would leave the table growing for ever, and nothing else in
+        // the daemon would notice.
+        let (db, supervisor) = world();
+        // ★ The epoch, which is older than any retention window. The first version of this used a large *positive* number
+        // hoping it read as "long ago" — it is 2.1e12, which is **after** now, so the intent was in the future and the
+        // sweep was right to keep it.
+        db.lock().save_intent(&stored("finished", "succeeded", 0)).expect("stored");
+
+        let running = {
+            let db = Arc::clone(&db);
+            let supervisor = Arc::clone(&supervisor);
+            std::thread::spawn(move || {
+                collect_loop(&db, &supervisor, Duration::from_millis(1), Duration::from_millis(5));
+            })
+        };
+
+        // Give it long enough for the first delay and at least one interval.
+        std::thread::sleep(Duration::from_millis(120));
+        assert_eq!(db.lock().intent_count().expect("counted"), 0, "the old one went");
+
+        let _ = supervisor.begin_shutdown();
+        assert!(running.join().is_ok(), "and the loop returned");
+    }
+
+    #[test]
+    fn a_daemon_asked_to_stop_does_not_wait_out_its_schedule() {
+        // ★ Why the first wait is sliced. The daemon's first sweep is a minute away, and a stop request during that minute
+        // must not take the whole minute to be noticed — the shutdown report would be missing a task that was still asleep.
+        let (_, supervisor) = world();
+        let shutdown = {
+            let supervisor = Arc::clone(&supervisor);
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(20));
+                let _ = supervisor.begin_shutdown();
+            })
+        };
+
+        let started = std::time::Instant::now();
+        let waited = sleep_until_shutdown(&supervisor, Duration::from_secs(30));
+        let elapsed = started.elapsed();
+
+        assert!(!waited, "the wait was cut short");
+        assert!(elapsed < Duration::from_secs(5), "and it did not wait out the thirty seconds: {elapsed:?}");
+        assert!(shutdown.join().is_ok());
+    }
+
+    #[test]
+    fn a_sweep_with_nothing_to_collect_removes_nothing() {
+        // The ordinary case, and the one that runs every hour: a daemon whose intents are all recent logs nothing and
+        // changes nothing.
+        let (db, supervisor) = world();
+        // `now_ms` is already an `i64`, which the first version of this did not notice.
+        let recent = synra_store::sqlite::now_ms();
+        db.lock().save_intent(&stored("recent", "succeeded", recent)).expect("stored");
+
+        let running = {
+            let db = Arc::clone(&db);
+            let supervisor = Arc::clone(&supervisor);
+            std::thread::spawn(move || {
+                collect_loop(&db, &supervisor, Duration::from_millis(1), Duration::from_millis(5));
+            })
+        };
+
+        std::thread::sleep(Duration::from_millis(60));
+        assert_eq!(db.lock().intent_count().expect("counted"), 1, "nothing was old enough");
+
+        let _ = supervisor.begin_shutdown();
+        assert!(running.join().is_ok());
     }
 }

@@ -22,7 +22,7 @@
 mod commands;
 mod devices;
 pub mod intent;
-mod intents;
+pub(crate) mod intents;
 pub(crate) mod plugin_host;
 mod plugins;
 mod refusals;

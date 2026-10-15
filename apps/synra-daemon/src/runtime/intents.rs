@@ -125,24 +125,37 @@ impl Runtime {
     /// # Returns
     ///
     /// How many rows were removed.
-    ///
-    /// # Why the retention window comes from the caller
-    ///
-    /// Because it is a configuration value and this module has no opinion about it. What this does own is the list of
-    /// finished states: it is read from the kernel at the moment of the sweep, so the store cannot be comparing against a
-    /// name nothing writes.
     pub fn collect_intents(&self, keep_for_ms: i64) -> usize {
-        let before = store_now().saturating_sub(keep_for_ms);
-        match self
-            .db
-            .lock()
-            .forget_finished_intents(synra_core::intent::types::IntentState::final_kinds(), before)
-        {
-            Ok(removed) => removed,
-            Err(error) => {
-                tracing::error!("finished intents could not be collected: {error}");
-                0
-            }
+        collect(&self.db.lock(), keep_for_ms)
+    }
+}
+
+/// The retention sweep, over a database rather than a runtime.
+///
+/// # ★ Why this is a free function and not only a method
+///
+/// Because the thing that runs it on a schedule is a **thread** that cannot hold the `Runtime`: the daemon owns the runtime
+/// on the stack of its accept loop, and the sweep must not block there. The thread is given the database handle instead —
+/// which is the only part of the runtime the sweep touches — so the schedule and the command path necessarily use the same
+/// implementation rather than two that agree today.
+///
+/// # Why the finished states come from the kernel
+///
+/// Because "finished" is the kernel's judgement. The list is read at the moment of the sweep, so a state renamed in the
+/// kernel cannot leave this comparing against a name nothing writes.
+///
+/// # Errors
+///
+/// Nothing is returned for a failure: a sweep that could not run is logged and the count is zero, because the caller is a
+/// timer and has nothing to do with the answer. A command path that collected nothing would have to say so; a background
+/// sweep that could not says it in the log.
+pub(crate) fn collect(db: &synra_store::SynraDb, keep_for_ms: i64) -> usize {
+    let before = store_now().saturating_sub(keep_for_ms);
+    match db.forget_finished_intents(synra_core::intent::types::IntentState::final_kinds(), before) {
+        Ok(removed) => removed,
+        Err(error) => {
+            tracing::error!("finished intents could not be collected: {error}");
+            0
         }
     }
 }
