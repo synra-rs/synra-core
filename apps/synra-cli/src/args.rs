@@ -286,6 +286,19 @@ pub enum DbAction {
     /// The same check the kernel runs at start-up, exposed because a user who suspects their database is the one who
     /// needs to run it — and because a support conversation goes faster with the answer than with a guess.
     Integrity,
+    /// Write a consistent copy of the database to a path.
+    ///
+    /// # Why this is a command rather than a note in the documentation
+    ///
+    /// Because copying the file is the obvious thing to do and it does not work: a live database also has a
+    /// write-ahead log, and a plain copy of the main file is a database that may not open at all. The design document
+    /// lists restore-from-backup as the recovery path when the integrity check fails, so the step has to exist before
+    /// the moment somebody needs it.
+    Backup {
+        /// Where to write it. Must not already exist.
+        #[arg(value_name = "PATH")]
+        path: std::path::PathBuf,
+    },
 }
 
 #[cfg(test)]

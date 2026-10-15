@@ -184,6 +184,42 @@ impl SynraDb {
         Ok(crate::db::interpret_integrity(&rows))
     }
 
+    /// Writes a consistent copy of the database to `destination`.
+    ///
+    /// # Why `VACUUM INTO` rather than copying the file
+    ///
+    /// Because a copy of a live database is a copy of a database mid-write: the write-ahead log is a separate file, the
+    /// pages are in whatever order the last transaction left them, and what comes out is a file that may not open at all.
+    /// `VACUUM INTO` is the engine's own answer — it reads a consistent snapshot and writes a compacted database — and it
+    /// is a single statement, so there is nothing for this crate to get wrong in between.
+    ///
+    /// # Why an existing destination is refused rather than overwritten
+    ///
+    /// Because the caller is usually a user making a backup *before* something risky, and the tool is not in a position to
+    /// know whether the file already there is the one they meant to replace. `VACUUM INTO` refuses an existing file
+    /// itself; this checks first so the error can say **which** file, rather than the engine's bare complaint.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::Statement`] when the destination exists or the vacuum cannot run.
+    pub fn backup_to(&self, destination: &Path) -> Result<(), DbError> {
+        if destination.exists() {
+            return Err(DbError::Statement {
+                why: format!(
+                    "{} already exists; a backup does not overwrite one, because the file there may be the one you meant to keep",
+                    destination.display()
+                ),
+            });
+        }
+        // ★ A bound parameter rather than a formatted string: the path comes from a user, and a quote in it would
+        // otherwise end the SQL literal and continue as syntax. `VACUUM INTO` takes an expression, so a placeholder is
+        // allowed here.
+        self.connection
+            .execute("VACUUM INTO ?1", [destination.to_string_lossy().as_ref()])
+            .map_err(|error| DbError::Statement { why: error.to_string() })?;
+        Ok(())
+    }
+
     /// Applies the pragmas the rest of the system assumes.
     fn apply_pragmas(&self) -> Result<(), DbError> {
         for (name, value) in PRAGMAS {

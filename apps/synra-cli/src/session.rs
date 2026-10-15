@@ -173,10 +173,14 @@ pub fn dispatch(cli: &Cli) -> CommandOutcome {
             None => {
                 return match &cli.command {
                     Command::Doctor(args) => doctor_outcome(cli.output, args),
-                    // A command with no question and no handler is `db`, whose own module takes it from here. Until it
-                    // does, saying so is better than an empty answer.
+                    // ★ `db` reads the database directly, and did not.
+                    //
+                    // The subcommand was parsed, documented, and had argument tests — and every invocation ended in
+                    // "this command reads the database directly, which is not implemented yet". Three verbs a user can
+                    // see and none of them worked. The store side already existed; what was missing was this branch.
+                    Command::Db(args) => crate::db::outcome(cli.output, args),
                     _ => CommandOutcome::Failed(
-                        "this command reads the database directly, which is not implemented yet".to_owned(),
+                        "this command needs a running kernel, and none is reachable".to_owned(),
                     ),
                 };
             }

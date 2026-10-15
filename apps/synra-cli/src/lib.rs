@@ -45,6 +45,7 @@
 
 pub mod args;
 pub mod channel;
+pub mod db;
 pub mod doctor;
 pub mod session;
 
