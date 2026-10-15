@@ -101,11 +101,23 @@ pub fn probe_disk_space(data_dir: &Path) -> ProbeResult {
                 "the data directory accepts writes; the free-space figure needs a platform query",
             )
         }
-        Err(error) => ProbeResult::fail(
-            "disk_space",
-            format!("a {} byte write failed: {error}", sample.len()),
-            "free some disk space; Synra needs room for plugin data and transfer buffers",
-        ),
+        Err(error) => {
+            // ★ The failure path cleans up too, and this was wrong until a stray file proved it.
+            //
+            // `std::fs::write` creates the file before it writes, so a write that fails partway — a full disk, a
+            // permission the sandbox withdrew, a device error — leaves a probe file behind. The success path removed it;
+            // this one did not. So the case this probe exists to diagnose (a disk that cannot be written) was also the
+            // case that littered the user's data directory, once per `synra doctor`, with a file named after the probe.
+            //
+            // Found the honest way: a 0-byte `apps/synra-cli/.synra-disk-probe` was sitting untracked in the repository
+            // after a test run whose write had been denied. The artefact was the bug report.
+            let _ = std::fs::remove_file(&probe);
+            ProbeResult::fail(
+                "disk_space",
+                format!("a {} byte write failed: {error}", sample.len()),
+                "free some disk space; Synra needs room for plugin data and transfer buffers",
+            )
+        }
     }
 }
 

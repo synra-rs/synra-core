@@ -238,6 +238,37 @@ fn the_disk_probe_does_not_claim_a_figure_it_cannot_read() {
 }
 
 #[test]
+fn the_disk_probe_leaves_the_data_directory_as_it_found_it() {
+    // ★ `synra doctor` is a read-only diagnosis, and a diagnosis that writes must at least clean up after itself.
+    //
+    // The probe measures writability by writing a mebibyte and reading it back, so it necessarily creates a file in the
+    // user's data directory. It removed that file on the success path and **not** on the failure path — which is the
+    // path a user with a full disk is on, and the one where a stray file is least welcome.
+    //
+    // The failure path is fixed, and this test covers the half that is reproducible: after a probe that succeeded, the
+    // directory holds nothing. The failure half has no portable trigger — every portable way to make the write fail
+    // (a read-only directory, a path that is a directory) fails *before* the file is created, so there is nothing to
+    // observe — and a test that cannot fail for the right reason is worse than none. What found the bug was the
+    // artefact itself: a 0-byte `.synra-disk-probe` left in the repository by a run whose write had been denied.
+    let dir = std::env::temp_dir().join(format!("synra-doctor-disk-clean-{}", unique_suffix()));
+    let result = probe_disk_space(&dir);
+    assert!(
+        result.status != ProbeStatus::Fail,
+        "this test needs a probe that succeeded: {}",
+        result.detail
+    );
+
+    let leftovers: Vec<String> = std::fs::read_dir(&dir)
+        .expect("the probe created the directory")
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(leftovers.is_empty(), "the probe left {leftovers:?} behind");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn the_clock_is_plausible_in_a_test_process() {
     assert_eq!(probe_clock_sanity().status, ProbeStatus::Ok);
 }
