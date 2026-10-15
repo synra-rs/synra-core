@@ -12,9 +12,11 @@ pub struct Migration {
 
 /// The statements that create the schema, in order.
 ///
-/// Five steps, matching the design document's table list. Split by area rather than by table so that a step is
-/// one coherent change: an interrupted migration then leaves the database at a version whose shape is one
-/// somebody reasoned about, rather than halfway through adding a column.
+/// Split by area rather than by table so that a step is one coherent change: an interrupted migration then leaves the
+/// database at a version whose shape is somebody reasoned about, rather than halfway through adding a column.
+///
+/// ★ It used to say how many steps there were — "five" — and that number was wrong for four steps by the time anybody
+/// looked. A count in a doc comment is a number that can only be maintained by remembering, so it is not here.
 pub const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 1,
@@ -235,6 +237,49 @@ pub const MIGRATIONS: &[Migration] = &[
             // Listing a plugin's keys is the one read that is not by primary key, and it is on a path a settings screen
             // takes. Without this it is a scan of every plugin's storage to find one plugin's.
             "CREATE INDEX plugin_storage_by_key ON plugin_storage(plugin_id, key)",
+        ],
+    },
+    Migration {
+        version: 9,
+        name: "intent-documents",
+        statements: &[
+            // ★ The `intents` table could not hold an intent, and this is why it is rebuilt rather than added to.
+            //
+            // It was created by the first migration and then never read or written by any code in either workspace. Its
+            // columns were a projection of an intent designed before the type existed, and none of them could carry what an
+            // intent actually has: the trace, the `Choice`, the candidate list, the admission refusal, or the request id a
+            // dispatch was sent under. A restored intent built from those columns would have forgotten which plugin was
+            // going to answer it — which is worse than not persisting at all, because it would look like it had worked.
+            //
+            // So the document is the row now. `document` holds the kernel's own serialisation of the whole intent, and the
+            // columns beside it are the projection that the two queries the store must make **without parsing every row**:
+            // the retention sweep, which filters by state, and the idempotency lookup, which is by request.
+            //
+            // ★ Dropping the old table loses nothing, and that is a fact rather than a hope: no production code path ever
+            // read or wrote it. The rule that a published migration is never edited is not being bent here either — this is
+            // a new step, and the one it replaces is still in the list, still applied, still tested.
+            "DROP TABLE intents",
+            "CREATE TABLE intents (
+                intent_id     TEXT PRIMARY KEY,
+                state         TEXT NOT NULL,
+                created_ms    INTEGER NOT NULL,
+                updated_ms    INTEGER NOT NULL,
+                origin_device TEXT,
+                request_id    TEXT,
+                document      TEXT NOT NULL
+            )",
+            // The retention rule is "finished, and older than N" — both halves are in the index, in the order the query
+            // filters them.
+            "CREATE INDEX intents_by_state ON intents (state, updated_ms)",
+            // ★ UNIQUE, and deliberately: `Board::raise` refuses a repeated request *in memory*, and the whole point of
+            // persisting is that a restart must not lose that. The kernel mints a fresh intent id for every raise, so the
+            // primary key cannot catch a repeat — this index is what turns "the same request is never two intents" from a
+            // rule the board remembers into one the database enforces. A row that violates it is a bug in the caller, and
+            // the honest answer to a bug is an error rather than a second copy of a user's action.
+            //
+            // NULLs are distinct in a SQLite unique index, so the many intents raised locally — with no origin device and
+            // no request — do not collide.
+            "CREATE UNIQUE INDEX intents_by_request ON intents (origin_device, request_id)",
         ],
     },
 ];

@@ -40,28 +40,26 @@ impl SynraDb {
         self.connection
             .execute(
                 "INSERT INTO intents \
-                     (intent_id, origin, plugin_id, action, args, state, created_ms, updated_ms, expires_ms) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) \
+                     (intent_id, state, created_ms, updated_ms, origin_device, request_id, document) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
                  ON CONFLICT (intent_id) DO UPDATE SET \
-                     origin = ?2, \
-                     plugin_id = ?3, \
-                     action = ?4, \
-                     args = ?5, \
-                     state = ?6, \
+                     state = ?2, \
                      -- ★ `created_ms` is deliberately absent: it is when the intent was raised, and a later write is not
-                     -- a later raising. Overwriting it would make every intent look as though it had just started.
-                     updated_ms = ?8, \
-                     expires_ms = ?9",
+                     -- a later raising. Overwriting it would make every intent look as though it had just started — and
+                     -- the retention rule is measured from when it *finished*, so the two must not be the same number by
+                     -- accident.
+                     updated_ms = ?4, \
+                     origin_device = ?5, \
+                     request_id = ?6, \
+                     document = ?7",
                 params![
                     intent.intent_id.as_str(),
-                    intent.origin.as_str(),
-                    intent.plugin_id.as_str(),
-                    intent.action.as_str(),
-                    intent.args.as_str(),
                     intent.state.as_str(),
                     intent.created_ms,
                     intent.updated_ms,
-                    intent.expires_ms,
+                    intent.origin_device.as_deref(),
+                    intent.request_id.as_deref(),
+                    intent.document.as_str(),
                 ],
             )
             .map_err(|error| DbError::Statement { why: error.to_string() })?;
@@ -85,19 +83,13 @@ impl SynraDb {
         let rows = statement
             .query_map([], |row| {
                 Ok(IntentRecord::from_columns(
-                    crate::records::IntentText {
-                        intent_id: row.get::<_, Option<String>>(0)?.as_deref(),
-                        origin: row.get::<_, Option<String>>(1)?.as_deref(),
-                        plugin_id: row.get::<_, Option<String>>(2)?.as_deref(),
-                        action: row.get::<_, Option<String>>(3)?.as_deref(),
-                        args: row.get::<_, Option<String>>(4)?.as_deref(),
-                        state: row.get::<_, Option<String>>(5)?.as_deref(),
-                    },
-                    crate::records::IntentNumbers {
-                        created_ms: row.get::<_, Option<i64>>(6)?,
-                        updated_ms: row.get::<_, Option<i64>>(7)?,
-                        expires_ms: row.get::<_, Option<i64>>(8)?,
-                    },
+                    row.get::<_, Option<String>>(0)?.as_deref(),
+                    row.get::<_, Option<String>>(1)?.as_deref(),
+                    row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?.as_deref(),
                 ))
             })
             .map_err(|error| DbError::Statement { why: error.to_string() })?
@@ -105,6 +97,55 @@ impl SynraDb {
             .map_err(|error| DbError::Statement { why: error.to_string() })?;
 
         rows.into_iter().collect::<Result<Vec<IntentRecord>, RowError>>().map_err(DbError::from)
+    }
+
+    /// The intent raised under a peer's request, when there is one.
+    ///
+    /// # Why the store answers this rather than the caller filtering
+    ///
+    /// Because it is the idempotency lookup, and after a restart it is the *only* way to answer it: the board is rebuilt
+    /// from these rows, and a peer that resends a request must be recognised from what was persisted rather than from what
+    /// happens to be in memory. The unique index on the pair is what makes the answer at most one row.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::Statement`], or [`DbError::Row`] for a row the schema should not have allowed.
+    pub fn intent_for_request(
+        &self,
+        origin_device: &str,
+        request_id: &str,
+    ) -> Result<Option<IntentRecord>, DbError> {
+        let sql = format!(
+            "SELECT {} FROM intents WHERE origin_device = ?1 AND request_id = ?2",
+            columns::INTENT.join(", ")
+        );
+        let mut statement = self
+            .connection
+            .prepare(&sql)
+            .map_err(|error| DbError::Statement { why: error.to_string() })?;
+        let mut rows = statement
+            .query_map(params![origin_device, request_id], |row| {
+                Ok(IntentRecord::from_columns(
+                    row.get::<_, Option<String>>(0)?.as_deref(),
+                    row.get::<_, Option<String>>(1)?.as_deref(),
+                    row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?.as_deref(),
+                ))
+            })
+            .map_err(|error| DbError::Statement { why: error.to_string() })?;
+
+        match rows.next() {
+            None => Ok(None),
+            Some(row) => {
+                let record = row
+                    .map_err(|error| DbError::Statement { why: error.to_string() })?
+                    .map_err(DbError::from)?;
+                Ok(Some(record))
+            }
+        }
     }
 
     /// How many intents are stored.

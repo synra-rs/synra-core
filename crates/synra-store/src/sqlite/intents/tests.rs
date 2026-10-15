@@ -10,26 +10,34 @@ fn db() -> SynraDb {
     db
 }
 
+/// A local intent: one this device raised, so it has neither half of a peer's request pair.
 fn intent(id: &str, state: &str, at_ms: i64) -> IntentRecord {
     IntentRecord {
         intent_id: id.to_owned(),
-        origin: "device-a".to_owned(),
-        plugin_id: "@acme/notes".to_owned(),
-        action: "create".to_owned(),
-        args: "{\"title\":\"x\"}".to_owned(),
         state: state.to_owned(),
         created_ms: at_ms,
         updated_ms: at_ms,
-        expires_ms: None,
+        origin_device: None,
+        request_id: None,
+        document: format!("{{\"id\":\"{id}\",\"state\":\"{state}\"}}"),
+    }
+}
+
+/// An intent a peer asked for, under the pair that identifies the request.
+fn from_peer(id: &str, origin: &str, request: &str, at_ms: i64) -> IntentRecord {
+    IntentRecord {
+        origin_device: Some(origin.to_owned()),
+        request_id: Some(request.to_owned()),
+        ..intent(id, "matching", at_ms)
     }
 }
 
 #[test]
 fn an_intent_survives_a_round_trip() {
-    // ★ The whole point: before this, an intent lived only in the kernel's `Board`, so a daemon restart lost every one of
-    // them and the `intents` table was never written by anything.
+    // ★ The point of the whole exercise: before this, an intent lived only in the kernel's in-memory `Board`, so a daemon
+    // restart lost every one of them.
     let db = db();
-    let written = intent("i-1", "raised", 1_000);
+    let written = from_peer("i-1", "device-a", "r-1", 1_000);
     db.save_intent(&written).expect("saved");
 
     let loaded = db.load_intents().expect("loaded");
@@ -38,11 +46,23 @@ fn an_intent_survives_a_round_trip() {
 }
 
 #[test]
+fn the_document_comes_back_byte_for_byte() {
+    // ★ The store has no opinion about what an intent is, so it must not quietly rewrite one. A `document` that came back
+    // differently — reordered, trimmed, escaped — would be a store that had parsed a format it promised not to know.
+    let db = db();
+    let mut written = intent("i-1", "matching", 1_000);
+    written.document = "  {\"a\":\"\\u00e9\",\"b\":[1,2,{\"c\":null}]}  ".to_owned();
+    db.save_intent(&written).expect("saved");
+
+    assert_eq!(db.load_intents().expect("loaded")[0].document, written.document);
+}
+
+#[test]
 fn a_second_write_updates_rather_than_adding_a_row() {
     // An intent changes as it is worked on, and every change is the same intent. A store that inserted per change would
     // answer `load_intents` with a history — which is what the audit is for, not what a board is.
     let db = db();
-    db.save_intent(&intent("i-1", "raised", 1_000)).expect("saved");
+    db.save_intent(&intent("i-1", "matching", 1_000)).expect("saved");
     db.save_intent(&intent("i-1", "succeeded", 2_000)).expect("saved again");
 
     let loaded = db.load_intents().expect("loaded");
@@ -54,11 +74,10 @@ fn a_second_write_updates_rather_than_adding_a_row() {
 
 #[test]
 fn a_later_write_does_not_move_when_the_intent_was_raised() {
-    // ★ `created_ms` is when the intent was raised, and a later write is not a later raising. Overwriting it would make
-    // every intent look as though it had just started — and the retention rule below is measured from when it *finished*,
-    // so the two must not be the same number by accident.
+    // ★ `created_ms` is when the intent was raised, and a later write is not a later raising. The retention rule is
+    // measured from when it *finished*, so the two must not become the same number by accident.
     let db = db();
-    db.save_intent(&intent("i-1", "raised", 1_000)).expect("saved");
+    db.save_intent(&intent("i-1", "matching", 1_000)).expect("saved");
     db.save_intent(&intent("i-1", "succeeded", 9_000)).expect("saved again");
 
     let loaded = db.load_intents().expect("loaded");
@@ -68,26 +87,11 @@ fn a_later_write_does_not_move_when_the_intent_was_raised() {
 }
 
 #[test]
-fn an_intent_with_no_deadline_keeps_none() {
-    // The one nullable column: an intent nobody gave a deadline to has none, rather than a zero that means "the epoch".
-    let db = db();
-    let mut written = intent("i-1", "raised", 1_000);
-    written.expires_ms = None;
-    db.save_intent(&written).expect("saved");
-
-    assert_eq!(db.load_intents().expect("loaded")[0].expires_ms, None);
-
-    written.expires_ms = Some(5_000);
-    db.save_intent(&written).expect("saved again");
-    assert_eq!(db.load_intents().expect("loaded")[0].expires_ms, Some(5_000));
-}
-
-#[test]
 fn intents_come_back_oldest_first() {
     // Two runs have to agree, or a board restored from the store would be in a different order each time.
     let db = db();
     for (id, at) in [("i-3", 3_000), ("i-1", 1_000), ("i-2", 2_000)] {
-        db.save_intent(&intent(id, "raised", at)).expect("saved");
+        db.save_intent(&intent(id, "matching", at)).expect("saved");
     }
 
     let loaded = db.load_intents().expect("loaded");
@@ -96,6 +100,55 @@ fn intents_come_back_oldest_first() {
         loaded.iter().map(|row| row.intent_id.as_str()).collect::<Vec<_>>(),
         vec!["i-1", "i-2", "i-3"]
     );
+}
+
+#[test]
+fn a_peers_request_finds_the_intent_it_raised() {
+    // ★ The idempotency lookup, and after a restart it is the only way to answer it: the board is rebuilt from these rows,
+    // and a peer whose answer was lost resends the same request. Answering "no such request" would run the action twice.
+    let db = db();
+    db.save_intent(&from_peer("i-1", "device-a", "r-1", 1_000)).expect("saved");
+    db.save_intent(&from_peer("i-2", "device-b", "r-1", 1_000)).expect("a different device");
+
+    let found = db.intent_for_request("device-a", "r-1").expect("looked up");
+
+    assert_eq!(found.map(|row| row.intent_id), Some("i-1".to_owned()));
+    // The same request id from another device is another request — the pair is the key, not either half.
+    assert_eq!(
+        db.intent_for_request("device-b", "r-1").expect("looked up").map(|row| row.intent_id),
+        Some("i-2".to_owned())
+    );
+    assert_eq!(db.intent_for_request("device-a", "r-9").expect("looked up"), None);
+}
+
+#[test]
+fn the_same_request_twice_cannot_become_two_intents() {
+    // ★ The unique index, and what it is for.
+    //
+    // `Board::raise` refuses a repeated request in memory; persisting exists so that a restart does not lose that. The
+    // kernel mints a **fresh** intent id for every raise, so the primary key cannot catch a repeat — this index is what
+    // turns "the same request is never two intents" from a rule the board remembers into one the database enforces. A row
+    // that violates it is a caller's bug, and the honest answer to a bug is an error, not a second copy of a user's action.
+    let db = db();
+    db.save_intent(&from_peer("i-1", "device-a", "r-1", 1_000)).expect("saved");
+
+    let refused = db.save_intent(&from_peer("i-2", "device-a", "r-1", 2_000));
+
+    assert!(refused.is_err(), "a second intent for one request: {refused:?}");
+    assert_eq!(db.intent_count().expect("counted"), 1);
+}
+
+#[test]
+fn intents_raised_here_do_not_collide_with_each_other() {
+    // ★ The other half of the unique index: NULLs are distinct in SQLite, so the many intents this device raised itself —
+    // with no origin device and no request — do not collide with one another. A unique index that treated them as equal
+    // would allow exactly one local intent ever.
+    let db = db();
+    for id in ["i-1", "i-2", "i-3"] {
+        db.save_intent(&intent(id, "matching", 1_000)).expect("saved");
+    }
+
+    assert_eq!(db.intent_count().expect("counted"), 3);
 }
 
 #[test]
@@ -116,8 +169,7 @@ fn only_finished_intents_that_are_old_enough_are_forgotten() {
     assert_eq!(removed, 2, "the old finished ones, and only those");
     let left: Vec<String> = db.load_intents().expect("loaded").into_iter().map(|row| row.intent_id).collect();
     // ★ Ordered by when each was **raised**, not by what happened to it: `running-old` was raised at 1_000 and `done-new`
-    // at 9_000, so the surviving row that has been waiting longest comes first. The first version of this assertion had
-    // them the other way round, which would have been a store that reordered a board by state.
+    // at 9_000, so the surviving row that has been waiting longest comes first.
     assert_eq!(left, vec!["running-old".to_owned(), "done-new".to_owned()]);
 }
 
@@ -167,6 +219,7 @@ fn an_empty_database_says_so_rather_than_failing() {
     assert_eq!(db.load_intents().expect("loaded"), Vec::new());
     assert_eq!(db.intent_count().expect("counted"), 0);
     assert_eq!(db.forget_finished_intents(&["succeeded"], 9_999).expect("collected"), 0);
+    assert_eq!(db.intent_for_request("device-a", "r-1").expect("looked up"), None);
 }
 
 #[test]
