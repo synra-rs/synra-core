@@ -4,7 +4,6 @@ use synra_control::Kernel;
 use synra_core::{Host, Identity};
 use synra_protocol::error::ErrorCode;
 
-use super::reports::is_debug_or_trace;
 use super::{Runtime, now_ms};
 
 /// A temporary directory that removes itself.
@@ -832,26 +831,7 @@ fn debug_lines_are_hidden_unless_they_are_asked_for() {
     assert!(lines[0].contains("INFO"), "{lines:?}");
 }
 
-#[test]
-fn the_filter_matches_a_level_token_in_either_shape() {
-    assert!(is_debug_or_trace("DEBUG detail"));
-    assert!(is_debug_or_trace("2026-01-01T00:00:00Z TRACE detail"));
-    assert!(!is_debug_or_trace("INFO started"));
-    assert!(!is_debug_or_trace("WARN something"));
-}
 
-#[test]
-fn the_filter_has_a_known_cost_and_it_is_not_hidden() {
-    // ★ A text filter over a text log cannot tell a level from a message that names one, and this test says so
-    // rather than leaving it to be discovered. `INFO turning DEBUG off` is hidden by the quiet filter.
-    //
-    // The alternatives were worse for this use: keeping only lines that *start* with a level would need the format
-    // to be fixed, and a daemon's log format is its own. A user who needs the line passes `--verbose`.
-    assert!(
-        is_debug_or_trace("INFO turning DEBUG off"),
-        "the documented cost of the filter has changed; the doc comment above `logs_value` says what it is"
-    );
-}
 
 #[test]
 fn the_newest_log_file_is_the_one_read() {

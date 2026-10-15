@@ -1,4 +1,3 @@
-use std::path::{Path, PathBuf};
 
 use synra_control::Refusal;
 use synra_protocol::error::ErrorCode;
@@ -157,45 +156,16 @@ impl Runtime {
     ) -> Result<serde_json::Value, Refusal> {
         // The log lives in the cache directory beside the data directory, which is where `Paths` puts it.
         let log_dir = self.data_dir.join("logs");
-        let Some(newest) = newest_file(&log_dir) else {
-            return Ok(serde_json::json!({"lines": [], "source": serde_json::Value::Null}));
-        };
 
-        let text = std::fs::read_to_string(&newest).map_err(|error| {
-            Refusal::new(
-                ErrorCode::Internal,
-                format!("could not read {}: {error}", newest.display()),
-            )
-        })?;
-
-        // Filtered rather than requested from the writer: the level is in the line, and a filter here keeps the daemon
-        // from needing an index of its own log.
-        //
-        // ★ The level is matched as a **token** rather than with `contains(" DEBUG ")`, which was the first version and
-        // was wrong: a line may begin with the level — `DEBUG detail` — and then there is no space before it. What
-        // follows the level is a space or the end of the line, and a line has a timestamp in front of it in the real
-        // log, which is why the token is found by splitting rather than by position.
-        //
-        // ★ The trace filter is a substring test, and the difference from the level filter is deliberate. A level is a
-        // fixed vocabulary in a known position, so a token match is exact and cheap. A trace id is an opaque string that
-        // appears wherever the logger chose to render it — as a span field, or inside a message a plugin wrote — so
-        // there is no position to anchor on, and a token match would find nothing.
-        //
-        // The two filters compose: `--trace` asks for the wide level filter because a trace's lines are the debug ones,
-        // and a caller who passes both gets the intersection, which is what "the lines for this trace, including debug"
-        // means.
-        let wanted: Vec<&str> = text
-            .lines()
-            .filter(|line| verbose || !is_debug_or_trace(line))
-            .filter(|line| trace.is_none_or(|id| line.contains(id)))
-            .collect();
-        let start = wanted.len().saturating_sub(lines);
-        let tail: &[&str] = wanted.get(start..).unwrap_or(&[]);
+        // ★ The reading, the level filter and the trace filter all live in `synra-observe::logging` now, because the
+        // shell needs the same three decisions for a diagnostic bundle and could not reach them here. What is left in
+        // this function is the control protocol's answer shape, which is the only part that is the daemon's business.
+        let tail = synra_observe::logging::tail(&log_dir, lines, verbose, trace);
 
         Ok(serde_json::json!({
-            "lines": tail,
-            "source": newest.to_string_lossy(),
-            "total": wanted.len(),
+            "lines": tail.lines,
+            "source": tail.source.map(|path| path.to_string_lossy().into_owned()),
+            "total": tail.matched,
             // Echoed so a caller can tell "this trace has no lines" from "the filter was dropped on the way here" —
             // the exact confusion the CLI's old `--trace` produced by discarding the id.
             "trace": trace,
@@ -203,27 +173,4 @@ impl Runtime {
     }
 }
 
-/// Whether a log line is at `DEBUG` or `TRACE`.
-///
-/// # Why a token rather than a substring
-///
-/// A line may begin with the level, so there is no space before it — `DEBUG detail` — and a search for `" DEBUG "` finds
-/// nothing. It may also have a timestamp in front, so the level is not the first word either. Splitting the line into
-/// words handles both, and the level is the word itself rather than something that merely contains it.
-pub(super) fn is_debug_or_trace(line: &str) -> bool {
-    line.split_whitespace().any(|word| word == "DEBUG" || word == "TRACE")
-}
 
-/// The newest file in a directory, if there is one.
-fn newest_file(dir: &Path) -> Option<PathBuf> {
-    let entries = std::fs::read_dir(dir).ok()?;
-    entries
-        .flatten()
-        .filter(|entry| entry.path().is_file())
-        .filter_map(|entry| {
-            let modified = entry.metadata().ok()?.modified().ok()?;
-            Some((modified, entry.path()))
-        })
-        .max_by_key(|(modified, _)| *modified)
-        .map(|(_, path)| path)
-}

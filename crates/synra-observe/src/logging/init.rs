@@ -106,6 +106,17 @@ pub struct LogGuard {
     writer: Arc<Mutex<RedactingWriter<RotatingFile>>>,
 }
 
+impl std::fmt::Debug for LogGuard {
+    /// Renders as the writer's own `Debug`, which names the file.
+    ///
+    /// ★ Not derived, because the guard holds an `Arc<Mutex<RedactingWriter<RotatingFile>>>` and a derive would render a
+    /// lock rather than the thing a reader wants to know: which file is being written. A shell that keeps this beside its
+    /// other state needs `Debug` — `AppState` derives it — and "logging is on, here" is the useful rendering.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_tuple("LogGuard").field(&self.writer.lock()).finish()
+    }
+}
+
 impl Drop for LogGuard {
     fn drop(&mut self) {
         let _ = self.writer.lock().flush();
