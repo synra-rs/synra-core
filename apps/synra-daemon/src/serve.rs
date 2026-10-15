@@ -142,6 +142,21 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
         local_id,
         synra_protocol::session::SessionTimeouts::default().pairing,
     ));
+    // ★ The crash store, and the panic hook that fills it, are set up before anything that can crash.
+    //
+    // The order matters and is the whole reason this is up here rather than beside the safe-mode check below: a hook
+    // installed after the plugin host is built does not record a failure while building it. The log directory comes from
+    // `Paths` rather than being joined here, because `Paths` is the one place that decides where things live.
+    let log_dir = synra_store::Paths::new(
+        std::path::PathBuf::from(&plan.data_dir),
+        std::path::PathBuf::from(&plan.data_dir).join("cache"),
+    )
+    .log_dir()
+    .to_path_buf();
+    let crashes = synra_observe::crash::CrashStore::new(&log_dir);
+    // The daemon's own version, not the observe layer's: the report is about the binary that crashed.
+    synra_observe::crash::install_panic_hook(crashes.clone(), env!("CARGO_PKG_VERSION"));
+
     // ★ The plugin host is built **before** the runtime, and its failure ends the daemon.
     //
     // This is the one dependency that can refuse. Everything else here is data the daemon reads; an engine that will not
@@ -164,20 +179,12 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
         // times in a row is not started a fourth time, so the settings screen the user needs to switch it off stays
         // reachable.
         //
-        // The log directory comes from `Paths` rather than being joined here, because `Paths` is the one place that
-        // decides where things live — the same reason `plan.rs` routes the data directory through it.
-        let log_dir = synra_store::Paths::new(
-            std::path::PathBuf::from(&plan.data_dir),
-            std::path::PathBuf::from(&plan.data_dir).join("cache"),
-        )
-        .log_dir()
-        .to_path_buf();
-        // `now_ms()` is `u64` because the runtime's clock is, and a crash report is stamped `i64` because it is written
-        // to SQLite. The conversion is saturating rather than `as`: a clock far enough past 2262 to overflow should read
-        // as "the latest possible instant", which makes every report look old and lets the daemon run — the direction
-        // that fails open on a clock problem rather than refusing to start.
+        // `now_ms()` is `u64` because the runtime's clock is, and a crash report is stamped `i64`. The conversion is
+        // saturating rather than `as`: a clock far enough past 2262 to overflow should read as "the latest possible
+        // instant", which makes every report look old and lets the daemon run — the direction that fails open on a clock
+        // problem rather than refusing to start.
         let now = i64::try_from(now_ms()).unwrap_or(i64::MAX);
-        let verdict = synra_observe::crash::CrashStore::new(&log_dir).verdict(now);
+        let verdict = crashes.verdict(now);
         let summary = {
             let mut set = plugins.lock();
             crate::runtime::load_installed(
