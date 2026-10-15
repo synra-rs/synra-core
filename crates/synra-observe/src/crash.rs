@@ -253,11 +253,45 @@ impl CrashStore {
     /// to ignore it: a report that cannot be written must not become a second panic.
     pub fn write(&self, report: &CrashReport) -> std::io::Result<PathBuf> {
         std::fs::create_dir_all(&self.directory)?;
-        let path = self.directory.join(format!("crash-{}.json", report.at_ms));
         let json = serde_json::to_vec_pretty(report).map_err(std::io::Error::other)?;
-        std::fs::write(&path, json)?;
-        self.prune();
-        Ok(path)
+
+        // ★ The name must be unique even when two crashes land in the same millisecond.
+        //
+        // It was `crash-{at_ms}.json`, and a crash loop that panics three times inside one millisecond — which is what
+        // a tight activation loop does, and what this crate's own integration test does — wrote **one** file instead of
+        // three. The consequence is not lost paperwork: [`startup_verdict`] counts reports to decide safe mode, so the
+        // count came up short and the daemon started the crashing plugin again on the next run. The mechanism that
+        // exists to stop a crash loop was defeated by a filename.
+        //
+        // `create_new` rather than "check whether it exists, then write": a check followed by an action is two steps
+        // another thread can interleave, and the hook runs on whichever thread panicked — so two threads crashing at
+        // once is a real case rather than a hypothetical one. `create_new` fails atomically if the name is taken, which
+        // is what makes the loop below correct rather than merely usually correct.
+        let mut suffix = 0u32;
+        loop {
+            let path = if suffix == 0 {
+                self.directory.join(format!("crash-{}.json", report.at_ms))
+            } else {
+                self.directory.join(format!("crash-{}-{suffix}.json", report.at_ms))
+            };
+
+            match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(mut file) => {
+                    use std::io::Write as _;
+                    file.write_all(&json)?;
+                    self.prune();
+                    return Ok(path);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    // Four billion reports in one millisecond is not a situation to invent a policy for, but it is a
+                    // situation the loop would otherwise spin in, so it ends in an error like any other write failure.
+                    suffix = suffix.checked_add(1).ok_or_else(|| {
+                        std::io::Error::other("too many crash reports share one millisecond")
+                    })?;
+                }
+                Err(error) => return Err(error),
+            }
+        }
     }
 
     /// Reads every report, oldest first.
@@ -674,6 +708,53 @@ mod tests {
 
         let back: CrashReport = serde_json::from_str(&json).expect("deserialises");
         assert_eq!(back, report);
+    }
+
+    #[test]
+    fn three_crashes_in_the_same_millisecond_are_three_reports() {
+        // ★ The flake that was a bug. Found by running the integration test in a loop: it failed 2 times in 15, and the
+        // assertion was "every panic should have produced its own report: 2 of 3".
+        //
+        // The cause was the file name — `crash-{at_ms}.json` — so a crash loop panicking three times inside one
+        // millisecond wrote one file, each write overwriting the last. A tight activation loop is exactly that shape.
+        //
+        // Why it matters beyond lost paperwork: `startup_verdict` **counts** reports to decide safe mode. A count that
+        // comes up short is a daemon that starts the crashing plugin again on every run, which is the one outcome the
+        // whole crash-reporting mechanism exists to prevent — and the settings screen the user needs to disable it is
+        // behind that start.
+        //
+        // The three reports are written with the *same* timestamp, which is the condition; distinct timestamps would
+        // have passed against the broken version and proved nothing. It has to be a **recent** one as well, because
+        // safe mode is decided from recent crashes only — a fixed timestamp from years ago is ignored by design, and a
+        // test that used one would be asserting about a verdict that never looked at these reports.
+        let dir = std::env::temp_dir().join(format!("synra-crash-collide-{}", test_suffix()));
+        let store = CrashStore::at(dir.clone());
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let at = now_ms();
+        for _ in 0..SAFE_MODE_THRESHOLD {
+            store.write(&report(at, Some("a.rs:1:1"))).expect("writes");
+        }
+
+        let read = store.read_all();
+        assert_eq!(
+            read.len(),
+            SAFE_MODE_THRESHOLD,
+            "a report was overwritten by one sharing its millisecond"
+        );
+
+        // And the point of counting: the same location, hit this many times, has to reach safe mode.
+        assert!(
+            !store.verdict(now_ms()).allows_plugins(),
+            "the crash loop should reach safe mode: {:?}",
+            store.verdict(now_ms())
+        );
+
+        // The files are distinct on disk too, so the count is not an artefact of reading one file repeatedly.
+        let files = std::fs::read_dir(&dir).expect("the directory").filter_map(Result::ok).count();
+        assert_eq!(files, SAFE_MODE_THRESHOLD, "one file per report");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
