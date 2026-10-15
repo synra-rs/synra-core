@@ -1,7 +1,21 @@
 //! Matching: whether a pattern covers a candidate, and how specific it is.
 
+use smallvec::SmallVec;
+
 use super::segment::Segment;
-use super::syntax::Capability;
+use super::syntax::{Capability, MAX_SEGMENTS};
+
+/// The most segments a match has to compare: everything after the domain, which is compared separately.
+///
+/// The parser rejects anything longer than [`MAX_SEGMENTS`], so this is a bound the type system cannot see but the
+/// invariant makes true. It is what lets the two side-by-side lists below live on the stack.
+const MAX_MATCHED_SEGMENTS: usize = MAX_SEGMENTS - 1;
+
+/// The segments after the domain, as pattern kinds.
+type PatternKinds<'a> = SmallVec<[SegmentKind<'a>; MAX_MATCHED_SEGMENTS]>;
+
+/// The segments after the domain, as the candidate's literal text.
+type CandidateTexts<'a> = SmallVec<[&'a str; MAX_MATCHED_SEGMENTS]>;
 
 impl Capability {
     /// Whether this names one capability rather than a family.
@@ -39,13 +53,13 @@ impl Capability {
             return false;
         }
 
-        let pattern: Vec<SegmentKind> = self
+        let pattern: PatternKinds<'_> = self
             .prefixes
             .iter()
             .chain(&self.qualifier)
             .map(Segment::kind)
             .collect();
-        let target: Vec<&str> = candidate
+        let target: CandidateTexts<'_> = candidate
             .prefixes
             .iter()
             .chain(&candidate.qualifier)
