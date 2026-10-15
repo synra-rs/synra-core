@@ -67,6 +67,15 @@ pub enum Scripted {
         /// What the engine "said".
         detail: String,
     },
+    /// ★ Panic inside the host, rather than a trap reported by the guest.
+    ///
+    /// The distinction is the point: a trap is a value the engine returns, and a panic is an unwind that has to be
+    /// caught before it reaches the thread that dispatched the call. A host function that indexes out of bounds, or
+    /// unwraps a `None`, produces this one.
+    Panic {
+        /// The message the panic carries, which is what the boundary should report.
+        message: String,
+    },
     /// Time out, whatever the budget says.
     ///
     /// # Why a script may ignore the budget
@@ -79,6 +88,26 @@ pub enum Scripted {
     MemoryExceeded,
     /// Report the fuel as exhausted.
     FuelExhausted,
+}
+
+/// Raises the panic that [`Scripted::Panic`] asks for.
+///
+/// # Why this is a function with an `allow` on it
+///
+/// The workspace denies `clippy::panic`, everywhere and for good reason: a library that panics turns a caller's mistake
+/// into a crash. This is the one place where panicking is the *point* rather than an accident — the variant exists
+/// solely so a test can make the host unwind, and a function that returned instead would be a test double that cannot
+/// produce the condition it is named after.
+///
+/// The `allow` is on this function rather than on `call`, so it covers the one statement that means to panic and not
+/// the eleven match arms around it.
+#[allow(
+    clippy::panic,
+    reason = "this is the only way to raise the host panic that Scripted::Panic exists to produce, and the allow is \
+              scoped to this function so the rest of the double stays under the workspace's rule"
+)]
+fn raise(message: &str) -> CallOutcome {
+    panic!("{message}")
 }
 
 /// The backend.
@@ -267,6 +296,14 @@ impl PluginInstance for ScriptedInstance {
             Scripted::Ok(payload) => CallOutcome::Ok(payload),
             Scripted::Failed { code, message } => CallOutcome::Failed { code, message },
             Scripted::Trap { detail } => CallOutcome::Trap { detail },
+            // ★ A panic in the host, which is a different failure from a trap the *guest* produced.
+            //
+            // A `Trap` is the engine reporting that the guest broke a rule, and it arrives here as an ordinary
+            // `CallOutcome`. This one unwinds. It exists so the boundary in `synra-core`'s `PluginSet::run_on` — the
+            // `catch_unwind` that `[profile.release] panic = "unwind"` is configured for — can be tested at all: before
+            // this variant there was no way to raise a panic from behind the `WasmBackend` trait, so the claim that a
+            // plugin cannot take the kernel down with it had nothing behind it.
+            Scripted::Panic { message } => raise(&message),
             // Both of these are the *budget* being reported, so a call that asked for no limit cannot produce them:
             // a script that ignored that would let a test assert a timeout on a call the host never bounded.
             Scripted::Timeout => match budget.timeout {

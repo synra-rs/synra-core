@@ -234,9 +234,70 @@ fn one_trapping_plugin_does_not_cost_the_user_the_others() {
     );
 }
 
+/// ★ A plugin that makes the **host** panic must not take the kernel with it.
+///
+/// This is the test behind `[profile.release] panic = "unwind"`, whose comment gives exactly one reason: that a plugin's
+/// panic has to be catchable. Until `Scripted::Panic` and the `catch_unwind` in `run_on` existed, nothing in the
+/// workspace unwound through a plugin call — so the profile was configured for a mechanism that was never written, and
+/// the claim "one plugin's bug cannot stop the kernel" rested on nothing.
+///
+/// # What the assertions below actually prove
+///
+/// The dispatch returns, both plugins were asked, the good plugin's answer reached the board, and the panic is recorded
+/// against the plugin that raised it. Removing the `catch_unwind` makes this test fail — but it fails **loudly**, by
+/// unwinding out of the test function, because the test harness catches a panic at its own boundary.
+///
+/// So this test does not simulate the production consequence, and it does not claim to. In a real dispatch there is no
+/// harness around the call: the unwind would travel out of `run_on`, out of the matcher, and out of whatever kernel
+/// thread was running it — no `Trap` outcome, no audit record, and no prompt for the user. The test detects the
+/// regression; the difference it makes in production is larger than the difference it makes here.
 #[test]
-fn every_plugin_failing_is_distinguishable_from_nothing_being_installed() {
+fn a_plugin_that_panics_the_host_does_not_stop_the_kernel() {
     let backend = ScriptedBackend::new();
+    let mut set = PluginSet::new(Backend::new(std::sync::Arc::new(backend.clone())));
+    load(
+        &mut set,
+        &backend,
+        "@synra/aaa-panicking",
+        Scripted::Panic {
+            message: "a deliberate panic from a host function".to_owned(),
+        },
+    );
+    load(
+        &mut set,
+        &backend,
+        "@synra/bbb-good",
+        Scripted::Ok(r#"{"handled":true,"title":"Good"}"#.to_owned()),
+    );
+
+    let (mut board, intent_id) = raised_board();
+    let report = Matcher::new(&mut set).match_share(&mut board, intent_id, share_json(), 1_000);
+
+    // Both were asked, so the panic did not stop the dispatch loop.
+    assert_eq!(report.asked, 2, "the panicking plugin ended the round early");
+    // The good plugin's answer still arrived, which is the user-visible half of the guarantee.
+    assert_eq!(
+        report.offered, 1,
+        "the working plugin's answer still reached the board"
+    );
+    assert_eq!(
+        report.misbehaved.len(),
+        1,
+        "the panic is recorded against the plugin rather than lost"
+    );
+    assert!(
+        !report.all_misbehaved(),
+        "not every plugin failed, so this is not a total failure"
+    );
+    assert_eq!(
+        candidates(&board, intent_id).len(),
+        1,
+        "the user still gets their prompt"
+    );
+}
+
+#[test]
+fn every_plugin_failing_is_distinguishable_from_nothing_being_installed() {    let backend = ScriptedBackend::new();
     let mut set = PluginSet::new(Backend::new(std::sync::Arc::new(backend.clone())));
     load(&mut set, &backend, "@synra/aaa", Scripted::Timeout);
 

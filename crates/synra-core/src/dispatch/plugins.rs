@@ -297,9 +297,51 @@ impl PluginSet {
                 Err(error) => return Err(PluginSetError::Compile(error)),
             }
         }
-        match loaded.live.get_mut(&handle) {
-            Some(instance) => instance.call(work, budget).map_err(PluginSetError::Compile),
-            None => Err(PluginSetError::NoInstance { id: id.clone() }),
+
+        // ★ The host's own panic must not cross this boundary.
+        //
+        // `Cargo.toml`'s release profile sets `panic = "unwind"` and gives one reason: "插件 panic 必须能被 catch_unwind
+        // 捕获". Until this was written, `catch_unwind` appeared nowhere in the workspace — so the profile was built for
+        // a mechanism that did not exist, and a panic raised inside a host function called by a guest (an index, an
+        // unwrap, an arithmetic overflow in a debug build) unwound straight through `call`, through the pool, and out
+        // of whatever kernel thread was dispatching. One plugin's bug took the process with it.
+        //
+        // The call is wrapped rather than the whole dispatcher, because the instance is what has to be thrown away: a
+        // panic that unwound out of the middle of a guest call leaves the store in a state nothing can reason about, so
+        // reusing it would trade a loud failure for a quiet wrong answer. The handle is dropped from `live` and a later
+        // call instantiates a fresh instance — which is what the pool is for.
+        //
+        // `AssertUnwindSafe` is required and is sound to give here: the only shared state the closure touches is the
+        // instance, and that instance is discarded on the unwind path rather than observed.
+        let outcome = {
+            let Some(instance) = loaded.live.get_mut(&handle) else {
+                return Err(PluginSetError::NoInstance { id: id.clone() });
+            };
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| instance.call(work, budget)))
+        };
+
+        match outcome {
+            Ok(result) => result.map_err(PluginSetError::Compile),
+            Err(payload) => {
+                // The instance is gone, so a later call builds a new one instead of inheriting the damage.
+                loaded.live.remove(&handle);
+                Ok(CallOutcome::Trap { detail: panic_detail(payload.as_ref()) })
+            }
         }
     }
+}
+
+/// A sentence describing a caught panic, for the plugin author and for the audit record.
+///
+/// The payload is `Box<dyn Any + Send>` because that is what `catch_unwind` hands back. The two shapes it takes in
+/// practice are a `&str` (a `panic!("...")` with a literal) and a `String` (a formatted one); anything else is a
+/// payload the caller chose, and saying so is better than guessing at a `Debug` rendering that may itself panic.
+fn panic_detail(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        return format!("the host panicked: {message}");
+    }
+    if let Some(message) = payload.downcast_ref::<String>() {
+        return format!("the host panicked: {message}");
+    }
+    "the host panicked with a payload that is neither a string nor a string slice".to_owned()
 }
