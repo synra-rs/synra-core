@@ -436,7 +436,8 @@ fn ui_document(title: &str) -> String {
     <p>The plugin's interface. `window.synra` is the only way to reach the kernel from here.</p>
     <script type="module">
       // `window.synra` is a frozen facade: every method is one kernel call, validated on the kernel's side with this
-      // page's own session credential. There is no other way out of the sandbox, and nothing the page can read to\n      // impersonate another.
+      // page's own session credential. There is no other way out of the sandbox, and nothing the page can read to
+      // impersonate another.
       const title = document.title
       const identity = await window.synra.identity()
       document.getElementById('title').textContent = title + ' — ' + identity.displayName
@@ -626,6 +627,29 @@ mod tests {
             ui.get("README.md").expect("a readme").contains("`ui/`"),
             "the UI README should say what it builds"
         );
+    }
+
+    #[test]
+    fn no_scaffolded_file_contains_a_leaked_escape() {
+        // ★ Found by reading the output rather than the source: the UI document contained the two characters `\` and
+        // `n` in the middle of a JavaScript comment, because a line had been written when the surrounding literal was a
+        // normal string and was later moved into a raw one. In a raw string an escape is not an escape — it is text —
+        // so what shipped to the author was `...the page can read to\n      // impersonate another.`
+        //
+        // The scaffold is the first thing a plugin author reads, and a leaked escape in it is the sort of thing that
+        // costs a reader five minutes and teaches them the tool is sloppy. It is also invisible in review: the source
+        // line looks like a line break until you notice the colouring.
+        //
+        // Checked over **every** file of every kind rather than just the document, because the mistake is about the
+        // literal a line sits in and not about which file it ends up in.
+        for kind in TemplateKind::all() {
+            for (path, contents) in scaffold(kind).as_map() {
+                assert!(
+                    !contents.contains("\\n") && !contents.contains("\\t"),
+                    "{kind:?}: {path} contains a leaked escape:\n{contents}"
+                );
+            }
+        }
     }
 
     #[test]
