@@ -696,7 +696,7 @@ mod tests {
 
     #[test]
     fn share_asks_the_kernel_to_route_rather_than_to_send() {
-        // \u2605 The two are opposites and the difference is the whole feature: `send` names a device and delivers to it,
+        // ★ The two are opposites and the difference is the whole feature: `send` names a device and delivers to it,
         // `share` names nothing and asks every plugin which one can handle it. A `share` that quietly became a `send`
         // would look identical from the command line and do something else entirely.
         let Command::Share(args) = parsed(&["synra", "share", "https://example.com"]).command else {

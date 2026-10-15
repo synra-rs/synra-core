@@ -220,13 +220,17 @@ pub enum Request {
         /// `None` takes the candidate the board already settled on, which is the ordinary case: one plugin claimed the
         /// share and the user confirmed it.
         plugin_id: Option<String>,
-        // ★ There is no `target` here, and its absence is a finding rather than an oversight.
-        //
-        // A candidate whose plugin suggested no device leaves the intent in `Choosing`, and that state is the question
-        // "where should this run?" — but `Board` has no method that answers it. `choose` re-enters `Choosing` when the
-        // candidate has no target, and `confirm` refuses anything that is not `Confirming`, so an intent in that state
-        // cannot be advanced at all. A `target` parameter here would be a field the kernel accepted and then ignored,
-        // which is worse than a field that is not there.
+        /// Where to run it, when the plugin that claimed the share did not say.
+        ///
+        /// # Why this is here now, and was not before
+        ///
+        /// Because `Board` could not answer the question. A candidate whose plugin suggested no device settles into
+        /// `Choosing` \u2014 which *is* "where should this run?" \u2014 and no method advanced it: `choose` put a targetless
+        /// candidate straight back into `Choosing`, and `confirm` refuses anything that is not `Confirming`. The field was
+        /// left out rather than accepted and ignored.
+        ///
+        /// `Board::aim` is the method that answers it, so the parameter does what it says.
+        target: Option<String>,
     },
 
     /// The user changed their mind.

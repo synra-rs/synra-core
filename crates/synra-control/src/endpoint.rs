@@ -498,6 +498,7 @@ mod tests {
         &self,
         _intent: &str,
         _plugin_id: Option<&str>,
+        _target: Option<&str>,
     ) -> Result<serde_json::Value, Refusal> {
         Err(Refusal::new(
             synra_protocol::ErrorCode::Internal,

@@ -282,7 +282,7 @@ impl Kernel for Runtime {
 
     /// Routes a share: asks the plugins, and reports what offered.
     ///
-    /// \u2605 The method that makes the kernel do the thing the product is for. Everything it calls existed and was tested;
+    /// ★ The method that makes the kernel do the thing the product is for. Everything it calls existed and was tested;
     /// what was missing was a way in, so the matcher had no production caller and a share that arrived became a file.
     fn intent_dispatch(&self, mime: &str, text: &str) -> Result<serde_json::Value, Refusal> {
         // ★ The origin is filled in here rather than accepted from the caller. A client on this machine's own socket is
@@ -309,13 +309,14 @@ impl Kernel for Runtime {
 
     /// Applies the user's answer, and runs what they chose.
     ///
-    /// \u2605 The one place in the daemon where a plugin's action actually runs. Everything before it \u2014 the matching pass,
+    /// ★ The one place in the daemon where a plugin's action actually runs. Everything before it \u2014 the matching pass,
     /// the board's states, the prompt \u2014 is a question; this is the answer, and it happens only for the plugin the user
     /// picked.
     fn intent_decide(
         &self,
         intent: &str,
         plugin_id: Option<&str>,
+        target: Option<&str>,
     ) -> Result<serde_json::Value, Refusal> {
         crate::runtime::intent::decide(
             &self.plugins,
@@ -323,6 +324,7 @@ impl Kernel for Runtime {
             self.identity.device_id,
             intent,
             plugin_id,
+            target,
             synra_store::sqlite::now_ms(),
         )
     }

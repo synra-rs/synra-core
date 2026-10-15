@@ -303,6 +303,53 @@ impl Board {
             .ok_or(IntentError::Unknown { intent_id: id })
     }
 
+    /// Answers "where should this run?" for an intent that asked.
+    ///
+    /// # ★ Why this method had to exist
+    ///
+    /// Because `Choosing` is reached for **two different questions** \u2014 "which plugin?" when several claimed the share,
+    /// and "where?" when the one that claimed it named no device \u2014 and only the first had a method. A targetless
+    /// candidate left the intent in a state nothing could advance: `choose` puts a candidate with no suggested target
+    /// straight back into `Choosing`, and `confirm` refuses anything that is not `Confirming`. The intent was reachable
+    /// and could not be moved, which meant an action could be proposed and never performed.
+    ///
+    /// # Why this refuses an ambiguous choice rather than taking the first candidate
+    ///
+    /// Because with two candidates the question being asked is "which plugin", and attaching a device to one the user has
+    /// not picked would answer a question they were not asked \u2014 and would do it by silently choosing for them. Which is
+    /// also why the two questions sharing one state is a weakness rather than a design: the state alone does not say what
+    /// is being asked, so this method has to infer it from the candidate count.
+    ///
+    /// # Errors
+    ///
+    /// [`IntentError::Unknown`] when there is no such intent, and [`IntentError::WrongState`] when the intent is not
+    /// waiting to be decided or is waiting with more than one candidate.
+    pub fn aim(&mut self, id: IntentId, target: DeviceId) -> Result<IntentState, IntentError> {
+        let intent = self.intents.get(&id).ok_or(IntentError::Unknown { intent_id: id })?;
+        let IntentState::Choosing { candidates } = &intent.state else {
+            return Err(IntentError::WrongState {
+                attempted: "aim",
+                current: intent.state.kind(),
+            });
+        };
+        // A slice pattern rather than `candidates[0]`: the workspace forbids indexing, and the shape check is the
+        // refusal this method means to give.
+        let candidate = match candidates.as_slice() {
+            [only] => only.clone(),
+            _ => {
+                return Err(IntentError::WrongState {
+                    attempted: "aim",
+                    current: "choosing between several candidates, so the question is which plugin rather than which device",
+                });
+            }
+        };
+        let _ = self.set_state(id, IntentState::Confirming { candidate, target });
+        self.intents
+            .get(&id)
+            .map(|intent| intent.state.clone())
+            .ok_or(IntentError::Unknown { intent_id: id })
+    }
+
     /// Confirms a candidate and a target, producing the dispatch.
     ///
     /// # Returns

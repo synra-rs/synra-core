@@ -169,6 +169,7 @@ pub trait Kernel {
         &self,
         intent: &str,
         plugin_id: Option<&str>,
+        target: Option<&str>,
     ) -> Result<serde_json::Value, Refusal>;
 
     /// The user changed their mind.
@@ -354,8 +355,8 @@ impl Server {
             Request::Plugins => kernel.plugins(),
             Request::IntentDispatch { mime, text } => kernel.intent_dispatch(mime, text),
             Request::IntentSnapshot { intent } => kernel.intent_snapshot(intent),
-            Request::IntentDecide { intent, plugin_id } => {
-                kernel.intent_decide(intent, plugin_id.as_deref())
+            Request::IntentDecide { intent, plugin_id, target } => {
+                kernel.intent_decide(intent, plugin_id.as_deref(), target.as_deref())
             }
             Request::IntentCancel { intent } => kernel.intent_cancel(intent),
             Request::Logs { lines, verbose, trace } => kernel.logs(*lines, *verbose, trace.as_deref()),
@@ -454,6 +455,7 @@ mod tests {
         &self,
         _intent: &str,
         _plugin_id: Option<&str>,
+        _target: Option<&str>,
     ) -> Result<serde_json::Value, Refusal> {
         Err(Refusal::new(
             synra_protocol::ErrorCode::Internal,

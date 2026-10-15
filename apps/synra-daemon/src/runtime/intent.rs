@@ -139,7 +139,7 @@ pub(super) fn snapshot(board: &Arc<Mutex<Board>>, intent: &str) -> Result<serde_
 
 /// Applies the user's answer, and runs what they chose.
 ///
-/// # \u2605 Why this is the one place an action happens
+/// # ★ Why this is the one place an action happens
 ///
 /// Because everything before it is a question. The matching pass asks every plugin whether it can handle a share and
 /// produces candidates; this is where the answer becomes an action \u2014 and only for the plugin the user picked, which is
@@ -155,11 +155,12 @@ pub(super) fn decide(
     local_device: synra_protocol::ids::DeviceId,
     intent: &str,
     plugin_id: Option<&str>,
+    target: Option<&str>,
     now_ms: i64,
 ) -> Result<serde_json::Value, Refusal> {
     let id = parse_intent(intent)?;
 
-    // \u2605 The choice is resolved against the board's own list, not accepted from the caller.
+    // ★ The choice is resolved against the board's own list, not accepted from the caller.
     //
     // `Board::choose` checks that the plugin and action were actually offered \u2014 "a choice arrives from an interface, and
     // acting on one that was never shown would run something the user did not choose". Looking the action up from the
@@ -196,7 +197,21 @@ pub(super) fn decide(
                 .choose(id, &synra_core::intent::CandidateChoice::new(plugin, offered))
                 .map_err(|error| refuse_intent(&error))?;
         }
-        // \u2605 The target is read **before** confirming, because confirming moves the state and the target is what decides
+        // ★ The user's answer to "where?", when the plugin that claimed the share did not say.
+        //
+        // This is the step that had no method: a targetless candidate settles into `Choosing`, which *is* that
+        // question, and every other move either refused or undid it. `aim` is what answers it.
+        if let Some(named) = target {
+            let device = named.parse::<synra_protocol::ids::DeviceId>().map_err(|_| {
+                Refusal::new(
+                    synra_protocol::ErrorCode::InvalidArgument,
+                    "that is not a device identifier",
+                )
+            })?;
+            intents.aim(id, device).map_err(|error| refuse_intent(&error))?;
+        }
+
+        // ★ The target is read **before** confirming, because confirming moves the state and the target is what decides
         // where the action runs. A remote target is not a local call with different arguments: it is a message to another
         // device, and running it here would be doing the user's action on the wrong machine.
         let target = intents.get(id).and_then(|found| match &found.state {
@@ -210,7 +225,7 @@ pub(super) fn decide(
         (candidate, request_id, target)
     };
 
-    // \u2605 Only a target that is **this** device runs here.
+    // ★ Only a target that is **this** device runs here.
     //
     // The board's `confirm` produces a request id because the ordinary dispatch is an envelope to another machine \u2014
     // "the candidate and the envelope id the caller must send under". Sending is not implemented in this build, and
@@ -222,7 +237,7 @@ pub(super) fn decide(
         ));
     }
 
-    // \u2605 The call itself. `execute` is the only function in the system that runs a plugin's action, and it is reached
+    // ★ The call itself. `execute` is the only function in the system that runs a plugin's action, and it is reached
     // from here alone.
     let started_ms = now_ms.max(0) as u64;
     let outcome = {
@@ -329,7 +344,7 @@ fn candidates_of(board: &Board, id: synra_protocol::ids::IntentId) -> Vec<serde_
     candidates
         .iter()
         .map(|candidate| {
-            // \u2605 The title and detail as well as the identifiers: a prompt is built from these, and a client that only
+            // ★ The title and detail as well as the identifiers: a prompt is built from these, and a client that only
             // received `(plugin, action)` would have to invent the sentence a user reads \u2014 which is the plugin's own
             // description of what it will do, not something a host can write for it.
             serde_json::json!({
@@ -384,7 +399,7 @@ mod tests {
         let backend = synra_plugin_host::ScriptedBackend::new();
         backend.script(
             &synra_plugin_host::Work::CanHandle { item_json: item_json() },
-            // \u2605 The shape a real plugin answers with, taken from the deserialiser rather than invented. The first
+            // ★ The shape a real plugin answers with, taken from the deserialiser rather than invented. The first
             // version of this fixture said `pluginId` and `requiredCaps`, and the pass recorded the plugin as
             // **misbehaved** with "can-handle returned missing field `handled`" \u2014 which is the code refusing a payload
             // no plugin would send. A fixture that had been accepted would have proved nothing about plugins.
@@ -397,7 +412,7 @@ mod tests {
                     "action": "open",
                     "title": "Open the link",
                     "required": [],
-                    // \u2605 A target, because without one the board settles the intent into `Choosing` \u2014 the question
+                    // ★ A target, because without one the board settles the intent into `Choosing` \u2014 the question
                     // "where should this run?" \u2014 and no method on `Board` answers it. `choose` re-enters `Choosing` for a
                     // candidate with no target and `confirm` refuses anything that is not `Confirming`, so an intent in
                     // that state cannot be advanced at all. This fixture names this device so the decide path is
@@ -463,6 +478,59 @@ mod tests {
             .expect("a device id")
     }
 
+    /// A set whose `can-handle` answers without suggesting a device.
+    ///
+    /// ★ The case that used to be unreachable. A candidate with no target settles into `Choosing` \u2014 the question
+    /// "where should this run?" \u2014 and before `Board::aim` there was no method that answered it, so an action could be
+    /// proposed here and never performed.
+    fn set_that_accepts_without_a_place(plugin: &str) -> Arc<Mutex<PluginSet>> {
+        let backend = synra_plugin_host::ScriptedBackend::new();
+        backend.script(
+            &synra_plugin_host::Work::CanHandle { item_json: item_json() },
+            synra_plugin_host::Scripted::Ok(
+                serde_json::json!({
+                    "handled": true,
+                    "action": "open",
+                    "title": "Open the link",
+                    "required": [],
+                    "args": { "url": "https://example.com" },
+                })
+                .to_string(),
+            ),
+        );
+        backend.script(
+            &synra_plugin_host::Work::Execute {
+                action: "open".to_owned(),
+                args_json: serde_json::json!({ "url": "https://example.com" }).to_string(),
+            },
+            synra_plugin_host::Scripted::Ok("opened".to_owned()),
+        );
+        let mut set = PluginSet::new(
+            Backend::new(Arc::new(backend)),
+            Arc::new(crate::runtime::plugin_host::KernelHost::new(
+                Arc::new(Mutex::new({
+                    let mut db = synra_store::SynraDb::open_in_memory().expect("a database");
+                    db.migrate().expect("migrates");
+                    db
+                })),
+                "0.1.0-test",
+            )),
+        );
+        let mut grants = synra_capability::CapabilitySet::new();
+        grants.insert_str("log:*").expect("a capability");
+        set.load(PluginSpec {
+            id: synra_protocol::ids::PluginId::try_from(plugin.to_owned()).expect("a plugin id"),
+            version: "1.0.0".to_owned(),
+            wasm: b"\0asm\x01\0\0\0".to_vec(),
+            grants,
+            policy: synra_plugin_host::InstancePolicy::Stateless,
+            limit: 4,
+            quota: synra_plugin_host::quota::Quota::default(),
+        })
+        .expect("loads");
+        Arc::new(Mutex::new(set))
+    }
+
     fn item() -> ShareItem {
         ShareItem {
             from: local_device(),
@@ -479,7 +547,7 @@ mod tests {
 
     #[test]
     fn a_share_reaches_the_plugins_and_its_candidates_come_back() {
-        // \u2605 The test the whole request exists for. Before it, the matcher had **no production caller**: `synra-core`
+        // ★ The test the whole request exists for. Before it, the matcher had **no production caller**: `synra-core`
         // implemented routing and nothing could reach it, so a share that arrived became a file in an inbox rather than an
         // action. The assertion is on the candidates, because a candidate is what routing produces.
         let plugins = set_that_accepts("@acme/opener");
@@ -500,7 +568,7 @@ mod tests {
 
     #[test]
     fn a_decided_share_runs_the_plugin_and_records_what_it_returned() {
-        // \u2605 The end of the line: a share becomes an action.
+        // ★ The end of the line: a share becomes an action.
         //
         // Every test before this one stops at "a candidate was produced". This is the only place in the system where a
         // plugin's action actually runs, and the assertion is on what the plugin was asked to do \u2014 not on the state
@@ -512,7 +580,7 @@ mod tests {
         let intent = routed["intent"].as_str().expect("an id").to_owned();
 
         let answer =
-            decide(&plugins, &board, local_device(), &intent, None, 2_000).expect("decided");
+            decide(&plugins, &board, local_device(), &intent, None, None, 2_000).expect("decided");
 
         assert_eq!(answer["ok"], true, "{answer}");
         assert_eq!(answer["pluginId"], "@acme/opener");
@@ -521,7 +589,7 @@ mod tests {
         assert_eq!(answer["result"], "opened");
         assert_eq!(answer["state"], "succeeded", "{answer}");
 
-        // \u2605 And the plugin was asked to **execute**, which is the call that has side effects. Asserting only on the
+        // ★ And the plugin was asked to **execute**, which is the call that has side effects. Asserting only on the
         // state would pass against an implementation that never invoked anything.
         // ★ And what the plugin proposed is what it was given. The call above is scripted on the exact arguments,
         // so this is the thing that would break if the URL stopped being carried — the defect that stood here before.
@@ -548,12 +616,48 @@ mod tests {
             "the proposal's own arguments travel with the candidate: {routed}"
         );
 
-        decide(&plugins, &board, local_device(), &intent, None, 2_000).expect("decided");
+        decide(&plugins, &board, local_device(), &intent, None, None, 2_000).expect("decided");
+    }
+
+    #[test]
+    fn a_share_whose_plugin_named_no_device_is_aimed_and_then_runs() {
+        // ★ The whole point of `Board::aim`, end to end.
+        //
+        // Before it, this share could be routed and could not be acted on: `settle` parked the intent in `Choosing` with
+        // its one targetless candidate, `choose` put it back there, and `confirm` refused anything that was not
+        // `Confirming`. The user was asked where to run it and there was no way to answer.
+        let plugins = set_that_accepts_without_a_place("@acme/opener");
+        let board = Arc::new(Mutex::new(synra_core::intent::Board::new()));
+        let routed = dispatch(&plugins, &board, &item(), 1_000).expect("routed");
+        let intent = routed["intent"].as_str().expect("an id").to_owned();
+        assert_eq!(routed["state"], "choosing", "the question is where: {routed}");
+
+        // A decision with no place is refused rather than silently run somewhere — and the refusal is the board's own, so
+        // it says what state the intent is in.
+        let without_a_place =
+            decide(&plugins, &board, local_device(), &intent, None, None, 2_000);
+        assert!(without_a_place.is_err(), "where was never answered");
+
+        // Answering it is what lets the intent move, and the action runs.
+        let answer = decide(
+            &plugins,
+            &board,
+            local_device(),
+            &intent,
+            None,
+            Some(&local_device().to_string()),
+            3_000,
+        )
+        .expect("aimed and run");
+
+        assert_eq!(answer["ok"], true, "{answer}");
+        assert_eq!(answer["state"], "succeeded", "{answer}");
+        assert_eq!(answer["result"], "opened");
     }
 
     #[test]
     fn an_unknown_intent_is_refused_rather_than_answered_with_an_empty_one() {
-        // \u2605 "There is no such intent" and "the intent is over" are different answers, and a client that received an
+        // ★ "There is no such intent" and "the intent is over" are different answers, and a client that received an
         // empty snapshot for the first would show a user a prompt for something that never existed.
         let plugins = set_that_accepts("@acme/opener");
         let board = Arc::new(Mutex::new(synra_core::intent::Board::new()));
@@ -576,14 +680,14 @@ mod tests {
         let answer = cancel(&board, &intent, "the user changed their mind").expect("cancelled");
 
         assert_eq!(answer["state"], "cancelled", "{answer}");
-        // \u2605 And it is no longer live: a cancelled intent that still appeared in the list would be a prompt a user
+        // ★ And it is no longer live: a cancelled intent that still appeared in the list would be a prompt a user
         // could answer after saying no.
         assert!(board.lock().live().is_empty(), "a cancelled intent is not live");
     }
 
     #[test]
     fn a_share_nobody_can_handle_is_told_apart_from_nothing_being_installed() {
-        // \u2605 The distinction the report exists for, and the one a candidate list cannot make. Both cases offer no
+        // ★ The distinction the report exists for, and the one a candidate list cannot make. Both cases offer no
         // candidates, and a user asking "why did nothing happen" needs to know which they are in.
         let plugins = Arc::new(Mutex::new(PluginSet::new(
             Backend::new(Arc::new(synra_plugin_host::ScriptedBackend::new())),

@@ -97,7 +97,7 @@ pub struct Runtime {
 
     /// The intents this kernel is holding: what was shared, which plugins offered, and what the user chose.
     ///
-    /// # \u2605 Why the runtime holds it
+    /// # ★ Why the runtime holds it
     ///
     /// Because it is the thing the product is. Something arrives, every plugin is asked whether it can handle it, the
     /// candidates are offered to the user, and one is run \u2014 and a board is what holds that state between the request

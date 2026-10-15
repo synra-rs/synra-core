@@ -161,7 +161,7 @@ struct Shared {
 
 /// The key a script is stored under.
 ///
-/// # \u2605 Why this is not `Work`'s `Display`
+/// # ★ Why this is not `Work`'s `Display`
 ///
 /// Because `Display` is `interface.function` \u2014 `share.execute` \u2014 which is the right label for a log line and the wrong
 /// key for a fixture. Two calls to `share.execute` with different actions, or two `can-handle` calls about different
