@@ -118,6 +118,17 @@ fn raise(message: &str) -> CallOutcome {
 pub struct ScriptedBackend {
     shared: Arc<Shared>,
     version: String,
+    /// The host functions this backend's artifacts claim to import.
+    ///
+    /// # Why the double needs this at all
+    ///
+    /// Because the kernel now checks, at load, that everything an artifact imports is covered by the capabilities it was
+    /// granted — and a double that always reported "no imports" could not express the condition being checked. A test
+    /// would then be unable to show that an artifact importing an undeclared function is refused, which is the whole
+    /// point of the check existing.
+    ///
+    /// Empty by default: an artifact with no imports is the ordinary case, and a test that does not care says nothing.
+    imports: Vec<String>,
 }
 
 /// What the backend and every instance of it share.
@@ -160,7 +171,18 @@ impl ScriptedBackend {
                 calls: AtomicU64::new(0),
             }),
             version: "scripted-1".to_owned(),
+            imports: Vec::new(),
         }
+    }
+
+    /// Declares the host functions this backend's artifacts import.
+    ///
+    /// A builder rather than a constructor argument, because almost no test cares: an artifact that imports nothing is
+    /// the ordinary case, and this is for the one test that has to show an undeclared import being refused at load.
+    #[must_use]
+    pub fn importing(mut self, imports: &[&str]) -> Self {
+        self.imports = imports.iter().map(|import| (*import).to_owned()).collect();
+        self
     }
 
     /// Sets what one plugin's copy of one entry point answers.
@@ -244,6 +266,8 @@ impl Default for ScriptedBackend {
 pub struct ScriptedArtifact {
     digest: String,
     plugin_id: String,
+    /// What this artifact claims to import, for the kernel's load-time coverage check.
+    imports: Vec<String>,
 }
 
 impl CompiledArtifact for ScriptedArtifact {
@@ -253,6 +277,10 @@ impl CompiledArtifact for ScriptedArtifact {
 
     fn digest(&self) -> &str {
         &self.digest
+    }
+
+    fn imports(&self) -> &[String] {
+        &self.imports
     }
 }
 
@@ -365,6 +393,7 @@ impl WasmBackend for ScriptedBackend {
         Ok(Box::new(ScriptedArtifact {
             digest,
             plugin_id: plugin_id.to_owned(),
+            imports: self.imports.clone(),
         }))
     }
 

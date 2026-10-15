@@ -166,6 +166,15 @@ impl CompiledArtifact for EngineArtifact {
     fn digest(&self) -> &str {
         &self.digest
     }
+
+    /// What the component's own type says it imports.
+    ///
+    /// Already read at compile time and already checked against the host's table — the linker refuses to instantiate a
+    /// component naming a function this build does not provide. Exposing it is what lets the *kernel* make the other
+    /// check, about the plugin's own capabilities, without knowing which engine produced the artifact.
+    fn imports(&self) -> &[String] {
+        &self.imports
+    }
 }
 
 /// What an instance's store holds.

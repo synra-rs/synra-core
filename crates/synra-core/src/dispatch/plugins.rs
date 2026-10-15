@@ -77,6 +77,25 @@ pub enum PluginSetError {
         /// The plugin.
         id: PluginId,
     },
+
+    /// The artifact imports a host function its capabilities do not cover.
+    ///
+    /// # Why the imported function is named and the capability is not
+    ///
+    /// Because the two readers need different halves. An author needs to know **which import** to remove or declare —
+    /// they wrote the code that reaches it. A user needs to know the plugin is not trustworthy as built, and naming a
+    /// capability at them would suggest a setting they could change to make it work, which is the opposite of true.
+    ///
+    /// Refused at load rather than at the call, because a call is where it becomes invisible: the guest would get a
+    /// refusal for a function it genuinely imports, on a code path nobody is looking at, and the plugin would appear to
+    /// work while quietly failing at one thing.
+    #[error("{id} imports {import}, which its capabilities do not cover")]
+    UndeclaredImport {
+        /// The plugin.
+        id: PluginId,
+        /// The imported host function, as the component's own type reports it.
+        import: String,
+    },
 }
 
 impl PluginSetError {
@@ -205,10 +224,35 @@ impl PluginSet {
     ///
     /// # Errors
     ///
-    /// [`PluginSetError::Compile`] when the engine refuses the bytes. A plugin already loaded is replaced, because a
+    /// [`PluginSetError::Compile`] when the engine refuses the bytes, and [`PluginSetError::UndeclaredImport`] when the
+    /// artifact imports a host function its capabilities do not cover. A plugin already loaded is replaced, because a
     /// reinstall is how an update arrives and refusing the second write would make updates depend on a clean shutdown.
     pub fn load(&mut self, spec: PluginSpec) -> Result<(), PluginSetError> {
         let compiled = self.backend.compile(&spec.wasm, spec.id.as_str())?;
+
+        // ★ The load-time import check, which had no caller until now.
+        //
+        // `host_surface::undeclared_imports` was written, tested, and called by nothing in production: the pipeline that
+        // uses it (`synra_plugin_host::verify::verify`) has no caller either. So an artifact importing a host function
+        // its capabilities never covered was loaded and run, and the first sign of it would have been a call refused at
+        // the gate — long after the install, and for a reason the author could not act on.
+        //
+        // What is checked is what the **component** imports, read from its own type at compile time, rather than what
+        // its manifest claims. That is the difference between a claim and a fact, and it is why the check can only
+        // happen here: the imports do not exist until the bytes have been compiled.
+        //
+        // The comparison is against `spec.grants`, which in today's caller is the manifest's declared set — see the
+        // daemon's `grants_of`. That makes the check "the artifact imports nothing its manifest did not declare", which
+        // is exactly layer 1 of the three-layer gate and holds whatever the grants came from. When the consent flow
+        // starts narrowing `grants` to the user's actual decisions, this check narrows with it and needs no change.
+        let undeclared = synra_plugin_host::host_surface::undeclared_imports(compiled.imports(), &spec.grants);
+        if let Some(import) = undeclared.first() {
+            return Err(PluginSetError::UndeclaredImport {
+                id: spec.id,
+                import: import.clone(),
+            });
+        }
+
         let pool = synra_plugin_host::InstancePool::new(spec.policy, spec.limit);
         pool.start();
         self.loaded.insert(

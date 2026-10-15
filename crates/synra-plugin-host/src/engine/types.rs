@@ -459,6 +459,28 @@ pub trait CompiledArtifact: Send + Sync + std::any::Any {
 
     /// A digest of the compiled form, for a cache key.
     fn digest(&self) -> &str;
+
+    /// The host functions the artifact imports, as the component's own type reports them.
+    ///
+    /// # ★ Why this is on the trait and not only on `EngineArtifact`
+    ///
+    /// Because the load-time check that needs it — "every function this artifact imports is one its capabilities cover"
+    /// — lives in the kernel, which holds a `Box<dyn CompiledArtifact>` and cannot name the concrete type without
+    /// depending on the engine it happens to be running.
+    ///
+    /// The check itself is [`host_surface::undeclared_imports`](crate::host_surface::undeclared_imports): written,
+    /// tested, and called by nothing in production, because the pipeline that uses it
+    /// ([`verify`](crate::verify::verify)) has no caller either. An artifact importing a host function its manifest never
+    /// declared was loaded and run, and the first sign of it would have been a call refused at the gate — for a reason
+    /// the author could not act on.
+    ///
+    /// # Why the default is empty
+    ///
+    /// A backend whose artifacts have no imports has nothing to report. `ScriptedArtifact` overrides it, so a test can
+    /// express an artifact that imports something — which is the condition this method exists to let a caller check.
+    fn imports(&self) -> &[String] {
+        &[]
+    }
 }
 
 /// One instantiated plugin, ready to be called.
