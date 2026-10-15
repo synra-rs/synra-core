@@ -328,12 +328,26 @@ impl Kernel for Runtime {
             transfers: Vec::new(),
             context_id: None,
         };
-        crate::runtime::intent::dispatch(
+        let answer = crate::runtime::intent::dispatch(
             &self.plugins,
             &self.board,
             &item,
             synra_store::sqlite::now_ms(),
-        )
+        )?;
+
+        // ★ Written down here, from the identifier the library returned, so what is stored is whatever the board now holds
+        // rather than a second opinion about it.
+        //
+        // The key is `intent`, not `intentId` — and the first version of this line read `intentId`, which is not a field of
+        // `Routed::to_json`. `as_str()` on a missing key is `None`, so the call was simply never made: persistence that
+        // silently does nothing is exactly the shape this whole path exists to remove, and it was caught by the test rather
+        // than by a user whose intents kept disappearing.
+        // `get` rather than indexing: a missing key is `None` either way, and an index expression is a panic waiting for
+        // the day the shape changes — which is exactly how the first version of this line went wrong.
+        if let Some(intent) = answer.get("intent").and_then(serde_json::Value::as_str) {
+            self.checkpoint_intent(intent);
+        }
+        Ok(answer)
     }
 
     fn intent_snapshot(&self, intent: &str) -> Result<serde_json::Value, Refusal> {
@@ -375,6 +389,10 @@ impl Kernel for Runtime {
             self.send_outbound(outbound)?;
         }
 
+        // ★ After the send, not before: a send that fails leaves the intent dispatching, and what must be written down is
+        // the state the caller is actually in — the far side may still have received the message.
+        self.checkpoint_intent(intent);
+
         Ok(decided.to_json())
     }
 
@@ -394,6 +412,8 @@ impl Kernel for Runtime {
         if let Some(outbound) = &change.outbound {
             self.send_outbound(outbound)?;
         }
+
+        self.checkpoint_intent(intent);
 
         Ok(change.to_json())
     }

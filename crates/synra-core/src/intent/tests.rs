@@ -1033,3 +1033,56 @@ fn the_board_keeps_the_order_it_was_given_rather_than_sorting_by_a_timestamp() {
     let order: Vec<IntentId> = restored.all().iter().map(|intent| intent.id).collect();
     assert_eq!(order, vec![second, first], "the board holds the order it was handed");
 }
+
+#[test]
+fn the_finished_kinds_are_exactly_the_states_that_are_final() {
+    // ★ Why this is a test and not a comment.
+    //
+    // `IntentState::final_kinds` exists because the store's retention sweep compares a persisted `state` column to a list
+    // of names, and the storage layer cannot depend on the kernel — so the list has to be written down somewhere it can be
+    // handed over. A hand-written list is a second definition of "finished", and the failure mode is asymmetric and quiet:
+    // a state renamed in `kind` but not in the list becomes **immortal**, and one renamed the other way is collected while
+    // still in progress.
+    //
+    // So every variant is constructed here and the two answers are compared. A variant added to `IntentState` that nobody
+    // added to either list fails to compile in this match, which is the point.
+    let refusal = super::super::admission::AdmissionRefusal {
+        step: super::super::admission::AdmissionStep::PluginGrant,
+        code: ErrorCode::CapabilityDenied,
+        detail: "not granted".to_owned(),
+    };
+    let candidate = candidate("@acme/browser", "open", None);
+
+    let every = [
+        IntentState::Matching { deadline_ms: NOW, candidates: Vec::new() },
+        IntentState::Choosing { candidates: vec![candidate.clone()] },
+        IntentState::Confirming { candidate: candidate.clone(), target: DeviceId::new() },
+        IntentState::Dispatching {
+            candidate,
+            target: DeviceId::new(),
+            request_id: RequestId::new(),
+        },
+        IntentState::Succeeded { result: serde_json::json!({}), elapsed_ms: 1 },
+        IntentState::Failed {
+            error: SynraError::new(ErrorCode::Internal, "broke"),
+            elapsed_ms: 1,
+        },
+        IntentState::NoHandler,
+        IntentState::TimedOut { after: Duration::from_millis(1) },
+        IntentState::Refused { refusal },
+        IntentState::Cancelled { reason: "no".to_owned() },
+    ];
+    // And that this list is the whole enum: a variant missing from it would be a variant nobody checked.
+    assert_eq!(every.len(), 10, "the enum has ten states; a new one needs adding here and to one of the lists");
+
+    for state in &every {
+        assert_eq!(
+            state.is_final(),
+            IntentState::final_kinds().contains(&state.kind()),
+            "`{}`: is_final says {}, the list says {}",
+            state.kind(),
+            state.is_final(),
+            IntentState::final_kinds().contains(&state.kind())
+        );
+    }
+}

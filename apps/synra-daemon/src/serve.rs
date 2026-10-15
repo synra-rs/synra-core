@@ -302,6 +302,17 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
         verbosity: log_verbosity,
     };
 
+    // ★ Put back what the last run was working on, **before** the socket is bound.
+    //
+    // The same reason the database is migrated first: a client that connects must find a kernel whose board is what it says
+    // it is. A daemon that bound first and restored afterwards would answer the first `intent_snapshot` with "no such
+    // intent" for one it was about to remember — and a peer whose answer was lost would take that as permission to raise it
+    // again, which is the second run of a user's action this whole path exists to prevent.
+    let restored = runtime.restore_intents();
+    if restored > 0 {
+        println!("restored {restored} intent(s)");
+    }
+
     let listener = match Listener::bind(&runtime.data_dir) {
         Ok(listener) => listener,
         Err(error) => {

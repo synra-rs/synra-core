@@ -293,6 +293,20 @@ impl IntentState {
         matches!(self, Self::Dispatching { .. })
     }
 
+    /// The [`IntentState::kind`] names of the states nothing more will happen in.
+    ///
+    /// # ★ Why this list is here rather than where it is used
+    ///
+    /// Because the store's retention sweep compares a persisted `state` column against these names, and the storage layer
+    /// cannot depend on the kernel — so the list has to be handed to it. A list written at the call site would be a second
+    /// definition of "finished", and the two would drift the first time a state is renamed: a rename here that is not made
+    /// there would make every intent in that state **immortal**, and a rename the other way would collect work still in
+    /// progress. There is a test beside this that constructs every variant and asserts the two agree.
+    #[must_use]
+    pub const fn final_kinds() -> &'static [&'static str] {
+        &["succeeded", "failed", "no-handler", "timed-out", "refused", "cancelled"]
+    }
+
     /// The candidates, wherever they are being held.
     #[must_use]
     pub fn candidates(&self) -> &[IntentCandidate] {
