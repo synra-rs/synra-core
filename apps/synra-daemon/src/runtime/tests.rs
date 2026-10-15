@@ -352,6 +352,33 @@ fn install(runtime: &Runtime, id: &str, enabled: i64, trusted: i64) {
         .expect("a plugin row");
 }
 
+/// Records the user's decision about a plugin's capabilities, which is what makes it loadable.
+///
+/// # ★ Why this helper had to exist
+///
+/// Because `trusted = 1` is no longer an authorisation. It used to be treated as one: the loader took the manifest's own
+/// declaration as the grant, so a row saying "the user trusts this" was enough, and a plugin received exactly what it
+/// asked for. Now the grants come from the decisions recorded here, and the manifest's digest is checked against the
+/// document those decisions were made about — so a test that set a flag and expected a plugin to run was asserting the
+/// old rule.
+///
+/// That three tests failed the moment this changed is the point rather than a nuisance: they were installing trusted
+/// plugins with nothing recorded, which is precisely the state the consistency check exists to catch.
+fn consent(runtime: &Runtime, id: &str, granted: &[&str]) {
+    let text = std::fs::read_to_string(runtime.plugins_dir.join(id).join("manifest.json"))
+        .expect("the manifest this consent is about");
+    let manifest: synra_plugin_api::Manifest = serde_json::from_str(&text).expect("a manifest");
+    let decisions: Vec<(String, bool)> = manifest
+        .capabilities
+        .iter()
+        .map(|declared| (declared.cap.clone(), granted.contains(&declared.cap.as_str())))
+        .collect();
+    runtime
+        .db()
+        .record_grants(id, &decisions, 200, &synra_plugin_api::manifest_digest(&text))
+        .expect("the decisions");
+}
+
 #[test]
 fn a_plugin_directory_the_database_has_never_seen_is_recorded_and_left_off() {
     // ★ The step that was missing entirely, and the reason the whole plugin subsystem was unreachable.
@@ -544,6 +571,7 @@ fn an_enabled_and_trusted_plugin_is_actually_loaded() {
     write_plugin(&runtime.plugins_dir, "@acme/hello", r#"{"cap": "log:info"}"#);
     install(&runtime, "@acme/hello", 1, 1);
 
+    consent(&runtime, "@acme/hello", &["log:info"]);
     let (mut set, _backend) = loader();
     let summary = crate::runtime::load_installed(
         &mut set,
@@ -555,6 +583,102 @@ fn an_enabled_and_trusted_plugin_is_actually_loaded() {
     assert_eq!(summary.len(), 1, "the one plugin that should run did; refused: {:?}", summary.refused);
     assert!(summary.contains(&synra_protocol::ids::PluginId::try_from("@acme/hello".to_owned()).expect("an id")));
     assert!(summary.refused.is_empty(), "nothing was refused: {:?}", summary.refused);
+}
+
+#[test]
+fn a_plugin_the_user_never_answered_about_is_not_loaded_even_when_it_is_trusted() {
+    // ★ The consistency check, and the reason `trusted = 1` stopped being an authorisation.
+    //
+    // The grants used to come from the manifest's own declaration, so a row saying "the user trusts this" was enough and
+    // a plugin received exactly what it asked for. A row in that state — trusted, with nothing recorded — is what a
+    // pre-consent build left behind, and it must not load: there is no decision behind the flag.
+    let dir = TempDir::new("no-consent");
+    let runtime = runtime(dir.path());
+    write_plugin(&runtime.plugins_dir, "@acme/hello", r#"{"cap": "log:info"}"#);
+    install(&runtime, "@acme/hello", 1, 1);
+    // Deliberately no `consent`.
+
+    let (mut set, _backend) = loader();
+    let summary = crate::runtime::load_installed(
+        &mut set,
+        &runtime.db(),
+        &runtime.plugins_dir,
+        &synra_observe::crash::StartupVerdict::Clean,
+    );
+
+    assert!(summary.is_empty(), "nothing may be loaded: {summary:?}");
+    let refused = summary.refused.first().expect("a refusal, not silence");
+    assert_eq!(refused.plugin_id, "@acme/hello");
+    assert!(
+        refused.reason.contains("confirmed by the user"),
+        "the reason has to be one a user can act on: {}",
+        refused.reason
+    );
+}
+
+#[test]
+fn a_plugin_whose_manifest_changed_after_consent_needs_confirming_again() {
+    // ★ Why the decision is recorded against a digest rather than against the plugin.
+    //
+    // A user approves a plugin that asks for `log:*`, and then the package is replaced by one that also asks for
+    // `device:list`. The decisions on record are about a **different document**, so the honest answer is "confirm this
+    // again" — not "run it with less than it says it needs", which produces a plugin that appears to work and fails at
+    // one thing.
+    let dir = TempDir::new("stale-consent");
+    let runtime = runtime(dir.path());
+    write_plugin(&runtime.plugins_dir, "@acme/hello", r#"{"cap": "log:info"}"#);
+    install(&runtime, "@acme/hello", 1, 1);
+    consent(&runtime, "@acme/hello", &["log:info"]);
+
+    // The package is replaced. Same id, same version, one more capability — a change an author can make without bumping
+    // anything, which is exactly why the bytes are what is hashed.
+    write_plugin(&runtime.plugins_dir, "@acme/hello", r#"{"cap": "log:info"}, {"cap": "device:list"}"#);
+
+    let (mut set, _backend) = loader();
+    let summary = crate::runtime::load_installed(
+        &mut set,
+        &runtime.db(),
+        &runtime.plugins_dir,
+        &synra_observe::crash::StartupVerdict::Clean,
+    );
+
+    assert!(summary.is_empty(), "nothing may be loaded: {summary:?}");
+    let refused = summary.refused.first().expect("a refusal, not silence");
+    assert!(
+        refused.reason.contains("changed since the user confirmed it"),
+        "the reason has to say what happened: {}",
+        refused.reason
+    );
+}
+
+#[test]
+fn the_grants_a_plugin_runs_with_are_the_ones_the_user_gave_it() {
+    // ★ The difference the whole change exists for, asserted at the only place it is observable from outside.
+    //
+    // The manifest declares two capabilities; the user granted one. The plugin must load with **one**, because the set
+    // it runs with is the user's decision rather than the author's request. Before this, the two were the same thing by
+    // construction and no test could tell them apart.
+    let dir = TempDir::new("granted-narrow");
+    let runtime = runtime(dir.path());
+    write_plugin(&runtime.plugins_dir, "@acme/hello", r#"{"cap": "log:info"}, {"cap": "device:list"}"#);
+    install(&runtime, "@acme/hello", 1, 1);
+    consent(&runtime, "@acme/hello", &["log:info"]);
+
+    let (mut set, _backend) = loader();
+    let summary = crate::runtime::load_installed(
+        &mut set,
+        &runtime.db(),
+        &runtime.plugins_dir,
+        &synra_observe::crash::StartupVerdict::Clean,
+    );
+    assert_eq!(summary.len(), 1, "the plugin still runs: {:?}", summary.refused);
+
+    // Read back through the set rather than the database, so this asserts what the *plugin* was given.
+    let held = set
+        .grants(&synra_protocol::ids::PluginId::try_from("@acme/hello".to_owned()).expect("an id"))
+        .expect("the plugin is loaded");
+    let held: Vec<String> = held.iter().map(ToString::to_string).collect();
+    assert_eq!(held, vec!["log:info".to_owned()], "the granted set, not the requested one: {held:?}");
 }
 
 #[test]
@@ -571,6 +695,7 @@ fn safe_mode_loads_nothing_and_says_why() {
     write_plugin(&runtime.plugins_dir, "@acme/hello", r#"{"cap": "log:info"}"#);
     install(&runtime, "@acme/hello", 1, 1);
 
+    consent(&runtime, "@acme/hello", &["log:info"]);
     let (mut set, _backend) = loader();
     // ★ The verdict is reached the way the daemon reaches it — by writing crash reports and asking the store — rather
     // than by constructing `SafeMode` here. Hand-building the enum would test that `allows_plugins` returns false for a
@@ -658,6 +783,10 @@ fn one_broken_plugin_does_not_stop_the_others() {
     .expect("a manifest");
     install(&runtime, "@acme/broken", 1, 1);
     install(&runtime, "@acme/good", 1, 1);
+    // `plugin_grants` has a foreign key onto `plugins`, so a decision cannot exist before the row it is about — which
+    // is the schema saying the same thing the loader does: consent is about a plugin that is installed.
+    consent(&runtime, "@acme/broken", &[]);
+    consent(&runtime, "@acme/good", &["log:info"]);
 
     let (mut set, _backend) = loader();
     let summary = crate::runtime::load_installed(
@@ -713,6 +842,7 @@ fn the_report_says_what_was_loaded_and_not_a_constant() {
     let runtime = runtime(dir.path());
     write_plugin(&runtime.plugins_dir, "@acme/hello", r#"{"cap": "log:info"}"#);
     install(&runtime, "@acme/hello", 1, 1);
+    consent(&runtime, "@acme/hello", &["log:info"]);
 
     let (mut set, _backend) = loader();
     let summary = crate::runtime::load_installed(

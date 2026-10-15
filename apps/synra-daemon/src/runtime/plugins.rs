@@ -275,7 +275,7 @@ pub fn load_installed(
         if !row.should_run() {
             continue;
         }
-        match load_one(set, plugins_dir, &row.plugin_id) {
+        match load_one(set, db, plugins_dir, &row.plugin_id) {
             Ok(id) => summary.loaded.push(id),
             Err(reason) => summary.refused.push(Refused { plugin_id: row.plugin_id.clone(), reason }),
         }
@@ -289,7 +289,12 @@ pub fn load_installed(
 ///
 /// A string saying what stopped it, because every reason here is a fact about a file on disk or a manifest a third party
 /// wrote, and each one is something the user or the author needs to read rather than an error code to map elsewhere.
-fn load_one(set: &mut PluginSet, plugins_dir: &Path, plugin_id: &str) -> Result<PluginId, String> {
+fn load_one(
+    set: &mut PluginSet,
+    db: &synra_store::SynraDb,
+    plugins_dir: &Path,
+    plugin_id: &str,
+) -> Result<PluginId, String> {
     let id = PluginId::try_from(plugin_id.to_owned()).map_err(|error| format!("the id is not usable: {error}"))?;
     let directory = plugins_dir.join(plugin_id);
     let manifest_text = std::fs::read_to_string(directory.join("manifest.json"))
@@ -303,7 +308,34 @@ fn load_one(set: &mut PluginSet, plugins_dir: &Path, plugin_id: &str) -> Result<
     let wasm = std::fs::read(directory.join(&headless.artifact))
         .map_err(|error| format!("the artifact could not be read: {error}"))?;
 
-    let grants = grants_of(&manifest)?;
+    // ★ The grants are what the **user approved**, not what the manifest asks for.
+    //
+    // This was `grants_of(&manifest)`, which made the plugin's own declaration its authorisation: the consent table had
+    // no writer, so there was nothing else to consult. A plugin received exactly what it asked for and the per-capability
+    // consent the whole capability model rests on did not exist at either end.
+    //
+    // # Why a mismatch is a refusal rather than an intersection
+    //
+    // Because intersecting quietly would be the wrong shape for the common case. A plugin whose manifest has changed —
+    // an update that adds a capability — has decisions recorded against a *different document*, and the honest answer is
+    // "we need to ask again", not "we will run it with less than it says it needs". The second one produces a plugin
+    // that appears to work and fails at one thing, which is exactly the silent degradation consent exists to prevent.
+    //
+    // The digest is over the bytes on disk, so a manifest that was edited rather than replaced is caught too.
+    let digest = synra_plugin_api::manifest_digest(&manifest_text);
+    let decisions = db.plugin_grants(plugin_id).map_err(|error| format!("the decisions could not be read: {error}"))?;
+    if decisions.is_empty() {
+        // Trusted with nothing recorded is the state a pre-consent build left behind, and it is not an authorisation.
+        return Err("it has not been confirmed by the user".to_owned());
+    }
+    if let Some(stale) = decisions.iter().find(|decision| decision.manifest_digest != digest) {
+        let _ = stale;
+        return Err(
+            "it has changed since the user confirmed it, and needs confirming again".to_owned(),
+        );
+    }
+
+    let grants = granted_of(&decisions)?;
     let policy = if headless.stateful { InstancePolicy::Stateful } else { InstancePolicy::Stateless };
     set.load(PluginSpec {
         id: id.clone(),
@@ -317,17 +349,27 @@ fn load_one(set: &mut PluginSet, plugins_dir: &Path, plugin_id: &str) -> Result<
     Ok(id)
 }
 
-/// The capability set a manifest asks for.
+/// The capability set the user granted, from the decisions on record.
 ///
-/// # Why this cannot fail silently
+/// # Why only the granted rows, and why a parse failure is loud
 ///
-/// A manifest whose capability string does not parse is a manifest whose author asked for something the grammar has no
-/// meaning for. Loading it with an empty set would grant it nothing and look like a working plugin that declined every
-/// share — which is a bug report that sends the author looking in the wrong file entirely.
-fn grants_of(manifest: &synra_plugin_api::Manifest) -> Result<CapabilitySet, String> {
+/// A denied row is a decision too, and it must not become a grant. And a capability string that does not parse is a row
+/// that cannot be honoured: skipping it would run the plugin with less than the user approved, which looks exactly like
+/// a plugin that declines everything — and sends its author looking in the wrong file.
+///
+/// # What used to be here
+///
+/// A function called `grants_of`, which built the set from the **manifest's own declarations** — and carried a doc
+/// comment explaining, correctly, why it must not fail silently. It was right about the failure mode and wrong about the
+/// source: a manifest is what a plugin *asks for*, and using it as the grant made the request its own authorisation. It
+/// became dead the moment the decisions above became the source, which is the shape a correct-but-misplaced function
+/// should have when it is replaced.
+fn granted_of(decisions: &[synra_store::PluginGrantRow]) -> Result<CapabilitySet, String> {
     let mut grants = CapabilitySet::new();
-    for declaration in &manifest.capabilities {
-        grants.insert_str(&declaration.cap).map_err(|error| format!("`{}`: {error}", declaration.cap))?;
+    for decision in decisions.iter().filter(|decision| decision.granted) {
+        grants
+            .insert_str(&decision.capability)
+            .map_err(|error| format!("a granted capability is not usable: `{}`: {error}", decision.capability))?;
     }
     Ok(grants)
 }
