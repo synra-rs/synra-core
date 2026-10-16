@@ -90,12 +90,7 @@ impl Host {
         // ★ Recorded where the session opens rather than on the way out, because that is the event. A link that opened
         // and then failed to be marked ready **did** open, and a count that hid it would make two different failures
         // look like one — the shape this codebase keeps removing.
-        if let Some(metrics) = &self.metrics {
-            metrics.counter_inc(&synra_observe::metrics::SeriesKey::new(
-                "links_opened_total",
-                Vec::new(),
-            ));
-        }
+        self.count_link_opened();
         let (key, _events) = self.sessions.open(
             SessionId::new(),
             negotiated.device_id,
@@ -384,12 +379,7 @@ impl Host {
         //
         // ★ Recorded **after** the send rather than before, and that is not a detail: a frame the link refused never
         // left, so a count that included it would say this device talks more than it does.
-        if let Some(metrics) = &self.metrics {
-            metrics.counter_inc(&synra_observe::metrics::SeriesKey::new(
-                "frames_sent_total",
-                [("event".to_owned(), envelope.event.as_str().to_owned())],
-            ));
-        }
+        self.count_frame_sent(envelope.event.as_str());
         Ok(())
     }
 

@@ -81,6 +81,33 @@ impl Host {
         self
     }
 
+    /// Counts one frame this host sent, by event.
+    ///
+    /// The pair of [`Host::count_frame_received`], and a method for the same reason: the field is `pub(super)`, so a
+    /// call site that reached for it would be one module's private arrangement rather than the host's rule.
+    pub fn count_frame_sent(&mut self, event: &str) {
+        if let Some(metrics) = &self.metrics {
+            metrics.counter_inc(&synra_observe::metrics::SeriesKey::new(
+                "frames_sent_total",
+                [("event".to_owned(), event.to_owned())],
+            ));
+        }
+    }
+
+    /// Counts one link this host opened.
+    ///
+    /// Recorded where the session opens rather than when it closes, because that is the event: a link that opened and
+    /// then failed to be marked ready **did** open, and a count that hid it would make two different failures look
+    /// like one.
+    pub fn count_link_opened(&mut self) {
+        if let Some(metrics) = &self.metrics {
+            metrics.counter_inc(&synra_observe::metrics::SeriesKey::new(
+                "links_opened_total",
+                Vec::new(),
+            ));
+        }
+    }
+
     /// Counts one frame this host received, by event.
     ///
     /// ★ The other half of what `Host::send` records, and a separate method rather than one with a direction: a device
