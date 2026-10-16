@@ -107,7 +107,20 @@ impl Runtime {
                     .and_then(serde_json::Value::as_str),
                 "enabled": row.enabled,
                 "trusted": row.trusted,
+                // ★ Two healths, because they are two different facts.
+                //
+                // `health` is the row: what was recorded when the plugin was installed or last checked, and it survives a
+                // restart. `liveHealth` is the ladder **now** — `good`, `overreaching`, `degraded`, `faulted` — and it is
+                // the one that moves when a plugin starts trapping. Until this field existed the ladder had no reader at
+                // all: the daemon reported the row and nothing reported the rung, so a plugin could degrade to `faulted`
+                // and the interface would still say what it said at install time.
+                //
+                // `null` for a plugin that is not loaded, which is a different fact from "healthy".
                 "health": row.health,
+                "liveHealth": self
+                    .plugins
+                    .lock()
+                    .health_of(&row.plugin_id),
                 "installedAtMs": row.installed_at_ms,
                 "updatedAtMs": row.updated_at_ms,
                 // ★ Reported rather than assumed. A row whose directory is gone is one `should_run` would say yes to and

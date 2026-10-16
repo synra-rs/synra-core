@@ -1881,3 +1881,40 @@ fn a_sweep_that_cannot_finish_says_so_rather_than_reporting_zero() {
         assert!(failure.contains(table), "{failure} should name {table}");
     }
 }
+
+#[test]
+fn the_plugin_report_carries_the_live_rung_as_well_as_the_row() {
+    // """ + S + """ The reader the ladder did not have.
+    //
+    // `PluginSet::health_of` exists because round 114 made a trap count towards the health ladder and then found that
+    // nothing could read the result: the daemon reported the **database row**, which is what was recorded at install time
+    // and never moves. This asserts the report now carries both, and that the live one is a real answer rather than `null`
+    // — which is what an accessor that always returned `None` would look like.
+    let dir = TempDir::new("report-live-health");
+    let runtime = runtime(dir.path());
+    let id = "@acme/notes";
+    write_plugin(&runtime.plugins_dir, id, r#"{"cap": "log:info"}"#);
+    install(&runtime, id, 1, 1);
+    consent(&runtime, id, &["log:info"]);
+
+    // Loaded into the runtime's **own** set, because that is the one the report reads.
+    crate::runtime::load_installed(
+        &mut runtime.plugins.lock(),
+        &runtime.db(),
+        &runtime.plugins_dir,
+        &synra_observe::crash::StartupVerdict::Clean,
+        &synra_plugin_api::revocation::RevocationList::empty(),
+    );
+
+    let value = runtime.plugins_value().expect("the report");
+    let listed = value["plugins"].as_array().expect("a list");
+    let row = listed
+        .iter()
+        .find(|entry| entry["id"] == id)
+        .expect("the plugin is listed");
+
+    // The recorded row, unchanged by anything that happened at runtime.
+    assert_eq!(row["health"], "healthy", "{row}");
+    // And the live rung, which is `good` for a plugin that has just been loaded and has done nothing.
+    assert_eq!(row["liveHealth"], "good", "{row}");
+}

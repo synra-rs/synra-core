@@ -34,7 +34,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use synra_capability::CapabilitySet;
 use synra_plugin_host::{
-    Backend, BackendError, CallBudget, CallOutcome, CompiledArtifact, InstancePolicy,
+    Backend, BackendError, CallBudget, CallOutcome, CompiledArtifact, Health, InstancePolicy,
     PluginInstance,
 };
 use synra_protocol::ids::PluginId;
@@ -304,6 +304,22 @@ impl fmt::Debug for PluginSet {
 }
 
 impl PluginSet {
+    /// The health a loaded plugin is in **right now**.
+    ///
+    /// ★ Why this accessor had to exist for the ladder to mean anything.
+    ///
+    /// Round 114 made a trap count towards the ladder and found that nothing could read the result: the daemon's `status`
+    /// reports the **database row**, recorded at install time, and the live rung was unreachable. A mechanism whose state
+    /// has no reader is one nobody can act on — and the point of telling a user their plugin is degrading is that they act
+    /// before it is disabled.
+    ///
+    /// `None` for a plugin that is not loaded, which is a different fact from "healthy".
+    #[must_use]
+    pub fn health_of(&self, id: &str) -> Option<Health> {
+        let id = PluginId::try_from(id.to_owned()).ok()?;
+        self.loaded.get(&id).map(|loaded| loaded.authority.budget.health())
+    }
+
     /// A set with no plugins, over a given engine and reaching a given host.
     ///
     /// # Why the host is required rather than defaulted
