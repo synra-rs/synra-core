@@ -244,7 +244,7 @@ fn an_artifact_larger_than_the_ceiling_is_refused_before_the_engine_sees_it() {
     // A megabyte of zeroes is not a component, so the engine would refuse it too, with a parse error. The assertion is on the
     // message: it names both numbers, which only this layer can produce.
     let backend = WasmtimeBackend::new(BackendKind::WasmtimeCranelift).expect("an engine");
-    let oversized = vec![0u8; MAX_COMPONENT_BYTES + 1];
+    let oversized = vec![0u8; super::super::MAX_COMPONENT_BYTES + 1];
 
     match backend.compile(&oversized, "@acme/huge") {
         Err(BackendError::Compile { detail }) => {
@@ -458,9 +458,11 @@ fn a_budget_that_names_no_ceiling_is_still_bounded() {
         //
         // `classify` reported `budget.max_memory_growth.unwrap_or(0)` — so this outcome used to name a limit of **zero** when
         // the wall the guest hit was sixteen mebibytes. That is the number a plugin author would go and change.
+        // ★ Asserted against the constant rather than the number, which is the difference between a test that
+        // checks the ceiling is reported and one that checks the arithmetic somebody typed matches theirs.
         CallOutcome::MemoryExceeded { limit } => assert_eq!(
             limit,
-            16 * 1024 * 1024,
+            INSTANTIATION_CEILING as u64,
             "an unnamed ceiling is the instantiation ceiling, and the outcome must name it"
         ),
         other => panic!("a guest that grows without bound must hit the instantiation ceiling, got {other:?}"),

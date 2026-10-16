@@ -44,6 +44,22 @@ pub fn check_enforceable(
     }
 }
 
+/// The largest component this host will compile.
+///
+/// ★ Why this lives here rather than beside the engine that enforces it.
+///
+/// It is a **policy** number, not an engine detail: the CLI checks it when an author runs `verify`, and the host checks it
+/// before wasmtime sees any bytes. It was defined inside `wasmtime_backend`, which is behind the `wasm-runtime` feature — so
+/// `tools/synra-plugin-cli`, which does not enable that feature and should not have to, could not reach it and kept a
+/// second literal with the same value.
+///
+/// Two literals that agree is a coincidence with a lifetime. What it costs when they diverge: `verify` passes an artifact
+/// the host then refuses at load, so a check told an author their plugin was fine and the kernel disagreed.
+///
+/// Sixteen mebibytes, matching what the tooling has always accepted. Wasmtime's own parser is not a resource limiter, so
+/// this is the only thing standing between a hostile or broken artifact and the compiler.
+pub const MAX_COMPONENT_BYTES: usize = 16 * 1024 * 1024;
+
 pub mod cache;
 pub mod executor;
 pub mod scripted;
@@ -71,4 +87,4 @@ pub use types::{
 // `exports` read the component's own type rather than a manifest — which is the difference between a claim and a fact,
 // and is what an import check has to be built on. Reachable is the difference between that being available and being
 // written twice.
-pub use wasmtime_backend::{EngineArtifact, MAX_COMPONENT_BYTES, WasmtimeBackend, shared};
+pub use wasmtime_backend::{EngineArtifact, WasmtimeBackend, shared};

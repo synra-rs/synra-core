@@ -70,20 +70,6 @@ const MEMORY_RESERVATION_FOR_GROWTH: u64 = 2 * 1024 * 1024;
 /// budget's, which is applied before the guest runs and is the number a hostile allocation meets.
 const INSTANTIATION_CEILING: usize = 16 * 1024 * 1024;
 
-/// The largest component this host will compile.
-///
-/// ★ Why the host needs its own ceiling when two other layers have one.
-///
-/// `tools/synra-plugin-cli` refuses a `.wasm` over 16 MiB (`verify/limits.rs`), and the registry refuses a packument over
-/// 8 MiB. The host had **no** limit at all: `compile` checked only whether the bytes were empty, so an artifact that reached
-/// it by any other road — a manifest pointing at a file, a cache that had been tampered with, a future installer — went
-/// straight into the engine. Wasmtime's own parser is not a resource limiter: it will happily start on a gigabyte.
-///
-/// The number matches the CLI's rather than being chosen again, and it is written here rather than imported because the
-/// host cannot depend on a tool. Two places with the same number is a smell; two places with different numbers would be a
-/// bug, which is the worse of the two.
-pub const MAX_COMPONENT_BYTES: usize = 16 * 1024 * 1024;
-
 /// Ticks that will not be reached, for a call whose budget names no wall clock.
 ///
 /// ★ Why not `u64::MAX`, which is the obvious way to say "no deadline".
@@ -744,11 +730,12 @@ impl WasmBackend for WasmtimeBackend {
         //
         // A parse of a hostile artifact is the expensive part, and it is exactly what a size ceiling exists to avoid
         // paying. The message names both numbers, because "too large" leaves a plugin author guessing at the limit.
-        if wasm.len() > MAX_COMPONENT_BYTES {
+        if wasm.len() > super::MAX_COMPONENT_BYTES {
             return Err(BackendError::Compile {
                 detail: format!(
-                    "the artifact is {} bytes, and the largest this host compiles is {MAX_COMPONENT_BYTES}",
-                    wasm.len()
+                    "the artifact is {} bytes, and the largest this host compiles is {}",
+                    wasm.len(),
+                    super::MAX_COMPONENT_BYTES
                 ),
             });
         }
