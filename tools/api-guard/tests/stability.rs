@@ -29,6 +29,26 @@ fn workspace_root() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")))
 }
 
+/// Every kind of violation `api-guard` can print, one fragment each.
+///
+/// ★ Why this is one list rather than three `contains` calls inside the check.
+///
+/// Because the check has to read **every** rule the tool can apply, and hard-coding the rules it happens to know about is how
+/// one gets left out — which is what happened: the `#[non_exhaustive]` rule was reported five times and read zero times, and
+/// four of the five were added in the same session as the code that ignored them. Naming the fragments once lets
+/// [`the_filter_reads_every_rule_the_tool_can_report`] compare them against the tool's own source, so a fifth rule fails a
+/// test instead of going unnoticed.
+const RULE_FRAGMENTS: [&str; 4] = [
+    // A public signature naming a concrete container.
+    "in its public signature",
+    // A public enum in a stable crate without `#[non_exhaustive]`.
+    "without `#[non_exhaustive]`",
+    // A promise about a foreign crate's error type.
+    "which is a promise about that crate's version",
+    // A file the tool could not read — a violation rather than a note, because a file it skipped is a file nothing checked.
+    "could not be read",
+];
+
 #[test]
 fn no_crate_that_makes_a_promise_breaks_it() {
     // ★ The promise is checked, and the three deviations that remain are named here rather than being suppressed.
@@ -45,19 +65,20 @@ fn no_crate_that_makes_a_promise_breaks_it() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    // ★ Both rules the tool applies to this tier, and the second was missing.
+    // ★ The **rules**, not examples of them — and that distinction was the second half of the same bug.
     //
-    // This filter used to read only `holds io::Error` and `exposes BTreeMap` — so the tool **reported** five public enums
-    // without `#[non_exhaustive]` and **no test looked at them**. Four of those five were added in this session, which is what
-    // a guard nothing reads produces: work that violates a written rule and passes anyway. A filter is where a check decides
-    // what it is checking, and leaving a rule out of it is the quietest way to disable one.
+    // This filter first read `holds io::Error` and `exposes BTreeMap`: one *instance* of the foreign-error rule and one
+    // instance of the concrete-container rule, plus the whole of the `#[non_exhaustive]` rule. So the tool reported five
+    // public enums missing the attribute and no test looked at them — and, just as quietly, a `pub` signature holding
+    // `HashMap` instead of `BTreeMap`, or `rusqlite::Error` instead of `io::Error`, would have been reported and ignored too.
+    // A filter that names types is a filter that reads the violations somebody thought of.
+    //
+    // `RULE_FRAGMENTS` is every message the tool can print about a violation, one fragment each, and
+    // `the_filter_reads_every_rule_the_tool_can_report` below checks it against the tool's own source — so a rule added there
+    // without being read here fails a test rather than going unnoticed.
     let reported: Vec<&str> = stdout
         .lines()
-        .filter(|line| {
-            line.contains("holds io::Error")
-                || line.contains("exposes BTreeMap")
-                || line.contains("without `#[non_exhaustive]`")
-        })
+        .filter(|line| RULE_FRAGMENTS.iter().any(|fragment| line.contains(fragment)))
         .collect();
 
     // Each of these is a deviation: the rule is about a *public* signature, and none of them is one. The first three are the
@@ -151,5 +172,40 @@ fn the_crates_the_promise_covers_are_the_ones_the_tool_reads() {
     for name in promised {
         let directory = root.join("crates").join(name).join("src");
         assert!(directory.is_dir(), "{name} is promised by STABILITY.md and has no source directory");
+    }
+}
+
+#[test]
+fn the_filter_reads_every_rule_the_tool_can_report() {
+    // ★ The check on the check, and the reason it is a test rather than a comment.
+    //
+    // `RULE_FRAGMENTS` decides what `no_crate_that_makes_a_promise_breaks_it` looks at. A rule the tool can report but this
+    // list does not name is invisible to every assertion in this file — which is not a hypothetical: the
+    // `#[non_exhaustive]` rule was reported five times, four of them by code written in the same session, and nothing read it.
+    //
+    // So the list is compared against the tool's **own** error templates, in both directions: every template the tool can
+    // print is covered by a fragment, and every fragment covers some template. The second direction is what catches a
+    // fragment left behind after a rule is renamed — a stale entry would otherwise quietly stop reading anything.
+    let source = std::fs::read_to_string(workspace_root().join("tools/api-guard/src/lib.rs"))
+        .expect("the tool's source");
+    let templates: Vec<&str> = source
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("#[error(\""))
+        .filter_map(|rest| rest.split_once("\")]").map(|(message, _)| message))
+        .collect();
+    assert!(!templates.is_empty(), "the tool's error templates were not found, so this check would pass vacuously");
+
+    for template in &templates {
+        assert!(
+            RULE_FRAGMENTS.iter().any(|fragment| template.contains(fragment)),
+            "the tool can report a violation this test does not read:\n  {template}\n\
+             add a fragment to `RULE_FRAGMENTS`, or the rule is enforced by nothing"
+        );
+    }
+    for fragment in RULE_FRAGMENTS {
+        assert!(
+            templates.iter().any(|template| template.contains(fragment)),
+            "`{fragment}` matches none of the tool's messages, so it reads nothing and should be removed"
+        );
     }
 }
