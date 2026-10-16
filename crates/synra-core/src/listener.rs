@@ -266,6 +266,10 @@ pub fn handle_within(
         match inbox.absorb(&mut link, synra_store::sqlite::now_ms(), PATIENCE, desk, &peer_address) {
             Ok(decision) => match decision {
                 Decision::Delivered { event, share } => {
+                    // ★ The design's `frames_received_total{event}` — the other half of what `Host::send` records.
+                    // Counted here because this is where a delivered frame becomes a fact: the `Decision` is what says
+                    // an event arrived, and it is the only thing that knows which one.
+                    host.lock().count_frame_received(&event);
                     // ★ Recorded as well as reported. A message this kernel received has arrived, and a log that looked
                     // the same whether it arrived or was lost in the network would be one a user cannot investigate with.
                     events.push(event.clone());

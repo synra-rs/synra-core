@@ -703,3 +703,35 @@ fn the_refusal_echoes_only_enough_of_the_name_to_recognise_it() {
         echoed.chars().count()
     );
 }
+
+
+#[test]
+fn a_received_frame_is_counted_by_its_event() {
+    // ★ 这条测的是 `Host::count_frame_received` **本身**，而不是「它被调用过」。
+    //
+    // 调用它的是 `listener` 里处理 `Decision::Delivered` 的那一支，而那个 `Decision` 只有
+    // `listener::handle_within` 会产生。本文件里的端到端测试走的是 `Host::accept` + `link.receive`，
+    // 完全绕过它 —— 第一版断言就写在这里，它失败了，而失败说明的正是这件事。
+    // 要验证那条路需要一份 `handle_within` 的装配（daemon 的 `transport/tests.rs` 里有）；
+    // 这一轮先把方法与它的计数固定下来。
+    let (host, _db) = host(A, "Laptop");
+    let recorder = Arc::new(synra_observe::metrics::RingRecorder::new());
+    let mut host = host.with_metrics(Arc::clone(&recorder));
+
+    host.count_frame_received("device.ping");
+
+    assert_eq!(
+        recorder
+            .snapshot()
+            .get("frames_received_total{event=device.ping}"),
+        Some(&synra_observe::metrics::Value::Counter(1)),
+        "the frame was not counted by its event"
+    );
+    // ★ 而它记的是**接收**那一侧而不是发送：两个方向是分开的方法，
+    // 因为「说得比听到的多」与「听到的比说得多」是两种不同的处境。
+    assert_eq!(
+        recorder.snapshot().get("frames_sent_total{event=device.ping}"),
+        None,
+        "receiving counted as sending"
+    );
+}

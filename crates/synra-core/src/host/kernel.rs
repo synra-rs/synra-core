@@ -81,6 +81,22 @@ impl Host {
         self
     }
 
+    /// Counts one frame this host received, by event.
+    ///
+    /// ★ The other half of what `Host::send` records, and a separate method rather than one with a direction: a device
+    /// that talks more than it is told, and one that is told more than it talks, are two different situations.
+    ///
+    /// A method rather than each call site reaching for the field: `metrics` is `pub(super)`, and "how is a received
+    /// frame counted" should have one answer rather than one per module that happens to see it.
+    pub fn count_frame_received(&mut self, event: &str) {
+        if let Some(metrics) = &self.metrics {
+            metrics.counter_inc(&synra_observe::metrics::SeriesKey::new(
+                "frames_received_total",
+                [("event".to_owned(), event.to_owned())],
+            ));
+        }
+    }
+
     /// This device.
     #[must_use]
     pub const fn identity(&self) -> &Identity {
