@@ -405,9 +405,10 @@ pub fn run_recording(
         // Gated on `absorbed` being non-empty rather than called every tick, so a caller that writes a row per candidate
         // is not paying for a write on every poll of an idle network.
         if !ticked.absorbed.is_empty() {
-            let candidates: Vec<crate::discovery::Candidate> =
-                host.lock().usable(wall).into_iter().cloned().collect();
-            heard(&candidates);
+            let candidates = heard_now(&host.lock(), &ticked.absorbed);
+            if !candidates.is_empty() {
+                heard(&candidates);
+            }
         }
 
         let service = service.lock();
@@ -422,6 +423,34 @@ pub fn run_recording(
 
         std::thread::sleep(POLL_INTERVAL);
     }
+}
+
+/// The candidates one tick just heard, for the callback that remembers them.
+///
+/// ★ **What this is not, and what it used to be.**
+///
+/// It was `host.usable(...)`, which is `current ∧ displayable` — and `displayable` starts at [`TrustLevel::Handshaked`], so
+/// a caller's callback never saw a device that had merely **announced itself**. That is right for a screen, which shows
+/// peers under their own heading, and wrong for this: [`Ticked::absorbed`] is "what did you hear", and the table both hosts
+/// write from this callback (`devices_seen`) says in its own documentation that it holds *"a sighting of a device this
+/// kernel has not paired with"*. Fed from `usable`, it stayed empty for exactly the devices it exists for — the reader
+/// existed, the writer existed, and nothing it was ever told about was a sighting.
+///
+/// A caller that wants the connectable subset can filter this; a caller that was never told about a sighting cannot
+/// un-forget it.
+///
+/// `Unchanged` and `Offline` are deliberately **not** here: one is the same announcement again and the other is a device
+/// leaving. Writing either would be a row per device per interval that says what the row already says.
+fn heard_now(host: &Host, absorbed: &[Absorbed]) -> Vec<crate::discovery::Candidate> {
+    absorbed
+        .iter()
+        .filter_map(|event| match event {
+            Absorbed::New { device_id } | Absorbed::Updated { device_id, .. } => {
+                host.discovery().get(*device_id).cloned()
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 /// Whether the table would show a device, for a caller reporting a tick.
@@ -802,6 +831,41 @@ mod tests {
             TrustLevel::Announced
         );
         assert!(!is_visible(kernel.discovery(), 5_000), "an announced device should not be visible");
+    }
+
+    #[test]
+    fn the_callback_is_given_a_device_that_only_announced_itself() {
+        // ★ The visibility rule and this are two different questions, and the callback used to answer the wrong one.
+        //
+        // `is_visible` is about a *screen*: an announced device is a candidate, shown under its own heading, not among
+        // peers. The callback is about *memory*: it is "what did you hear", and the table both hosts write from it says
+        // it holds a sighting of a device this kernel has not paired with. Fed from `usable`, which starts at
+        // `Handshaked`, it was never told about a sighting.
+        let mut service = service(A, Duration::from_secs(60));
+        let responder = service.responder_address().expect("an address");
+        let mut kernel = host(A, "Laptop");
+        let asker = DiscoverySocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).expect("an asker");
+        asker
+            .send_query(&announcement(B, "Phone", 47_101), responder)
+            .expect("asks");
+
+        let ticked = service.tick(&mut kernel, 5_000, Instant::now(), 0);
+        let heard = heard_now(&kernel, &ticked.absorbed);
+
+        assert_eq!(heard.len(), 1, "the device that asked is what was heard");
+        assert_eq!(heard[0].device_id, device(B));
+        assert_eq!(heard[0].trust, TrustLevel::Announced, "and it is a sighting, not an identity");
+        // And the screen's rule is untouched: the same device is still not a peer.
+        assert!(!is_visible(kernel.discovery(), 5_000));
+
+        // A device saying the same thing again is not news, and a row per device per interval is a write nobody asked
+        // for. `Offline` is a device leaving, which the table handles by expiring it.
+        asker
+            .send_query(&announcement(B, "Phone", 47_101), responder)
+            .expect("asks again");
+        let again = service.tick(&mut kernel, 5_001, Instant::now(), 0);
+        assert_eq!(again.absorbed, vec![Absorbed::Unchanged { device_id: device(B) }]);
+        assert!(heard_now(&kernel, &again.absorbed).is_empty(), "a repeat is not a sighting");
     }
 
     #[test]
