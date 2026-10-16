@@ -801,6 +801,27 @@ impl Runtime {
             ),
             started.elapsed().as_secs_f64() * 1_000.0,
         );
+        // ★ And the sender records what the peer now holds — the other half of the mirror whose receiving side landed
+        // in round 150 (`sync_records`, keyed by `(plugin_id, peer_device)`).
+        //
+        // ★ Only on a `Verified` event, and that is the precise test rather than a convenient one: `events` carries
+        // one only when the receiver actually said it checked the file (`await_confirmation`'s answer). A transfer
+        // that was sent but never confirmed must not claim the peer holds anything — a row like that would make the
+        // next synchronisation believe the two ends agree.
+        if let Some((plugin_id, version)) = bundle
+            && let Some(digest) = events.iter().find_map(|event| match event {
+                synra_core::SessionEvent::Verified { digest, .. } => Some(digest.clone()),
+                _ => None,
+            })
+        {
+            let _ = self.db().record_sync(
+                plugin_id.as_str(),
+                &device_id.to_string(),
+                version,
+                &digest,
+                now,
+            );
+        }
         Ok(serde_json::json!({
             "sent": true,
             "confirmed": confirmed,

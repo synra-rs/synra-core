@@ -2153,4 +2153,17 @@ fn a_bundle_arrives_as_a_bundle() {
         Some("@acme/chat".to_owned()),
         "a bundle arrived as something else"
     );
+
+    // ★ 而**发送端**也记下了「对端现在持有这个版本」—— 与接收端那一半（`sync_records`）对称。
+    // 版本在这里是 `1.2.0`，而接收端那一行是空串：接收端只知道传输的元数据里有什么，
+    // 而发送端知道它**推的是哪个版本**。两行回答的是同一个问题的两侧。
+    let held = runtime.db().sync_records().expect("reads");
+    assert_eq!(held.len(), 1, "the sender did not record what the peer holds: {held:?}");
+    assert_eq!(held[0].plugin_id, "@acme/chat");
+    assert_eq!(held[0].peer_device, "11111111-1111-4111-8111-111111111111");
+    assert_eq!(held[0].version, "1.2.0");
+    assert!(
+        !held[0].digest.is_empty(),
+        "the digest the receiver confirmed is missing"
+    );
 }
