@@ -262,7 +262,9 @@ pub fn pair_response(
 /// Because that type is this device's own bookkeeping: which duties it performed, in what order, and whether the whole set
 /// was completed. The sender needs four facts and no more, and it must not be handed a list of checks it cannot see the
 /// evidence for — a report is not a wire format.
-#[derive(Debug, Clone, serde::Serialize)]
+// 两个方向都要：接收端发出它，发起端读回它。一个只能序列化的线上类型是半成品，
+// 而往返测试是唯一能证明两边字段名真的对上的东西。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncResult {
     /// Whether the plugin is installed.
@@ -317,6 +319,33 @@ pub fn sync_result(
 mod tests {
     use super::*;
     use serde_json::value::RawValue;
+
+    #[test]
+    fn a_sync_result_round_trips_and_reads_the_field_names_the_design_writes() {
+        // 「出」的一半上一轮做了，这是「进」的一半。一个线上类型只做一个方向是半成品，
+        // 而往返测试是唯一能证明两边字段名真的对上的东西。
+        let outcome = crate::plugin_sync::SyncOutcome::refused(
+            synra_protocol::ids::PluginId::try_from("@acme/chat".to_owned()).expect("a plugin id"),
+            crate::plugin_sync::SyncSessionId::new("round-1"),
+            "the signature did not verify",
+        );
+        let result = SyncResult::of(&outcome);
+
+        let json = serde_json::to_string(&result).expect("json");
+        assert!(json.contains("\"installedVersion\""), "{json}");
+        let back: SyncResult = serde_json::from_str(&json).expect("parsed");
+        assert_eq!(back.ok, result.ok);
+        assert_eq!(back.error, result.error);
+
+        // 以及直接读文档给出的那个形状：字段名写错的话这里会失败。
+        let from_design: SyncResult =
+            serde_json::from_str("{\"ok\":true,\"installedVersion\":\"1.2.0\",\"activated\":false,\"error\":null}")
+                .expect("the shape the design documents");
+        assert!(from_design.ok);
+        assert_eq!(from_design.installed_version.as_deref(), Some("1.2.0"));
+        assert!(!from_design.activated);
+        assert!(from_design.error.is_none());
+    }
 
     #[test]
     fn a_sync_result_carries_the_four_fields_the_design_names() {

@@ -699,6 +699,46 @@ impl SyncTable {
         Self::default()
     }
 
+    /// ⑨ 的第一半：发起端把一轮同步的结局写进它对本机的认识。
+    ///
+    /// ★ **为什么这条是 `record` 唯一的<ins>生产</ins>调用者。**
+    ///
+    /// 这张表能存、能查、能按插件列出，但从写下来那天起没有任何东西把一次同步的**结果**写进去，
+    /// 所以 §5.2 第 ⑨ 步（「A 更新同步状态，UI 显示」）没有实现 —— 表和回复都在，缺的是把两半接起来的这一行。
+    ///
+    /// ★ **而失败时不改这张表，这是语义而不是省事。**
+    ///
+    /// 一次失败的同步没有改变对端持有什么：它仍然有原来那个版本。写成「什么也没有」会让下一次推送判断成
+    /// 「它需要」，于是重复传输；写成「新版本」更糟 —— 表会声称对端有一个它从未收到的包。
+    /// 失败属于**历史**（§5.5 的 `SyncRecord`），不属于「对端现在有什么」。
+    ///
+    /// ★ 而摘要从**参数**来，不从回复来：回复里没有摘要，也不需要 —— 发起端推的就是那个包，摘要是它自己算的。
+    /// 让对端回报摘要会多一个可以撒谎的地方。
+    pub fn apply_result(
+        &mut self,
+        device: DeviceId,
+        plugin_id: &PluginId,
+        result: &crate::messaging::SyncResult,
+        pushed_digest: &str,
+    ) {
+        if !result.ok {
+            return;
+        }
+        // 说成功却没有版本，是回复自相矛盾。不更新好过记一个半真半假的状态。
+        let Some(version) = result.installed_version.clone() else {
+            return;
+        };
+        self.record(
+            device,
+            RemoteState {
+                plugin_id: plugin_id.clone(),
+                version: Some(version),
+                digest: Some(pushed_digest.to_owned()),
+                active: result.activated,
+            },
+        );
+    }
+
     /// Records what a device has.
     pub fn record(&mut self, device: DeviceId, state: RemoteState) {
         let _ = self.entries.insert((state.plugin_id.clone(), device), state);
