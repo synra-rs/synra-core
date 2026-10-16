@@ -68,12 +68,18 @@ use super::wire::{Message, classify, envelope_for, payload_of};
     }
 
     /// Two connected links, as a session would have.
+    ///
+    /// ★ Over memory rather than over a socket, and that is the point of the signature above it.
+    ///
+    /// These tests used to open a `TcpListener`, connect, and accept — three system calls per test to move bytes between two
+    /// halves of one process — because `PeerLink` held a concrete `TcpStream` and there was nothing else to build one from.
+    /// `04 §11` records what that cost: the design's end-to-end tests were unwritable, since the only link that existed
+    /// needed a socket and `synra-testkit`'s transport moves frames rather than bytes.
+    ///
+    /// The suite is the proof that the seam carries real work: everything below this helper — proposing a transfer, writing
+    /// blocks through a window, reading reports, confirming — now runs with no socket at all.
     fn connected() -> (PeerLink, PeerLink) {
-        let listener =
-            std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).expect("binds");
-        let address = listener.local_addr().expect("an address");
-        let dialer = std::net::TcpStream::connect(address).expect("connects");
-        let (accepted, _) = listener.accept().expect("accepts");
+        let (dialer, accepted) = crate::link::memory::MemoryStream::pair();
         let agreed = synra_protocol::handshake::Agreed {
             common: Vec::new(),
             missing_required: Vec::new(),
