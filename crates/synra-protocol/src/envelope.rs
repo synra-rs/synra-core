@@ -174,7 +174,7 @@ pub struct OutboundSpec {
 }
 
 impl Envelope {
-    /// Builds an outgoing message.
+/// Builds an outgoing message.
     ///
     /// The payload is serialised once, straight into its wire form. Passing `&impl Serialize` rather
     /// than a `serde_json::Value` avoids building a tree only to flatten it again.
@@ -221,17 +221,38 @@ impl Envelope {
     where
         P: ?Sized + Serialize,
     {
+        Self::reply_parts(ReplyContext::of(request, local), event, sent_at_ms, payload)
+    }
+
+    /// Builds a reply from the facts a reply needs, when the request itself is no longer at hand.
+    ///
+    /// ★ **Why this exists beside [`Envelope::reply_to`].** The side that answers is often not the side that read the
+    /// request: in the daemon the bytes were consumed by a transfer that has already landed, and what survives is a
+    /// [`ReplyContext`]. Requiring the whole envelope would make every reader keep one — payload included.
+    ///
+    /// # Errors
+    ///
+    /// [`EnvelopeError`] when the payload cannot be encoded, as in [`Envelope::reply_to`].
+    pub fn reply_parts<P>(
+        context: ReplyContext,
+        event: EventName,
+        sent_at_ms: i64,
+        payload: Option<&P>,
+    ) -> Result<Self, EnvelopeError>
+    where
+        P: ?Sized + Serialize,
+    {
         Ok(Self {
             request_id: RequestId::new(),
             event,
-            target: request.from,
-            from: local,
-            reply_to: Some(request.request_id),
-            trace_id: request.trace_id,
+            target: context.target,
+            from: context.from,
+            reply_to: Some(context.request_id),
+            trace_id: context.trace_id,
             payload: encode_payload(payload)?,
             sent_at_ms,
             // The reply is only interesting for as long as the question was.
-            ttl_ms: request.ttl_ms,
+            ttl_ms: context.ttl_ms,
         })
     }
 
@@ -873,6 +894,45 @@ mod proptests {
             // `{ .. }` pattern would be read as a format placeholder.
             prop_assert!(result.is_err(), "a payload of {} bytes should be refused", len);
             prop_assert!(result.unwrap_err().to_string().contains("exceeds the ceiling"));
+        }
+    }
+}
+
+/// What a reply needs to know, when the request's own bytes are no longer at hand.
+///
+/// ★ **Why this is a value rather than the request envelope.**
+///
+/// The side that answers is often not the side that read the request: in the daemon's case the bytes were consumed by a
+/// transfer that has already landed, and what survives is these four facts. A constructor that demanded the original
+/// envelope would make every reader keep one — including a payload it has no use for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReplyContext {
+    /// The request this answers.
+    pub request_id: RequestId,
+    /// Who the answer is for.
+    pub target: DeviceId,
+    /// Who it is from.
+    pub from: DeviceId,
+    /// The trace the question belonged to.
+    pub trace_id: TraceId,
+    /// How long the question was interesting for.
+    pub ttl_ms: Option<u32>,
+}
+
+impl ReplyContext {
+    /// The facts a reply needs, taken from the request and this device's own identity.
+    ///
+    /// ★ `local` is a parameter rather than a field read off the request, and that is the whole reason this is a
+    /// function: **who is answering** is never in the question. A version of this that took only the request would set
+    /// `from` to the *asker* — a reply addressed from the device it is addressed to.
+    #[must_use]
+    pub const fn of(request: &Envelope, local: DeviceId) -> Self {
+        Self {
+            request_id: request.request_id,
+            target: request.from,
+            from: local,
+            trace_id: request.trace_id,
+            ttl_ms: request.ttl_ms,
         }
     }
 }
