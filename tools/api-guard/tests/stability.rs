@@ -56,12 +56,13 @@ fn no_crate_that_makes_a_promise_breaks_it() {
     let expected = [
         // A private helper: `fn` with no visibility at all is not public API.
         //
-        // ★ The line moved from 467 to 520 when `PeerLink` gained its write deadline. The deviation is the same one — the
+        // ★ The line has moved twice: 467 → 520 when `PeerLink` gained its write deadline, and 520 → 533 when the
+        // write path learned to tell a quiet peer from a broken one. The deviation is the same one — the
         // tool reads lines and cannot tell a private `fn` from a public one without the module tree — so what changed is
         // where it is, and a check that pinned the old number would have failed for a reason that had nothing to do with
         // stability. It is still pinned by line rather than by name, which is the fragile part: two helpers with one
         // signature would be indistinguishable here.
-        "crates\\synra-core\\src\\link.rs:520",
+        "crates\\synra-core\\src\\link.rs:533",
         // `pub(crate)`: reachable inside the crate, not by a consumer.
         "crates\\synra-core\\src\\peer\\wire.rs:138",
         // `pub(super)`: reachable by the parent module, not by a consumer.

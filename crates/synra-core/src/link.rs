@@ -48,7 +48,14 @@ pub enum LinkError {
         why: String,
     },
 
-    /// A read waited longer than the link's timeout and no frame arrived.
+    /// A read or a write waited longer than the link's timeout.
+    ///
+    /// ★ Both directions, and the second was missing for a long time.
+    ///
+    /// A read that times out means nothing arrived; a **write** that times out means the peer is alive and not taking bytes —
+    /// its receive window is full. They are the same fact about the link from opposite ends, and neither is a broken
+    /// connection. The write side reported every failure as [`Self::Transport`] until this variant covered it, so a caller
+    /// could not tell a busy peer from a dead one.
     ///
     /// # Why this is not `Transport`
     ///
@@ -248,10 +255,16 @@ impl PeerLink {
                 .set_write_timeout(Some(timeout))
                 .map_err(|error| LinkError::Transport { why: error.to_string() })?;
         }
-        self.stream
-            .write_all(encoded)
-            .and_then(|()| self.stream.flush())
-            .map_err(|error| LinkError::Transport { why: error.to_string() })
+        match self.stream.write_all(encoded).and_then(|()| self.stream.flush()) {
+            Ok(()) => Ok(()),
+            // ★ A write that ran out of time is the same fact `TimedOut` already names for reads, from the other
+            // end: the peer is **alive and not taking bytes**. Reporting it as `Transport` is the flattening that variant's own
+            // documentation warns against — "nothing has arrived yet" and "the connection is broken" lead a caller to
+            // different actions, and the difference here is between backing off and reconnecting. A caller that saw a slow
+            // peer as a dead link would tear down a working transfer to a device that was merely busy.
+            Err(error) if is_a_timeout(&error) => Err(LinkError::TimedOut),
+            Err(error) => Err(LinkError::Transport { why: error.to_string() }),
+        }
     }
 
     /// The deadline a write runs under: the caller's, or the negotiated one.
@@ -611,7 +624,12 @@ mod tests {
         }
 
         match refused {
-            Some(LinkError::Transport { .. }) => {
+            Some(LinkError::TimedOut) => {
+                // ★ `TimedOut` and not `Transport`: a peer that is alive and not reading is a **quiet** link, which is a
+                // different thing from a broken one, and the caller's next step differs — back off, rather than tear down a
+                // working transfer to a device that is merely busy. Before this, every write failure was `Transport`, so a
+                // caller had no way to tell.
+                //
                 // ★ And it came back **because the deadline passed**, not because the peer went away. Asserted as time
                 // rather than as text, and the reason is worth keeping: the operating system's message is **localized** —
                 // this machine reports WSAETIMEDOUT as a sentence in Chinese — so matching "timed out" was a test that
@@ -629,6 +647,38 @@ mod tests {
             }
             Some(other) => panic!("a full window is a transport failure, got {other:?}"),
             None => panic!("a peer that never read absorbed two thousand blocks, so nothing was bounded"),
+        }
+    }
+
+    #[test]
+    fn a_peer_that_is_gone_is_a_transport_failure_rather_than_a_quiet_link() {
+        // ★ The other half of the distinction, and the reason it is a distinction at all. If a closed socket were also
+        // reported as `TimedOut`, a caller would back off from a peer that has actually gone — waiting out a backoff schedule
+        // for a link that will never carry anything again. One condition has a repair and the other does not.
+        let (dialer, peer) = connected();
+        let mut link = link_with_timeout(dialer, LOCAL, PEER, std::time::Duration::from_secs(5));
+        drop(peer);
+
+        // The first write after a peer closes may still be absorbed by the local buffer; the failure arrives after that.
+        let block = vec![0u8; 32 * 1024];
+        let mut refusal = None;
+        for index in 0..64_u32 {
+            match link.send_chunk(index, &block) {
+                Ok(()) => continue,
+                Err(error) => {
+                    refusal = Some(error);
+                    break;
+                }
+            }
+        }
+
+        match refusal {
+            Some(LinkError::Transport { .. }) => {}
+            Some(LinkError::TimedOut) => {
+                panic!("a closed socket is not a quiet link: the peer is gone, not busy")
+            }
+            Some(other) => panic!("expected a transport failure, got {other:?}"),
+            None => panic!("a closed peer absorbed sixty-four blocks"),
         }
     }
 
