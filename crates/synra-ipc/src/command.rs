@@ -223,6 +223,13 @@ commands! {
 
     // ── intent ──
     "intent_dispatch" => Intent, Host, One, true;
+    // ★ The listing read, which the interface asked for before the contract had it.
+    //
+    // `HomePage.vue`'s "received" panel wanted the intents in flight, and there was no command that answers them — so the
+    // page called `intent_snapshot` with no identifier (refused by the bridge, since the wrapper requires one) and read
+    // `answer.value.intents`, a field no DTO has. The capability was never missing: `Board::all()` has existed since the
+    // board was written, for persistence. What was missing was the name.
+    "intent_list" => Intent, Host, Many, false;
     "intent_snapshot" => Intent, Host, One, false;
     "intent_decide" => Intent, Host, Unit, true;
     "intent_cancel" => Intent, Host, Unit, true;
@@ -462,6 +469,7 @@ mod tests {
             "pairing_cancel",
             // intent
             "intent_dispatch",
+            "intent_list",
             "intent_snapshot",
             "intent_decide",
             "intent_cancel",
