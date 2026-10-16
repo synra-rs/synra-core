@@ -81,7 +81,7 @@ pub use admission::{
 };
 pub use session::{
     Message, Receiving, Received, SessionError, SessionEvent, abort, classify, complete, propose,
-    report_progress, send_blocks, send_file,
+    report_progress, send_blocks, send_bundle, send_file,
 };
 pub use transfer::{
     Absorbed as BlockAbsorbed, Block, DEFAULT_CHUNK_SIZE, MAX_CHUNK_SIZE, ObjectDigest, TransferError,

@@ -119,10 +119,57 @@ pub fn send_file(
     deadline: std::time::Instant,
 ) -> Result<Vec<SessionEvent>, SessionError> {
     let mut sender = TransferSender::open(path, chunk_size)?;
-    let mut events = vec![propose(link, &sender, trace_id, now_ms)?];
-    events.extend(send_blocks(link, &mut sender, deadline)?);
+    run_transfer(link, &mut sender, trace_id, now_ms, deadline)
+}
+
+/// Reads a digest's algorithm and value, for a report.
+#[must_use]
+pub fn describe(digest: &SriDigest) -> String {
+    format!("{}:{}", digest.algorithm().prefix(), digest.encoded())
+}
+
+/// A bundle's one-shot send: the same four steps, with a request that says what it is.
+///
+/// # Why a second function rather than an argument on [`send_file`]
+///
+/// The two differ in exactly one thing — the metadata the receiver builds its decision from — and that one thing is
+/// decided by *what is being sent*, not by how the transfer runs. An `Option<PluginId>` on `send_file` would make every
+/// existing caller state which of the two they meant, in a signature about bytes rather than about plugins.
+///
+/// # Errors
+///
+/// The same as [`send_file`]: any failure of the link, the file or the messages.
+pub fn send_bundle(
+    link: &mut PeerLink,
+    path: &Path,
+    plugin_id: synra_protocol::ids::PluginId,
+    version: impl Into<String>,
+    trace_id: TraceId,
+    now_ms: i64,
+    deadline: std::time::Instant,
+) -> Result<Vec<SessionEvent>, SessionError> {
+    // The chunk size is the kernel's rather than the caller's, which is why this takes one argument fewer than
+    // `send_file`: a bundle is sent by the daemon on a plugin's behalf, and neither of them has a view about how many
+    // bytes should travel in one block.
+    let mut sender = TransferSender::open_bundle(path, crate::transfer::DEFAULT_CHUNK_SIZE, plugin_id, version)?;
+    run_transfer(link, &mut sender, trace_id, now_ms, deadline)
+}
+
+/// Proposes, moves every block, completes, and waits for the confirmation.
+///
+/// Extracted when the second caller appeared, because the four steps are the transfer's and not the payload's: a bundle
+/// and a screenshot take the same route, and the only thing that differs is already in the sender.
+fn run_transfer(
+    link: &mut PeerLink,
+    sender: &mut TransferSender,
+    trace_id: TraceId,
+    now_ms: i64,
+    deadline: std::time::Instant,
+) -> Result<Vec<SessionEvent>, SessionError> {
+    let mut events = vec![propose(link, sender, trace_id, now_ms)?];
+    events.extend(send_blocks(link, sender, deadline)?);
     if sender.is_complete() {
-        events.push(complete(link, &sender, trace_id, now_ms)?);
+        events.push(complete(link, sender, trace_id, now_ms)?);
         // ★ And now the wait the protocol asks for. `events` gains a `Verified` only when the receiver has actually said so,
         // which is what makes a caller's report of success mean something.
         let confirmed = await_confirmation(link, sender.transfer_id(), deadline)?;
@@ -134,10 +181,4 @@ pub fn send_file(
         }
     }
     Ok(events)
-}
-
-/// Reads a digest's algorithm and value, for a report.
-#[must_use]
-pub fn describe(digest: &SriDigest) -> String {
-    format!("{}:{}", digest.algorithm().prefix(), digest.encoded())
 }
