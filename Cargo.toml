@@ -19,6 +19,7 @@ members = [
   "crates/synra-protocol",
   "apps/synra-cli",
   "tools/api-guard",
+    "tools/doc-links",
   "tools/guards",
   "tools/matrix",
   "tools/synra-plugin-cli",
