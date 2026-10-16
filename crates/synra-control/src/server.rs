@@ -119,6 +119,31 @@ pub trait Kernel {
     /// As [`Kernel::send_text`], plus [`ErrorCode::InvalidArgument`] for a path that is not a readable file.
     fn send_file(&self, to: &str, path: &str) -> Result<serde_json::Value, Refusal>;
 
+    /// Sends a plugin bundle to a device, for installation on the other side.
+    ///
+    /// # Why this has a default implementation when `send_file` does not
+    ///
+    /// Because "this kernel does not send bundles" is a *correct* answer for the doubles in this crate's own tests: they
+    /// answer what the control layer asks them and nothing more. A required method would make each of them claim an
+    /// implementation it does not have, and a double that answers plausibly about something it does not do is the shape
+    /// of lie this workspace keeps removing.
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal`] naming what went wrong, or `ErrorCode::Unsupported` for a kernel that does not send bundles.
+    fn send_bundle(
+        &self,
+        _to: &str,
+        _path: &str,
+        _plugin_id: &str,
+        _version: &str,
+    ) -> Result<serde_json::Value, Refusal> {
+        Err(Refusal::new(
+            ErrorCode::Unsupported,
+            "this kernel does not send plugin bundles".to_owned(),
+        ))
+    }
+
     /// The installed plugins, as one JSON value.
     ///
     /// # Errors

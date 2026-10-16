@@ -192,146 +192,29 @@ impl Kernel for Runtime {
     ///
     /// [`Refusal`] naming what the user got wrong: the path, the device, or the transfer.
     fn send_file(&self, to: &str, path: &str) -> Result<serde_json::Value, Refusal> {
-        let now = synra_store::sqlite::now_ms();
-        let started = std::time::Instant::now();
-        let trace_id = synra_protocol::ids::TraceId::new();
-        let source = PathBuf::from(path);
+        self.send_a_file(to, path, None)
+    }
 
-        // ★ The file is checked **before** the device is looked up, for the reason `send --text` checks the text first: a
-        // path that does not exist is a mistake in the argument the user just typed, and reporting it as an unknown device
-        // would send them to check a device list for a problem that is not there.
-        if !source.is_file() {
+    /// Sends a plugin bundle to a device, for installation on the other side.
+    ///
+    /// # Errors
+    ///
+    /// As [`Kernel::send_file`], plus [`ErrorCode::InvalidArgument`] for an identifier or a version this build will not
+    /// put in a request.
+    fn send_bundle(
+        &self,
+        to: &str,
+        path: &str,
+        plugin_id: &str,
+        version: &str,
+    ) -> Result<serde_json::Value, Refusal> {
+        let Ok(plugin_id) = synra_protocol::ids::PluginId::try_from(plugin_id.to_owned()) else {
             return Err(Refusal::new(
                 ErrorCode::InvalidArgument,
-                format!("{path} is not a file this process can read"),
+                format!("{plugin_id} is not a plugin identifier"),
             ));
-        }
-
-        // The same two-step the text path uses: resolve and read the address under one lock, release it, then dial. The
-        // handshake can take seconds, and a guard living across it would make a `devices` listing wait for the network.
-        //
-        // ★ One critical section, a `drop` and then the failures — not an expression that returns them. `?` inside a block
-        // whose guard is still alive reads, to clippy's `significant_drop_in_scrutinee`, as a drop on the early-return path
-        // — which is the same pattern that has bitten this workspace before.
-        // ★ `--to` may be an address as well as a device, and the address is checked first because it is unambiguous by
-        // construction: a device identifier and a display name are both arbitrary strings that *could* look like one, and
-        // a user who typed `192.168.1.5:47100` meant the address. This is what makes a device reachable before discovery
-        // has found it — which is the state every installation is in until its first scan.
-        let address = match to.trim().parse::<std::net::SocketAddr>() {
-            Ok(address) => address,
-            Err(_) => {
-                let found = {
-                    let host = self.host.lock();
-                    match host.resolve(to) {
-                        Ok(device_id) => host.address_of(device_id).map(|address| (device_id, address)).ok_or_else(
-                            || {
-                                Refusal::new(
-                                    ErrorCode::DeviceOffline,
-                                    format!(
-                                        "{device_id} is known and has no address — it has not been seen on this network"
-                                    ),
-                                )
-                            },
-                        ),
-                        Err(error) => Err(refusal_of(&error)),
-                    }
-                };
-                // The guard is gone by now: the block above ended, which is what `significant_drop_in_scrutinee` wants to
-                // see rather than a `?` on an expression that still holds it.
-                let (device_id, address) = found?;
-                // Kept only so the report below can name the device. The handshake establishes the real identity, and the
-                // link is the authority for everything after it.
-                let _ = device_id;
-                address
-            }
         };
-
-        // ★ The handshake runs **outside** the lock, so a `devices` listing does not wait for it.
-        // `Host::dial` needs `&mut self` to record the session; `dial_peer` needs only a clone of this device's record,
-        // and `adopt` records what the exchange proved.
-        let parts = {
-            let host = self.host.lock();
-            host.dialling_parts()
-        };
-        let handshake_now = synra_core::reading_millis(now);
-        let dialled = synra_core::dial_peer(&parts.0, parts.1, address, None, handshake_now)
-            .map_err(|error| refusal_of(&error))?;
-        let mut host = self.host.lock();
-        let mut link = host
-            .adopt(dialled, handshake_now)
-            .map_err(|error| refusal_of(&error))?;
-        // ★ Taken from the link rather than from what the user typed. The handshake is what established who is on the other
-        // end, so an address that turned out to belong to a different device is reported as *that* device rather than as
-        // the one that was expected.
-        let device_id = link.peer();
-
-        // ★ The transfer runs with a deadline, because a peer that stops reading would otherwise hold this thread for ever.
-        // The protocol's own scan budget is not the right figure — a file takes as long as it takes — so this is a ceiling
-        // on one transfer rather than an expected duration.
-        let deadline = std::time::Instant::now() + TRANSFER_DEADLINE;
-        let events = synra_core::send_file(
-            &mut link,
-            &source,
-            synra_core::transfer::DEFAULT_CHUNK_SIZE,
-            trace_id,
-            now,
-            deadline,
-        )
-        .map_err(|error| Refusal::new(error_code_for_session(&error), error.to_string()))?;
-        drop(host);
-
-        let bytes = std::fs::metadata(&source).map(|meta| meta.len()).unwrap_or(0);
-        let resends = events
-            .iter()
-            .filter(|event| matches!(event, synra_core::SessionEvent::Resend { .. }))
-            .count();
-        // ★ `sent` means **the receiver confirmed it**, not "this end finished talking". Those are different claims, and
-        // an end-to-end run showed the gap: the file arrived byte-for-byte while the sender reported a transport failure,
-        // because it had stopped listening before the confirmation came.
-        let confirmed = events
-            .iter()
-            .any(|event| matches!(event, synra_core::SessionEvent::Verified { .. }));
-
-        // The link is closed rather than kept, for the reason the text path gives: the daemon has nowhere to record it
-        // between requests, and a link nobody is reading is one the peer sees as a connection that arrived and went quiet.
-        let _ = link.bye("file sent");
-
-        // ★ `confirmed` is a **separate fact** from whether the bytes moved, and an end-to-end run is what showed why: a
-        // 300 KB file arrived byte-for-byte with a matching digest while the sender never heard the receiver's completion.
-        // Reporting that as a transfer failure would tell a user their file did not arrive when it did — and reporting it
-        // as a plain success would claim knowledge this device does not have.
-        //
-        // So both are said. `sent` is what this device did; `confirmed` is what it heard back.
-        // ★ The two things the successful path can answer: how big it was, and how long it took.
-        //
-        // `transfers_total{outcome}` is deliberately **not** here. This method has several early returns — a path that
-        // does not exist, an address that cannot be resolved, a handshake that fails — and a counter written on the
-        // success path alone would count the transfers that worked and say nothing about the ones a user asks about,
-        // which is the same mistake the intent counter next door exists to avoid. That one needs every exit to pass one
-        // place, and this method cannot get that without restructuring a `Kernel` trait method's body — tried this round
-        // and backed out, because the surgery cost more than the metric.
-        self.metrics.histogram_observe(
-            &synra_observe::metrics::SeriesKey::new(
-                "transfer_bytes",
-                [("kind".to_owned(), "attachment".to_owned())],
-            ),
-            bytes as f64,
-        );
-        self.metrics.histogram_observe(
-            &synra_observe::metrics::SeriesKey::new(
-                "transfer_duration_ms",
-                [("kind".to_owned(), "attachment".to_owned())],
-            ),
-            started.elapsed().as_secs_f64() * 1_000.0,
-        );
-        Ok(serde_json::json!({
-            "sent": true,
-            "confirmed": confirmed,
-            "to": device_id.to_string(),
-            "bytes": bytes,
-            "resendRounds": resends,
-            "traceId": trace_id.to_string(),
-        }))
+        self.send_a_file(to, path, Some((&plugin_id, version)))
     }
 
     fn catalog_search(&self, package: &str) -> Result<serde_json::Value, Refusal> {
@@ -766,6 +649,168 @@ impl Kernel for Runtime {
 
 /// What this host does that the kernel trait has no place for.
 impl Runtime {
+
+    fn send_a_file(
+        &self,
+        to: &str,
+        path: &str,
+        bundle: Option<(&synra_protocol::ids::PluginId, &str)>,
+    ) -> Result<serde_json::Value, Refusal> {
+        let now = synra_store::sqlite::now_ms();
+        let started = std::time::Instant::now();
+        let trace_id = synra_protocol::ids::TraceId::new();
+        let source = PathBuf::from(path);
+
+        // ★ The file is checked **before** the device is looked up, for the reason `send --text` checks the text first: a
+        // path that does not exist is a mistake in the argument the user just typed, and reporting it as an unknown device
+        // would send them to check a device list for a problem that is not there.
+        if !source.is_file() {
+            return Err(Refusal::new(
+                ErrorCode::InvalidArgument,
+                format!("{path} is not a file this process can read"),
+            ));
+        }
+
+        // The same two-step the text path uses: resolve and read the address under one lock, release it, then dial. The
+        // handshake can take seconds, and a guard living across it would make a `devices` listing wait for the network.
+        //
+        // ★ One critical section, a `drop` and then the failures — not an expression that returns them. `?` inside a block
+        // whose guard is still alive reads, to clippy's `significant_drop_in_scrutinee`, as a drop on the early-return path
+        // — which is the same pattern that has bitten this workspace before.
+        // ★ `--to` may be an address as well as a device, and the address is checked first because it is unambiguous by
+        // construction: a device identifier and a display name are both arbitrary strings that *could* look like one, and
+        // a user who typed `192.168.1.5:47100` meant the address. This is what makes a device reachable before discovery
+        // has found it — which is the state every installation is in until its first scan.
+        let address = match to.trim().parse::<std::net::SocketAddr>() {
+            Ok(address) => address,
+            Err(_) => {
+                let found = {
+                    let host = self.host.lock();
+                    match host.resolve(to) {
+                        Ok(device_id) => host.address_of(device_id).map(|address| (device_id, address)).ok_or_else(
+                            || {
+                                Refusal::new(
+                                    ErrorCode::DeviceOffline,
+                                    format!(
+                                        "{device_id} is known and has no address — it has not been seen on this network"
+                                    ),
+                                )
+                            },
+                        ),
+                        Err(error) => Err(refusal_of(&error)),
+                    }
+                };
+                // The guard is gone by now: the block above ended, which is what `significant_drop_in_scrutinee` wants to
+                // see rather than a `?` on an expression that still holds it.
+                let (device_id, address) = found?;
+                // Kept only so the report below can name the device. The handshake establishes the real identity, and the
+                // link is the authority for everything after it.
+                let _ = device_id;
+                address
+            }
+        };
+
+        // ★ The handshake runs **outside** the lock, so a `devices` listing does not wait for it.
+        // `Host::dial` needs `&mut self` to record the session; `dial_peer` needs only a clone of this device's record,
+        // and `adopt` records what the exchange proved.
+        let parts = {
+            let host = self.host.lock();
+            host.dialling_parts()
+        };
+        let handshake_now = synra_core::reading_millis(now);
+        let dialled = synra_core::dial_peer(&parts.0, parts.1, address, None, handshake_now)
+            .map_err(|error| refusal_of(&error))?;
+        let mut host = self.host.lock();
+        let mut link = host
+            .adopt(dialled, handshake_now)
+            .map_err(|error| refusal_of(&error))?;
+        // ★ Taken from the link rather than from what the user typed. The handshake is what established who is on the other
+        // end, so an address that turned out to belong to a different device is reported as *that* device rather than as
+        // the one that was expected.
+        let device_id = link.peer();
+
+        // ★ The transfer runs with a deadline, because a peer that stops reading would otherwise hold this thread for ever.
+        // The protocol's own scan budget is not the right figure — a file takes as long as it takes — so this is a ceiling
+        // on one transfer rather than an expected duration.
+        let deadline = std::time::Instant::now() + TRANSFER_DEADLINE;
+        // ★ The same eleven steps for both payloads: what differs is the request the sender builds, and that is
+        // decided here rather than by a second copy of the validation, the dial and the report.
+        let events = match bundle {
+            Some((plugin_id, version)) => synra_core::send_bundle(
+                &mut link,
+                &source,
+                plugin_id.clone(),
+                version,
+                trace_id,
+                now,
+                deadline,
+            ),
+            None => synra_core::send_file(
+                &mut link,
+                &source,
+                synra_core::transfer::DEFAULT_CHUNK_SIZE,
+                trace_id,
+                now,
+                deadline,
+            ),
+        }
+        .map_err(|error| Refusal::new(error_code_for_session(&error), error.to_string()))?;
+        drop(host);
+
+        let bytes = std::fs::metadata(&source).map(|meta| meta.len()).unwrap_or(0);
+        let resends = events
+            .iter()
+            .filter(|event| matches!(event, synra_core::SessionEvent::Resend { .. }))
+            .count();
+        // ★ `sent` means **the receiver confirmed it**, not "this end finished talking". Those are different claims, and
+        // an end-to-end run showed the gap: the file arrived byte-for-byte while the sender reported a transport failure,
+        // because it had stopped listening before the confirmation came.
+        let confirmed = events
+            .iter()
+            .any(|event| matches!(event, synra_core::SessionEvent::Verified { .. }));
+
+        // The link is closed rather than kept, for the reason the text path gives: the daemon has nowhere to record it
+        // between requests, and a link nobody is reading is one the peer sees as a connection that arrived and went quiet.
+        let _ = link.bye("file sent");
+
+        // ★ `confirmed` is a **separate fact** from whether the bytes moved, and an end-to-end run is what showed why: a
+        // 300 KB file arrived byte-for-byte with a matching digest while the sender never heard the receiver's completion.
+        // Reporting that as a transfer failure would tell a user their file did not arrive when it did — and reporting it
+        // as a plain success would claim knowledge this device does not have.
+        //
+        // So both are said. `sent` is what this device did; `confirmed` is what it heard back.
+        // ★ The two things the successful path can answer: how big it was, and how long it took.
+        //
+        // `transfers_total{outcome}` is deliberately **not** here. This method has several early returns — a path that
+        // does not exist, an address that cannot be resolved, a handshake that fails — and a counter written on the
+        // success path alone would count the transfers that worked and say nothing about the ones a user asks about,
+        // which is the same mistake the intent counter next door exists to avoid. That one needs every exit to pass one
+        // place, and this method cannot get that without restructuring a `Kernel` trait method's body — tried this round
+        // and backed out, because the surgery cost more than the metric.
+        self.metrics.histogram_observe(
+            &synra_observe::metrics::SeriesKey::new(
+                "transfer_bytes",
+                [("kind".to_owned(), "attachment".to_owned())],
+            ),
+            bytes as f64,
+        );
+        self.metrics.histogram_observe(
+            &synra_observe::metrics::SeriesKey::new(
+                "transfer_duration_ms",
+                [("kind".to_owned(), "attachment".to_owned())],
+            ),
+            started.elapsed().as_secs_f64() * 1_000.0,
+        );
+        Ok(serde_json::json!({
+            "sent": true,
+            "confirmed": confirmed,
+            "to": device_id.to_string(),
+            "bytes": bytes,
+            "resendRounds": resends,
+            "traceId": trace_id.to_string(),
+        }))
+    }
+
         /// Puts an intent's envelope on a link to the device it names.
         ///
         /// # Errors

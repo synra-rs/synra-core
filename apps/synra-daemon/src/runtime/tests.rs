@@ -2084,3 +2084,73 @@ fn a_file_that_reaches_the_other_side_is_measured() {
         "the duration of a completed transfer is not recorded"
     );
 }
+
+
+#[test]
+fn a_bundle_arrives_as_a_bundle() {
+    // ★ 这一条走的是第 153 轮的 `send_bundle` 与这一轮的 `Kernel::send_bundle` ——
+    // 而它证明的是一件具体的事：接收端**以插件包的身份**认出它（第 139 轮的 `bundle` 字段）。
+    //
+    // 在此之前，`send_file` 的请求把 kind 与 meta 写死为附件，于是一个包会以一张截图的身份到达，
+    // 而接收端据此决定它落在哪里、以及它是什么 —— 一条在接收端看起来完全正常的错。
+    let dir = TempDir::new("send-bundle");
+    let runtime = runtime(dir.path());
+    let source = dir.path().join("plugin.wasm");
+    std::fs::write(&source, b"\0asm\x01\0\0\0an artifact").expect("a file to send");
+
+    runtime
+        .host
+        .lock()
+        .set_flags(synra_core::peer::Flags::no_timeout());
+    let inbox = TempDir::new("send-bundle-inbox");
+    let (listener, address) = listening("11111111-1111-4111-8111-111111111111", "Laptop");
+    let served = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let taken = listener.lock().try_accept();
+            match taken {
+                Ok(Some(stream)) => {
+                    return synra_core::listener::handle_within(
+                        &listener,
+                        stream,
+                        inbox.path(),
+                        std::time::Duration::from_secs(5),
+                        &test_desk(),
+                        &test_router(),
+                    );
+                }
+                Ok(None) => {}
+                Err(error) => panic!("the listener could not accept: {error}"),
+            }
+            assert!(std::time::Instant::now() < deadline, "no connection arrived");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    });
+
+    // 端口 0 让操作系统挑地址，而它报回来的不总是能拨的。
+    let dial_to = std::net::SocketAddr::new(
+        match address.ip() {
+            std::net::IpAddr::V4(v4) if v4.is_unspecified() => {
+                std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+            }
+            other => other,
+        },
+        address.port(),
+    );
+    let answer = runtime.send_bundle(
+        &dial_to.to_string(),
+        &source.to_string_lossy(),
+        "@acme/chat",
+        "1.2.0",
+    );
+    assert!(answer.is_ok(), "the send failed: {answer:?}");
+
+    let served = served.join().expect("the server thread finished");
+    assert_eq!(served.finished.len(), 1, "{served:?}");
+    // ★ 而它到了对端**作为插件包**，带着它的标识 —— 这是授权安装的那一步。
+    assert_eq!(
+        served.finished[0].bundle.as_ref().map(ToString::to_string),
+        Some("@acme/chat".to_owned()),
+        "a bundle arrived as something else"
+    );
+}
