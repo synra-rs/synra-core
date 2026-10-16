@@ -111,6 +111,12 @@ pub struct Receiving {
     /// The field is here because **accepting the proposal** is when this is knowable — the metadata carries it. At
     /// completion the only thing left is a path, and a path is a file name.
     bundle: Option<synra_protocol::ids::PluginId>,
+    /// Which round this transfer belongs to, when it belongs to one.
+    ///
+    /// ★ The value the *sender* chose (round 166), carried so the receiver can name the round in the result it sends
+    /// back. Read out of the request rather than made up here: a receiver that invented one would answer with a round
+    /// the sender has never heard of.
+    sync_session_id: Option<synra_protocol::ids::SessionId>,
     /// The request this transfer answered.
     ///
     /// ★ Carried because a result has to reply *to* something: `messaging::sync_result` needs the request, and a reply
@@ -146,9 +152,17 @@ impl Receiving {
         // the only thing left is where the bytes landed.
         let bundle = bundle_of(&request.meta);
         let request_id = envelope.request_id;
+        let sync_session_id = request.sync_session_id;
         let version = version_of(&request.meta);
         let receiver = TransferReceiver::accept(&request, destination)?;
-        Ok(Self { receiver, trace_id, bundle, version, request_id })
+        Ok(Self {
+            receiver,
+            trace_id,
+            bundle,
+            version,
+            request_id,
+            sync_session_id,
+        })
     }
 
     /// Which transfer this is.
@@ -179,6 +193,12 @@ impl Receiving {
     #[must_use]
     pub const fn request_id(&self) -> synra_protocol::ids::RequestId {
         self.request_id
+    }
+
+    /// Which round this transfer belongs to, when it belongs to one.
+    #[must_use]
+    pub const fn sync_session_id(&self) -> Option<synra_protocol::ids::SessionId> {
+        self.sync_session_id
     }
 
     /// How many blocks have arrived.
