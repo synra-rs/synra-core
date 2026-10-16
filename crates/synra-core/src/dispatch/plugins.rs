@@ -654,7 +654,24 @@ impl PluginSet {
         };
 
         match outcome {
-            Ok(result) => result.map_err(PluginSetError::Compile),
+            Ok(result) => {
+                let outcome = result.map_err(PluginSetError::Compile)?;
+                // ★ And the same rule applies when the **engine** stopped the guest, which is where it was missing.
+                //
+                // The panic path above discards the instance because a store that unwound out of a call cannot be reasoned
+                // about. A guest that ran out of fuel, hit its memory ceiling or was interrupted by the clock is in exactly
+                // that condition: it trapped **mid-execution**, and a trapped component instance cannot be entered again.
+                // wasmtime answers the next call with `Trap { "cannot enter component instance" }`.
+                //
+                // Keeping it made one overrun permanent. Every later call to that plugin failed with a trap that says
+                // nothing about the plugin and everything about the instance the kernel was holding, and the only remedy a
+                // user had was to restart the app. Discarding it costs one instantiation on the next call, which is what the
+                // pool exists for, and it is the difference between a plugin that misbehaved once and one that is broken.
+                if outcome.is_misbehaviour() {
+                    loaded.live.remove(&handle);
+                }
+                Ok(outcome)
+            }
             Err(payload) => {
                 // The instance is gone, so a later call builds a new one instead of inheriting the damage.
                 loaded.live.remove(&handle);

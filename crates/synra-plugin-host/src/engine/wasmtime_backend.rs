@@ -326,6 +326,20 @@ impl PluginInstance for EngineInstance {
             self.store.set_fuel(fuel).map_err(|error| BackendError::Engine {
                 detail: format!("the fuel budget could not be set: {error}"),
             })?;
+        } else {
+            // ★ And "no instruction limit" has to be **given** fuel rather than left alone, which is the one thing this
+            // layer cannot express by doing nothing.
+            //
+            // Every store is built with `consume_fuel(true)` and starts at zero, so a call that named no amount inherited
+            // either nothing — a fresh instance, which traps at once with `FuelExhausted { fuel: 0 }` — or the previous
+            // call's remainder on a reused one, and a remainder can be zero. Both are a plugin reported as out of
+            // instructions when its budget named no instruction limit.
+            //
+            // `u64::MAX` is what wasmtime documents for effectively-unlimited fuel, and it is safe here where the same value
+            // was **not** safe for the epoch deadline: fuel is subtracted as instructions run, not added to a counter.
+            self.store.set_fuel(u64::MAX).map_err(|error| BackendError::Engine {
+                detail: format!("the fuel budget could not be set: {error}"),
+            })?;
         }
 
         // ── Layer 2: the wall clock ──

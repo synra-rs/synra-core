@@ -437,6 +437,50 @@ fn a_guest_cannot_grow_past_the_ceiling_its_budget_names() {
 }
 
 #[test]
+fn a_call_that_asks_for_no_fuel_is_given_fuel_rather_than_left_at_zero() {
+    // """ + S + """ "No instruction limit" is the one budget the engine cannot express by doing nothing.
+    //
+    // Every store is built with `consume_fuel(true)` and starts at **zero**. Setting fuel only when the budget names an
+    // amount left a call that named none with nothing to spend, so a guest trapped at once with `FuelExhausted { fuel: 0 }`
+    // — a plugin reported as out of instructions when its budget said there was no limit. A reused instance was worse rather
+    // than better: it inherited the previous call's remainder, which can also be zero.
+    //
+    // """ + S + """ On a fresh instance, and about the tank rather than about reuse.
+    //
+    // The first version of this test called the same instance twice after draining it, and what it found was a different
+    // bug entirely: a **trapped** component instance cannot be entered again, so reuse after a stop is not something the
+    // engine offers. Discarding such an instance is `PluginSet`'s job — `a_plugin_that_exhausts_its_budget_is_not_broken_afterwards`
+    // in `synra-core` is where that lives — and asserting it here would have been asserting a contract this layer never
+    // made.
+    let (backend, _executor) = backend_and_executor();
+    let artifact = compile(&backend, SPINS_ON_DEACTIVATE, "@acme/spins");
+    let mut instance = instantiate(&backend, artifact.as_ref());
+
+    // Unlimited instructions, bounded by the clock so the test cannot hang. Both facts matter: without the fuel the guest
+    // stops before it starts, and without the clock it never stops.
+    let started = std::time::Instant::now();
+    let outcome = instance
+        .call(
+            &Work::Deactivate,
+            CallBudget {
+                fuel: None,
+                timeout: Some(Duration::from_millis(250)),
+                max_memory_growth: None,
+            },
+        )
+        .expect("a call");
+
+    match outcome {
+        CallOutcome::Timeout { .. } => {}
+        other => panic!("a budget with no instruction limit should run until its clock, got {other:?}"),
+    }
+    assert!(
+        started.elapsed() < Duration::from_secs(30),
+        "and it should stop near that clock rather than running on"
+    );
+}
+
+#[test]
 fn a_real_guest_that_loops_is_stopped_by_the_wall_clock_not_by_zero() {
     // """ + S + """ The other half of the round-95 fix, and the half nothing covered.
     //
