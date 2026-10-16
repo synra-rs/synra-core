@@ -893,3 +893,51 @@ fn a_row_this_build_cannot_read_is_skipped_rather_than_fatal() {
         .state_of(&plugin("@acme/chat"), "22222222-2222-4222-8222-222222222222".parse().expect("a device"));
     assert_eq!(state.and_then(|state| state.version.as_deref()), Some("1.2.0"));
 }
+
+
+#[test]
+fn the_two_faces_of_one_question_agree() {
+    // ★ `SyncTable`（内存）与 `sync_records`（SQLite）回答同一个问题：**谁持有什么**。
+    //
+    // ★ 而它们**不是**重复，理由与第 157 轮写下的那个不同 —— 那个理由是错的：
+    // 它说内存的那张是给「没有 SQLite 的宿主」用的，而 `synra-core` 从第 136 轮起就依赖 `synra-store`
+    // （`SyncRecord::to_row` 返回 store 的行类型）。所以这里没有那种宿主。
+    //
+    // 真正的理由是：一个是纯逻辑、一个是持久化，而**没有任何东西保证两边一致**。
+    // 这条测试就是那个保证 —— 同一组事实写进库，再装进内存的那张，两边的答案必须一样。
+    //
+    // ★ 而它同时钉住第 162 轮修过的语义：**摘要也算「持有」**。库里那一行的版本是空的
+    // （接收端写下的形状：摘要来自文件证明，而一次 `Decision` 不带版本），
+    // 而两个实现都必须把它读成「有」，否则下一次同步会把同一个包再推一遍。
+    let mut db = synra_store::SynraDb::open_in_memory().expect("opens");
+    db.migrate().expect("migrates");
+    let peer = "22222222-2222-4222-8222-222222222222";
+    db.record_sync("@acme/chat", peer, "1.2.0", "sha256-abc", 2_000).expect("records");
+    // 而这一行是接收端的形状：版本空，摘要真。
+    db.record_sync("@acme/chat", "33333333-3333-4333-8333-333333333333", "", "sha256-def", 3_000)
+        .expect("records");
+
+    // 磁盘那一侧。
+    let rows = db.sync_records().expect("reads");
+    assert_eq!(rows.len(), 2);
+
+    // 而内存那一侧从同一批行装起来。
+    let table = SyncTable::from_rows(&rows);
+    let plugin_id = plugin("@acme/chat");
+
+    for row in &rows {
+        let device = row.peer_device.parse().expect("a device id");
+        let state = table.state_of(&plugin_id, device).expect("the same peer is known");
+        // 版本：库里的空串在两边都必须是「没有版本」，而不是「版本是空串」。
+        let expected = if row.version.is_empty() { None } else { Some(row.version.as_str()) };
+        assert_eq!(
+            state.version.as_deref(),
+            expected,
+            "the two faces disagree about {}",
+            row.peer_device
+        );
+        assert_eq!(state.digest.as_deref(), Some(row.digest.as_str()));
+        // ★ 而两者都说「有」—— 包括那个版本为空、只有摘要的行。
+        assert!(state.has_it(), "the two faces disagree about holding it");
+    }
+}
