@@ -77,6 +77,11 @@ fn guards() -> Vec<Guard> {
             source: "10 §3.1",
             run: guard_host_functions_are_gated,
         },
+        Guard {
+            rule: "only the sandbox may delete a directory tree",
+            source: "11 §D2",
+            run: guard_directory_deletion_is_contained,
+        },
     ]
 }
 
@@ -545,6 +550,73 @@ fn guard_directories_is_contained(root: &Path) -> Vec<String> {
             format!("{} uses `directories::`", relative.display())
         })
         .collect()
+}
+
+/// 6. A path that deletes a whole directory must be the sandbox's own.
+///
+/// """ + S + """ Why this one is new, and what it is for.
+///
+/// `11 §D2` says the kernel must never silently delete a user's data, and the document's evidence for it was a
+/// hand-counted number plus the phrase *"all of them are in test code"* — which is not something anybody can check without
+/// first deciding what test code is. Counting it properly found **71** call sites rather than 42, and exactly two in
+/// production: `sandbox.rs`, removing the sandbox's own cache and root.
+///
+/// So the rule is written down here with the allow-list it needs. A call site is test code when the file's name says so or
+/// the path is a `tests` directory, or when it sits **below** the file's first `#[cfg(test)]` — which is where a Rust test
+/// module goes. Everything else is production, and production may only delete a directory in the one place whose whole job
+/// is to own one.
+fn guard_directory_deletion_is_contained(root: &Path) -> Vec<String> {
+    /// The only production file allowed to remove a directory tree, and why: a sandbox owns directories to delete them.
+    const ALLOWED: &[&str] = &["crates/synra-store/src/sandbox.rs"];
+
+    let mut offenders = Vec::new();
+    for base in ["crates", "apps", "tools"] {
+        for path in rust_files(&root.join(base)) {
+            let relative = path.strip_prefix(root).unwrap_or(&path);
+            let relative = relative.to_string_lossy().replace('\\', "/");
+            let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            // Test code, by the two rules above.
+            if name.contains("test") || relative.split('/').any(|part| part == "tests") {
+                continue;
+            }
+            if ALLOWED.contains(&relative.as_str()) {
+                continue;
+            }
+            // ★ And a checker cannot check itself: this file contains the name it looks for, in the code that does the
+            // looking and in the paragraph explaining it. Counting those as call sites makes the ruler part of what it
+            // measures, which is the same mistake as a fixture named after the thing a document makes a claim about.
+            //
+            // Only this file, and not the other tools: they mention nothing, and `tools/synra-plugin-cli` is a real program
+            // that is worth checking.
+            if relative.ends_with("tools/guards/src/main.rs") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            if !text.contains("remove_dir_all") {
+                continue;
+            }
+            // ★ The marker has to be **code**, not a comment about the marker.
+            //
+            // The first version of this guard failed on its own documentation: the paragraph above contains the literal
+            // `#[cfg(test)]`, so the boundary was found in prose and the two `remove_dir_all` calls in the guard's own test
+            // helper were read as production code. A rule that cannot tell a mention from a use will always find one.
+            let boundary = text
+                .lines()
+                .position(|line| {
+                    let trimmed = line.trim_start();
+                    !trimmed.starts_with("//") && trimmed.starts_with("#[cfg(test)]")
+                })
+                .unwrap_or(usize::MAX);
+            for (index, line) in text.lines().enumerate() {
+                if index < boundary && line.contains("remove_dir_all") {
+                    offenders.push(format!("{relative}:{} removes a directory tree", index + 1));
+                }
+            }
+        }
+    }
+    offenders
 }
 
 /// 5. A host function reachable without the gate is a capability the manifest never granted.
