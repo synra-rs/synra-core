@@ -677,3 +677,60 @@ fn a_skipped_round_is_not_a_failed_one() {
     assert!(matches!(skipped.verdict, Some(SyncVerdict::Skipped { .. })));
     assert_ne!(skipped.verdict, Some(SyncVerdict::Failed { error: String::new() }));
 }
+
+
+#[test]
+fn a_record_round_trips_through_a_database_row() {
+    // 表那一半在 `synra-store`（迁移 v10）；这一半把两者接起来，而往返是唯一能证明
+    // 「投影列与文档说的是同一件事」的办法 —— 三种结局各走一遍，因为 `Skipped` 与 `Failed`
+    // 携带的内容不同，只测一种会漏掉另一种的字段。
+    for (verdict, action) in [
+        (
+            SyncVerdict::Succeeded,
+            SyncAction::Push { why: "the peer had nothing".to_owned() },
+        ),
+        (
+            SyncVerdict::Skipped { reason: "both ends agree".to_owned() },
+            SyncAction::Skip { why: "same digest".to_owned() },
+        ),
+        (
+            SyncVerdict::Failed { error: "the signature did not verify".to_owned() },
+            SyncAction::Refuse { why: "the publisher is untrusted here".to_owned() },
+        ),
+    ] {
+        let record = SyncRecord::new(plugin("@acme/chat"), DeviceId::new(), action, 1_000)
+            .identified(
+                SyncId::new("sync-1"),
+                SyncDirection::Push,
+                Some("1.2.0".to_owned()),
+                synra_protocol::ids::TraceId::new(),
+            )
+            .finished(verdict, 4_096, 2_000)
+            .expect("a verdict");
+
+        let row = record.to_row().expect("serialises");
+        // 投影列与文档来自同一个记录，而不是各写各的。
+        assert_eq!(row.sync_id, "sync-1");
+        assert_eq!(row.plugin_id, "@acme/chat");
+        assert_eq!(row.peer_device, record.peer.to_string());
+        assert_eq!(row.started_at_ms, 1_000);
+        assert_eq!(row.finished_at_ms, Some(2_000));
+
+        // 而整份记录回得来：包括决定里的原因、结局里的错误、字节数与追踪。
+        assert_eq!(SyncRecord::from_row(&row).expect("deserialises"), record);
+    }
+}
+
+#[test]
+fn a_row_that_is_not_this_rounds_document_is_an_error_rather_than_a_guess() {
+    // 坏文档必须是错误：一个「猜出来」的记录会让历史页面显示一轮从未发生过的同步。
+    let row = synra_store::records::SyncLogRow {
+        sync_id: "sync-1".to_owned(),
+        plugin_id: "@acme/chat".to_owned(),
+        peer_device: "device-b".to_owned(),
+        started_at_ms: 1_000,
+        finished_at_ms: None,
+        document: "{ this is not json".to_owned(),
+    };
+    assert!(SyncRecord::from_row(&row).is_err());
+}

@@ -119,7 +119,7 @@ impl ConflictPolicy {
 }
 
 /// What a sync should do next.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SyncAction {
     /// Send the package.
@@ -652,7 +652,7 @@ impl SyncOutcome {
 ///
 /// 与会话标识分开：一轮会话可以产生不止一条记录（发起端与接收端各记自己的），
 /// 而一条记录要能被单独引用、排序和去重。
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SyncId(String);
 
 impl SyncId {
@@ -670,7 +670,7 @@ impl SyncId {
 }
 
 /// 这一轮是谁推给谁。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyncDirection {
     /// 本机推给对端。
     Push,
@@ -684,7 +684,7 @@ pub enum SyncDirection {
 /// 接收端做过哪些义务的清单（[`SyncOutcome`]）。文档 §5.5 的 `SyncOutcome` 是这三态，
 /// 代码的 [`SyncOutcome`] 是记账 —— 同名不同物。给新的这个起一个准确的名字，
 /// 比重命名一个已经有生产调用者的类型代价小。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Eq)]
 pub enum SyncVerdict {
     /// 装上了。
     Succeeded,
@@ -704,7 +704,7 @@ pub enum SyncVerdict {
 ///
 /// 这条记录**就是**那一步的产物：以前它只有四个字段（插件、对端、决定、时间），
 /// 所以一次同步结束之后没有任何地方说得出来它成没成、传了多少。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct SyncRecord {
     /// 这条记录自己的标识。
     pub id: SyncId,
@@ -763,6 +763,41 @@ impl SyncRecord {
             bytes_transferred: 0,
             trace_id: None,
         }
+    }
+
+    /// 把这一轮写成库里的一行（迁移 v10 的 `sync_log`）。
+    ///
+    /// ★ 形状照 `intents`（迁移 v9）的先例：**整份文档 + 查询用的投影列**。
+    /// `document` 是整份记录的序列化；旁边的列是历史页面真正要问的两个问题
+    /// （最新在前、按插件过滤）。它们必须与 `document` 里的同一件事一致，
+    /// 而这里保证这一点的方式是：两者都从**同一个** `self` 取。
+    ///
+    /// # Errors
+    ///
+    /// 序列化失败。对一个全是普通数据的结构体这不会发生，但返回 `Result` 好过 `panic` ——
+    /// 而且工作区禁止 `unwrap`，所以「不会发生」也必须有人接着。
+    pub fn to_row(&self) -> Result<synra_store::records::SyncLogRow, serde_json::Error> {
+        Ok(synra_store::records::SyncLogRow {
+            sync_id: self.id.as_str().to_owned(),
+            plugin_id: self.plugin_id.to_string(),
+            peer_device: self.peer.to_string(),
+            started_at_ms: self.started_at_ms,
+            finished_at_ms: self.finished_at_ms,
+            document: serde_json::to_string(self)?,
+        })
+    }
+
+    /// 从库里的一行读回这一轮。
+    ///
+    /// ★ **`document` 是权威。** 投影列是给查询用的索引；与文档不一致的列只可能来自有人手工改过库，
+    /// 而那时相信哪一半都不对 —— 这里选择相信完整的那一半，并把不一致留给一个单独的检查
+    /// （而不是在这里悄悄让列赢）。
+    ///
+    /// # Errors
+    ///
+    /// 文档不是这一轮的序列化。
+    pub fn from_row(row: &synra_store::records::SyncLogRow) -> Result<Self, serde_json::Error> {
+        serde_json::from_str(&row.document)
     }
 
     /// 给记录一个身份、一个方向、一个版本和一条追踪。
