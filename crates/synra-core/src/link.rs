@@ -137,6 +137,12 @@ pub struct PeerLink {
     flags: Flags,
     /// A per-call read timeout, for a caller whose own deadline is sooner than the link's.
     read_timeout_override: Option<std::time::Duration>,
+    /// A write deadline a caller asked for, in place of the negotiated one.
+    ///
+    /// ★ The asymmetry this fixes: a **read** timeout had an override and a write timeout did not exist at all. A caller that
+    /// wanted its own write deadline had no way to say so, and the link's own deadline is the negotiated session timeout —
+    /// thirty seconds — which for a transfer's first block is a long time to hold a thread that could be told sooner.
+    write_timeout_override: Option<std::time::Duration>,
     /// Envelopes sent, for a report.
     sent: u64,
     /// Envelopes received and accepted, for a report.
@@ -166,6 +172,7 @@ impl PeerLink {
             agreed,
             flags,
             read_timeout_override: None,
+            write_timeout_override: None,
             sent: 0,
             received: 0,
         }
@@ -216,9 +223,53 @@ impl PeerLink {
     /// attacker-controlled — and a symmetric check here would be one that reads as protection while protecting against
     /// nothing.
     ///
+    /// Writes a frame, under the link's timeout.
+    ///
+    /// # ★ Why a write needs a timeout, and never had one
+    ///
+    /// Because a write to a socket whose peer has stopped reading **blocks forever** once the kernel's send buffer and the
+    /// peer's receive window are full. `PeerLink` set a read timeout and no write timeout, so a peer that stopped reading did
+    /// not produce an error anywhere: the calling thread simply never came back, and the daemon's transport stopped serving
+    /// every other device behind it. TCP will not report this — a full window is not a closed socket, and there is no
+    /// keepalive short enough to notice.
+    ///
+    /// The crate written for exactly this has the reasoning: `synra_net::write_queue`'s module documentation says a peer that
+    /// stops reading "turns the application into a buffer", and that the three ways to stay bounded are to drop the oldest
+    /// (silent corruption), drop the newest (a message the caller believes was queued), or **close the link so the loss is
+    /// visible**. A timeout is the smallest form of the third: the caller is told, and reconnection re-requests what is
+    /// still needed.
+    ///
+    /// The second link implementation in this crate already did this (`peer/link.rs` sets a write timeout from the same
+    /// negotiated `flags.timeout`), so this is one of two implementations catching up with the other rather than a new
+    /// decision.
+    fn write_frame(&mut self, encoded: &[u8]) -> Result<(), LinkError> {
+        if let Some(timeout) = self.write_deadline() {
+            self.stream
+                .set_write_timeout(Some(timeout))
+                .map_err(|error| LinkError::Transport { why: error.to_string() })?;
+        }
+        self.stream
+            .write_all(encoded)
+            .and_then(|()| self.stream.flush())
+            .map_err(|error| LinkError::Transport { why: error.to_string() })
+    }
+
+    /// The deadline a write runs under: the caller's, or the negotiated one.
+    ///
+    /// ★ Observable on purpose. A socket's write timeout has no getter, so a test cannot ask the socket what was applied —
+    /// and the interesting decision is not "did `set_write_timeout` get called" but **which of the two deadlines wins**.
+    /// That is what this answers, and it is what a test can hold.
+    #[must_use]
+    pub fn write_deadline(&self) -> Option<std::time::Duration> {
+        self.write_timeout_override.or(self.flags.timeout)
+    }
+
+    /// Sends a completed envelope.
+    ///
     /// # Errors
     ///
-    /// [`LinkError::Envelope`] when the envelope cannot be serialised, and [`LinkError::Transport`] when the write fails.
+    /// [`LinkError::Envelope`] when the envelope cannot be serialised, and [`LinkError::Transport`] when the write fails —
+    /// including the timeout above, which is a peer that has stopped reading rather than one that has gone away.
     pub fn send(&mut self, envelope: &Envelope) -> Result<(), LinkError> {
         let bytes = serde_json::to_vec(envelope).map_err(|error| LinkError::Envelope {
             why: error.to_string(),
@@ -229,10 +280,7 @@ impl PeerLink {
             body: FrameBody::Envelope(Bytes::from(bytes)),
         };
         let encoded = FrameEncoder::encode_to_vec(&frame)?;
-        self.stream
-            .write_all(&encoded)
-            .and_then(|()| self.stream.flush())
-            .map_err(|error| LinkError::Transport { why: error.to_string() })?;
+        self.write_frame(&encoded)?;
         self.sent = self.sent.saturating_add(1);
         Ok(())
     }
@@ -331,10 +379,7 @@ impl PeerLink {
 
     fn send_frame(&mut self, frame: &Frame) -> Result<(), LinkError> {
         let encoded = FrameEncoder::encode_to_vec(frame)?;
-        self.stream
-            .write_all(&encoded)
-            .and_then(|()| self.stream.flush())
-            .map_err(|error| LinkError::Transport { why: error.to_string() })
+        self.write_frame(&encoded)
     }
 
     /// Reads the next envelope, answering heartbeats on the way.
@@ -405,6 +450,14 @@ impl PeerLink {
     /// every other caller wants.
     pub const fn set_read_timeout(&mut self, timeout: Option<std::time::Duration>) {
         self.read_timeout_override = timeout;
+    }
+
+    /// Sets this link's write deadline, or restores the negotiated one.
+    ///
+    /// The same reasoning as [`Self::set_read_timeout`], and one more: a caller that has just decided a peer is not worth
+    /// waiting for should be able to say so for writes without waiting out the session timeout first.
+    pub const fn set_write_timeout(&mut self, timeout: Option<std::time::Duration>) {
+        self.write_timeout_override = timeout;
     }
 
     /// Reads one frame.
@@ -497,6 +550,85 @@ mod tests {
         synra_protocol::handshake::Agreed {
             common: vec![synra_protocol::handshake::Feature::EventStream],
             missing_required: Vec::new(),
+        }
+    }
+
+    fn link_with_timeout(
+        stream: TcpStream,
+        local: &str,
+        peer: &str,
+        timeout: std::time::Duration,
+    ) -> PeerLink {
+        PeerLink::new(
+            stream,
+            device(local),
+            device(peer),
+            agreed(),
+            Flags { timeout: Some(timeout) },
+        )
+    }
+
+    #[test]
+    fn the_callers_write_deadline_wins_over_the_negotiated_one() {
+        // ★ The decision, which is the part a test can hold: a socket's write timeout has no getter, so "was
+        // `set_write_timeout` called" is not askable — but *which deadline applies* is, and that is the question the two
+        // sources raise. Without this, the override could be stored and never consulted and nothing would notice.
+        let (dialer, _peer) = connected();
+        let mut link = link_with_timeout(dialer, LOCAL, PEER, std::time::Duration::from_secs(30));
+
+        assert_eq!(link.write_deadline(), Some(std::time::Duration::from_secs(30)), "the negotiated one");
+        link.set_write_timeout(Some(std::time::Duration::from_millis(250)));
+        assert_eq!(link.write_deadline(), Some(std::time::Duration::from_millis(250)), "the caller's");
+        // And `None` puts the negotiated one back rather than removing every deadline — the same reading
+        // `set_read_timeout` has.
+        link.set_write_timeout(None);
+        assert_eq!(link.write_deadline(), Some(std::time::Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn a_peer_that_stops_reading_is_told_rather_than_waited_for() {
+        // ★ What this covers, and why it mattered: `PeerLink` set a **read** timeout and no write timeout, so a peer that
+        // stopped reading did not produce an error anywhere — the calling thread never came back, and the daemon's
+        // transport stopped serving every other device behind it. TCP will not report it; a full window is not a closed
+        // socket.
+        //
+        // A **one-millisecond** deadline, not zero: Windows refuses `set_write_timeout(Some(ZERO))` outright — "cannot set a 0
+        // duration timeout" — so the first version of this test failed while *setting up*, and the reason assertion below
+        // is what caught it. A millisecond is accepted, and the write that would block gives up after it.
+        let (dialer, _peer) = connected();
+        let mut link = link_with_timeout(dialer, LOCAL, PEER, std::time::Duration::from_millis(1));
+
+        // The peer end is held and never read from, so its receive window fills and the sender's buffer with it. A block of
+        // the frame ceiling rather than a small one, so this takes a handful of writes rather than thousands.
+        let block = vec![0u8; 32 * 1024];
+        let started = std::time::Instant::now();
+        let mut refused = None;
+        for index in 0..2_000_u32 {
+            if let Err(error) = link.send_chunk(index, &block) {
+                refused = Some(error);
+                break;
+            }
+        }
+
+        match refused {
+            Some(LinkError::Transport { .. }) => {
+                // ★ And it came back **because the deadline passed**, not because the peer went away. Asserted as time
+                // rather than as text, and the reason is worth keeping: the operating system's message is **localized** —
+                // this machine reports WSAETIMEDOUT as a sentence in Chinese — so matching "timed out" was a test that
+                // passed on an English machine and failed on this one. The elapsed time cannot be localized: with no write
+                // deadline the write blocks forever, because the peer end is alive and simply not reading, and TCP will not
+                // report a full window as an error.
+                //
+                // (The code is in the message — `10060` here — but the *number* is Windows'; on Linux the same condition is
+                // EAGAIN or ETIMEDOUT. Time is the portable fact.)
+                assert!(
+                    started.elapsed() < std::time::Duration::from_secs(10),
+                    "the write returned after {:?}, which is not a deadline: the peer was alive and not reading",
+                    started.elapsed()
+                );
+            }
+            Some(other) => panic!("a full window is a transport failure, got {other:?}"),
+            None => panic!("a peer that never read absorbed two thousand blocks, so nothing was bounded"),
         }
     }
 
