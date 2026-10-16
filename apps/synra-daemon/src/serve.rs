@@ -958,7 +958,22 @@ mod tests {
         // ★ 这一条把两个在 `synra-store` 里写好了、测过了、而**没有任何生产代码调用过**的函数接上了：
         // `insert_plugin` 与 `plugin_is_installed`。
         let db = a_database();
-        super::record_received(&db, std::path::Path::new("."), &a_bundle());
+        // ★ 一个**真的**目录：`check_room` 会去问它有多少空余，而一个不存在的路径会被它拒绝 ——
+        // 而第 130 轮的设计是**一个被拒绝的步骤不留痕迹**，所以那会让 `performed` 空着。
+        // 第一次这行写的是 `"."`，测试失败，而失败原因正是这个。
+        // `TempDir` 是 `runtime::tests` 的辅助，这个模块里没有 —— 建一个自己的目录就够了。
+        let dir = std::env::temp_dir().join("synra-record-received");
+        std::fs::create_dir_all(&dir).expect("a directory to install into");
+        // ★ 而这里**故意没有**断言 `performed` 非空 —— 因为这一轮发现它**仍然是**空的，
+        // 而我没有查出为什么。
+        //
+        // 上面那三项检查（磁盘空间、是否启用、权限归本机）都调了，而 `ReceiverCheck` 会对一个
+        // **被拒绝**的步骤不留痕迹（第 130 轮的设计）。所以 `performed` 空着有两种可能：
+        // 三项之中有的失败了（`check_room` 会去问目录有多少空余，而那个探针在第 130 轮有过
+        // 一个 Windows 上的坑），或者 `finish` 没有把它们带过来。
+        //
+        // **一个为了通过而写的断言比没有断言更糟**，所以这里只留下调用，把问题写在原地。
+        let _ = super::record_received(&db, &dir, &a_bundle()).expect("a bundle has an outcome");
 
         assert!(
             db.lock().plugin_is_installed("@acme/chat").expect("reads"),
