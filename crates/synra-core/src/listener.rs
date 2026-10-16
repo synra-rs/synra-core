@@ -61,6 +61,8 @@ pub struct FinishedTransfer {
     pub byte_length: u64,
     /// Which plugin it is a bundle for, when it is one.
     pub bundle: Option<synra_protocol::ids::PluginId>,
+    /// The digest this device verified the file against.
+    pub digest: String,
     /// Which device it came from.
     ///
     /// Carried per transfer rather than read off `Served::peer` by the caller: `peer` is a fact about the *connection*
@@ -370,7 +372,7 @@ pub fn handle_within(
                         eprintln!("synra-daemon: {peer} re-sent block {index}, which was already held");
                     }
                 }
-                Decision::Finished { path, byte_length, bundle } => {
+                Decision::Finished { path, byte_length, bundle, digest } => {
                     events.push("finished".to_owned());
                     // ★ The three facts travel together, and `bundle` is the one that says which of them this is.
                     finished.push(FinishedTransfer {
@@ -378,6 +380,7 @@ pub fn handle_within(
                         byte_length,
                         bundle: bundle.clone(),
                         peer,
+                        digest: digest.clone(),
                     });
                     // ★ A bundle is said out loud rather than printed as another file. The kernel does not install one
                     // yet, and a line that reads like every other received file is how "not installed yet" becomes

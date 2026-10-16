@@ -97,6 +97,12 @@ pub enum Decision {
         /// Carried rather than guessed from the file name: `proposed_name` builds `plugin-<id>.wasm`, and a consumer
         /// that parsed that back would be wrong the first time somebody sent a file called `plugin-notes.wasm`.
         bundle: Option<synra_protocol::ids::PluginId>,
+        /// The digest the receiver checked the file against.
+        ///
+        /// ★ Carried because it is the only thing that answers "do these two devices hold the same bytes" — the
+        /// question the `sync_records` table exists for. It was already in `Received::Verified` and was being dropped
+        /// by a `..` in the match below.
+        digest: String,
     },
     /// The transfer ended without a usable file.
     Failed {
@@ -340,7 +346,7 @@ impl Inbox {
                 session::report_progress(link, receiving.receiver(), self.trace, now_ms)?;
                 Ok(Decision::Stored { index, duplicate })
             }
-            Received::Verified { .. } => {
+            Received::Verified { digest, .. } => {
                 // The transfer is over, so the state is released whatever happens to the file afterwards.
                 let path = receiving.path().to_path_buf();
                 let byte_length = receiving.byte_length();
@@ -348,7 +354,7 @@ impl Inbox {
                 // lost — after `self.receiving = None` there is a path and nothing else.
                 let bundle = receiving.bundle().cloned();
                 self.receiving = None;
-                Ok(Decision::Finished { path, byte_length, bundle })
+                Ok(Decision::Finished { path, byte_length, bundle, digest })
             }
             Received::Failed { why, .. } => {
                 self.receiving = None;

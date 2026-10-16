@@ -248,7 +248,9 @@ fn record_received(
     };
     let now = synra_store::sqlite::now_ms();
     let Ok(record) = synra_core::plugin_sync::SyncRecord::new(
-        plugin_id,
+        // Cloned because the second table below needs the identifier too, and the two questions it answers — what
+        // happened, and what the peer holds — are both about the same plugin.
+        plugin_id.clone(),
         transfer.peer,
         synra_core::plugin_sync::SyncAction::Push {
             why: "the peer sent a bundle".to_owned(),
@@ -278,6 +280,22 @@ fn record_received(
         // A history that cannot be written is not a reason to fail a connection that already succeeded.
         let _ = db.lock().record_sync_log(&row);
     }
+
+    // ★ And the other question, which the history cannot answer: **what does the other device hold now**.
+    //
+    // `sync_records` is keyed by `(plugin_id, peer_device)` and was written for exactly this — a lookup that says
+    // whether two ends agree, rather than a list of what happened. It had no writer until now.
+    //
+    // The version is empty rather than guessed: it travels in the transfer's metadata, and a `Decision` carries what
+    // the *file* proved, which is the digest. An empty version is a row that says "this peer holds these bytes" —
+    // which is true, and better than a version invented from a file name.
+    let _ = db.lock().record_sync(
+        plugin_id.as_str(),
+        &transfer.peer.to_string(),
+        "",
+        &transfer.digest,
+        now,
+    );
 }
 
 /// Runs the daemon until the supervisor says to stop, and reports how it ended.
@@ -824,6 +842,7 @@ mod tests {
                 synra_protocol::ids::PluginId::try_from("@acme/chat".to_owned()).expect("a plugin id"),
             ),
             peer: synra_protocol::ids::DeviceId::new(),
+            digest: "sha256-test".to_owned(),
         }
     }
 
@@ -858,6 +877,25 @@ mod tests {
             db.lock().sync_log(None, 10).expect("reads").is_empty(),
             "an attachment was recorded as a synchronisation"
         );
+    }
+
+    #[test]
+    fn a_received_bundle_says_what_the_peer_now_holds() {
+        // ★ 「发生了什么」与「对端现在有什么」是两个问题，而 `sync_records` 是为后者写的：
+        // 它由 `(plugin_id, peer_device)` 主键回答「两端是否一致」，而不是罗列发生过的事。
+        // 第 134 轮建了这张表、第 136 轮做了转换、第 149 轮接上了历史 —— 到这一轮它才第一次有写者。
+        let db = a_database();
+        let transfer = a_bundle();
+        super::record_received(&db, &transfer);
+
+        let rows = db.lock().sync_records().expect("reads");
+        assert_eq!(rows.len(), 1, "what the peer holds was not recorded: {rows:?}");
+        assert_eq!(rows[0].plugin_id, "@acme/chat");
+        assert_eq!(rows[0].peer_device, transfer.peer.to_string());
+        // ★ 而摘要真的写进去了 —— 它是唯一能回答「两端是否持有同样的字节」的东西。
+        assert_eq!(rows[0].digest, "sha256-test");
+        // 版本诚实地是空的：它随传输的元数据走，而一次 `Decision` 带的是**文件证明过**的东西，那个是摘要。
+        assert!(rows[0].version.is_empty());
     }
     use std::sync::Arc;
     use std::time::Duration;
