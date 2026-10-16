@@ -70,6 +70,18 @@ const MEMORY_RESERVATION_FOR_GROWTH: u64 = 2 * 1024 * 1024;
 /// budget's, which is applied before the guest runs and is the number a hostile allocation meets.
 const INSTANTIATION_CEILING: usize = 16 * 1024 * 1024;
 
+/// Ticks that will not be reached, for a call whose budget names no wall clock.
+///
+/// ★ Why not `u64::MAX`, which is the obvious way to say "no deadline".
+///
+/// Because wasmtime **adds** the deadline to the current epoch, and `u64::MAX` overflows that addition — inside the
+/// library, as a panic: `attempt to add with overflow` in `wasmtime/src/runtime/store.rs`. The disarm value therefore has
+/// to leave room for the counter, which is the sort of thing only running it teaches.
+///
+/// At the executor's ten-millisecond period this is about three hundred and fifty years, so it is unreachable by any run
+/// of any program, and the arithmetic cannot overflow.
+const NO_DEADLINE_TICKS: u64 = 1 << 40;
+
 /// The configuration the security baseline requires.
 ///
 /// Every option here is one that decides what a guest may cost the host.
@@ -325,6 +337,20 @@ impl PluginInstance for EngineInstance {
             let ticks = ticks_for(timeout);
             self.store.set_epoch_deadline(ticks);
             self.deadline_epoch = Some(ticks);
+        } else {
+            // ★ And with no time limit, the deadline has to be **disarmed** rather than left alone.
+            //
+            // Instantiation arms `set_epoch_deadline(1)` — a single tick, so that a start function cannot run away before
+            // the first call sets a budget. Nothing put it back: a call whose budget asked for no wall clock kept the
+            // deadline of one, so the executor's next epoch advance interrupted it and `classify` reported
+            // `Timeout { after: 0ns }` — a timeout for a budget that had none.
+            //
+            // It only happened under load, because the interrupt needs the epoch to advance while the call is in flight,
+            // which is why it read as a flake: a plugin that returned immediately was reported as having timed out, in a
+            // suite run and never on its own. `u64::MAX` ticks is the same statement as "no deadline" using the only
+            // vocabulary the store offers, and clearing `deadline_epoch` keeps the accessor honest about it.
+            self.store.set_epoch_deadline(NO_DEADLINE_TICKS);
+            self.deadline_epoch = None;
         }
 
         // ── Layer 3: memory ──

@@ -48,6 +48,19 @@ const EMPTY: &str = r#"
 
 
 
+/// A component whose `deactivate` returns at once.
+const STOPS: &str = r#"
+(component
+  (core module $m
+    (func (export "stop")))
+  (core instance $i (instantiate $m))
+  (func $deactivate
+    (canon lift (core func $i "stop")))
+  (instance $lifecycle (export "deactivate" (func $deactivate)))
+  (export "synra:plugin/lifecycle@1.0.0" (instance $lifecycle))
+)
+"#;
+
 /// A component whose `deactivate` never returns.
 ///
 /// # ★ Why this is `deactivate` and not `activate`
@@ -421,6 +434,41 @@ fn a_guest_cannot_grow_past_the_ceiling_its_budget_names() {
         CallOutcome::MemoryExceeded { limit } => assert_eq!(limit, ceiling),
         other => panic!("expected the memory ceiling to end it, got {other:?}"),
     }
+}
+
+#[test]
+fn a_budget_with_no_time_limit_leaves_no_deadline_armed() {
+    // """ + S + """ A call that asked for no wall clock must not be interrupted by one.
+    //
+    // Instantiation arms `set_epoch_deadline(1)` so a start function cannot run away before the first call sets a budget.
+    // Nothing put it back, so a call whose budget had `timeout: None` kept that deadline of one tick: the executor's next
+    // epoch advance interrupted it and `classify` reported `Timeout { after: 0ns }` — a timeout for a budget that had none.
+    //
+    // ★ It surfaced as a **flake**, and this test is written to not be one. The interrupt needs the epoch to advance while a
+    // call is in flight, which under load happens by itself and never when the test runs alone; so instead of racing, this
+    // advances the epoch **first** and then calls. The store's counter is ahead of a deadline of one, so with the bug the
+    // very next call is interrupted, and with the fix it is not — deterministically, on every machine.
+    let (backend, executor) = backend_and_executor();
+    let artifact = compile(&backend, STOPS, "@acme/stops");
+    let mut instance = instantiate(&backend, artifact.as_ref());
+
+    // The epoch is already past the deadline instantiation armed.
+    let now = executor.epoch().advance();
+    assert!(now >= 1, "the epoch moved");
+
+    let outcome = instance
+        .call(
+            &Work::Deactivate,
+            CallBudget { fuel: None, timeout: None, max_memory_growth: None },
+        )
+        .expect("a call");
+
+    assert!(
+        !matches!(outcome, CallOutcome::Timeout { .. }),
+        "a budget with no wall clock was timed out anyway: {outcome:?}"
+    );
+    // And the observable state agrees: nothing is armed, rather than a tick that cannot be told from a real deadline.
+    assert_eq!(instance.deadline_epoch(), None);
 }
 
 #[test]

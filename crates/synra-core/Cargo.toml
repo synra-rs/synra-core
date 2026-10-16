@@ -35,8 +35,16 @@ rstest.workspace = true
 # The hot-path assertions reach across the workspace — a frame decoder, a capability match, the gate, the router — so
 # they live in the crate that already depends on all of them rather than in a crate that would have to gain four
 # dependencies to host one test file.
-synra-plugin-host = { path = "../synra-plugin-host" }
+synra-plugin-host = { path = "../synra-plugin-host", features = ["wasm-text"] }
 synra-testkit-alloc = { path = "../synra-testkit-alloc" }
+# ★ The real engine, for the tests that must run a **real** guest through the kernel.
+#
+# `wasm-runtime` is off by default in that crate, so without it these tests could only drive the scripted double — and a
+# double cannot loop. A plugin that eats its instruction budget is the one failure no fixture can imitate: the whole point
+# is that a real engine stops it. This costs nothing at run time, since the workspace already builds wasmtime.
+#
+# `.wat` rather than `.wasm`, so a reader can check four lines of text against what the test asserts.
+wat = "1"
 
 [lints]
 workspace = true

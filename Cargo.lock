@@ -1781,6 +1781,7 @@ dependencies = [
  "synra-store",
  "synra-testkit-alloc",
  "thiserror",
+ "wat",
 ]
 
 [[package]]

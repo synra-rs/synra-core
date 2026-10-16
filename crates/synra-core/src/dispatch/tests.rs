@@ -938,3 +938,100 @@ fn the_report_is_the_default_of_nothing_happening() {
     assert!(!report.all_misbehaved());
     assert_eq!(report.asked, 0);
 }
+
+// ── A real malicious guest, through the kernel ────────────────────────────────────────────────────
+
+/// A component whose `deactivate` never returns.
+///
+/// # """ + S + """ Why `deactivate`, and why hand-written `.wat`
+///
+/// `activate`, `can-handle` and `migrate` all take or return a `string`, whose canonical ABI a hand-written component has to
+/// implement by hand — a pointer and a length in, a pointer and a length out, a `realloc`, a `post-return`. `deactivate` is
+/// `func()`: no parameters, no results, so its lift is a core function with **no signature at all** and four lines of text
+/// suffice. The instruction budget is a property of the engine rather than of the interface, so a guest that loops in
+/// `deactivate` tests exactly the same limit as one that loops in `activate`.
+const SPINS: &str = r#"
+(component
+  (core module $m
+    (func (export "spin")
+      (loop $l
+        (br $l))))
+  (core instance $i (instantiate $m))
+  (func $deactivate
+    (canon lift (core func $i "spin")))
+  (instance $lifecycle (export "deactivate" (func $deactivate)))
+  (export "synra:plugin/lifecycle@1.0.0" (instance $lifecycle))
+)
+"#;
+
+/// A component whose `deactivate` returns at once.
+const FINISHES: &str = r#"
+(component
+  (core module $m
+    (func (export "stop")))
+  (core instance $i (instantiate $m))
+  (func $deactivate
+    (canon lift (core func $i "stop")))
+  (instance $lifecycle (export "deactivate" (func $deactivate)))
+  (export "synra:plugin/lifecycle@1.0.0" (instance $lifecycle))
+)
+"#;
+
+#[test]
+fn a_real_guest_that_loops_is_stopped_without_costing_the_others() {
+    // """ + S + """ The strongest form of `21 §5.1`'s sentence, and the one thing no double can stand in for.
+    //
+    // The isolation table above proves the **kernel's** handling of an outcome; the engine's own tests prove the engine
+    // produces it. Neither runs a real guest **through the kernel**, which is the property a user has: a plugin whose bytes
+    // contain `while true` must not stop the kernel, and the plugin beside it must keep working. So this loads a genuine
+    // looping component into a `PluginSet` over the real engine, calls it, and then asks the other one.
+    //
+    // A scripted backend cannot do this. `Scripted::FuelExhausted` is a value somebody wrote down, and the failure it cannot
+    // express is the one that matters: the engine really counting instructions and really stopping.
+    let bytes = |wat: &str| wat::parse_str(wat).expect("the fixture is valid text");
+    let engine = synra_plugin_host::engine::WasmtimeBackend::new(
+        synra_plugin_host::BackendKind::WasmtimeCranelift,
+    )
+    .expect("an engine");
+    let mut set = PluginSet::new(Backend::new(std::sync::Arc::new(engine)), host());
+
+    for (name, wat) in [("@synra/aaa-spins", SPINS), ("@synra/bbb-finishes", FINISHES)] {
+        set.load(PluginSpec {
+            id: id(name),
+            version: "1.0.0".to_owned(),
+            wasm: bytes(wat),
+            grants: CapabilitySet::new(),
+            policy: InstancePolicy::Stateless,
+            limit: 4,
+            quota: synra_plugin_host::quota::Quota::default(),
+        })
+        .expect("loads");
+    }
+
+    // A bounded budget, so the loop cannot run forever and the test cannot hang if the engine does not count.
+    let budget = synra_plugin_host::CallBudget {
+        fuel: Some(100_000),
+        timeout: None,
+        max_memory_growth: None,
+    };
+
+    let spun = set
+        .call(&id("@synra/aaa-spins"), &Work::Deactivate, budget, 1_000)
+        .expect("a call");
+    assert!(
+        matches!(spun, synra_plugin_host::CallOutcome::FuelExhausted { .. }),
+        "a real infinite loop must be stopped by its instruction budget, got {spun:?}"
+    );
+
+    // """ + S + """ And the kernel is still usable, with the other plugin in the same set: the plugin beside the malicious
+    // one answers, twice, so a set left in a bad state fails here rather than at the next share.
+    for now in [1_000_u64, 2_000] {
+        let finished = set
+            .call(&id("@synra/bbb-finishes"), &Work::Deactivate, budget, now)
+            .expect("a call");
+        assert!(
+            !finished.is_misbehaviour(),
+            "the plugin beside the looping one must keep working, got {finished:?}"
+        );
+    }
+}
