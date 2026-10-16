@@ -39,6 +39,7 @@ use crate::publisher::{Fingerprint, PluginTrust};
 
 /// When an available update may be applied without asking.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum UpdatePolicy {
     /// Never update on its own; tell the user and let them decide.
     ///
@@ -89,6 +90,7 @@ impl UpdatePolicy {
 
 /// How much of a change an update is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ChangeSize {
     /// A patch.
     Patch,

@@ -54,8 +54,17 @@ pub struct MemoryStream {
 }
 
 /// One direction, shared by the two ends.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Pipe {
+    /// How many bytes this direction holds before a write waits.
+    ///
+    /// ★ Why this is a field rather than the constant it started as.
+    ///
+    /// Because the interesting case is a **full** pipe, and a real socket's buffer is whatever the operating system decided —
+    /// so the socket-based test of "a peer that stops reading" had to write enough bytes to fill an unknown amount, which is
+    /// slow and depends on a machine's configuration. A fixture that can be made 4 KiB wide tests the same behaviour in
+    /// microseconds and tests it the same way every time.
+    capacity: usize,
     /// The bytes in flight, and the lock that makes them a queue.
     bytes: Mutex<VecDeque<u8>>,
     /// Signalled whenever the queue changes, in either direction.
@@ -66,29 +75,30 @@ struct Pipe {
 
 impl Pipe {
     fn push(&self, bytes: &[u8], deadline: Option<Duration>) -> std::io::Result<usize> {
+        let limit = self.capacity;
         let mut queue = self.bytes.lock().unwrap_or_else(|error| error.into_inner());
-        if queue.len() >= MEMORY_CAPACITY {
+        if queue.len() >= limit {
             // Full: wait for the reader, under the write deadline. This is where a stalled peer becomes observable rather
             // than a hang.
             queue = match deadline {
                 Some(timeout) => self
                     .ready
-                    .wait_timeout_while(queue, timeout, |queue| queue.len() >= MEMORY_CAPACITY)
+                    .wait_timeout_while(queue, timeout, |queue| queue.len() >= limit)
                     .unwrap_or_else(|error| error.into_inner())
                     .0,
                 None => self
                     .ready
-                    .wait_while(queue, |queue| queue.len() >= MEMORY_CAPACITY)
+                    .wait_while(queue, |queue| queue.len() >= limit)
                     .unwrap_or_else(|error| error.into_inner()),
             };
-            if queue.len() >= MEMORY_CAPACITY {
+            if queue.len() >= limit {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::WouldBlock,
                     "the peer is not reading",
                 ));
             }
         }
-        let room = MEMORY_CAPACITY - queue.len();
+        let room = limit - queue.len();
         let taken = room.min(bytes.len());
         queue.extend(bytes.iter().take(taken));
         drop(queue);
@@ -141,8 +151,26 @@ impl MemoryStream {
     /// Two ends of one connection.
     #[must_use]
     pub fn pair() -> (Self, Self) {
-        let first = Arc::new(Pipe::default());
-        let second = Arc::new(Pipe::default());
+        Self::pair_with_capacity(MEMORY_CAPACITY)
+    }
+
+    /// Two ends of one connection, holding this many bytes per direction.
+    ///
+    /// A small capacity makes a write block after very little data, which is how a test reaches the "peer is not reading"
+    /// case deterministically rather than by filling a socket buffer the operating system sized.
+    #[must_use]
+    pub fn pair_with_capacity(capacity: usize) -> (Self, Self) {
+        let capacity = capacity.max(1);
+        let pipe = |capacity| {
+            Arc::new(Pipe {
+                capacity,
+                bytes: Mutex::new(VecDeque::new()),
+                ready: Condvar::new(),
+                closed: Mutex::new(false),
+            })
+        };
+        let first = pipe(capacity);
+        let second = pipe(capacity);
         (
             Self {
                 outgoing: Arc::clone(&first),

@@ -164,6 +164,7 @@ pub enum Decision {
 /// The lock is honest about what a waiter is: **something taken once**. A caller gets it by taking it out, and a second
 /// caller finds nothing rather than blocking for ever on a receiver that has already been consumed.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum PairingAnswer {
     /// Send this to the dialer now. The link stays up, so it may ask again.
     Now(synra_protocol::session::PairResponse),

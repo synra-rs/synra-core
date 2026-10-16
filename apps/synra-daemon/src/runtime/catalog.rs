@@ -112,6 +112,11 @@ fn describe(packument: &synra_plugin_host::registry::Packument, origin: &Origin)
         Origin::Cache { age_ms, stale } => {
             serde_json::json!({ "source": "cache", "ageMs": age_ms, "stale": stale })
         }
+        // ★ Reported rather than guessed, and this arm exists because `Origin` is `#[non_exhaustive]` — which is the
+        // attribute doing its job: the enum can grow a third place a catalogue comes from without breaking this caller, and
+        // what it costs is this line. Saying "unknown" is the honest answer for a variant this build has never heard of;
+        // picking one of the two above would tell a user their catalogue came from somewhere it did not.
+        _ => serde_json::json!({ "source": "unknown" }),
     };
 
     serde_json::json!({

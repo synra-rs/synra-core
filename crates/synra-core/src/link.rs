@@ -656,57 +656,12 @@ mod tests {
         assert_eq!(link.write_deadline(), Some(std::time::Duration::from_secs(30)));
     }
 
-    #[test]
-    fn a_peer_that_stops_reading_is_told_rather_than_waited_for() {
-        // ★ What this covers, and why it mattered: `PeerLink` set a **read** timeout and no write timeout, so a peer that
-        // stopped reading did not produce an error anywhere — the calling thread never came back, and the daemon's
-        // transport stopped serving every other device behind it. TCP will not report it; a full window is not a closed
-        // socket.
-        //
-        // A **one-millisecond** deadline, not zero: Windows refuses `set_write_timeout(Some(ZERO))` outright — "cannot set a 0
-        // duration timeout" — so the first version of this test failed while *setting up*, and the reason assertion below
-        // is what caught it. A millisecond is accepted, and the write that would block gives up after it.
-        let (dialer, _peer) = connected();
-        let mut link = link_with_timeout(dialer, LOCAL, PEER, std::time::Duration::from_millis(1));
-
-        // The peer end is held and never read from, so its receive window fills and the sender's buffer with it. A block of
-        // the frame ceiling rather than a small one, so this takes a handful of writes rather than thousands.
-        let block = vec![0u8; 32 * 1024];
-        let started = std::time::Instant::now();
-        let mut refused = None;
-        for index in 0..2_000_u32 {
-            if let Err(error) = link.send_chunk(index, &block) {
-                refused = Some(error);
-                break;
-            }
-        }
-
-        match refused {
-            Some(LinkError::TimedOut) => {
-                // ★ `TimedOut` and not `Transport`: a peer that is alive and not reading is a **quiet** link, which is a
-                // different thing from a broken one, and the caller's next step differs — back off, rather than tear down a
-                // working transfer to a device that is merely busy. Before this, every write failure was `Transport`, so a
-                // caller had no way to tell.
-                //
-                // ★ And it came back **because the deadline passed**, not because the peer went away. Asserted as time
-                // rather than as text, and the reason is worth keeping: the operating system's message is **localized** —
-                // this machine reports WSAETIMEDOUT as a sentence in Chinese — so matching "timed out" was a test that
-                // passed on an English machine and failed on this one. The elapsed time cannot be localized: with no write
-                // deadline the write blocks forever, because the peer end is alive and simply not reading, and TCP will not
-                // report a full window as an error.
-                //
-                // (The code is in the message — `10060` here — but the *number* is Windows'; on Linux the same condition is
-                // EAGAIN or ETIMEDOUT. Time is the portable fact.)
-                assert!(
-                    started.elapsed() < std::time::Duration::from_secs(10),
-                    "the write returned after {:?}, which is not a deadline: the peer was alive and not reading",
-                    started.elapsed()
-                );
-            }
-            Some(other) => panic!("a full window is a transport failure, got {other:?}"),
-            None => panic!("a peer that never read absorbed two thousand blocks, so nothing was bounded"),
-        }
-    }
+    // ── A peer that stops reading ─────────────────────────────────────────────────────────────────
+    //
+    // ★ The socket-based version of this test is gone, and what replaced it is above: `a_pipe_that_is_full_stops_the_writer`
+    // uses a 4 KiB pipe so the bound is the **fixture's** rather than the operating system's. The version that remains below
+    // tests the other direction — a peer that is **gone** rather than busy — and needs a real socket, because only a closed
+    // socket produces a connection reset while a dropped `MemoryStream` produces end-of-file.
 
     #[test]
     fn a_peer_that_is_gone_is_a_transport_failure_rather_than_a_quiet_link() {
@@ -797,6 +752,68 @@ mod tests {
         drop(there);
 
         assert!(matches!(link.receive(), Err(LinkError::Closed)));
+    }
+
+    #[test]
+    fn a_pipe_that_is_full_stops_the_writer_without_waiting_for_a_socket_buffer_to_fill() {
+        // ★ What the seam buys over a socket, in one test.
+        //
+        // `a_peer_that_stops_reading_is_told_rather_than_waited_for` reaches the same behaviour by writing into a real
+        // socket until the operating system's buffer fills — which is slow, depends on how that machine is configured, and
+        // has to send megabytes to get there. A pipe that is **4 KiB wide** reaches it in microseconds and reaches it the
+        // same way on every machine, because the bound is this fixture's rather than the kernel's.
+        //
+        // The deadline is one millisecond, so "the write stopped" means "its deadline passed" rather than "the operating
+        // system eventually gave up".
+        let (here, _there) = MemoryStream::pair_with_capacity(4 * 1024);
+        let mut link = link_with_stream(here, LOCAL, PEER);
+        link.set_write_timeout(Some(std::time::Duration::from_millis(1)));
+
+        let started = std::time::Instant::now();
+        let refused = link.send_chunk(0, &[0u8; 8 * 1024]).expect_err("the pipe holds four");
+
+        // ★ `TimedOut` and not `Transport`: the reader is alive and not reading, which is the distinction rounds 83 and 84
+        // built. A caller backs off from this one and reconnects from the other.
+        assert!(matches!(refused, LinkError::TimedOut), "{refused:?}");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "it waited {:?}, which is not a deadline",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn the_same_narrow_pipe_carries_everything_when_somebody_reads() {
+        // ★ The control for the test above, and the reason it is not just "a small pipe fails": the same 4 KiB pipe
+        // delivers a block twice its width intact once a reader is taking bytes. Without this, a fixture that refused
+        // everything would pass the other test.
+        let (here, there) = MemoryStream::pair_with_capacity(4 * 1024);
+        let mut sender = link_with_stream(here, LOCAL, PEER);
+        let mut receiver = link_with_stream(there, PEER, LOCAL);
+        sender.set_write_timeout(Some(std::time::Duration::from_millis(500)));
+        receiver.set_read_timeout(Some(std::time::Duration::from_millis(500)));
+
+        // Eight kibibytes through a four-kibibyte pipe, from another thread: the writer cannot finish until the reader
+        // starts, which is exactly what a bounded pipe is for.
+        let payload = vec![7u8; 8 * 1024];
+        let writer = std::thread::spawn(move || {
+            sender.send_chunk(0, &payload).expect("sends");
+            sender
+        });
+
+        // ★ A block arrives on the block plane, so `receive` — which is the control plane and refuses anything else —
+        // is the wrong door and said so: `Unexpected { found: "chunk" }`. `receive_inbound` is the sum of both planes.
+        match receiver.receive_inbound().expect("receives") {
+            Inbound::Block { chunk_id, data } => {
+                assert_eq!(chunk_id, 0);
+                assert_eq!(data.len(), 8 * 1024, "the whole block, through a pipe half its width");
+                assert!(data.iter().all(|byte| *byte == 7));
+            }
+            other => panic!("expected a block, got {other:?}"),
+        }
+        let sender = writer.join().expect("the writer finished");
+        assert_eq!(sender.sent(), 1);
+        assert_eq!(receiver.received(), 1);
     }
 
     /// A link over anything that carries bytes.

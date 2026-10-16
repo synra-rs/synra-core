@@ -63,6 +63,7 @@ pub enum CacheError {
 
 /// A cache entry, and how old it is.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Cached {
     /// Within its lifetime.
     Fresh {
@@ -321,6 +322,7 @@ pub trait Fetches {
 
 /// Where a packument came from.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Origin {
     /// A registry answered.
     Registry {
