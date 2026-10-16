@@ -58,6 +58,7 @@
     )
 )]
 
+pub mod catalog;
 pub mod engine;
 pub mod host_calls;
 pub mod host_surface;
