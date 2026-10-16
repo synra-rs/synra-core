@@ -373,12 +373,43 @@ impl Kernel for Runtime {
             transfers: Vec::new(),
             context_id: None,
         };
-        let answer = crate::runtime::intent::dispatch(
+        let routed = crate::runtime::intent::dispatch(
             &self.plugins,
             &self.board,
             &item,
             synra_store::sqlite::now_ms(),
-        )?;
+        );
+        // ★ Recorded **before** the `?`, because that `?` is the "no plugin answered" half of the outcome.
+        //
+        // The design's `intents_total` is labelled by result, and a counter incremented on the success path alone would
+        // count the shares something handled — which is the opposite of the question it exists for. "Why did nothing
+        // answer this" is asked about the refusals.
+        {
+            let outcome = if routed.is_ok() { "ok" } else { "refused" };
+            self.metrics.counter_inc(&synra_observe::metrics::SeriesKey::new(
+                "intents_total",
+                [("outcome".to_owned(), outcome.to_owned())],
+            ));
+            // ★ 「路由成功」与「有人回答」是两件事，而测试先证明了这一点：一个**空插件集**也会成功地把意图建立
+            // 起来。这正是清单里 `intent_no_handler_total` 存在的理由 —— 一个没人能处理的意图和一个被处理了的
+            // 意图，对用户是两种处境，而 `intents_total{outcome=ok}` 会把它们算成一件。
+            //
+            // `dispatch` 交回的是 JSON，所以「有没有人举手」按客户端读它的方式读：`to_json` 写 `candidates`，
+            // 缺了或空了在这里是同一件事。
+            if let Ok(value) = &routed {
+                let nobody_offered = value
+                    .get("candidates")
+                    .and_then(serde_json::Value::as_array)
+                    .is_none_or(Vec::is_empty);
+                if nobody_offered {
+                    self.metrics.counter_inc(&synra_observe::metrics::SeriesKey::new(
+                        "intent_no_handler_total",
+                        Vec::new(),
+                    ));
+                }
+            }
+        }
+        let answer = routed?;
 
         // ★ Written down here, from the identifier the library returned, so what is stored is whatever the board now holds
         // rather than a second opinion about it.

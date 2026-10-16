@@ -1918,3 +1918,34 @@ fn the_plugin_report_carries_the_live_rung_as_well_as_the_row() {
     // And the live rung, which is `good` for a plugin that has just been loaded and has done nothing.
     assert_eq!(row["liveHealth"], "good", "{row}");
 }
+
+
+// ── The intent counter ──────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn a_share_nothing_can_answer_is_counted_as_refused() {
+    // ★ The half that only exists because the counter is written before the `?`. An `intents_total` incremented on the
+    // success path would count what was handled and say nothing about the shares that became files — and "why did
+    // nothing answer this" is a question about the refusals.
+    let dir = TempDir::new("intent-metric");
+    let runtime = runtime(dir.path());
+
+    // ★ 这个 fixture 里没有插件，而这**不会**让路由失败 —— 第一版测试就是这么假设的，它失败了：
+    // 空插件集也会成功地把一个意图建立起来，返回 `Ok`。所以「路由成功」和「有人回答」是两件事，
+    // 而这一条测的正是后者。
+    let routed = runtime.intent_dispatch("text/plain", "hello");
+    assert!(routed.is_ok(), "an empty plugin set failed to raise an intent: {routed:?}");
+
+    let snapshot = runtime.metrics.snapshot();
+    assert_eq!(
+        snapshot.get("intents_total{outcome=ok}"),
+        Some(&synra_observe::metrics::Value::Counter(1)),
+        "the intent was raised and not counted"
+    );
+    // 而**没人能处理它**：这是「为什么没人回答」真正的答案，`outcome=ok` 说不出这件事。
+    assert_eq!(
+        snapshot.get("intent_no_handler_total"),
+        Some(&synra_observe::metrics::Value::Counter(1)),
+        "nothing could handle it, and that is not recorded"
+    );
+}
