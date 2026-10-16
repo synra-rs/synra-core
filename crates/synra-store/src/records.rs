@@ -235,6 +235,53 @@ impl SeenDeviceRow {
     }
 }
 
+/// What one device holds for one plugin — a row of `sync_records`.
+///
+/// ★ **This is not the same thing as [`crate::plugin_sync::SyncRecord`]**, and the two names being alike is a trap worth
+/// naming: that type is a **log line** (one per round, with a verdict, a byte count and a trace), and this is
+/// **current state** (one per device, replaced on each round). This one answers "does the peer already have it", which is
+/// the question that decides whether to send the package at all.
+///
+/// The table has existed since the first migration and **nothing has ever written to it** — so the in-memory
+/// [`crate::plugin_sync::SyncTable`] knew what a peer had only until the process ended, and a restart made every device
+/// look like it had nothing. That is the duplicate transfer the design's third step exists to avoid.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncRow {
+    /// Which plugin.
+    pub plugin_id: String,
+    /// Which peer device.
+    pub peer_device: String,
+    /// The version it holds.
+    pub version: String,
+    /// The digest of the artifact it holds.
+    pub digest: String,
+    /// When this was recorded.
+    pub synced_at_ms: i64,
+}
+
+impl SyncRow {
+    /// Builds a row from the columns a query selects, in `columns::SYNC` order.
+    ///
+    /// # Errors
+    ///
+    /// [`RowError`] naming the column that was NULL.
+    pub fn from_columns(
+        plugin_id: Option<&str>,
+        peer_device: Option<&str>,
+        version: Option<&str>,
+        digest: Option<&str>,
+        synced_at_ms: Option<i64>,
+    ) -> Result<Self, RowError> {
+        Ok(Self {
+            plugin_id: required(plugin_id, "plugin_id")?.to_owned(),
+            peer_device: required(peer_device, "peer_device")?.to_owned(),
+            version: required(version, "version")?.to_owned(),
+            digest: required(digest, "digest")?.to_owned(),
+            synced_at_ms: required(synced_at_ms, "synced_at_ms")?,
+        })
+    }
+}
+
 /// One intent, as the `intents` table keeps it.
 ///
 /// # Why this is a projection **and** a document
@@ -584,6 +631,12 @@ pub mod columns {
         // and `DeviceRow::from_columns` are one order written twice — and this is the file that says which.
         "last_address",
     ];
+
+    /// The `sync_records` columns, in the order `SyncRow::from_columns` takes them.
+    ///
+    /// The table's own order, and its primary key is `(plugin_id, peer_device)` — so this is a **current state** per
+    /// device, not a log. See the note on `SyncRow`.
+    pub const SYNC: &[&str] = &["plugin_id", "peer_device", "version", "digest", "synced_at_ms"];
 
     /// The `plugin_audit` columns, in the order `AuditRecord::from_columns` takes them.
     ///

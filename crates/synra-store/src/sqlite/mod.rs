@@ -37,6 +37,7 @@ mod identities;
 mod intents;
 mod migrations;
 mod pairing;
+mod sync;
 mod plugins;
 mod storage;
 mod settings;

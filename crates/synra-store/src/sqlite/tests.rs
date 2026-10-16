@@ -931,3 +931,38 @@ fn a_device_that_was_seen_again_counts_as_recent() {
     assert_eq!(left.len(), 1);
     assert_eq!(left[0].display_name, "familiar", "the one that came back");
 }
+
+// ── 跨设备的插件状态 ────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn a_sync_record_round_trips() {
+    let db = migrated();
+    db.record_sync("@acme/chat", "device-b", "1.2.0", "sha256-abc", 2_000).expect("records");
+
+    let rows = db.sync_records().expect("reads");
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].plugin_id, "@acme/chat");
+    assert_eq!(rows[0].peer_device, "device-b");
+    assert_eq!(rows[0].version, "1.2.0");
+    assert_eq!(rows[0].digest, "sha256-abc");
+    assert_eq!(rows[0].synced_at_ms, 2_000);
+}
+
+#[test]
+fn a_second_round_for_the_same_peer_corrects_the_row_rather_than_adding_one() {
+    // ★ 表的主键是 (plugin_id, peer_device)，而这是正确的形状：这张表回答「对端已经有了吗」，
+    // 而一台设备两行会让这个问题有两个答案。同步的历史是 `plugin_sync::SyncRecord` 的事。
+    let db = migrated();
+    db.record_sync("@acme/chat", "device-b", "1.0.0", "sha256-old", 1_000).expect("first");
+    db.record_sync("@acme/chat", "device-b", "1.1.0", "sha256-new", 2_000).expect("second");
+
+    let rows = db.sync_records().expect("reads");
+    assert_eq!(rows.len(), 1, "a second round added a row: {rows:?}");
+    assert_eq!(rows[0].version, "1.1.0");
+    assert_eq!(rows[0].digest, "sha256-new");
+    assert_eq!(rows[0].synced_at_ms, 2_000);
+
+    // 而另一台设备是另一行，所以「谁已经有了」仍然是一台一行。
+    db.record_sync("@acme/chat", "device-c", "1.1.0", "sha256-new", 2_500).expect("third");
+    assert_eq!(db.sync_records().expect("reads").len(), 2);
+}
