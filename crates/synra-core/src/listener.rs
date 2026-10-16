@@ -328,9 +328,19 @@ pub fn handle_within(
                         eprintln!("synra-daemon: {peer} re-sent block {index}, which was already held");
                     }
                 }
-                Decision::Finished { path, byte_length } => {
+                Decision::Finished { path, byte_length, bundle } => {
                     events.push("finished".to_owned());
-                    println!("received {byte_length} bytes into {}", path.display());
+                    // ★ A bundle is said out loud rather than printed as another file. The kernel does not install one
+                    // yet, and a line that reads like every other received file is how "not installed yet" becomes
+                    // "somebody will notice later" — the state this codebase keeps replacing with a sentence that says
+                    // which half is missing.
+                    match bundle {
+                        Some(plugin_id) => println!(
+                            "received {byte_length} bytes into {} — a plugin bundle for {plugin_id}, which this kernel does not install yet",
+                            path.display()
+                        ),
+                        None => println!("received {byte_length} bytes into {}", path.display()),
+                    }
                 }
                 Decision::Failed { why } => {
                     events.push("failed".to_owned());

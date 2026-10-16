@@ -92,6 +92,11 @@ pub enum Decision {
         path: PathBuf,
         /// How large.
         byte_length: u64,
+        /// Which plugin it is a bundle for, when it is one.
+        ///
+        /// Carried rather than guessed from the file name: `proposed_name` builds `plugin-<id>.wasm`, and a consumer
+        /// that parsed that back would be wrong the first time somebody sent a file called `plugin-notes.wasm`.
+        bundle: Option<synra_protocol::ids::PluginId>,
     },
     /// The transfer ended without a usable file.
     Failed {
@@ -339,8 +344,11 @@ impl Inbox {
                 // The transfer is over, so the state is released whatever happens to the file afterwards.
                 let path = receiving.path().to_path_buf();
                 let byte_length = receiving.byte_length();
+                // Taken before the receiver is dropped, because this is the moment the "what it was" is about to be
+                // lost — after `self.receiving = None` there is a path and nothing else.
+                let bundle = receiving.bundle().cloned();
                 self.receiving = None;
-                Ok(Decision::Finished { path, byte_length })
+                Ok(Decision::Finished { path, byte_length, bundle })
             }
             Received::Failed { why, .. } => {
                 self.receiving = None;

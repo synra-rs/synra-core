@@ -67,6 +67,18 @@ pub struct Receiving {
     receiver: TransferReceiver,
     /// The trace this transfer's messages share.
     trace_id: TraceId,
+    /// Which plugin this bundle belongs to, when it is one.
+    ///
+    /// ★ **Why the receiver holds this and `Decision::Finished` carries it.**
+    ///
+    /// The transfer path sees bytes. `Decision::Finished { path, byte_length }` says the same sentence about a screenshot
+    /// and about a plugin bundle, and its only consumer prints that sentence — so "the thing that arrived is a plugin
+    /// bundle" was a fact the code did not hold anywhere. `proposed_name`'s own comment admits it: *"a plugin bundle is
+    /// not something this kernel installs yet"*.
+    ///
+    /// The field is here because **accepting the proposal** is when this is knowable — the metadata carries it. At
+    /// completion the only thing left is a path, and a path is a file name.
+    bundle: Option<synra_protocol::ids::PluginId>,
 }
 
 impl std::fmt::Debug for Receiving {
@@ -74,6 +86,7 @@ impl std::fmt::Debug for Receiving {
         f.debug_struct("Receiving")
             .field("transfer_id", &self.receiver.transfer_id())
             .field("received", &self.receiver.received_count())
+            .field("bundle", &self.bundle.as_ref().map(ToString::to_string))
             .finish()
     }
 }
@@ -90,8 +103,16 @@ impl Receiving {
         trace_id: TraceId,
     ) -> Result<Self, SessionError> {
         let request: TransferRequest = payload_of(envelope, "request")?;
+        // Read here rather than at completion, which is the whole point of the field: by then the metadata is gone and
+        // the only thing left is where the bytes landed.
+        let bundle = match &request.meta {
+            synra_protocol::session::TransferMeta::PluginBundle { plugin_id, .. } => {
+                Some(plugin_id.clone())
+            }
+            _ => None,
+        };
         let receiver = TransferReceiver::accept(&request, destination)?;
-        Ok(Self { receiver, trace_id })
+        Ok(Self { receiver, trace_id, bundle })
     }
 
     /// Which transfer this is.
@@ -104,6 +125,12 @@ impl Receiving {
     #[must_use]
     pub const fn trace_id(&self) -> TraceId {
         self.trace_id
+    }
+
+    /// Which plugin this bundle belongs to, when it is one.
+    #[must_use]
+    pub const fn bundle(&self) -> Option<&synra_protocol::ids::PluginId> {
+        self.bundle.as_ref()
     }
 
     /// How many blocks have arrived.
