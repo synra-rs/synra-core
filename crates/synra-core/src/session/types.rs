@@ -46,6 +46,18 @@ pub enum SessionEvent {
         /// The digest that was checked.
         digest: String,
     },
+    /// What the receiver answered about a bundle it has finished with.
+    ///
+    /// ★ **Why this is an event rather than a return value.** It arrives *after* the confirmation, on the same link,
+    /// and a list of events is how everything else on this link is described.
+    ///
+    /// ★ And it has to be **read**: `await_confirmation` stops at the receiver's `Complete`, so a result left in the
+    /// stream would be the next reader's message about a round that is already over. A reply nobody reads is not an
+    /// unanswered question — it is a wrong answer to the next one.
+    SyncResult {
+        /// What the receiver said it did.
+        result: crate::messaging::SyncResult,
+    },
     /// One side gave up.
     Aborted {
         /// Which transfer.

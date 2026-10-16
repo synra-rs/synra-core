@@ -264,7 +264,7 @@ pub fn pair_response(
 /// evidence for — a report is not a wire format.
 // 两个方向都要：接收端发出它，发起端读回它。一个只能序列化的线上类型是半成品，
 // 而往返测试是唯一能证明两边字段名真的对上的东西。
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(PartialEq, Eq, Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncResult {
     /// Whether the plugin is installed.

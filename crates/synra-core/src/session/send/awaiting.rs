@@ -122,6 +122,46 @@ pub fn send_file(
     run_transfer(link, &mut sender, trace_id, now_ms, deadline)
 }
 
+/// Reads the result a receiver sends back after it has finished with a bundle.
+///
+/// ★ **Why this exists.** `await_confirmation` stops at the receiver's `Complete`, and the result is sent *after* it —
+/// so without this the message stays in the stream, and the next thing this link reads is an answer about a round that
+/// is already over.
+///
+/// Returns `None` when the next message is something else. A plain file has no result waiting for it, and this
+/// deliberately does not swallow a feature's traffic: what it does not understand it leaves to its caller's problem,
+/// which is the same choice `await_confirmation` makes and for the same reason.
+///
+/// # Errors
+///
+/// [`SessionError`] for a link failure, or a payload that does not decode as a result.
+pub fn await_result(
+    link: &mut PeerLink,
+    deadline: std::time::Instant,
+) -> Result<Option<crate::messaging::SyncResult>, SessionError> {
+    if std::time::Instant::now() >= deadline {
+        return Ok(None);
+    }
+    let inbound = match link.receive_inbound() {
+        Ok(inbound) => inbound,
+        Err(LinkError::TimedOut) => return Ok(None),
+        // ★ 一个已经关闭的连接没有结果可读，而那**不是**这次传输的失败。
+        //
+        // 这一行是必要的，而不是防御性的：接收端发完结果就结束它那一侧（它没有更多要收的），
+        // 而发起端随后读到的是关闭 —— 第一次实现因此让一次**成功的**传输以
+        // `TransportNotOpen` 失败，那比不读那个结果糟得多。
+        Err(LinkError::Closed) => return Ok(None),
+        Err(error) => return Err(SessionError::Link(error)),
+    };
+    let Inbound::Envelope(envelope) = inbound else {
+        return Ok(None);
+    };
+    if envelope.event.as_str() != synra_protocol::event::events::PLUGIN_SYNC_RESULT {
+        return Ok(None);
+    }
+    Ok(Some(payload_of(&envelope, "result")?))
+}
+
 /// Reads a digest's algorithm and value, for a report.
 #[must_use]
 pub fn describe(digest: &SriDigest) -> String {
@@ -177,6 +217,13 @@ fn run_transfer(
                 transfer_id: sender.transfer_id(),
                 digest: sender.digest().encoded().to_owned(),
             });
+            // ★ 而一个插件包会**再**收到一条:接收端对它做了什么。它必须在还来得及的时候被读掉，
+            // 否则它就留在流里，成为下一个人读到的「关于一个已经结束的轮次的消息」。
+            if sender.request().kind == synra_protocol::session::TransferKind::PluginBundle
+                && let Some(result) = await_result(link, deadline)?
+            {
+                events.push(SessionEvent::SyncResult { result });
+            }
         }
     }
     Ok(events)

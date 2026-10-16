@@ -18,7 +18,7 @@ mod transfer;
 mod control;
 mod awaiting;
 
-pub use awaiting::{await_confirmation, describe, send_bundle, send_file};
+pub use awaiting::{await_confirmation, await_result, describe, send_bundle, send_file};
 pub use blocks::{WINDOW_BLOCKS, propose, send_blocks};
 pub use transfer::{abort, complete, report_progress};
 
