@@ -61,6 +61,12 @@ pub struct FinishedTransfer {
     pub byte_length: u64,
     /// Which plugin it is a bundle for, when it is one.
     pub bundle: Option<synra_protocol::ids::PluginId>,
+    /// Which device it came from.
+    ///
+    /// Carried per transfer rather than read off `Served::peer` by the caller: `peer` is a fact about the *connection*
+    /// and this is a fact about the *file*, and a caller writing history would otherwise need to hold both pieces
+    /// together to know who sent what.
+    pub peer: synra_protocol::ids::DeviceId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -99,6 +105,7 @@ pub fn serve(
     data_dir: &Path,
     desk: &Arc<crate::pairing::PairingDesk>,
     router: &Arc<crate::dispatch::orchestrate::Router>,
+    on_finished: &Arc<dyn Fn(&FinishedTransfer) + Send + Sync>,
 ) {
     // Owned, because each connection is handed to its own thread and a thread cannot borrow the caller's stack.
     let data_dir = data_dir.to_path_buf();
@@ -136,8 +143,16 @@ pub fn serve(
                 let router = Arc::clone(&shared_router);
                 // A thread per connection, because a link's lifetime is a peer's to decide. Nothing joins it: a link that
                 // ended is one whose thread returns, and one that is still open is doing useful work.
+                // ★ The callback is cloned per connection, and it has to be `Send + Sync + 'static`: the thread below
+                // owns it, so a borrow cannot reach it. This is what makes the value that `Decision::Finished` produces
+                // reach somebody who can write it down — until now the connection thread looked at `Served` and threw
+                // it away, and a received bundle became a line on stderr and nothing else.
+                let on_finished = Arc::clone(on_finished);
                 std::thread::spawn(move || {
                     let served = handle(&host, stream, &inbox_root, &desk, &router);
+                    for transfer in &served.finished {
+                        on_finished(transfer);
+                    }
                     if let Some(ended) = &served.ended {
                         let who = served
                             .peer
@@ -358,7 +373,12 @@ pub fn handle_within(
                 Decision::Finished { path, byte_length, bundle } => {
                     events.push("finished".to_owned());
                     // ★ The three facts travel together, and `bundle` is the one that says which of them this is.
-                    finished.push(FinishedTransfer { path: path.clone(), byte_length, bundle: bundle.clone() });
+                    finished.push(FinishedTransfer {
+                        path: path.clone(),
+                        byte_length,
+                        bundle: bundle.clone(),
+                        peer,
+                    });
                     // ★ A bundle is said out loud rather than printed as another file. The kernel does not install one
                     // yet, and a line that reads like every other received file is how "not installed yet" becomes
                     // "somebody will notice later" — the state this codebase keeps replacing with a sentence that says

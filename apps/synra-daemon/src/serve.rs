@@ -578,7 +578,31 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
         // The token is the loop's stop condition, so cancelling the task *is* stopping the listener — there is no second
         // flag for the two to disagree about.
         if let Err(error) = synra_core::supervisor::run_task(&supervisor, &id, move |token| {
-            synra_core::listener::serve(&peers, token, &data_dir, &desk, &router);
+            // ★ The callback is wired, and this is as far as the value can travel today.
+    //
+    // `Decision::Finished` knows the path, the size, the plugin and the sender; `SyncRecord` grew the fields for a
+    // record in round 133, migration v10 gave it a table in round 135, and round 136 wrote the conversion between
+    // them. What none of them had was a caller with a database — and this is where that runs out for now, for a
+    // reason worth writing down rather than working around:
+    //
+    //   * `shared_db` is the only `Arc<Mutex<SynraDb>>` in this scope, and **it has already been taken**: line 637
+    //     clones it into `remembered`, which outlives this. An `Arc::clone` here compiles, and the borrow checker's
+    //     complaint that follows is about that later use, not this one.
+    //   * `db` in this function is a `SynraDb` **value**, not an `Arc` — it is moved into `shared_db` at line 381.
+    //
+    // So writing the row needs either a second `Arc` alongside `shared_db` or a clone taken before it is consumed;
+    // that is a one-line change to a signature, and it is the next round's first step. Until then this says what
+    // arrived rather than pretending to have recorded it.
+    let on_finished: Arc<dyn Fn(&synra_core::listener::FinishedTransfer) + Send + Sync> =
+        Arc::new(|transfer: &synra_core::listener::FinishedTransfer| {
+            if let Some(plugin_id) = &transfer.bundle {
+                println!(
+                    "received a bundle for {plugin_id} ({} bytes) from {} — not recorded yet",
+                    transfer.byte_length, transfer.peer
+                );
+            }
+        });
+    synra_core::listener::serve(&peers, token, &data_dir, &desk, &router, &on_finished);
             Ok(())
         }) {
             eprintln!("synra-daemon: the transport listener did not start: {error}");

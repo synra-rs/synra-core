@@ -2070,6 +2070,9 @@ fn a_file_that_reaches_the_other_side_is_measured() {
     assert_eq!(served.finished[0].byte_length, 4_096);
     // 而它不是插件包 —— 发送的是一份附件。
     assert!(served.finished[0].bundle.is_none(), "{served:?}");
+    // ★ 而它带着发送方 —— 逐条带上，因为「谁发的这个文件」是关于**文件**的事实，
+    // 而 `Served::peer` 是关于**连接**的。
+    assert_eq!(served.finished[0].peer, served.peer.expect("a handshaked peer"));
 
     let snapshot = runtime.metrics.snapshot();
     assert!(
