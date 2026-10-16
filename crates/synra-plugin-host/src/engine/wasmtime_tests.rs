@@ -232,6 +232,32 @@ fn handle(backend: &Arc<WasmtimeBackend>) -> Backend {
 // ── Compiling ─────────────────────────────────────────────────────────────────────────────────────
 
 #[test]
+fn an_artifact_larger_than_the_ceiling_is_refused_before_the_engine_sees_it() {
+    // """ + S + """ The limit the host did not have.
+    //
+    // The CLI refuses a `.wasm` over 16 MiB and the registry refuses a packument over 8 MiB, and `compile` checked only
+    // whether the bytes were empty — so anything arriving by another road went straight into the engine, whose parser is not
+    // a resource limiter.
+    //
+    // """ + S + """ And what makes this test about *our* refusal rather than wasmtime's.
+    //
+    // A megabyte of zeroes is not a component, so the engine would refuse it too, with a parse error. The assertion is on the
+    // message: it names both numbers, which only this layer can produce.
+    let backend = WasmtimeBackend::new(BackendKind::WasmtimeCranelift).expect("an engine");
+    let oversized = vec![0u8; MAX_COMPONENT_BYTES + 1];
+
+    match backend.compile(&oversized, "@acme/huge") {
+        Err(BackendError::Compile { detail }) => {
+            assert!(detail.contains("16777217"), "it names the size it was given: {detail}");
+            assert!(detail.contains("16777216"), "and the largest it accepts: {detail}");
+        }
+        // A compiled artifact has no `Debug`, so the arm reports that it succeeded rather than showing one.
+        Ok(_) => panic!("a 16 MiB artifact was compiled"),
+        Err(other) => panic!("expected a size refusal, got {other}"),
+    }
+}
+
+#[test]
 fn an_empty_artifact_is_refused_before_the_engine_sees_it() {
     let backend = WasmtimeBackend::new(BackendKind::WasmtimeCranelift).expect("an engine");
     assert!(matches!(backend.compile(b"", "p"), Err(BackendError::Compile { .. })));
