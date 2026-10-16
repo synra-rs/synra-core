@@ -124,9 +124,16 @@ impl Runtime {
     ///
     /// # Returns
     ///
-    /// How many rows were removed.
+    /// How many rows were removed, and zero when they could not be.
+    ///
+    /// ★ This one still answers with a number, and that is a deliberate difference from [`sweep`]: it is a test-facing
+    /// convenience, and a test that wants to know whether the collection *failed* calls `sweep` and reads
+    /// [`GcReport::failures`]. Losing the failure here would matter if a command path used it; nothing does.
     pub fn collect_intents(&self, keep_for_ms: i64) -> usize {
-        collect(&self.db.lock(), keep_for_ms)
+        collect(&self.db.lock(), keep_for_ms).unwrap_or_else(|error| {
+            tracing::error!("finished intents could not be collected: {error}");
+            0
+        })
     }
 }
 
@@ -141,7 +148,7 @@ pub(crate) const SEEN_DEVICE_CEILING: usize = 500;
 ///
 /// # Returns
 ///
-/// `(intents, devices)` removed, so the caller can report what it did.
+/// A [`GcReport`]: what was removed, and what could not be.
 ///
 /// # Why both are here rather than two schedules
 ///
@@ -149,12 +156,19 @@ pub(crate) const SEEN_DEVICE_CEILING: usize = 500;
 /// when that decision changes. The database is the only thing either needs, which is what lets this run on a thread that
 /// cannot hold the runtime.
 #[must_use]
-pub(crate) fn sweep(db: &synra_store::SynraDb, retention: Retention) -> Collected {
-    let intents = collect(db, retention.intents_ms);
+pub(crate) fn sweep(db: &synra_store::SynraDb, retention: Retention) -> GcReport {
+    let mut failures = Vec::new();
+    let intents = match collect(db, retention.intents_ms) {
+        Ok(removed) => removed,
+        Err(error) => {
+            failures.push(error);
+            0
+        }
+    };
     let devices = match db.forget_seen_devices_beyond(SEEN_DEVICE_CEILING) {
         Ok(removed) => removed,
         Err(error) => {
-            tracing::error!("devices heard from could not be collected: {error}");
+            failures.push(format!("devices heard from: {error}"));
             0
         }
     };
@@ -164,18 +178,18 @@ pub(crate) fn sweep(db: &synra_store::SynraDb, retention: Retention) -> Collecte
     let audit = match db.forget_audit_before(store_now().saturating_sub(retention.audit_ms)) {
         Ok(removed) => removed,
         Err(error) => {
-            tracing::error!("audit records could not be collected: {error}");
+            failures.push(format!("recorded calls: {error}"));
             0
         }
     };
-    Collected { intents, devices, audit }
+    GcReport { intents, devices, audit, failures }
 }
 
 /// How long each kind of record is kept.
 ///
 /// A value rather than constants read inside the sweep, so a test can say "a day" without waiting one — the same reason the
 /// schedule is a parameter in `serve`.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Retention {
     /// How long a finished intent is kept.
     pub(crate) intents_ms: i64,
@@ -183,15 +197,52 @@ pub(crate) struct Retention {
     pub(crate) audit_ms: i64,
 }
 
-/// What one sweep removed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Collected {
+/// What one sweep did, and what it could not do.
+///
+/// ★ Why `failures` is a field rather than a log line.
+///
+/// The three collection targets used to swallow their errors: a delete that failed logged `tracing::error!` and returned
+/// **zero**, so a sweep that could not do its job was byte-for-byte the same answer as a sweep with nothing to do — and the
+/// caller printed nothing at all, because every count was zero. A background thread's log line is also the easiest thing in
+/// a system to miss, which is how a database that cannot be collected from stays broken for a week.
+///
+/// The caller is a timer, and the comment that said *"it has nothing to do with the answer"* was the reason this was written
+/// that way. That is no longer true: this loop can report, and a test can assert on what it reports.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GcReport {
     /// Finished intents past their retention.
     pub(crate) intents: usize,
     /// Devices heard from beyond the ceiling.
     pub(crate) devices: usize,
     /// Recorded calls past their retention.
     pub(crate) audit: usize,
+    /// One line per target that could not be collected, named so a reader knows which.
+    pub(crate) failures: Vec<String>,
+}
+
+impl GcReport {
+    /// How many rows were removed altogether.
+    #[must_use]
+    pub(crate) const fn removed(&self) -> usize {
+        self.intents + self.devices + self.audit
+    }
+}
+
+/// The schedule the design calls `GcTask`: what to collect, and how often.
+///
+/// ★ Why the schedule is a value rather than three constants.
+///
+/// Because the constants lived at the top of `serve.rs` and the sweep's own tests had to restate them; a task carrying its
+/// own interval and retention is what lets a test run the real loop with milliseconds, and what makes "the schedule" a thing
+/// a reader can point at rather than a rule assembled from three separate `const`s.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GcTask {
+    /// How long each kind of record is kept.
+    pub(crate) retention: Retention,
+    /// How long to wait after start-up before the first sweep.
+    pub(crate) first_delay: std::time::Duration,
+    /// How often to sweep after that.
+    pub(crate) every: std::time::Duration,
 }
 
 /// The retention sweep, over a database rather than a runtime.
@@ -210,17 +261,13 @@ pub(crate) struct Collected {
 ///
 /// # Errors
 ///
-/// Nothing is returned for a failure: a sweep that could not run is logged and the count is zero, because the caller is a
-/// timer and has nothing to do with the answer. A command path that collected nothing would have to say so; a background
-/// sweep that could not says it in the log.
-pub(crate) fn collect(db: &synra_store::SynraDb, keep_for_ms: i64) -> usize {
+/// A failure comes back as a sentence naming the target, and [`sweep`] puts it in the report. It used to be logged and
+/// turned into zero, which made "could not collect" and "nothing to collect" the same answer — see [`GcReport`].
+pub(crate) fn collect(db: &synra_store::SynraDb, keep_for_ms: i64) -> Result<usize, String> {
     let before = store_now().saturating_sub(keep_for_ms);
     match db.forget_finished_intents(synra_core::intent::types::IntentState::final_kinds(), before) {
-        Ok(removed) => removed,
-        Err(error) => {
-            tracing::error!("finished intents could not be collected: {error}");
-            0
-        }
+        Ok(removed) => Ok(removed),
+        Err(error) => Err(format!("finished intents: {error}")),
     }
 }
 

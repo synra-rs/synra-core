@@ -63,12 +63,38 @@ const GC_FIRST_DELAY: Duration = Duration::from_secs(60);
 ///
 /// Because a test that waited an hour to see whether the sweep ran would not be a test. The schedule is decided where the
 /// daemon is built and passed in, so the same loop can be driven with milliseconds.
+/// The schedule this daemon collects on: the design's `GcTask`, as a value.
+const fn gc_task() -> crate::runtime::intents::GcTask {
+    crate::runtime::intents::GcTask {
+        retention: crate::runtime::intents::Retention {
+            intents_ms: INTENT_RETENTION_MS,
+            audit_ms: AUDIT_RETENTION_MS,
+        },
+        first_delay: GC_FIRST_DELAY,
+        every: GC_INTERVAL,
+    }
+}
+
+/// The same schedule at a speed a test can wait for, which is the reason the schedule is a value.
+#[cfg(test)]
+const fn fast_gc_task() -> crate::runtime::intents::GcTask {
+    crate::runtime::intents::GcTask {
+        retention: crate::runtime::intents::Retention {
+            intents_ms: INTENT_RETENTION_MS,
+            audit_ms: AUDIT_RETENTION_MS,
+        },
+        first_delay: Duration::from_millis(1),
+        every: Duration::from_millis(5),
+    }
+}
+
 fn collect_loop(
     db: &Arc<Mutex<synra_store::SynraDb>>,
     supervisor: &Arc<synra_core::supervisor::Supervisor>,
-    first_delay: Duration,
-    every: Duration,
+    task: crate::runtime::intents::GcTask,
 ) {
+    let first_delay = task.first_delay;
+    let every = task.every;
     // ★ The first wait is interruptible in slices, so a daemon asked to stop during its first minute does not take the
     // whole minute to notice. The heartbeat loop has the same shape for the same reason.
     if !sleep_until_shutdown(supervisor, first_delay) {
@@ -76,13 +102,15 @@ fn collect_loop(
     }
 
     while !supervisor.is_shutting_down() {
-        let collected = crate::runtime::intents::sweep(
-            &db.lock(),
-            crate::runtime::intents::Retention {
-                intents_ms: INTENT_RETENTION_MS,
-                audit_ms: AUDIT_RETENTION_MS,
-            },
-        );
+        let collected = crate::runtime::intents::sweep(&db.lock(), task.retention);
+        // ★ A sweep that could not finish says so, on the error stream and by name.
+        //
+        // It used to say nothing at all: every count was zero, and the failure was a log line written inside the store. A
+        // database that cannot be collected from is the one thing about a sweep worth interrupting somebody for, and it was
+        // the one thing this loop was silent about.
+        for failure in &collected.failures {
+            eprintln!("the retention sweep could not finish: {failure}");
+        }
         if collected.intents > 0 {
             println!("collected {} finished intent(s)", collected.intents);
         }
@@ -91,6 +119,13 @@ fn collect_loop(
         }
         if collected.audit > 0 {
             println!("forgot {} recorded call(s)", collected.audit);
+        }
+        // ★ One line for the sweep as a whole, and the reason `removed` is a method rather than a test helper: an
+        // operator reading the log wants to know whether collection is happening at all, and three separate numbers that are
+        // all zero look the same as a sweep that never ran.
+        let removed = collected.removed();
+        if removed > 0 {
+            println!("the retention sweep removed {removed} row(s)");
         }
         if !sleep_until_shutdown(supervisor, every) {
             return;
@@ -555,7 +590,7 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
     let collector = {
         let supervisor = Arc::clone(&supervisor);
         let db = Arc::clone(&shared_db);
-        std::thread::spawn(move || collect_loop(&db, &supervisor, GC_FIRST_DELAY, GC_INTERVAL))
+        std::thread::spawn(move || collect_loop(&db, &supervisor, gc_task()))
     };
 
     let mut code = ExitCode::SUCCESS;
@@ -678,7 +713,7 @@ mod tests {
             let db = Arc::clone(&db);
             let supervisor = Arc::clone(&supervisor);
             std::thread::spawn(move || {
-                collect_loop(&db, &supervisor, Duration::from_millis(1), Duration::from_millis(5));
+                collect_loop(&db, &supervisor, super::fast_gc_task());
             })
         };
 
@@ -733,7 +768,7 @@ mod tests {
             let db = Arc::clone(&db);
             let supervisor = Arc::clone(&supervisor);
             std::thread::spawn(move || {
-                collect_loop(&db, &supervisor, Duration::from_millis(1), Duration::from_millis(5));
+                collect_loop(&db, &supervisor, super::fast_gc_task());
             })
         };
 
@@ -761,7 +796,7 @@ mod tests {
             let db = Arc::clone(&db);
             let supervisor = Arc::clone(&supervisor);
             std::thread::spawn(move || {
-                collect_loop(&db, &supervisor, Duration::from_millis(1), Duration::from_millis(5));
+                collect_loop(&db, &supervisor, super::fast_gc_task());
             })
         };
 

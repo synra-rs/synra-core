@@ -1853,3 +1853,31 @@ fn the_sweep_does_not_touch_what_a_plugin_stored() {
 fn store_time() -> i64 {
     i64::try_from(now_ms()).unwrap_or(i64::MAX)
 }
+
+#[test]
+fn a_sweep_that_cannot_finish_says_so_rather_than_reporting_zero() {
+    // """ + S + """ The failure this report exists for, and it is the shape that hides longest.
+    //
+    // Every collection target used to swallow its error: a delete that failed logged and returned **zero**, so a sweep that
+    // could not do its job produced exactly the same answer as a sweep with nothing to do — and the daemon's loop printed
+    // nothing at all, because every count was zero. A database that cannot be collected from would stay that way quietly.
+    //
+    // """ + S + """ The fixture is a database that was never migrated, which is how round 82 found the same class of bug.
+    //
+    // `open_in_memory` creates an empty file and runs no schema, so all three targets fail for the same honest reason: the
+    // tables are not there. That is a real failure rather than a contrived one, and it needs no seam to inject.
+    let db = synra_store::SynraDb::open_in_memory().expect("a database");
+
+    let report = crate::runtime::intents::sweep(
+        &db,
+        crate::runtime::intents::Retention { intents_ms: 0, audit_ms: 0 },
+    );
+
+    assert_eq!(report.removed(), 0, "nothing could have been removed: {report:?}");
+    // ★ All three are named, so a reader knows which tables to look at — and three rather than one, which is what makes
+    // this a report about the sweep rather than about the first thing that went wrong.
+    assert_eq!(report.failures.len(), 3, "{report:?}");
+    for (failure, table) in report.failures.iter().zip(["intents", "devices", "call"]) {
+        assert!(failure.contains(table), "{failure} should name {table}");
+    }
+}
