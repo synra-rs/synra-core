@@ -97,6 +97,11 @@ pub enum Decision {
         /// Carried rather than guessed from the file name: `proposed_name` builds `plugin-<id>.wasm`, and a consumer
         /// that parsed that back would be wrong the first time somebody sent a file called `plugin-notes.wasm`.
         bundle: Option<synra_protocol::ids::PluginId>,
+        /// The trace this transfer belongs to.
+        ///
+        /// ★ Carried for the same reason the round is: a result is a reply, and a reply belongs to the question's
+        /// trace — that is what makes a log filter able to show the whole exchange on one side or the other.
+        trace_id: TraceId,
         /// Which round this transfer belongs to, so a result can name it.
         sync_session_id: Option<synra_protocol::ids::SessionId>,
         /// The request this transfer answered, so a result can reply to it.
@@ -371,6 +376,7 @@ impl Inbox {
                     version,
                     request_id,
                     sync_session_id,
+                    trace_id: self.trace,
                 })
             }
             Received::Failed { why, .. } => {
