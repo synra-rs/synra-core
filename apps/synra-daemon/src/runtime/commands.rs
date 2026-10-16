@@ -833,19 +833,38 @@ impl Runtime {
         // one only when the receiver actually said it checked the file (`await_confirmation`'s answer). A transfer
         // that was sent but never confirmed must not claim the peer holds anything — a row like that would make the
         // next synchronisation believe the two ends agree.
+        // ★ **And when the receiver also said what it installed, that is what goes in the row** — not the version this
+        // side pushed. They are two different questions, and until round 172 there was no answer to the second one: a
+        // peer that refused the package would still have been recorded as holding it.
+        //
+        // A receiver that answered `ok: false` installed nothing, and one that said `ok` without naming a version is
+        // contradicting itself — so neither writes a row. That is the rule `SyncTable::apply_result` has had since
+        // round 134, applied to the durable copy of the same fact.
         if let Some((plugin_id, version)) = bundle
             && let Some(digest) = events.iter().find_map(|event| match event {
                 synra_core::SessionEvent::Verified { digest, .. } => Some(digest.clone()),
                 _ => None,
             })
         {
-            let _ = self.db().record_sync(
-                plugin_id.as_str(),
-                &device_id.to_string(),
-                version,
-                &digest,
-                now,
-            );
+            let answered = events.iter().find_map(|event| match event {
+                synra_core::SessionEvent::SyncResult { result } => Some(result),
+                _ => None,
+            });
+            // 没有回复时用推过去的那个版本（第 155 轮的判断）；有回复时用**装上的**那个。
+            let held = match answered {
+                Some(result) if !result.ok => None,
+                Some(result) => result.installed_version.clone(),
+                None => Some(version.to_owned()),
+            };
+            if let Some(held) = held {
+                let _ = self.db().record_sync(
+                    plugin_id.as_str(),
+                    &device_id.to_string(),
+                    &held,
+                    &digest,
+                    now,
+                );
+            }
         }
         Ok(serde_json::json!({
             "sent": true,
