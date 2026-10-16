@@ -381,7 +381,18 @@ impl PluginInstance for EngineInstance {
 
         match self.dispatch(work) {
             Ok(outcome) => Ok(outcome),
-            Err(failure) => Ok(failure.into_outcome(budget, self.store.data().memory_refused)),
+            Err(failure) => Ok(failure.into_outcome(
+                budget,
+                self.store.data().memory_refused,
+                // ★ The **limiter's** ceiling, not `memory_bytes()`.
+                //
+                // They answer different questions and differ exactly when the budget names no ceiling: `memory_bytes` reports
+                // what the budget asked for — zero before any call names one — while the limiter enforces the store's own
+                // value, which starts at `INSTANTIATION_CEILING`. Reporting the first made a `MemoryExceeded` outcome say the
+                // limit was zero when the wall the guest hit was sixteen mebibytes, which is the number a plugin author would
+                // go and change.
+                u64::try_from(self.store.data().ceiling).unwrap_or(u64::MAX),
+            )),
         }
     }
 }
@@ -499,26 +510,36 @@ enum CallFailure {
 
 impl CallFailure {
     /// What the caller is told.
-    fn into_outcome(self, budget: CallBudget, memory_refused: bool) -> CallOutcome {
+    fn into_outcome(self, budget: CallBudget, memory_refused: bool, effective_ceiling: u64) -> CallOutcome {
         match self {
             Self::MissingExport { interface, function } => CallOutcome::Trap {
                 detail: format!("the component does not export {interface}.{function}"),
             },
-            Self::Trap(error) => classify(&error, budget, memory_refused),
+            Self::Trap(error) => classify(&error, budget, memory_refused, effective_ceiling),
         }
     }
 }
 
 /// Turns an engine error into the outcome the caller handles.
 ///
+/// `effective_ceiling` is the ceiling **in force**, not the one the budget named, and the distinction is the point: the
+/// instantiation ceiling of sixteen mebibytes applies to a budget that named nothing, and reporting
+/// `budget.max_memory_growth.unwrap_or(0)` told a plugin author their limit was **zero** when it was sixteen mebibytes. A
+/// number that describes the wrong thing is worse than no number, because it is the number they will go and change.
+///
 /// # Why this is a function and not a `match` at the call site
 ///
 /// Because the three limits produce three *different* errors, and each has a different thing a user can do: raise the
 /// instruction budget, raise the time limit, or give the plugin more memory. Collapsing them into "the plugin failed"
 /// would put the work of telling them apart on whoever reads the message.
-fn classify(error: &wasmtime::Error, budget: CallBudget, memory_refused: bool) -> CallOutcome {
+fn classify(
+    error: &wasmtime::Error,
+    budget: CallBudget,
+    memory_refused: bool,
+    effective_ceiling: u64,
+) -> CallOutcome {
     if memory_refused {
-        return CallOutcome::MemoryExceeded { limit: budget.max_memory_growth.unwrap_or(0) };
+        return CallOutcome::MemoryExceeded { limit: effective_ceiling };
     }
     let text = format!("{error:#}");
     let lowered = text.to_lowercase();
@@ -807,6 +828,9 @@ impl WasmBackend for WasmtimeBackend {
             kind: self.kind,
             host_calls: 0,
             deadline_epoch: None,
+            // Zero, and that is what `memory_bytes` means here: the ceiling the **budget** has named, which is none until a
+            // call names one. The wall the limiter actually enforces is the store's own `ceiling`, which starts at
+            // `INSTANTIATION_CEILING` — a different number answering a different question, and the one `classify` needs.
             ceiling: 0,
         }))
     }

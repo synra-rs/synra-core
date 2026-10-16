@@ -400,6 +400,48 @@ fn a_guest_that_loops_for_ever_is_stopped_by_its_instruction_budget() {
 }
 
 #[test]
+fn a_budget_that_names_no_ceiling_is_still_bounded() {
+    // """ + S + """ The one layer where `None` must **not** mean "no limit", and the reason is worth a test rather than a
+    // comment.
+    //
+    // The other two layers read `None` as "the caller named no limit for this layer", and rounds 95 to 97 fixed the engine
+    // to honour that. Memory is different: a budget that names no ceiling is held to `INSTANTIATION_CEILING`, the sixteen
+    // mebibytes an instance is created with. That is deliberate — `execute_budget()` in `synra-core` names no memory
+    // ceiling, so an action is bounded by time alone, and the instantiation ceiling is the last-resort cap that stops a
+    // hostile `execute` from eating the machine.
+    //
+    // """ + S + """ Which is exactly why it is pinned.
+    //
+    // The inconsistency is visible, and the obvious "fix" — making `None` clear the ceiling, as the other two layers now do
+    // — would **remove the sandbox's last resort**. A future reader who notices the asymmetry should find this test and the
+    // number in it rather than a commit that quietly uncapped memory.
+    let (backend, _executor) = backend_and_executor();
+    let artifact = compile(&backend, GROWS_UNTIL_REFUSED, "@acme/greedy");
+    let mut instance = instantiate(&backend, artifact.as_ref());
+
+    // No ceiling named, and enough instructions that the guest reaches the wall rather than its budget.
+    let outcome = instance
+        .call(
+            &Work::Deactivate,
+            CallBudget { fuel: Some(1_000_000), timeout: None, max_memory_growth: None },
+        )
+        .expect("a call");
+
+    match outcome {
+        // """ + S + """ And the number is the ceiling **in force**, not the budget's absence.
+        //
+        // `classify` reported `budget.max_memory_growth.unwrap_or(0)` — so this outcome used to name a limit of **zero** when
+        // the wall the guest hit was sixteen mebibytes. That is the number a plugin author would go and change.
+        CallOutcome::MemoryExceeded { limit } => assert_eq!(
+            limit,
+            16 * 1024 * 1024,
+            "an unnamed ceiling is the instantiation ceiling, and the outcome must name it"
+        ),
+        other => panic!("a guest that grows without bound must hit the instantiation ceiling, got {other:?}"),
+    }
+}
+
+#[test]
 fn a_guest_cannot_grow_past_the_ceiling_its_budget_names() {
     // ★ The sandbox's second promise, against a real component: a plugin that allocates without bound is stopped by the
     // number the kernel chose rather than by the machine running out.
