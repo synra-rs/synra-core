@@ -1,7 +1,7 @@
 use rusqlite::params;
 
 use crate::db::{Health, MIGRATIONS, VERSION_TABLE_NAME};
-use crate::records::RowError;
+use crate::records::{RowError, SyncLogRow};
 
 use super::{ConfigChange, DbError, SynraDb, migration_versions};
 
@@ -965,4 +965,71 @@ fn a_second_round_for_the_same_peer_corrects_the_row_rather_than_adding_one() {
     // 而另一台设备是另一行，所以「谁已经有了」仍然是一台一行。
     db.record_sync("@acme/chat", "device-c", "1.1.0", "sha256-new", 2_500).expect("third");
     assert_eq!(db.sync_records().expect("reads").len(), 2);
+}
+
+// ── 同步的历史 ──────────────────────────────────────────────────────────────────────────────────
+
+fn a_log_row(sync_id: &str, plugin: &str, started_at_ms: i64, finished: bool) -> SyncLogRow {
+    SyncLogRow {
+        sync_id: sync_id.to_owned(),
+        plugin_id: plugin.to_owned(),
+        peer_device: "device-b".to_owned(),
+        started_at_ms,
+        finished_at_ms: if finished { Some(started_at_ms + 500) } else { None },
+        document: format!("{{\"syncId\":\"{sync_id}\"}}"),
+    }
+}
+
+#[test]
+fn a_round_is_recorded_and_read_back_newest_first() {
+    let db = migrated();
+    db.record_sync_log(&a_log_row("sync-1", "@acme/chat", 1_000, true)).expect("first");
+    db.record_sync_log(&a_log_row("sync-2", "@acme/chat", 2_000, true)).expect("second");
+
+    let rows = db.sync_log(None, 10).expect("reads");
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    // 最新在前：历史页面看的是刚刚发生了什么，而不是最早发生了什么。
+    assert_eq!(rows[0].sync_id, "sync-2");
+    assert_eq!(rows[1].sync_id, "sync-1");
+    assert_eq!(rows[0].document, "{\"syncId\":\"sync-2\"}");
+    // 以及 `limit` 真的限制住。
+    assert_eq!(db.sync_log(None, 1).expect("reads").len(), 1);
+}
+
+#[test]
+fn a_round_that_is_still_running_has_no_finish_time() {
+    // 可空列不能用 `required`：没有结束时间是**事实**，不是缺陷 —— 一轮同步在开始时先写一行。
+    let db = migrated();
+    db.record_sync_log(&a_log_row("sync-1", "@acme/chat", 1_000, false)).expect("started");
+
+    let rows = db.sync_log(None, 10).expect("reads");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].finished_at_ms, None);
+    assert!(rows[0].document.contains("sync-1"));
+}
+
+#[test]
+fn finishing_a_round_corrects_its_row_rather_than_adding_one() {
+    // ★ 一轮写两次：开始时一次、结束时一次 —— 而第二次是**同一轮**，不是第二轮。
+    // 两行会让历史把一轮显示两遍，其中一遍说它从未结束。
+    let db = migrated();
+    db.record_sync_log(&a_log_row("sync-1", "@acme/chat", 1_000, false)).expect("started");
+    db.record_sync_log(&a_log_row("sync-1", "@acme/chat", 1_000, true)).expect("finished");
+
+    let rows = db.sync_log(None, 10).expect("reads");
+    assert_eq!(rows.len(), 1, "finishing added a row: {rows:?}");
+    assert_eq!(rows[0].finished_at_ms, Some(1_500));
+}
+
+#[test]
+fn the_history_can_be_asked_about_one_plugin() {
+    // 这两个问题是历史页面真正要问的，所以它们是列；其余在 document 里，不必为查一次而解析每一行。
+    let db = migrated();
+    db.record_sync_log(&a_log_row("sync-1", "@acme/chat", 1_000, true)).expect("chat");
+    db.record_sync_log(&a_log_row("sync-2", "@acme/notes", 2_000, true)).expect("notes");
+
+    let chat = db.sync_log(Some("@acme/chat"), 10).expect("reads");
+    assert_eq!(chat.len(), 1, "{chat:?}");
+    assert_eq!(chat[0].plugin_id, "@acme/chat");
+    assert_eq!(db.sync_log(None, 10).expect("reads").len(), 2);
 }

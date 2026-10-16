@@ -282,6 +282,31 @@ pub const MIGRATIONS: &[Migration] = &[
             "CREATE UNIQUE INDEX intents_by_request ON intents (origin_device, request_id)",
         ],
     },
+    Migration {
+        version: 10,
+        name: "sync-log",
+        statements: &[
+            // ★ The record is the row, which is the shape v9 established for `intents` — and for the same reason.
+            //
+            // `sync_records` is one row per `(plugin_id, peer_device)`: what a peer holds **now**, replaced on every round.
+            // That is the state the third step of the sync flow needs. It is not a history: a round that failed, a round
+            // that was skipped because both ends already agreed, what it cost in bytes — none of that survives in a table
+            // with one row per peer. `16` §5.5 asks for a record per sync and `SyncRecord` grew the fields for it in round
+            // 133, with nowhere to put them.
+            //
+            // So `document` holds the record as the kernel serialises it, and the columns beside it are the projection a
+            // history query needs **without parsing every row**: newest first, filtered by plugin.
+            "CREATE TABLE sync_log (
+                sync_id        TEXT PRIMARY KEY,
+                plugin_id      TEXT NOT NULL,
+                peer_device    TEXT NOT NULL,
+                started_at_ms  INTEGER NOT NULL,
+                finished_at_ms INTEGER,
+                document       TEXT NOT NULL
+            )",
+            "CREATE INDEX sync_log_by_plugin ON sync_log (plugin_id, started_at_ms)",
+        ],
+    },
 ];
 
 /// The schema version this build expects.

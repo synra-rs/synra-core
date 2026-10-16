@@ -235,6 +235,57 @@ impl SeenDeviceRow {
     }
 }
 
+/// One round of sync, as `sync_log` keeps it — a row of **history**, not of state.
+///
+/// ★ **The shape is `intents`' (migration v9), and for the reason written there**: the document is the row, and the
+/// columns beside it are the projection a query needs without parsing every row. So `document` carries whatever the kernel
+/// serialises a round as, and this type deliberately does not know what that is — `synra-store` depends on
+/// `synra-protocol` and not on the crate that owns [`crate::records::SyncRow`]'s counterpart for a single round.
+///
+/// The difference from [`SyncRow`] is the whole point of having two tables: that one is replaced on every round and
+/// answers "does the peer already have it"; this one is appended to and answers "what happened, and when".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncLogRow {
+    /// The round's identifier.
+    pub sync_id: String,
+    /// Which plugin.
+    pub plugin_id: String,
+    /// Which peer device.
+    pub peer_device: String,
+    /// When it started.
+    pub started_at_ms: i64,
+    /// When it finished, still `None` while it is running.
+    pub finished_at_ms: Option<i64>,
+    /// The kernel's own serialisation of the round.
+    pub document: String,
+}
+
+impl SyncLogRow {
+    /// Builds a row from the columns a query selects, in `columns::SYNC_LOG` order.
+    ///
+    /// # Errors
+    ///
+    /// [`RowError`] naming the column that was NULL.
+    pub fn from_columns(
+        sync_id: Option<&str>,
+        plugin_id: Option<&str>,
+        peer_device: Option<&str>,
+        started_at_ms: Option<i64>,
+        finished_at_ms: Option<i64>,
+        document: Option<&str>,
+    ) -> Result<Self, RowError> {
+        Ok(Self {
+            sync_id: required(sync_id, "sync_id")?.to_owned(),
+            plugin_id: required(plugin_id, "plugin_id")?.to_owned(),
+            peer_device: required(peer_device, "peer_device")?.to_owned(),
+            started_at_ms: required(started_at_ms, "started_at_ms")?,
+            // Not `required`: a round that has not finished has no finish time, and that is a fact rather than a defect.
+            finished_at_ms,
+            document: required(document, "document")?.to_owned(),
+        })
+    }
+}
+
 /// What one device holds for one plugin — a row of `sync_records`.
 ///
 /// ★ **This is not the same thing as [`crate::plugin_sync::SyncRecord`]**, and the two names being alike is a trap worth
@@ -631,6 +682,10 @@ pub mod columns {
         // and `DeviceRow::from_columns` are one order written twice — and this is the file that says which.
         "last_address",
     ];
+
+    /// The `sync_log` columns, in the order `SyncLogRow::from_columns` takes them.
+    pub const SYNC_LOG: &[&str] =
+        &["sync_id", "plugin_id", "peer_device", "started_at_ms", "finished_at_ms", "document"];
 
     /// The `sync_records` columns, in the order `SyncRow::from_columns` takes them.
     ///
