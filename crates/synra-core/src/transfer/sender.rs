@@ -26,6 +26,12 @@ pub struct TransferSender {
     kind: TransferKind,
     /// The metadata that travels with it.
     meta: TransferMeta,
+    /// Which round this transfer is part of, when it is part of one.
+    ///
+    /// ★ A field rather than a constant for the same reason `kind` became one: `request()` used to hardcode
+    /// `sync_session_id: None`, so a bundle reached the other side as a round nobody could name — and the result the
+    /// receiver is supposed to send back had nothing to reply to.
+    sync_session_id: Option<synra_protocol::ids::SessionId>,
 }
 
 impl std::fmt::Debug for TransferSender {
@@ -87,6 +93,7 @@ impl TransferSender {
                 mime_type: None,
                 context_id: None,
             },
+            sync_session_id: None,
         })
     }
 
@@ -104,15 +111,15 @@ impl TransferSender {
     pub fn open_bundle(
         path: &Path,
         chunk_size: u32,
-        plugin_id: synra_protocol::ids::PluginId,
-        version: impl Into<String>,
+        round: &crate::plugin_sync::SyncRound,
     ) -> Result<Self, TransferError> {
         let mut sender = Self::open(path, chunk_size)?;
         sender.kind = TransferKind::PluginBundle;
         sender.meta = TransferMeta::PluginBundle {
-            plugin_id,
-            version: version.into(),
+            plugin_id: round.plugin_id.clone(),
+            version: round.version.clone(),
         };
+        sender.sync_session_id = Some(round.session);
         Ok(sender)
     }
 
@@ -128,7 +135,7 @@ impl TransferSender {
             byte_length: self.byte_length,
             chunk_size: self.chunk_size,
             digest: self.digest.as_sri().clone(),
-            sync_session_id: None,
+            sync_session_id: self.sync_session_id,
             meta: self.meta.clone(),
         }
     }
@@ -252,11 +259,22 @@ mod tests {
         let path = a_file();
         let plugin_id =
             synra_protocol::ids::PluginId::try_from("@acme/chat".to_owned()).expect("an id");
-        let sender =
-            TransferSender::open_bundle(&path, 4, plugin_id.clone(), "1.2.0").expect("opens");
+        let round = crate::plugin_sync::SyncRound {
+            plugin_id: plugin_id.clone(),
+            version: "1.2.0".to_owned(),
+            session: synra_protocol::ids::SessionId::new(),
+        };
+        let sender = TransferSender::open_bundle(&path, 4, &round).expect("opens");
         let request = sender.request();
 
         assert_eq!(request.kind, TransferKind::PluginBundle);
+        // ★ 而它现在也说得出是哪一轮 —— 在此之前 `request()` 把 `sync_session_id` 写死成 `None`，
+        // 于是一个包到了对端是一个**没人能命名的轮次**，而接收端要回的结果没有东西可以回应。
+        assert_eq!(
+            request.sync_session_id,
+            Some(round.session),
+            "the round did not travel with the request"
+        );
         match request.meta {
             TransferMeta::PluginBundle { plugin_id: announced, version } => {
                 assert_eq!(announced, plugin_id);

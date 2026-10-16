@@ -739,8 +739,13 @@ impl Runtime {
             Some((plugin_id, version)) => synra_core::send_bundle(
                 &mut link,
                 &source,
-                plugin_id.clone(),
-                version,
+                &synra_core::plugin_sync::SyncRound {
+                    plugin_id: plugin_id.clone(),
+                    version: version.to_owned(),
+                    // ★ 这一侧发起，所以这一侧命名 —— 而 `SessionId::new()` 给的是一个不与任何东西相撞的
+                    // 标识。它不需要写进磁盘：它的用途只是让对端的回复能对上这一轮。
+                    session: synra_protocol::ids::SessionId::new(),
+                },
                 trace_id,
                 now,
                 deadline,

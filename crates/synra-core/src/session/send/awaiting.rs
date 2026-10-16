@@ -142,8 +142,7 @@ pub fn describe(digest: &SriDigest) -> String {
 pub fn send_bundle(
     link: &mut PeerLink,
     path: &Path,
-    plugin_id: synra_protocol::ids::PluginId,
-    version: impl Into<String>,
+    round: &crate::plugin_sync::SyncRound,
     trace_id: TraceId,
     now_ms: i64,
     deadline: std::time::Instant,
@@ -151,7 +150,7 @@ pub fn send_bundle(
     // The chunk size is the kernel's rather than the caller's, which is why this takes one argument fewer than
     // `send_file`: a bundle is sent by the daemon on a plugin's behalf, and neither of them has a view about how many
     // bytes should travel in one block.
-    let mut sender = TransferSender::open_bundle(path, crate::transfer::DEFAULT_CHUNK_SIZE, plugin_id, version)?;
+    let mut sender = TransferSender::open_bundle(path, crate::transfer::DEFAULT_CHUNK_SIZE, round)?;
     run_transfer(link, &mut sender, trace_id, now_ms, deadline)
 }
 
