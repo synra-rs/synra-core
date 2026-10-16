@@ -941,3 +941,37 @@ fn the_two_faces_of_one_question_agree() {
         assert!(state.has_it(), "the two faces disagree about holding it");
     }
 }
+
+
+#[test]
+fn the_receiver_checks_cannot_be_run_out_of_order() {
+    // ★ 这条测试回答第 176 轮留下的那个问题：**为什么 `performed` 是空的。**
+    //
+    // 那一轮把三项检查（磁盘空间、是否启用、权限归本机）接到 daemon 上，而 `performed` 仍然是空的。
+    // 这一轮查清了：它们**不是独立的检查**，而是那个七项**序列**里的第 4、6、7 项 ——
+    // `check_room` 要 `ArchiveLimits` 与 `Manifest`，`decide_activation` 要 `SessionComplete`，
+    // `keep_local_grants` 要 `LocalActivation`。daemon 一项前置都没做，所以三项**全部被拒**。
+    //
+    // 而「一个被拒绝的步骤不留痕迹」（第 130 轮的设计）正是 `performed` 空着的原因 ——
+    // 于是那个 outcome **没有**声称做过任何检查，那是对的。
+    let mut check = ReceiverCheck::new();
+
+    assert!(
+        matches!(
+            check.check_room(std::path::Path::new("."), 1),
+            Err(SyncError::OutOfOrder { .. })
+        ),
+        "check_room ran without the checks it depends on"
+    );
+    assert!(
+        matches!(check.decide_activation(true), Err(SyncError::OutOfOrder { .. })),
+        "activation was decided before the session was known complete"
+    );
+    assert!(
+        matches!(check.keep_local_grants(true), Err(SyncError::OutOfOrder { .. })),
+        "grants were kept before activation was decided"
+    );
+
+    // 而三次拒绝之后，什么都没有被记为做过。
+    assert!(check.performed().is_empty(), "a refused step left a trace");
+}
