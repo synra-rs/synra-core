@@ -90,6 +90,10 @@ pub fn version_of(meta: &synra_protocol::session::TransferMeta) -> Option<String
     }
 }
 
+/// A receiver's side of one transfer.
+///
+/// ★ Its `version` and `bundle` are read out of the proposal's metadata at acceptance, because that is where the
+/// sender's declaration lives — and by the time the transfer finishes, all that is left is a path.
 pub struct Receiving {
     /// The transfer being filled.
     receiver: TransferReceiver,
