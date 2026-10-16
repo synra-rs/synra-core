@@ -116,8 +116,19 @@ impl Kernel for Runtime {
 
         // ★ One critical section, and the handshake is **outside** it. `dial` blocks for as long as a connection takes,
         // and a `host` guard living across it would mean a `devices` listing waits for a network — which is exactly the
-        // report a user runs while something is wrong. So: resolve and read the address under the lock, release it, dial,
-        // and take it again to record what happened.
+        // report a user runs while something is wrong. So: **resolve and read the address under a short lock**, release it,
+        // build the envelope, and take the lock again for the exchange.
+        //
+        // ★ And the second lock *is* held across the dial, the handshake and the send.
+        //
+        // The sentence here used to say "release it, dial, and take it again", which described the address step and
+        // claimed the dial for it too. It does not: `Host::dial` takes `&mut self`, because the handshake needs this
+        // device's identity and the completed session has to be recorded on the host — so the network round trip happens
+        // with the registry locked, in **this** function and in three others (`send_file`, `pair`, `send_outbound`).
+        //
+        // That is a real cost, and it is not fixed by moving a line: it needs the host split so a handshake can be
+        // performed without `&mut self` and adopted afterwards, which is a design change rather than a tidy-up. `11` §
+        // records it as the open item it is; what this comment can do is stop claiming otherwise.
         let (device_id, address, from) = {
             let host = self.host.lock();
             let device_id = host.resolve(to).map_err(|error| refusal_of(&error))?;
