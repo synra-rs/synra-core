@@ -296,6 +296,21 @@ fn record_received(
         &transfer.digest,
         now,
     );
+
+    // ★ And the plugin is installed — which is a **decision**, not the only possible behaviour.
+    //
+    // A file that arrived could be left in the inbox for a user to approve first. What decides it here is that this
+    // kernel has nowhere to *record* "arrived but not installed": `plugins` is the only table that says a plugin
+    // exists, and a package sitting in a directory with no row is invisible to every reader — a state the design has
+    // no name for, and one this codebase keeps replacing with a sentence that says which half happened.
+    //
+    // ★ `trusted: false` is the part that matters. `PluginRow::trusted` answers "has the user confirmed what it may
+    // do", and a file that just arrived has been confirmed by nobody. `enabled: true` answers a different question —
+    // whether it may run at all — and the store keeps them as two columns for exactly this case: "this may run, and
+    // nobody has said what it may do yet".
+    //
+    // This is the first caller `insert_plugin` and `plugin_is_installed` have had.
+    let _ = db.lock().insert_plugin(plugin_id.as_str(), true, false, "unknown", now, now);
 }
 
 /// Runs the daemon until the supervisor says to stop, and reports how it ended.
@@ -896,6 +911,29 @@ mod tests {
         assert_eq!(rows[0].digest, "sha256-test");
         // 版本诚实地是空的：它随传输的元数据走，而一次 `Decision` 带的是**文件证明过**的东西，那个是摘要。
         assert!(rows[0].version.is_empty());
+    }
+
+    #[test]
+    fn a_received_bundle_is_installed_but_not_trusted() {
+        // ★ 这一条把两个在 `synra-store` 里写好了、测过了、而**没有任何生产代码调用过**的函数接上了：
+        // `insert_plugin` 与 `plugin_is_installed`。
+        let db = a_database();
+        super::record_received(&db, &a_bundle());
+
+        assert!(
+            db.lock().plugin_is_installed("@acme/chat").expect("reads"),
+            "the received bundle was not installed"
+        );
+        let installed = db.lock().plugins().expect("reads");
+        assert_eq!(installed.len(), 1, "{installed:?}");
+        // ★ 而它**不可信**：一个刚到达的文件没有被任何人确认过它能做什么。
+        assert!(
+            !installed[0].trusted,
+            "a file that just arrived is trusted by nobody"
+        );
+        // 但它可以被运行 —— 这是两个不同的问题，两列。
+        assert!(installed[0].enabled);
+        assert_eq!(installed[0].health, "unknown", "health is observed, not assumed");
     }
     use std::sync::Arc;
     use std::time::Duration;
