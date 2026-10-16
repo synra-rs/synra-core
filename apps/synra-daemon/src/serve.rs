@@ -242,9 +242,10 @@ fn sleep_until_shutdown(
 fn record_received(
     db: &Mutex<synra_store::SynraDb>,
     transfer: &synra_core::listener::FinishedTransfer,
-) {
+) -> Option<synra_core::plugin_sync::SyncOutcome> {
     let Some(plugin_id) = transfer.bundle.clone() else {
-        return;
+        // 一个附件不是一轮同步，所以没有结果可回。
+        return None;
     };
     let now = synra_store::sqlite::now_ms();
     let Ok(record) = synra_core::plugin_sync::SyncRecord::new(
@@ -274,7 +275,8 @@ fn record_received(
         now,
     )
     else {
-        return;
+        // 连一条记录都造不出来时，也没有结果可回（只可能是 `verdict` 之类，实际上不会发生）。
+            return None;
     };
     if let Ok(row) = record.to_row() {
         // A history that cannot be written is not a reason to fail a connection that already succeeded.
@@ -311,6 +313,25 @@ fn record_received(
     //
     // This is the first caller `insert_plugin` and `plugin_is_installed` have had.
     let _ = db.lock().insert_plugin(plugin_id.as_str(), true, false, "unknown", now, now);
+
+    // ★ 回给对端的是**实际做过的事**。
+    //
+    // `performed` 是空的，而那不是省略：它列的是 ⑧ 的七项**检查**义务（`PackageDigest`、`Signature`、
+    // `Manifest`、`ArchiveLimits`、`SessionComplete`、`LocalActivation`、`LocalGrants`），
+    // 而这个内核**一项都还没有跑** —— 它做的是安装。一个声称检查过的 outcome 会让 ⑨ 写下一件没发生的事。
+    //
+    // `activated` 是 `true`，因为安装时那个插件是被启用的（第 151 轮），而「启用」是这一侧的政策。
+    Some(synra_core::plugin_sync::SyncOutcome::installed(
+        plugin_id,
+        synra_core::plugin_sync::SyncSessionId::new(
+            transfer
+                .sync_session_id
+                .map_or_else(String::new, |session| session.to_string()),
+        ),
+        transfer.version.clone().unwrap_or_default(),
+        true,
+        Vec::new(),
+    ))
 }
 
 /// Runs the daemon until the supervisor says to stop, and reports how it ended.
@@ -691,10 +712,10 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
     // So writing the row needs either a second `Arc` alongside `shared_db` or a clone taken before it is consumed;
     // that is a one-line change to a signature, and it is the next round's first step. Until then this says what
     // arrived rather than pretending to have recorded it.
-    let on_finished: Arc<dyn Fn(&synra_core::listener::FinishedTransfer) + Send + Sync> = {
+    let on_finished: synra_core::listener::FinishedCallback = {
         let history_db = Arc::clone(&history_db);
         Arc::new(move |transfer: &synra_core::listener::FinishedTransfer| {
-            record_received(&history_db, transfer);
+            record_received(&history_db, transfer)
         })
     };
     synra_core::listener::serve(&peers, token, &data_dir, &desk, &router, &on_finished);
@@ -859,6 +880,7 @@ mod tests {
             peer: synra_protocol::ids::DeviceId::new(),
             digest: "sha256-test".to_owned(),
             version: Some("1.2.0".to_owned()),
+            sync_session_id: None,
         }
     }
 

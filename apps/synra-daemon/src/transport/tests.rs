@@ -268,6 +268,7 @@ use synra_core::listener::{bind, handle_within, is_open};
                 Duration::from_secs(5),
                 &test_desk(),
                 &test_router(),
+                &synra_core::listener::no_answer(),
             );
                     }
                     Ok(None) => {}
@@ -328,6 +329,7 @@ use synra_core::listener::{bind, handle_within, is_open};
                 Duration::from_millis(500),
                 &test_desk(),
                 &test_router(),
+                &synra_core::listener::no_answer(),
             );
 
         assert!(served.ended.is_some(), "a non-peer should be reported: {served:?}");
@@ -363,6 +365,7 @@ use synra_core::listener::{bind, handle_within, is_open};
                 Duration::from_millis(300),
                 &test_desk(),
                 &test_router(),
+                &synra_core::listener::no_answer(),
             );
         let elapsed = started.elapsed();
 

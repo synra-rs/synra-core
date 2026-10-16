@@ -65,6 +65,8 @@ pub struct FinishedTransfer {
     pub digest: String,
     /// The version the sender declared, when this arrived as a plugin bundle.
     pub version: Option<String>,
+    /// Which round this belonged to, when the sender named one.
+    pub sync_session_id: Option<synra_protocol::ids::SessionId>,
     /// Which device it came from.
     ///
     /// Carried per transfer rather than read off `Served::peer` by the caller: `peer` is a fact about the *connection*
@@ -109,7 +111,7 @@ pub fn serve(
     data_dir: &Path,
     desk: &Arc<crate::pairing::PairingDesk>,
     router: &Arc<crate::dispatch::orchestrate::Router>,
-    on_finished: &Arc<dyn Fn(&FinishedTransfer) + Send + Sync>,
+    on_finished: &FinishedCallback,
 ) {
     // Owned, because each connection is handed to its own thread and a thread cannot borrow the caller's stack.
     let data_dir = data_dir.to_path_buf();
@@ -153,10 +155,11 @@ pub fn serve(
                 // it away, and a received bundle became a line on stderr and nothing else.
                 let on_finished = Arc::clone(on_finished);
                 std::thread::spawn(move || {
-                    let served = handle(&host, stream, &inbox_root, &desk, &router);
-                    for transfer in &served.finished {
-                        on_finished(transfer);
-                    }
+                    // ★ The callback goes **into** the handler rather than being applied to its result, and that is
+                    // the correction of a mistake from round 148: applied here, it ran after the link was gone — so
+                    // the side that installed a bundle could not tell the sender so, and the result the sender is
+                    // waiting for could never be sent. A reply belongs on the connection that asked.
+                    let served = handle(&host, stream, &inbox_root, &desk, &router, &on_finished);
                     if let Some(ended) = &served.ended {
                         let who = served
                             .peer
@@ -189,8 +192,17 @@ pub fn handle(
     data_dir: &Path,
     desk: &Arc<crate::pairing::PairingDesk>,
     router: &Arc<crate::dispatch::orchestrate::Router>,
+    on_finished: &FinishedCallback,
 ) -> Served {
-    handle_within(host, stream, data_dir, synra_protocol::limits::HELLO_TIMEOUT, desk, router)
+    handle_within(
+        host,
+        stream,
+        data_dir,
+        synra_protocol::limits::HELLO_TIMEOUT,
+        desk,
+        router,
+        on_finished,
+    )
 }
 
 /// Handshakes on a connection with a chosen deadline for the exchange.
@@ -210,6 +222,7 @@ pub fn handle_within(
     timeout: Duration,
     desk: &Arc<crate::pairing::PairingDesk>,
     router: &Arc<crate::dispatch::orchestrate::Router>,
+    on_finished: &FinishedCallback,
 ) -> Served {
     // ★ Read before the handshake consumes the stream, and kept as text. It is the one fact about the requester this side
     // *observed* rather than was told: a prompt shows the name the device chose, and the address is what lets a user
@@ -378,17 +391,47 @@ pub fn handle_within(
                         eprintln!("synra-daemon: {peer} re-sent block {index}, which was already held");
                     }
                 }
-                Decision::Finished { path, byte_length, bundle, digest, version, .. } => {
+                Decision::Finished {
+                    path,
+                    byte_length,
+                    bundle,
+                    digest,
+                    version,
+                    request_id,
+                    sync_session_id,
+                    trace_id,
+                } => {
                     events.push("finished".to_owned());
                     // ★ The three facts travel together, and `bundle` is the one that says which of them this is.
-                    finished.push(FinishedTransfer {
+                    // ★ 先造出来交给回调，再收进列表：回调的答案属于**这个**传输，而它已经被移走了就没有了。
+                    let transfer = FinishedTransfer {
                         path: path.clone(),
                         byte_length,
                         bundle: bundle.clone(),
                         peer,
                         digest: digest.clone(),
                         version,
-                    });
+                        sync_session_id,
+                    };
+                    // ★ 收到、检查、装完 —— 现在告诉对端。第 133 轮的 `sync_result` 与第 134 轮的
+                    // `apply_result` 等的就是这一行，而它只能在连接还活着的时候发。
+                    if let Some(outcome) = on_finished(&transfer) {
+                        let context = synra_protocol::envelope::ReplyContext {
+                            request_id,
+                            target: transfer.peer,
+                            from: host.lock().device_id(),
+                            trace_id,
+                            ttl_ms: None,
+                        };
+                        if let Ok(reply) = crate::messaging::sync_result(
+                            context,
+                            &outcome,
+                            synra_store::sqlite::now_ms(),
+                        ) {
+                            let _ = link.send(&reply);
+                        }
+                    }
+                    finished.push(transfer);
                     // ★ A bundle is said out loud rather than printed as another file. The kernel does not install one
                     // yet, and a line that reads like every other received file is how "not installed yet" becomes
                     // "somebody will notice later" — the state this codebase keeps replacing with a sentence that says
@@ -438,4 +481,26 @@ pub fn bind(host: &mut Host, port: u16) -> Result<SocketAddr, crate::HostError> 
 #[must_use]
 pub const fn is_open(link: &PeerLink) -> bool {
     !link.peer().is_nil()
+}
+
+/// What the connection handler asks the host to do about a transfer that just finished.
+///
+/// ★ **Why the three arguments are named rather than written out three times.** The signature appeared in `serve`,
+/// `handle` and `handle_within`, and clippy's `type_complexity` was right about it: three copies of a type nobody can
+/// read is three places to change and one place to understand.
+///
+/// ★ **Why it returns an answer rather than nothing.** It is called while the connection is still open, and what it
+/// returns is what the sender is told. `None` means "there is nothing to say" — an attachment is not a round of
+/// synchronisation, so it has no result.
+pub type FinishedCallback =
+    Arc<dyn Fn(&FinishedTransfer) -> Option<crate::plugin_sync::SyncOutcome> + Send + Sync>;
+
+/// A callback that answers nothing.
+///
+/// For a host with no opinion about what it received — a test, or a build that only wants the file on disk. It is a
+/// named function rather than a closure written at each call site because the type is the unreadable part, and three
+/// spellings of it would be three places to change.
+#[must_use]
+pub fn no_answer() -> FinishedCallback {
+    Arc::new(|_| None)
 }
