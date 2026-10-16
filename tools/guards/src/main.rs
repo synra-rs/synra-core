@@ -109,9 +109,10 @@ fn main() -> std::process::ExitCode {
     let app_ok = check_sibling_app(&root);
     let msrv_ok = check_msrv(&root);
     let links_ok = check_document_links(&root);
+    let claims_ok = check_document_claims(&root);
 
-    if failures == 0 && app_ok && msrv_ok && links_ok {
-        println!("{} guard(s) passed", guards().len() + 3);
+    if failures == 0 && app_ok && msrv_ok && links_ok && claims_ok {
+        println!("{} guard(s) passed", guards().len() + 4);
         std::process::ExitCode::SUCCESS
     }
     else {
@@ -323,6 +324,93 @@ fn check_document_links(root: &Path) -> bool {
         }
         if problems.len() > 20 {
             println!("        ... and {} more", problems.len() - 20);
+        }
+        false
+    }
+}
+
+/// Every "the codebase has N of these" claim in the documents, counted.
+///
+/// """ + S + """ Why a claim needs checking at all.
+///
+/// Because a document saying *"`X` appears nowhere"* is a claim that **rots the moment somebody writes `X`**, and nothing
+/// notices: the sentence keeps saying zero and the reader has no reason to doubt it. Twice in one session: a type said to
+/// have no hits had one, and a file said to be an unread path constant had become a nine-file module with five hundred
+/// lines of tests.
+///
+/// """ + S + """ And why it counts three things rather than two.
+///
+/// A claim whose token is a **pattern** — `Command::new("npm"|"cargo")` — cannot be answered by a substring search, and a
+/// claim naming a bare English word (`devices`) would count thousands of hits that mean nothing. Both are reported by
+/// `doc-claims` as uncheckable and counted here as neither passing nor failing, because a checker that silently skips what
+/// it cannot read reports `ok` for a document it did not read.
+fn check_document_claims(root: &Path) -> bool {
+    let Some(parent) = root.parent() else {
+        println!("SKIP  the workspace has no parent directory, so the sibling documents cannot be read");
+        return true;
+    };
+
+    let mut documents = vec![root.to_path_buf()];
+    let mut absent = Vec::new();
+    // The documents that make claims about the code live in the design repository; the user documentation and the API
+    // reference are checked for links, not for counts.
+    let design = parent.join("design-docs");
+    if design.is_dir() {
+        documents.push(design);
+    } else {
+        absent.push("design-docs");
+    }
+
+    // The code the claims are about: this workspace and the shell beside it, which is where the contract's commands live.
+    let mut code = vec![root.to_path_buf()];
+    let shell = parent.join("synra-rust-app").join("src-tauri");
+    if shell.is_dir() {
+        code.push(shell);
+    }
+
+    let mut checked = Vec::new();
+    for directory in &documents {
+        for document in doc_claims::documents(directory) {
+            let Ok(text) = std::fs::read_to_string(&document) else {
+                continue;
+            };
+            for claim in doc_claims::claims_in(&document, &text) {
+                checked.push(doc_claims::check(&claim, &code));
+            }
+        }
+    }
+
+    if !absent.is_empty() {
+        println!("SKIP  not checked out, so their claims were not counted: {}", absent.join(", "));
+    }
+
+    let wrong: Vec<&doc_claims::Checked> = checked
+        .iter()
+        .filter(|entry| matches!(entry.outcome, doc_claims::Outcome::Disagrees { .. }))
+        .collect();
+    let uncheckable = checked
+        .iter()
+        .filter(|entry| matches!(entry.outcome, doc_claims::Outcome::Uncheckable { .. }))
+        .count();
+
+    if wrong.is_empty() {
+        // The uncheckable count is printed rather than hidden: it is the part of the corpus nothing verifies.
+        println!(
+            "ok    {} documented count(s) agree with the code ({uncheckable} not checkable)",
+            checked.len() - uncheckable
+        );
+        true
+    } else {
+        println!("FAIL  {} documented count(s) no longer describe the code", wrong.len());
+        for entry in &wrong {
+            let where_ = format!("{}:{}", entry.claim.file.display(), entry.claim.line);
+            let names = entry.claim.tokens.join("`/`");
+            if let doc_claims::Outcome::Disagrees { found } = entry.outcome {
+                println!(
+                    "        {where_}  `{names}`: the document says {}, the code has {found}",
+                    entry.claim.claimed
+                );
+            }
         }
         false
     }
