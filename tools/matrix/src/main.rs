@@ -35,6 +35,19 @@
 //!
 //! Same reason as `guards`: the workspace is Rust and only Rust, and this runs wherever `cargo` does.
 
+// Test code is exempt from the no-panic rules; see `synra-protocol` for the reasoning.
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::indexing_slicing,
+        clippy::needless_pass_by_value,
+    )
+)]
+
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Output};
 
@@ -205,7 +218,7 @@ fn main() -> ExitCode {
             Ok(output) if output.status.success() => {
                 println!("ok    {}  ({})", row.claim, row.source);
             }
-            Ok(output) => match environmental(&output) {
+            Ok(output) => match environmental(&output.stderr) {
                 Some(remedy) => {
                     skipped += 1;
                     println!("SKIP  {}  ({})", row.claim, row.source);
@@ -219,7 +232,7 @@ fn main() -> ExitCode {
                     for line in command(row.args) {
                         println!("        cargo check {}", line);
                     }
-                    for line in errors(&output) {
+                    for line in errors(&output.stderr) {
                         println!("        {line}");
                     }
                 }
@@ -259,8 +272,13 @@ fn run(root: &Path, args: &[&str]) -> Result<Output, String> {
 ///
 /// Each arm is a thing a developer installs once. Reporting any of them as `FAIL` would be a false accusation, and a
 /// check that cries wolf is one people learn to ignore — so the remedies are stated, not guessed at.
-fn environmental(output: &Output) -> Option<&'static str> {
-    let stderr = String::from_utf8_lossy(&output.stderr);
+///
+/// ★ **Takes the stderr bytes rather than the whole `Output`**, because that is all it reads. The first version took the
+/// `Output` and had no tests, and the reason was the signature: a `std::process::Output` cannot be fabricated without
+/// spawning a process, so a pure classifier that decided `SKIP` versus `FAIL` was untestable by construction. A function
+/// that only looks at bytes should take bytes.
+fn environmental(stderr: &[u8]) -> Option<&'static str> {
+    let stderr = String::from_utf8_lossy(stderr);
     if stderr.contains("can't find crate for `core`") || stderr.contains("E0463") {
         return Some(
             "the target's standard library is not installed — `rustup target add aarch64-linux-android`",
@@ -280,9 +298,9 @@ fn environmental(output: &Output) -> Option<&'static str> {
 
 /// The `error` lines of a failed check, without the trailing whitespace and noise cargo prints around them.
 ///
-/// Owned rather than borrowed: the stderr buffer is a temporary that does not outlive the call.
-fn errors(output: &Output) -> Vec<String> {
-    String::from_utf8_lossy(&output.stderr)
+/// Owned rather than borrowed: the caller's buffer is a temporary that does not outlive the call.
+fn errors(stderr: &[u8]) -> Vec<String> {
+    String::from_utf8_lossy(stderr)
         .lines()
         .map(str::trim_end)
         .filter(|line| line.starts_with("error"))
@@ -338,5 +356,94 @@ fn workspace_root() -> Option<PathBuf> {
         if !dir.pop() {
             return None;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The control, and the half that matters: an ordinary compile error must **not** be read as this machine's fault.
+    ///
+    /// Without this, a classifier that answered `Some` for everything would pass every other test here and quietly turn
+    /// every real failure into a `SKIP` — which is the one outcome this tool exists to prevent.
+    #[test]
+    fn a_real_error_is_not_environmental() {
+        let stderr = b"error[E0308]: mismatched types\n  --> src/lib.rs:3:5\nerror: could not compile";
+        assert_eq!(environmental(stderr), None);
+    }
+
+    #[test]
+    fn every_environmental_failure_is_recognised_and_named() {
+        // Each pattern, so an arm that stops matching is a failing test rather than a row that silently starts failing
+        // the build on a machine that was never going to pass it.
+        let cases: [&[u8]; 6] = [
+            b"error[E0463]: can't find crate for `core`",
+            b"error[E0463]: can't find crate for `std`",
+            b"error: failed to find tool: aarch64-linux-android-clang",
+            b"error: linker `aarch64-linux-android-clang` not found",
+            b"error: No space left on device (os error 112)",
+            b"error: failed to write: StorageFull",
+        ];
+
+        for stderr in cases {
+            let reason = environmental(stderr)
+                .unwrap_or_else(|| panic!("{:?} should be environmental", String::from_utf8_lossy(stderr)));
+            // And the remedy is stated rather than the row being skipped in silence.
+            assert!(reason.len() > 20, "{reason}");
+        }
+    }
+
+    #[test]
+    fn only_error_lines_are_reported_and_at_most_six() {
+        let mut stderr = String::from("warning: unused variable\n");
+        for number in 0..9 {
+            stderr.push_str(&format!("error: number {number}   \n"));
+        }
+        stderr.push_str("note: something\n");
+
+        let found = errors(stderr.as_bytes());
+        assert_eq!(found.len(), 6, "{found:?}");
+        assert!(found.iter().all(|line| line.starts_with("error")), "{found:?}");
+        // Trailing whitespace is stripped, which is what makes the printed block line up.
+        assert_eq!(found[0], "error: number 0");
+    }
+
+    #[test]
+    fn a_failure_with_no_error_lines_reports_nothing() {
+        // A build that died to a signal prints no `error` line at all. Reporting an empty list is right; inventing a line
+        // would be worse, because it would read as the compiler having said something.
+        assert!(errors(b"").is_empty());
+        assert!(errors(b"warning: nothing to do\n").is_empty());
+    }
+
+    #[test]
+    fn wrapping_never_splits_a_word_and_never_drops_one() {
+        let reason = "a reason long enough to need more than one line, because a single two-hundred-character line is not read at all";
+        let lines = wrap(reason);
+
+        assert!(lines.len() > 1, "{lines:?}");
+        for line in &lines {
+            assert!(line.chars().count() <= 76, "{line:?} is too long");
+        }
+        // ★ Nothing is lost in the folding, which is the property a wrapping bug breaks quietly.
+        let rejoined = lines.join(" ");
+        assert_eq!(rejoined, reason);
+    }
+
+    #[test]
+    fn wrapping_a_long_word_keeps_it_rather_than_truncating_it() {
+        // A 100-character token cannot be folded, and dropping or cutting it would hide part of a compiler's message.
+        let long = "x".repeat(100);
+        let lines = wrap(Box::leak(long.clone().into_boxed_str()));
+
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0], long);
+    }
+
+    #[test]
+    fn an_empty_reason_still_produces_one_line() {
+        // The fallback branch: a `SKIP` heading with nothing under it reads as a formatting bug rather than as silence.
+        assert_eq!(wrap(""), vec![String::new()]);
     }
 }
