@@ -61,6 +61,22 @@ pub enum Received {
     Ignored,
 }
 
+/// Which plugin a proposal is a bundle for, when it is one.
+///
+/// ★ **A free function rather than a match inside [`Receiving::accept`], so that it can be tested.**
+///
+/// Accepting needs a whole envelope and a writable destination, and a test for "does a bundle carry its plugin" would
+/// have to build both — a `TransferRequest` with a real digest, an envelope around it, a temporary directory. The
+/// decision itself reads one field of the metadata, so it takes the metadata and nothing else. That is the same narrowing
+/// that made the disk probe testable: a pure question should not need a filesystem to answer.
+#[must_use]
+pub fn bundle_of(meta: &synra_protocol::session::TransferMeta) -> Option<synra_protocol::ids::PluginId> {
+    match meta {
+        synra_protocol::session::TransferMeta::PluginBundle { plugin_id, .. } => Some(plugin_id.clone()),
+        _ => None,
+    }
+}
+
 /// A receiver's side of one transfer.
 pub struct Receiving {
     /// The transfer being filled.
@@ -105,12 +121,7 @@ impl Receiving {
         let request: TransferRequest = payload_of(envelope, "request")?;
         // Read here rather than at completion, which is the whole point of the field: by then the metadata is gone and
         // the only thing left is where the bytes landed.
-        let bundle = match &request.meta {
-            synra_protocol::session::TransferMeta::PluginBundle { plugin_id, .. } => {
-                Some(plugin_id.clone())
-            }
-            _ => None,
-        };
+        let bundle = bundle_of(&request.meta);
         let receiver = TransferReceiver::accept(&request, destination)?;
         Ok(Self { receiver, trace_id, bundle })
     }
@@ -291,5 +302,37 @@ impl Receiving {
         // incomplete and wrong bytes as a mismatch.
         let expected = self.receiver.expected_digest().clone();
         self.receiver.finish(&expected)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use synra_protocol::ids::PluginId;
+    use synra_protocol::session::TransferMeta;
+
+    fn a_plugin_id() -> PluginId {
+        PluginId::try_from("@acme/chat".to_owned()).expect("a plugin id")
+    }
+
+    #[test]
+    fn a_bundle_proposal_names_its_plugin() {
+        // ★ 这条测试是第 139 轮欠下的。那一轮把 `bundle` 加进了结构、让 `Decision::Finished` 带上它、
+        // 让 listener 说得出来 —— 但没有一条测试说过「插件包带着它的 plugin_id」这句话。
+        let meta = TransferMeta::PluginBundle { plugin_id: a_plugin_id(), version: "1.2.0".to_owned() };
+
+        assert_eq!(bundle_of(&meta), Some(a_plugin_id()));
+    }
+
+    #[test]
+    fn an_attachment_proposal_names_no_plugin() {
+        // 另一半，而且是没有它时最容易出的错：把所有传输都当成包。
+        let meta = TransferMeta::Attachment {
+            file_name: "notes.txt".to_owned(),
+            mime_type: None,
+            context_id: None,
+        };
+
+        assert_eq!(bundle_of(&meta), None);
     }
 }
