@@ -188,20 +188,26 @@ mod tests {
         // a function a plugin cannot call — and the symptom would be a plugin author concluding the host does not
         // provide something it plainly does.
         //
-        // The contract's table is read as **text** rather than through the crate that owns it: `synra-plugin-host`
-        // depends on this one through the workspace, and a dev-dependency back on it would be a cycle. What is being
-        // compared is a generated artifact against another generated artifact, which is a text comparison by nature.
-        let table = std::fs::read_to_string(
-            concat!(env!("CARGO_MANIFEST_DIR"), "/../synra-plugin-host/src/generated/capability_table.rs"),
-        )
-        .expect("the contract's capability table");
-        // The contract's table lists full import names and the SDK's constants are full import names, so they are
-        // compared as they are — a bare-name comparison would pass for a binding keyed by the wrong interface.
-        let declared: Vec<String> = table
-            .lines()
-            .filter_map(|line| line.trim().strip_prefix("(\"synra:plugin/host#"))
-            .filter_map(|rest| rest.split('"').next())
-            .map(|name| format!("synra:plugin/host#{name}"))
+        // The contract is read **as the contract**, not through the kernel's generated table.
+        //
+        // ★ Why this changed. The table is a checked-in artifact that the **host's** build script regenerates, so a run
+        // which builds only this crate compares against whatever the last host build left on disk. Round 126 added a
+        // function to the contract, built nothing, and watched this test pass — a guard reading a stale copy of the very
+        // thing it guards. `wit-codegen` is the parser the host's build script uses, and it takes the WIT text, so there
+        // is no intermediate that can be out of date.
+        //
+        // It is a dev-dependency rather than a dependency: a plugin links this crate, and a parser must not be in what a
+        // user downloads. And it is not `synra-plugin-host`, so it is not the cycle the note above warns about.
+        let contract = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../wit/synra-plugin.wit"))
+            .expect("the contract");
+        let parsed = wit_codegen::Contract::parse(&contract).expect("the contract parses");
+        let host = parsed.host().expect("the contract declares the host interface");
+        // The contract's names are the import names the component model resolves, so they are compared as they are — a
+        // bare-name comparison would pass for a binding keyed by the wrong interface.
+        let declared: Vec<String> = host
+            .functions
+            .iter()
+            .map(|function| format!("synra:plugin/host#{}", function.name))
             .collect();
         assert_eq!(declared.len(), 35, "the contract's own count: {}", declared.len());
 

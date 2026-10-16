@@ -29,3 +29,9 @@ wit-bindgen = "0.57"
 # generated bodies were `todo!()` until `wit-bindgen` supplied the guest side, and there is nothing left to exempt.
 [lints]
 workspace = true
+
+[dev-dependencies]
+# ★ The same parser the host's build script uses, so the test that keeps the SDK and the contract the same size reads the
+# **contract** rather than the table that script leaves on disk. Reading the generated artifact meant comparing a stale
+# copy whenever only this crate was built — see the note on that test.
+wit-codegen = { path = "../../tools/wit-codegen" }

@@ -1954,6 +1954,7 @@ dependencies = [
  "serde",
  "synra-plugin-api",
  "wit-bindgen",
+ "wit-codegen",
 ]
 
 [[package]]
