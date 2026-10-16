@@ -386,7 +386,7 @@ fn a_record_says_what_happened_and_why() {
     );
     assert!(pushed.describe().contains("push"), "{}", pushed.describe());
     assert!(pushed.describe().contains("does not have"), "{}", pushed.describe());
-    assert_eq!(pushed.at_ms, 1_000);
+    assert_eq!(pushed.started_at_ms, 1_000);
 
     let asked = SyncRecord::new(
         plugin("@acme/chat"),
@@ -594,4 +594,86 @@ fn a_failed_round_does_not_move_what_the_other_device_has() {
     // 以及一个自称成功却没有版本的回复：自相矛盾，不更新好过记一个半真半假的状态。
     table.apply_result(laptop, &id, &a_result(true, None, true), "sha256-pushed");
     assert_eq!(table.state_of(&id, laptop).expect("recorded").version.as_deref(), Some("1.0.0"));
+}
+
+
+// ── §5.5：一次同步留下了什么 ────────────────────────────────────────────────────────────────────
+
+#[test]
+fn a_record_starts_empty_and_ends_with_a_verdict() {
+    // 记录在**开始**时建立，结束时才有结局 —— 所以「没有结局」与「有结局没有结束时间」这两种
+    // 自相矛盾的状态在类型上是分开的。
+    let started = SyncRecord::new(
+        plugin("@acme/chat"),
+        DeviceId::new(),
+        SyncAction::Ask { ours: String::new(), theirs: None },
+        1_000,
+    );
+
+    assert!(started.verdict.is_none());
+    assert!(started.finished_at_ms.is_none());
+    assert!(started.trace_id.is_none(), "还没认出是哪一轮");
+    assert_eq!(started.bytes_transferred, 0);
+
+    let done = started
+        .identified(
+            SyncId::new("sync-1"),
+            SyncDirection::Push,
+            Some("1.2.0".to_owned()),
+            synra_protocol::ids::TraceId::new(),
+        )
+        .finished(SyncVerdict::Succeeded, 4_096, 2_000)
+        .expect("the first verdict is accepted");
+
+    assert_eq!(done.id.as_str(), "sync-1");
+    assert_eq!(done.direction, SyncDirection::Push);
+    assert_eq!(done.version.as_deref(), Some("1.2.0"));
+    assert_eq!(done.verdict, Some(SyncVerdict::Succeeded));
+    assert_eq!(done.finished_at_ms, Some(2_000));
+    assert_eq!(done.bytes_transferred, 4_096);
+    assert!(done.trace_id.is_some());
+}
+
+#[test]
+fn a_second_verdict_is_refused_because_it_would_replace_the_first() {
+    // ★ 这是 `finished` 返回 `Result` 而不是 `self` 的原因：覆盖结局是「最后的说法赢」，
+    // 而那种错没人看得出来 —— 一条先失败后成功的记录会读成成功。
+    let done = SyncRecord::new(
+        plugin("@acme/chat"),
+        DeviceId::new(),
+        SyncAction::Ask { ours: String::new(), theirs: None },
+        1_000,
+    )
+    .finished(SyncVerdict::Failed { error: "the signature did not verify".to_owned() }, 0, 2_000)
+    .expect("the first verdict is accepted");
+
+    match done.clone().finished(SyncVerdict::Succeeded, 10, 3_000) {
+        Err(SyncError::StepRefused { step, why }) => {
+            assert_eq!(step, "sync-record");
+            assert!(why.contains("already"), "{why}");
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    // 而原记录没有被改动：它仍然说失败。
+    assert_eq!(
+        done.verdict,
+        Some(SyncVerdict::Failed { error: "the signature did not verify".to_owned() })
+    );
+}
+
+#[test]
+fn a_skipped_round_is_not_a_failed_one() {
+    // 三态而不是布尔：跳过意味着双方已经一致，不需要任何人做什么；失败意味着有人得看一眼。
+    // 合成一个 `ok: false` 会让界面把两件事说成一件。
+    let skipped = SyncRecord::new(
+        plugin("@acme/chat"),
+        DeviceId::new(),
+        SyncAction::Skip { why: "both devices have the same artifact".to_owned() },
+        1_000,
+    )
+    .finished(SyncVerdict::Skipped { reason: "both devices have the same artifact".to_owned() }, 0, 1_500)
+    .expect("a verdict");
+
+    assert!(matches!(skipped.verdict, Some(SyncVerdict::Skipped { .. })));
+    assert_ne!(skipped.verdict, Some(SyncVerdict::Failed { error: String::new() }));
 }

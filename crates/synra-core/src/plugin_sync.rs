@@ -648,24 +648,164 @@ impl SyncOutcome {
     }
 }
 
-/// What a device does about a plugin somebody else has, for a report.
+/// 一条同步记录的标识。
+///
+/// 与会话标识分开：一轮会话可以产生不止一条记录（发起端与接收端各记自己的），
+/// 而一条记录要能被单独引用、排序和去重。
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SyncId(String);
+
+impl SyncId {
+    /// 一个标识，名字由调用方给。
+    #[must_use]
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    /// 标识本身。
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// 这一轮是谁推给谁。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncDirection {
+    /// 本机推给对端。
+    Push,
+    /// 对端推给本机。
+    Pull,
+}
+
+/// 一轮同步的结局，三态。
+///
+/// ★ **而它不能叫 `SyncOutcome`。** 那个名字在本模块里已经是一个**不同**的东西：
+/// 接收端做过哪些义务的清单（[`SyncOutcome`]）。文档 §5.5 的 `SyncOutcome` 是这三态，
+/// 代码的 [`SyncOutcome`] 是记账 —— 同名不同物。给新的这个起一个准确的名字，
+/// 比重命名一个已经有生产调用者的类型代价小。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SyncVerdict {
+    /// 装上了。
+    Succeeded,
+    /// 双方已经一致，所以没有传输 —— 与失败不同，它不需要任何人做什么。
+    Skipped {
+        /// 为什么跳过。
+        reason: String,
+    },
+    /// 被拒绝了。
+    Failed {
+        /// 原因。
+        error: String,
+    },
+}
+
+/// 一次同步留下了什么，够 §5.5 的可观测性和界面用。
+///
+/// 这条记录**就是**那一步的产物：以前它只有四个字段（插件、对端、决定、时间），
+/// 所以一次同步结束之后没有任何地方说得出来它成没成、传了多少。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncRecord {
-    /// Which plugin.
+    /// 这条记录自己的标识。
+    pub id: SyncId,
+    /// 哪个插件。
     pub plugin_id: PluginId,
-    /// Which device.
+    /// 对端当时持有什么版本，或本机推过去的版本。
+    pub version: Option<String>,
+    /// 谁推给谁。
+    pub direction: SyncDirection,
+    /// 哪台设备。
     pub peer: DeviceId,
-    /// What happened.
+    /// 当时的**决定**（推送 / 跳过 / 询问）。
+    ///
+    /// 与 `verdict` 不同，也不是它的前身：决定是第 ③ 步的产物，结局是第 ⑧ 步的产物，
+    /// 而一次「决定推送、结果失败」的记录需要对这两件事都说得出来。
     pub action: SyncAction,
-    /// When, in signed milliseconds since the epoch.
-    pub at_ms: i64,
+    /// 什么时候开始的，有符号毫秒。
+    ///
+    /// 有符号毫秒而不是 `SystemTime`：仓库里每一个时间戳都是这个形状
+    /// （`Runtime` 的 `started_at_ms`、每一张表的时间列），而一个 `SyncRecord` 要与它们比较、
+    /// 要能存进 SQLite。文档写的 `SystemTime` 是意图，这个形状是实现它的方式。
+    pub started_at_ms: i64,
+    /// 什么时候结束的，还没结束时为 `None`。
+    pub finished_at_ms: Option<i64>,
+    /// 结局，还没结束时为 `None`。
+    ///
+    /// 与 `finished_at_ms` 同时为空或有值：一条已经结束却没有结局的记录，
+    /// 和一条有结局却没有结束时间的记录，都是自相矛盾的。
+    pub verdict: Option<SyncVerdict>,
+    /// 传了多少字节。
+    pub bytes_transferred: u64,
+    /// 这一轮属于哪条追踪，还没认出是哪一轮时为 `None`。
+    pub trace_id: Option<synra_protocol::ids::TraceId>,
 }
 
 impl SyncRecord {
     /// A record of what a sync decided.
     #[must_use]
-    pub const fn new(plugin_id: PluginId, peer: DeviceId, action: SyncAction, at_ms: i64) -> Self {
-        Self { plugin_id, peer, action, at_ms }
+    pub const fn new(
+        plugin_id: PluginId,
+        peer: DeviceId,
+        action: SyncAction,
+        started_at_ms: i64,
+    ) -> Self {
+        // 一条刚刚开始的记录：没有结束时间、没有结局、没有字节。
+        Self {
+            id: SyncId(String::new()),
+            plugin_id,
+            version: None,
+            direction: SyncDirection::Push,
+            peer,
+            action,
+            started_at_ms,
+            finished_at_ms: None,
+            verdict: None,
+            bytes_transferred: 0,
+            trace_id: None,
+        }
+    }
+
+    /// 给记录一个身份、一个方向、一个版本和一条追踪。
+    ///
+    /// 分开而不是塞进 `new`：`new` 的调用点只关心「决定了什么」，
+    /// 而身份与追踪是这一轮被真正记下来时才有的东西。
+    #[must_use]
+    pub fn identified(
+        mut self,
+        id: SyncId,
+        direction: SyncDirection,
+        version: Option<String>,
+        trace_id: synra_protocol::ids::TraceId,
+    ) -> Self {
+        self.id = id;
+        self.direction = direction;
+        self.version = version;
+        self.trace_id = Some(trace_id);
+        self
+    }
+
+    /// 收尾：结局、字节数与结束时间。
+    ///
+    /// # Errors
+    ///
+    /// [`SyncError::StepRefused`] 当这条记录已经收过尾 —— 收两次的结局覆盖第一次，
+    /// 而那正是「最后的说法赢」这种没人看得出来的错。
+    pub fn finished(
+        mut self,
+        verdict: SyncVerdict,
+        bytes_transferred: u64,
+        at_ms: i64,
+    ) -> Result<Self, SyncError> {
+        if self.verdict.is_some() {
+            return Err(SyncError::StepRefused {
+                step: "sync-record",
+                why: "this record already has a verdict, and a second one would silently replace the first".to_owned(),
+            });
+        }
+        self.verdict = Some(verdict);
+        self.bytes_transferred = bytes_transferred;
+        self.finished_at_ms = Some(at_ms);
+        Ok(self)
     }
 
     /// A sentence for a log line.
