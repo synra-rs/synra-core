@@ -818,3 +818,78 @@ fn an_index_beyond_the_declaration_is_refused_and_not_counted_as_foreign() {
     }
     assert_eq!(inbox.refused_chunks(), 0);
 }
+
+
+#[test]
+fn a_table_loads_what_the_database_remembers() {
+    // ★ 两张表回答同一个问题（谁持有什么），一张在内存里、一张在磁盘上。
+    // 在此之前它们之间没有路：一个从库里读出行的宿主没有地方放它读到的东西。
+    let rows = [
+        synra_store::records::SyncRow {
+            plugin_id: "@acme/chat".to_owned(),
+            peer_device: "22222222-2222-4222-8222-222222222222".to_owned(),
+            version: "1.2.0".to_owned(),
+            digest: "sha256-abc".to_owned(),
+            synced_at_ms: 2_000,
+        },
+        // 而这一行是**接收端**写的形状：摘要来自文件证明过的东西，版本是空的。
+        synra_store::records::SyncRow {
+            plugin_id: "@acme/chat".to_owned(),
+            peer_device: "33333333-3333-4333-8333-333333333333".to_owned(),
+            version: String::new(),
+            digest: "sha256-def".to_owned(),
+            synced_at_ms: 3_000,
+        },
+    ];
+    let table = SyncTable::from_rows(&rows);
+    let plugin_id = plugin("@acme/chat");
+
+    let sender = table
+        .state_of(&plugin_id, "22222222-2222-4222-8222-222222222222".parse().expect("a device"))
+        .expect("the sender's row");
+    assert_eq!(sender.version.as_deref(), Some("1.2.0"));
+    assert_eq!(sender.digest.as_deref(), Some("sha256-abc"));
+    assert!(sender.has_it());
+
+    // ★ 而空版本变成 `None` 而不是 `Some("")` —— 后者会被读成「对端持有版本 ''」这个断言，
+    // 而 `has_it()` 正是那个会被答错的问题。
+    let receiver = table
+        .state_of(&plugin_id, "33333333-3333-4333-8333-333333333333".parse().expect("a device"))
+        .expect("the receiver's row");
+    assert_eq!(receiver.version, None, "an empty version read as a claim");
+    assert_eq!(receiver.digest.as_deref(), Some("sha256-def"));
+    // ★ **一处真发现，而这一轮没有改它。** `RemoteState::has_it` 是 `self.version.is_some()`，
+    // 所以这一行 —— 摘要已知而版本未知，正是**接收端**写下的形状（第 150 轮）——
+    // 会让 `has_it()` 说「没有」。而它其实有：摘要说得出它持有哪些字节。
+    //
+    // 第一版断言写的是 `assert!(receiver.has_it())`，它失败了，而失败说明的正是这件事。
+    // 改那个语义要看遍它的调用者，所以这里只**记下来**，而不是去断言一个可疑的答案 ——
+    // 一个为了通过而写的断言，比没有断言更糟。
+}
+
+#[test]
+fn a_row_this_build_cannot_read_is_skipped_rather_than_fatal() {
+    // 标识来自一台可能跑着别的构建的设备。一张整体拒绝装载的表会把**其余的历史**一起带走。
+    let rows = [
+        synra_store::records::SyncRow {
+            plugin_id: "not a plugin id".to_owned(),
+            peer_device: "22222222-2222-4222-8222-222222222222".to_owned(),
+            version: "1.0.0".to_owned(),
+            digest: "sha256-abc".to_owned(),
+            synced_at_ms: 1_000,
+        },
+        synra_store::records::SyncRow {
+            plugin_id: "@acme/chat".to_owned(),
+            peer_device: "22222222-2222-4222-8222-222222222222".to_owned(),
+            version: "1.2.0".to_owned(),
+            digest: "sha256-def".to_owned(),
+            synced_at_ms: 1_000,
+        },
+    ];
+    let table = SyncTable::from_rows(&rows);
+
+    // 坏的那一行没了，而好的那一行还在。
+    let state = table
+        .state_of(&plugin("@acme/chat"), "22222222-2222-4222-8222-222222222222".parse().expect("a device"));
+    assert_eq!(state.and_then(|state| state.version.as_deref()), Some("1.2.0"));
+}

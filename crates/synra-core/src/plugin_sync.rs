@@ -914,6 +914,49 @@ impl SyncTable {
         );
     }
 
+    /// Loads this table from rows read out of a database.
+    ///
+    /// ★ **Why this exists.**
+    ///
+    /// `SyncTable` is the in-memory answer to "what does each device hold"; `sync_records` is the durable one. They are
+    /// not duplicates — a kernel without SQLite can use this one — but nothing could get from one to the other, so a
+    /// host that read the rows had nowhere to put what it read.
+    ///
+    /// ★ **One-way on purpose.** The database is the record, and a table that could write back would be a second author
+    /// of it — the arrangement this codebase keeps replacing with "one place decides, the rest read".
+    ///
+    /// ★ **An empty version or digest becomes `None` rather than `Some("")`.** The receiving side writes a row with the
+    /// digest the *file* proved and leaves the version empty, because a `Decision` does not carry one. `Some("")` would
+    /// read as the claim "the peer holds version ''" rather than as the silence it is — and `has_it` is exactly the
+    /// question that would then be answered wrongly.
+    ///
+    /// ★ **A row this build cannot parse is skipped rather than refused.** The identifier came from a device that may
+    /// run another build, and a table that refused to load at all would take the rest of the history down with it.
+    #[must_use]
+    pub fn from_rows(rows: &[synra_store::records::SyncRow]) -> Self {
+        let mut table = Self::new();
+        for row in rows {
+            let (Ok(plugin_id), Ok(device)) = (
+                PluginId::try_from(row.plugin_id.clone()),
+                row.peer_device.parse::<DeviceId>(),
+            ) else {
+                continue;
+            };
+            table.record(
+                device,
+                RemoteState {
+                    plugin_id,
+                    version: Some(row.version.clone()).filter(|version| !version.is_empty()),
+                    digest: Some(row.digest.clone()).filter(|digest| !digest.is_empty()),
+                    // A row says the peer holds these bytes. Whether it is *running* them is not something this table
+                    // was ever told, and guessing would be the kind of claim this codebase keeps removing.
+                    active: false,
+                },
+            );
+        }
+        table
+    }
+
     /// Records what a device has.
     pub fn record(&mut self, device: DeviceId, state: RemoteState) {
         let _ = self.entries.insert((state.plugin_id.clone(), device), state);
