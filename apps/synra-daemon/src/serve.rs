@@ -63,6 +63,62 @@ const GC_FIRST_DELAY: Duration = Duration::from_secs(60);
 ///
 /// Because a test that waited an hour to see whether the sweep ran would not be a test. The schedule is decided where the
 /// daemon is built and passed in, so the same loop can be driven with milliseconds.
+/// Runs a background loop as a task the supervisor knows about, and reports how it ended.
+///
+/// """ + S + """ Why this exists rather than a bare `std::thread::spawn`.
+///
+/// The daemon spawns seven background threads and they were all bare. A panic inside one unwinds and **kills the thread**:
+/// the accept loop, the heartbeat or the retention sweep simply stops, the process serves on, and nothing anywhere says so.
+/// A dead task is indistinguishable from a quiet one — the same shape as a collection failure reported as zero.
+///
+/// The supervisor was already there, with `RestartPolicy`, `Criticality` and a `TaskRecord` per task, and the daemon
+/// registered two services it never started. Wrapping the loop is what makes the register/start/decide cycle real: a task
+/// that panics leaves a `Failed` record with a sentence in it, which is what `is_healthy` and the shutdown report read.
+///
+/// A thread that returns normally is recorded as `Cancelled`, because the only way these loops return is being asked to
+/// stop.
+fn supervised(
+    supervisor: &Arc<synra_core::supervisor::Supervisor>,
+    id: &str,
+    body: impl FnOnce(),
+) {
+    use synra_core::supervisor::{StopReason, TaskId, TaskSpec};
+
+    let task = TaskId::new(id);
+    // Reported rather than fatal, the same way the two services above are: a task that will not register is a capability
+    // this run lacks, not a reason to refuse to serve.
+    if let Err(error) = supervisor.register(TaskSpec::service(task.as_str())) {
+        eprintln!("synra-daemon: {id} could not be registered: {error}");
+    }
+    if let Err(error) = supervisor.start(&task) {
+        eprintln!("synra-daemon: {id} could not be started: {error}");
+    }
+
+    // ★ `AssertUnwindSafe` is required and is sound to give here.
+    //
+    // The closure holds a database and the supervisor, neither of which is `UnwindSafe` because both can be mutated. What
+    // makes the assertion honest is that this is the **end** of the loop: a panic unwinds out of the body, the thread is
+    // about to return, and nothing observes those values afterwards except `decide`, which takes the supervisor by
+    // reference and only records. The same reasoning the plugin host gives for catching a guest's panic.
+    let ended = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)) {
+        Ok(()) => StopReason::Cancelled,
+        Err(payload) => {
+            let detail = payload
+                .downcast_ref::<&str>()
+                .map(|text| (*text).to_owned())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "it panicked".to_owned());
+            // Printed as well as recorded: the record is read by a health check, and this is the one moment the reason is
+            // in hand.
+            eprintln!("synra-daemon: {id} panicked: {detail}");
+            StopReason::Failed { detail }
+        }
+    };
+    if let Err(error) = supervisor.decide(&task, &ended, synra_store::sqlite::now_ms()) {
+        eprintln!("synra-daemon: {id} could not be recorded as stopped: {error}");
+    }
+}
+
 /// The schedule this daemon collects on: the design's `GcTask`, as a value.
 const fn gc_task() -> crate::runtime::intents::GcTask {
     crate::runtime::intents::GcTask {
@@ -590,7 +646,15 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
     let collector = {
         let supervisor = Arc::clone(&supervisor);
         let db = Arc::clone(&shared_db);
-        std::thread::spawn(move || collect_loop(&db, &supervisor, gc_task()))
+        {
+        let supervisor = Arc::clone(&supervisor);
+        std::thread::spawn(move || {
+            let inner = Arc::clone(&supervisor);
+            supervised(&supervisor, "gc.collect", move || {
+                collect_loop(&db, &inner, gc_task());
+            });
+        })
+    }
     };
 
     let mut code = ExitCode::SUCCESS;
@@ -805,5 +869,42 @@ mod tests {
 
         let _ = supervisor.begin_shutdown();
         assert!(running.join().is_ok());
+    }
+
+    #[test]
+    fn a_loop_that_panics_is_recorded_rather_than_vanishing() {
+        // """ + S + """ The failure this exists for: a background thread that dies is indistinguishable from one that is quiet.
+        //
+        // Seven threads used to be spawned bare, so a panic inside the retention sweep — or the heartbeat, or the accept
+        // loop — killed that thread, left the process serving, and said nothing anywhere. The supervisor was registered with
+        // two services it never started, and no task ever reached a `Failed` record.
+        let supervisor = Arc::new(synra_core::supervisor::Supervisor::new(0));
+
+        super::supervised(&supervisor, "test.panics", || panic!("the disk went away"));
+
+        let id = synra_core::supervisor::TaskId::new("test.panics");
+        let record = supervisor.record(&id).expect("the task is known");
+        match record.last_reason {
+            Some(synra_core::supervisor::StopReason::Failed { detail }) => {
+                assert!(detail.contains("the disk went away"), "{detail}");
+            }
+            other => panic!("expected a failure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_loop_that_returns_normally_is_recorded_as_stopped() {
+        // And the other half, so the first test cannot pass by recording everything as a failure.
+        let supervisor = Arc::new(synra_core::supervisor::Supervisor::new(0));
+
+        super::supervised(&supervisor, "test.finishes", || {});
+
+        let id = synra_core::supervisor::TaskId::new("test.finishes");
+        let record = supervisor.record(&id).expect("the task is known");
+        assert!(
+            matches!(record.last_reason, Some(synra_core::supervisor::StopReason::Cancelled)),
+            "{:?}",
+            record.last_reason
+        );
     }
 }
