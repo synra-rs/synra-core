@@ -27,6 +27,12 @@ pub struct Host {
     pub(super) flags: Flags,
     /// Envelopes sent, for a report.
     pub(super) sent: u64,
+    /// Where this host's numbers go, when anybody is keeping them.
+    ///
+    /// ★ Optional on the same terms the plugin host's recorder is: a host that keeps no numbers is a host, not a broken
+    /// one, and a send that failed because a *metric* could not be written would be a message refused for a reason
+    /// neither end can see or act on.
+    pub(super) metrics: Option<std::sync::Arc<synra_observe::metrics::RingRecorder>>,
 }
 
 impl std::fmt::Debug for Host {
@@ -53,6 +59,7 @@ impl Host {
             listener: None,
             flags: Flags::production(),
             sent: 0,
+            metrics: None,
         }
     }
 
@@ -62,6 +69,16 @@ impl Host {
         let mut host = Self::new(identity, local);
         host.flags = flags;
         host
+    }
+
+    /// Sends this host's numbers to a recorder.
+    ///
+    /// A builder rather than an argument on [`Host::new`], because the two places a host is built — the daemon and a
+    /// hundred tests — should not each have to say where the numbers go when most of them keep none.
+    #[must_use]
+    pub fn with_metrics(mut self, metrics: std::sync::Arc<synra_observe::metrics::RingRecorder>) -> Self {
+        self.metrics = Some(metrics);
+        self
     }
 
     /// This device.

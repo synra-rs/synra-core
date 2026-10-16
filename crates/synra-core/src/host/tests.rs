@@ -276,7 +276,9 @@ fn the_recorded_address_is_the_one_the_connection_worked_at() {
 fn an_envelope_travels_between_two_connected_hosts() {
     // The whole path: dial, handshake, session, envelope, and a session recorded on the receiving side.
     let (mut server, _server_db, address) = listening(A, "Laptop");
-    let (mut client, _client_db) = host(B, "Phone");
+    let (client, _client_db) = host(B, "Phone");
+    let recorder = Arc::new(synra_observe::metrics::RingRecorder::new());
+    let mut client = client.with_metrics(Arc::clone(&recorder));
 
     let serving = std::thread::spawn(move || {
         let (mut link, _) = server.accept(1_000, |_, _| PairingState::Unknown).expect("accepts");
@@ -303,6 +305,20 @@ fn an_envelope_travels_between_two_connected_hosts() {
     assert_eq!(received.event.as_str(), "device.ping");
     assert_eq!(received.from, device(B));
     assert_eq!(client.sent(), 1);
+    // ★ 而同一个事实现在也说得出**说了什么** —— `frames_sent_total{event}`。
+    // `sent()` 回答「说了多少」，而排查时要问的是「说了哪一类」。
+    assert_eq!(
+        recorder.snapshot().get("frames_sent_total{event=device.ping}"),
+        Some(&synra_observe::metrics::Value::Counter(1)),
+        "the frame was not counted by its event"
+    );
+    // ★ 而链路本身也是一个事实：`links_opened_total`。客户端的这一条是它拨号时开的，
+    // 而 `adopt` 是拨入与接入**共同**经过的地方 —— 所以同一个计数也覆盖服务端那一侧。
+    assert_eq!(
+        recorder.snapshot().get("links_opened_total"),
+        Some(&synra_observe::metrics::Value::Counter(1)),
+        "the client's link was not counted"
+    );
     // The receiving host recorded the session too, which is what makes the envelope attributable.
     assert_eq!(server.state_of(device(B)), Some(LinkState::Ready));
 }

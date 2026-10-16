@@ -85,6 +85,17 @@ impl Host {
 
         // ★ Now, and not before. The handshake proved which device is on the other end, so this is the first moment at
         // which recording a session attributes work correctly.
+        // ★ The design's `links_opened_total`: a session exists, which is what "a link is open" means here.
+        //
+        // ★ Recorded where the session opens rather than on the way out, because that is the event. A link that opened
+        // and then failed to be marked ready **did** open, and a count that hid it would make two different failures
+        // look like one — the shape this codebase keeps removing.
+        if let Some(metrics) = &self.metrics {
+            metrics.counter_inc(&synra_observe::metrics::SeriesKey::new(
+                "links_opened_total",
+                Vec::new(),
+            ));
+        }
         let (key, _events) = self.sessions.open(
             SessionId::new(),
             negotiated.device_id,
@@ -369,6 +380,16 @@ impl Host {
         self.may_send(link)?;
         link.send(envelope)?;
         self.count_sent();
+        // ★ The design's `frames_sent_total{event}`: what this kernel said, and how much of it.
+        //
+        // ★ Recorded **after** the send rather than before, and that is not a detail: a frame the link refused never
+        // left, so a count that included it would say this device talks more than it does.
+        if let Some(metrics) = &self.metrics {
+            metrics.counter_inc(&synra_observe::metrics::SeriesKey::new(
+                "frames_sent_total",
+                [("event".to_owned(), envelope.event.as_str().to_owned())],
+            ));
+        }
         Ok(())
     }
 
