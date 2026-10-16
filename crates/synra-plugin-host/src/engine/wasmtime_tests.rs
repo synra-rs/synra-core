@@ -437,6 +437,51 @@ fn a_guest_cannot_grow_past_the_ceiling_its_budget_names() {
 }
 
 #[test]
+fn a_real_guest_that_loops_is_stopped_by_the_wall_clock_not_by_zero() {
+    // """ + S + """ The other half of the round-95 fix, and the half nothing covered.
+    //
+    // Disarming the deadline for `timeout: None` is only correct if `timeout: Some(_)` still **arms** one and still stops a
+    // real guest. The test beside this one proves the disarming; this proves the arming, with a guest that genuinely never
+    // returns, so an error in either branch cannot hide behind the other.
+    //
+    // """ + S + """ And it asserts the **duration in the outcome**, which is what `after: 0ns` was.
+    //
+    // That value was the signature of the bug: a call interrupted by the instantiation deadline it never asked for reported
+    // a timeout of zero, because the budget had no duration to name. A real wall-clock stop has a duration to name, and it
+    // is the one the budget asked for.
+    let (backend, _executor) = backend_and_executor();
+    let artifact = compile(&backend, SPINS_ON_DEACTIVATE, "@acme/spins");
+    let mut instance = instantiate(&backend, artifact.as_ref());
+
+    // Enough fuel to run for far longer than the clock allows, so the layer that stops this is the wall clock rather than
+    // the instruction budget — otherwise the test would pass for the wrong reason.
+    let budget = CallBudget {
+        fuel: Some(1_000_000_000),
+        timeout: Some(Duration::from_millis(250)),
+        max_memory_growth: None,
+    };
+
+    let started = std::time::Instant::now();
+    let outcome = instance.call(&Work::Deactivate, budget).expect("a call");
+    let elapsed = started.elapsed();
+
+    match outcome {
+        CallOutcome::Timeout { after } => assert_eq!(
+            after,
+            Duration::from_millis(250),
+            "the outcome names the budget's duration, not zero"
+        ),
+        other => panic!("a real infinite loop must be stopped by its wall clock, got {other:?}"),
+    }
+    // And it stopped near the deadline rather than running until its fuel ran out, which is what makes the assertion above
+    // about the clock rather than about a coincidence.
+    assert!(
+        elapsed < Duration::from_secs(30),
+        "it ran for {elapsed:?}, so something other than the 250ms budget stopped it"
+    );
+}
+
+#[test]
 fn a_budget_with_no_time_limit_leaves_no_deadline_armed() {
     // """ + S + """ A call that asked for no wall clock must not be interrupted by one.
     //
