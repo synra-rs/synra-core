@@ -176,6 +176,19 @@ pub enum Request {
     /// The installed plugins.
     Plugins,
 
+    /// Search the plugin catalogue.
+    ///
+    /// ★ Why this is a request of its own rather than part of `Plugins`.
+    ///
+    /// Because the two answer questions about different machines. `Plugins` is what is **installed here**, which the store
+    /// answers; this is what a **registry offers**, which is a network call that can take seconds and can fail. Merging them
+    /// would make the installed list as slow as the network and make a screen that only wanted to show what is installed
+    /// depend on a registry being reachable.
+    CatalogSearch {
+        /// The package name, as a registry spells it.
+        package: String,
+    },
+
     /// Turn a plugin on or off.
     ///
     /// ★ Why this had to exist.
@@ -331,7 +344,8 @@ impl Request {
             Self::SendFile { .. } => "sendFile",
             Self::Plugins => "plugins",
                 Self::IntentDispatch { .. } => "intentDispatch",
-                Self::PluginSetEnabled { .. } => "pluginSetEnabled",
+                Self::CatalogSearch { .. } => "catalogSearch",
+        Self::PluginSetEnabled { .. } => "pluginSetEnabled",
                 Self::IntentCancel { .. } => "intentCancel",
                 Self::IntentDecide { .. } => "intentDecide",
                 Self::IntentSnapshot { .. } => "intentSnapshot",

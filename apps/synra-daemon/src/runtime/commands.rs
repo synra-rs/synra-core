@@ -272,6 +272,12 @@ impl Kernel for Runtime {
         }))
     }
 
+    fn catalog_search(&self, package: &str) -> Result<serde_json::Value, Refusal> {
+        // ★ The one kernel command that talks to the open network, and the only one whose answer can be stale. `search`
+        // carries both facts in the reply rather than in a log line, because a screen has to show them.
+        super::catalog::search(self, package)
+    }
+
     fn plugins(&self) -> Result<serde_json::Value, Refusal> {
         self.plugins_value()
     }

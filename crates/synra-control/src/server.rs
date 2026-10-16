@@ -134,6 +134,32 @@ pub trait Kernel {
     /// — the second is a success, and a caller that could not tell them apart would report a typo as a no-op.
     fn plugin_set_enabled(&self, plugin_id: &str, enabled: bool) -> Result<serde_json::Value, Refusal>;
 
+    /// Searches the plugin catalogue.
+    ///
+    /// # Why this has a default body
+    ///
+    /// Because a kernel without a catalogue is a kernel, not a broken one — and every implementor of this trait outside this
+    /// workspace would otherwise stop compiling for a command it may never be asked. The default **refuses**, rather than
+    /// answering with an empty list: "no plugins match" and "this kernel cannot search" are different facts, and a screen that
+    /// could not tell them apart would show an empty catalogue for a host that has no registry configured at all.
+    ///
+    /// # The design's offline row
+    ///
+    /// The answer carries where it came from, because the design asks for a cached packument to be **used and announced**
+    /// when no registry answers. A caller that could not tell a live answer from a seven-day-old one would be showing a
+    /// catalogue it cannot vouch for.
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal`] with [`ErrorCode::Unsupported`] by default; the daemon's implementation answers
+    /// [`ErrorCode::DeviceOffline`] when nothing answered and nothing was cached.
+    fn catalog_search(&self, _package: &str) -> Result<serde_json::Value, Refusal> {
+        Err(Refusal::new(
+            ErrorCode::Unsupported,
+            "this kernel has no plugin catalogue",
+        ))
+    }
+
     /// Hands the kernel something to route.
     ///
     /// # ★ Why this is the method that makes the kernel do its job
@@ -361,6 +387,7 @@ impl Server {
             Request::SendText { to, text } => kernel.send_text(to, text),
             Request::SendFile { to, path } => kernel.send_file(to, path),
             Request::Plugins => kernel.plugins(),
+            Request::CatalogSearch { package } => kernel.catalog_search(package),
             Request::PluginSetEnabled { plugin_id, enabled } => {
                 kernel.plugin_set_enabled(plugin_id, *enabled)
             }

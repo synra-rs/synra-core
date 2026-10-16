@@ -273,6 +273,18 @@ pub enum PluginAction {
         #[arg(long)]
         all: bool,
     },
+    /// Search a registry for a plugin.
+    ///
+    /// ★ Why this is not `install --dry-run`.
+    ///
+    /// Because searching and installing fail for different reasons and a person runs them at different times: a search is
+    /// what somebody does while deciding, and it is the command that shows the design's *offline mode* — a cached catalogue
+    /// with its age — rather than refusing. Burying it in an install flag would make "what is available" a question only
+    /// somebody already installing could ask.
+    Search {
+        /// The package, as a registry spells it, such as `@acme/chat`.
+        package: String,
+    },
     /// Install a plugin from a path or a registry.
     Install {
         /// A path to a package, or a `@scope/name` for a registry.

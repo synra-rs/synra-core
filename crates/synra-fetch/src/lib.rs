@@ -388,7 +388,29 @@ impl Client {
             Refusal::new(ErrorCode::InvalidArgument, format!("`{url}` could not be built: {error}"))
         })?;
 
-        agent.run(built).map_err(|error| transport_refusal(url, &error))
+        // ★ The upstream client is wrapped, because a **reponse with too many headers panics it**.
+        //
+        // `ureq-proto` 0.6.4 collects something about a response into an `ArrayVec<_, 16>` whose `push` "panics if the array
+        // is already full" — so a server that answers with more of whatever that is does not produce a refusal, it produces a
+        // panic. It was found by fetching `https://registry.npmjs.org/%40acme/chat`: an unresolvable host errors cleanly and
+        // a resolvable one reached the bug, which is why the plugin host's own tests never saw it — they all use
+        // `127.0.0.1:<port>` against a fixture this process writes.
+        //
+        // The two rules this follows are the codebase's own: a host function that panics is caught and the instance is
+        // destroyed, never the kernel; and a *server's* behaviour must never be able to do that from the far end. A plugin
+        // fetching an ordinary URL does not choose how many headers come back.
+        //
+        // The panic is reported rather than swallowed: a refusal saying the client panicked is a bug report, and one that
+        // said "the network failed" would send the next reader looking at the network.
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            agent.run(built).map_err(|error| transport_refusal(url, &error))
+        }))
+        .unwrap_or_else(|_| {
+            Err(Refusal::new(
+                ErrorCode::Internal,
+                format!("the HTTP client panicked while fetching `{url}`"),
+            ))
+        })
     }
 }
 

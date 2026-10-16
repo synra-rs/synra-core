@@ -19,6 +19,7 @@
 //! That is the same rule the daemon's own start-up follows: it prints `no kernel is started yet` rather than reporting
 //! success. A host that reported success without running a kernel would be worse than one that says what it did not do.
 
+pub mod catalog;
 mod commands;
 mod devices;
 pub mod intent;

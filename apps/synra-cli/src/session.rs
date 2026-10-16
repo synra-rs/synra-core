@@ -220,6 +220,9 @@ fn plugin_request(command: &Command) -> Option<Request> {
     };
     match &args.action {
         PluginAction::List { .. } => Some(Request::Plugins),
+        PluginAction::Search { package } => {
+            Some(Request::CatalogSearch { package: package.clone() })
+        }
         // ★ These two did nothing at all, and said so wrongly.
         //
         // Every action but `list` answered `None`, and a `None` from here makes the CLI report "this command needs a

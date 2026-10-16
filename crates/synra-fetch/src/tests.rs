@@ -409,3 +409,35 @@ fn an_empty_method_is_refused_rather_than_defaulted() {
     assert!(client().fetch(&request).is_err());
     assert_eq!(server.requests(), 0);
 }
+
+#[test]
+fn a_fetch_that_panics_inside_the_client_is_a_refusal() {
+    // ★ A server must not be able to kill the host by answering with something the client mishandles.
+    //
+    // `ureq-proto` 0.6.4 panics when a response carries more of a particular thing than its `ArrayVec<_, 16>` holds. This
+    // test was written as a probe after the daemon's catalogue command panicked through it: an **unresolvable** host errors
+    // cleanly, and a resolvable one reaches the bug — which is why nothing in this crate's own suite saw it, since every
+    // other test talks to a `127.0.0.1` fixture this process writes.
+    //
+    // What the test asserts is deliberately weak about the network and strict about the panic: whether the request fails or
+    // succeeds depends on the machine, and **neither may be a panic**. On a host with no resolver this is an ordinary `Err`,
+    // and on the machine where this was found it is the wrapped panic.
+    let guard = NetworkGuard::for_hosts(&["registry.npmjs.org".to_owned()]);
+    let client = Client::new(guard, Limits::default());
+    let request = Request {
+        method: "GET".to_owned(),
+        url: "https://registry.npmjs.org/%40acme/chat".to_owned(),
+        headers: std::collections::BTreeMap::new(),
+        body: None,
+    };
+
+    // Before the fix this line panicked the test process. It now returns, whatever the network did.
+    let outcome = client.fetch(&request);
+    if let Err(refusal) = &outcome {
+        // A wrapped panic says so, so the next reader is not sent looking at the network.
+        assert!(
+            !refusal.message.contains("panicked") || refusal.message.contains("HTTP client"),
+            "{refusal:?}"
+        );
+    }
+}
