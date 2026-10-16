@@ -223,6 +223,67 @@ fn sleep_until_shutdown(
 ///
 /// `may_run` was already true, so a plan exists. Reading it as `None` would be a contradiction rather than a condition a
 /// user can act on, and the honest answer is to say which invariant broke.
+/// Writes one row of synchronisation history for a transfer that just finished.
+///
+/// ★ **Why this is a function.**
+///
+/// The callback it is called from lives inside the listener's connection loop, which never returns — so nothing that
+/// happens only inside it can be tested. Moving the work here makes it reachable with an in-memory database and a
+/// hand-built [`synra_core::listener::FinishedTransfer`], which is the difference between "the wiring compiles" and
+/// "a received bundle becomes a row".
+///
+/// Three things that had no caller meet here: `SyncRecord` (which grew the fields for a record in round 133),
+/// migration v10's `sync_log` table (round 135), and the conversion between them (round 136).
+///
+/// # Why an attachment is skipped rather than recorded
+///
+/// Because a screenshot is not a synchronisation. A history that filled up with them would answer "what has been
+/// synced" with the wrong rows, and a user reading it would have no way to tell which line was a plugin.
+fn record_received(
+    db: &Mutex<synra_store::SynraDb>,
+    transfer: &synra_core::listener::FinishedTransfer,
+) {
+    let Some(plugin_id) = transfer.bundle.clone() else {
+        return;
+    };
+    let now = synra_store::sqlite::now_ms();
+    let Ok(record) = synra_core::plugin_sync::SyncRecord::new(
+        plugin_id,
+        transfer.peer,
+        synra_core::plugin_sync::SyncAction::Push {
+            why: "the peer sent a bundle".to_owned(),
+        },
+        now,
+    )
+    .identified(
+        // The path is what makes this row distinct: two bundles for one plugin are two syncs, and the file name the
+        // receiver chose carries both the plugin and the transfer.
+        synra_core::plugin_sync::SyncId::new(format!("recv-{}", transfer.path.display())),
+        // Received, so the peer pushed: `Pull` is this device's side of it.
+        synra_core::plugin_sync::SyncDirection::Pull,
+        // The version is in the transfer's metadata, which the listener does not keep — so it is honestly absent
+        // rather than guessed from the file name.
+        None,
+        synra_protocol::ids::TraceId::new(),
+    )
+    .finished(
+        synra_core::plugin_sync::SyncVerdict::Succeeded,
+        transfer.byte_length,
+        now,
+    )
+    else {
+        return;
+    };
+    if let Ok(row) = record.to_row() {
+        // A history that cannot be written is not a reason to fail a connection that already succeeded.
+        let _ = db.lock().record_sync_log(&row);
+    }
+}
+
+/// Runs the daemon until the supervisor says to stop, and reports how it ended.
+///
+/// Everything the daemon owns is built here in one order the comments below explain: the claim, the database,
+/// the identity, the socket, and then the loops.
 pub fn serve(decision: &crate::Startup) -> ExitCode {
     let Some(plan) = decision.plan() else {
         eprintln!("synra-daemon: the start-up said it may run and produced no plan");
@@ -379,6 +440,10 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
     // interface was configured with — so the handle has to exist first. It used to be wrapped much later, which is part
     // of why the host had nothing to be built from and no session was ever installed.
     let shared_db = Arc::new(Mutex::new(db));
+    // ★ A second handle, because the first one does not survive to where the history is written: `shared_db` is
+    // cloned into `remembered` further down and that holder outlives this function's own use of it. Two `Arc`s to
+    // one database is the ordinary way to say "two owners".
+    let history_db = Arc::clone(&shared_db);
 
     // ★ The plugin host is built **before** the runtime, and its failure ends the daemon.
     //
@@ -593,15 +658,12 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
     // So writing the row needs either a second `Arc` alongside `shared_db` or a clone taken before it is consumed;
     // that is a one-line change to a signature, and it is the next round's first step. Until then this says what
     // arrived rather than pretending to have recorded it.
-    let on_finished: Arc<dyn Fn(&synra_core::listener::FinishedTransfer) + Send + Sync> =
-        Arc::new(|transfer: &synra_core::listener::FinishedTransfer| {
-            if let Some(plugin_id) = &transfer.bundle {
-                println!(
-                    "received a bundle for {plugin_id} ({} bytes) from {} — not recorded yet",
-                    transfer.byte_length, transfer.peer
-                );
-            }
-        });
+    let on_finished: Arc<dyn Fn(&synra_core::listener::FinishedTransfer) + Send + Sync> = {
+        let history_db = Arc::clone(&history_db);
+        Arc::new(move |transfer: &synra_core::listener::FinishedTransfer| {
+            record_received(&history_db, transfer);
+        })
+    };
     synra_core::listener::serve(&peers, token, &data_dir, &desk, &router, &on_finished);
             Ok(())
         }) {
@@ -747,6 +809,56 @@ fn heartbeat_loop(supervisor: &Arc<synra_core::supervisor::Supervisor>, lock_pat
 }
 #[cfg(test)]
 mod tests {
+
+    fn a_database() -> Mutex<synra_store::SynraDb> {
+        let mut db = synra_store::SynraDb::open_in_memory().expect("opens");
+        db.migrate().expect("migrates");
+        Mutex::new(db)
+    }
+
+    fn a_bundle() -> synra_core::listener::FinishedTransfer {
+        synra_core::listener::FinishedTransfer {
+            path: std::path::PathBuf::from("inbox/plugin-acme-chat.wasm"),
+            byte_length: 4_096,
+            bundle: Some(
+                synra_protocol::ids::PluginId::try_from("@acme/chat".to_owned()).expect("a plugin id"),
+            ),
+            peer: synra_protocol::ids::DeviceId::new(),
+        }
+    }
+
+    #[test]
+    fn a_received_bundle_becomes_a_row_of_history() {
+        // ★ 这一条是这一轮的核心：三件彼此孤立了十几轮的东西，在这里第一次真的合作 ——
+        // `SyncRecord`（第 133 轮长出这些字段）、迁移 v10 的 `sync_log` 表（第 135 轮）、
+        // 以及两者之间的转换（第 136 轮）。在此之前它们各自有读者、有测试、没有调用者。
+        let db = a_database();
+        let transfer = a_bundle();
+        super::record_received(&db, &transfer);
+
+        let rows = db.lock().sync_log(None, 10).expect("reads");
+        assert_eq!(rows.len(), 1, "the bundle was not recorded: {rows:?}");
+        assert_eq!(rows[0].plugin_id, "@acme/chat");
+        assert_eq!(rows[0].peer_device, transfer.peer.to_string());
+        assert!(rows[0].finished_at_ms.is_some(), "a finished transfer with no end time");
+        // 而按插件过滤的那条查询也回得来 —— 这是第 136 轮那个转换的第一次生产性使用。
+        assert_eq!(db.lock().sync_log(Some("@acme/chat"), 10).expect("reads").len(), 1);
+    }
+
+    #[test]
+    fn an_attachment_is_not_a_synchronisation() {
+        // 一张截图不是一次同步。一份填满它们的「历史」会用错误的行回答「同步过什么」，
+        // 而读它的用户没有办法分辨哪一行是插件。
+        let db = a_database();
+        let mut attachment = a_bundle();
+        attachment.bundle = None;
+        super::record_received(&db, &attachment);
+
+        assert!(
+            db.lock().sync_log(None, 10).expect("reads").is_empty(),
+            "an attachment was recorded as a synchronisation"
+        );
+    }
     use std::sync::Arc;
     use std::time::Duration;
 
