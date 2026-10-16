@@ -378,7 +378,7 @@ pub fn handle_within(
                         eprintln!("synra-daemon: {peer} re-sent block {index}, which was already held");
                     }
                 }
-                Decision::Finished { path, byte_length, bundle, digest, version } => {
+                Decision::Finished { path, byte_length, bundle, digest, version, .. } => {
                     events.push("finished".to_owned());
                     // ★ The three facts travel together, and `bundle` is the one that says which of them this is.
                     finished.push(FinishedTransfer {

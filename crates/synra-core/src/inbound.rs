@@ -97,6 +97,8 @@ pub enum Decision {
         /// Carried rather than guessed from the file name: `proposed_name` builds `plugin-<id>.wasm`, and a consumer
         /// that parsed that back would be wrong the first time somebody sent a file called `plugin-notes.wasm`.
         bundle: Option<synra_protocol::ids::PluginId>,
+        /// The request this transfer answered, so a result can reply to it.
+        request_id: synra_protocol::ids::RequestId,
         /// The version the sender declared, when this is a bundle.
         version: Option<String>,
         /// The digest the receiver checked the file against.
@@ -356,8 +358,9 @@ impl Inbox {
                 // lost — after `self.receiving = None` there is a path and nothing else.
                 let bundle = receiving.bundle().cloned();
                 let version = receiving.version().cloned();
+                let request_id = receiving.request_id();
                 self.receiving = None;
-                Ok(Decision::Finished { path, byte_length, bundle, digest, version })
+                Ok(Decision::Finished { path, byte_length, bundle, digest, version, request_id })
             }
             Received::Failed { why, .. } => {
                 self.receiving = None;

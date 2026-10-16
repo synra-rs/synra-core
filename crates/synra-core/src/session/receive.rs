@@ -111,6 +111,11 @@ pub struct Receiving {
     /// The field is here because **accepting the proposal** is when this is knowable — the metadata carries it. At
     /// completion the only thing left is a path, and a path is a file name.
     bundle: Option<synra_protocol::ids::PluginId>,
+    /// The request this transfer answered.
+    ///
+    /// ★ Carried because a result has to reply *to* something: `messaging::sync_result` needs the request, and a reply
+    /// that named no request would be a message the sender cannot match to the round it started.
+    request_id: synra_protocol::ids::RequestId,
     /// The version the sender declared, when this is a bundle.
     version: Option<String>,
 }
@@ -140,9 +145,10 @@ impl Receiving {
         // Read here rather than at completion, which is the whole point of the field: by then the metadata is gone and
         // the only thing left is where the bytes landed.
         let bundle = bundle_of(&request.meta);
+        let request_id = envelope.request_id;
         let version = version_of(&request.meta);
         let receiver = TransferReceiver::accept(&request, destination)?;
-        Ok(Self { receiver, trace_id, bundle, version })
+        Ok(Self { receiver, trace_id, bundle, version, request_id })
     }
 
     /// Which transfer this is.
@@ -167,6 +173,12 @@ impl Receiving {
     #[must_use]
     pub const fn version(&self) -> Option<&String> {
         self.version.as_ref()
+    }
+
+    /// The request this transfer answered.
+    #[must_use]
+    pub const fn request_id(&self) -> synra_protocol::ids::RequestId {
+        self.request_id
     }
 
     /// How many blocks have arrived.
