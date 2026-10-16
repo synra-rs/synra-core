@@ -541,18 +541,30 @@ pub struct SyncOutcome {
 }
 
 impl SyncOutcome {
-    /// A successful outcome, with every duty performed.
+    /// A successful outcome, naming the duties this device actually performed.
+    ///
+    /// ★ **Why the caller supplies the list rather than this filling in [`ReceiverDuty::ALL`].**
+    ///
+    /// It used to fill it in. So an outcome built here said every obligation had been carried out — a claim made by a
+    /// constructor, about work it had no way to observe. The only reason that was harmless is that nothing in production
+    /// called it: the sync orchestrator does not exist yet. The day one appeared it would have inherited a report that was
+    /// true by construction and false in fact, which is the shape this file exists to avoid — the design's own comment
+    /// says a list in a document is "a list somebody skips", and a list a constructor fills in is skipped by the compiler.
+    ///
+    /// Now the caller names what it did. [`SyncOutcome::is_fully_checked`] still asks whether the list is complete, and it
+    /// can now answer "no" for an outcome that was assembled rather than performed.
     #[must_use]
     pub fn installed(
         plugin_id: PluginId,
         session: SyncSessionId,
         version: impl Into<String>,
         activated: bool,
+        performed: Vec<ReceiverDuty>,
     ) -> Self {
         Self {
             plugin_id,
             session,
-            performed: ReceiverDuty::ALL.to_vec(),
+            performed,
             installed: true,
             installed_version: Some(version.into()),
             activated,

@@ -292,18 +292,27 @@ fn the_missing_list_is_in_order_so_a_retransmit_is_deterministic() {
 
 #[test]
 fn an_outcome_records_every_duty_the_device_owed_itself() {
-    // The seven things the design document says must not be skipped, made answerable rather than claimed.
-    let outcome = SyncOutcome::installed(plugin("@acme/chat"), session("round-1"), "1.0.0", true);
+    // The seven things the design document says must not be skipped, made answerable rather than claimed. The caller
+    // names them, which is the point: a constructor cannot report work it did not see.
+    let outcome = SyncOutcome::installed(
+        plugin("@acme/chat"),
+        session("round-1"),
+        "1.0.0",
+        true,
+        ReceiverDuty::ALL.to_vec(),
+    );
     assert!(outcome.is_fully_checked());
     assert!(outcome.installed);
     assert!(outcome.activated);
     assert_eq!(outcome.performed.len(), ReceiverDuty::ALL.len());
     assert!(outcome.describe().contains("enabled"), "{}", outcome.describe());
 
-    // And an outcome that installed without checking is a bug the type can report.
+    // And an outcome that installed without checking is a bug the type can report. The `performed` argument here is empty
+    // because it is overwritten by the struct update below — a placeholder that says so, rather than a list that pretends
+    // to be the work.
     let unchecked = SyncOutcome {
         performed: vec![ReceiverDuty::PackageDigest],
-        ..SyncOutcome::installed(plugin("@acme/chat"), session("round-1"), "1.0.0", true)
+        ..SyncOutcome::installed(plugin("@acme/chat"), session("round-1"), "1.0.0", true, Vec::new())
     };
     assert!(!unchecked.is_fully_checked());
     // The original is untouched, which is what makes the two assertions about the same value.
