@@ -4,7 +4,8 @@ use synra_control::Kernel;
 use synra_core::{Host, Identity};
 use synra_protocol::error::ErrorCode;
 
-use synra_store::records::IntentRecord;
+use synra_store::records::{AuditRecord, IntentRecord};
+use synra_store::{Paired, Seen};
 
 use super::{Runtime, now_ms};
 
@@ -159,6 +160,126 @@ fn a_catalogue_search_that_cannot_reach_anything_says_so_rather_than_answering_e
     assert_eq!(refused.code, ErrorCode::DeviceOffline, "{refused:?}");
     // And the reason names every mirror that was tried, because "the registry is unreachable" is not actionable.
     assert!(refused.message.contains("@acme/chat"), "{}", refused.message);
+}
+
+#[test]
+fn the_sweep_takes_only_what_it_is_for() {
+    // ★ `11` asks for this and it did not exist: *"GC 的测试断言‘用户数据目录未被触碰’"*.
+    //
+    // The sweep is the only thing in this kernel that **deletes rows**. A `DELETE` with a missing `WHERE`, or a new
+    // collection target written against the wrong table, is not a slow failure or a wrong answer — it is a user's paired
+    // devices, plugin consents or settings gone, discovered later and unrecoverable. So the assertion is not "the sweep
+    // removed something"; it is that **everything it is not for is exactly as it was**.
+    //
+    // The instrument is `counts()`, which is what `status` reports: every table, from the schema's own list. Using the
+    // product's own mechanism means the test cannot pass by looking at a list somebody kept up to date by hand.
+    let mut db = synra_store::SynraDb::open_in_memory().expect("a database");
+    db.migrate().expect("the schema");
+
+    // Everything with a public writer, so every table the sweep must not touch has a row to lose.
+    db.insert_plugin("@acme/notes", true, true, "enabled", 1_000, 1_000).expect("a plugin");
+    db.record_grants("@acme/notes", &[("device:list".to_owned(), true)], 1_000, "digest")
+        .expect("grants");
+    db.pair_device(&Paired {
+        device_id: "01a139a9-8f3c-72ce-9c96-2b2c81f14551".to_owned(),
+        display_name: "Laptop".to_owned(),
+        platform: "windows".to_owned(),
+        features: "[]".to_owned(),
+        link_token: "token".to_owned(),
+        address: None,
+        paired_at_ms: 1_000,
+    })
+    .expect("a pairing");
+    db.set_config("theme", &serde_json::json!("dark"), 1_000).expect("a setting");
+
+    // And one row in each table the sweep **is** for, all old enough to be collectable.
+    db.record_seen_device(&Seen {
+        device_id: "01b139a9-8f3c-72ce-9c96-2b2c81f14552".to_owned(),
+        display_name: "Phone".to_owned(),
+        platform: "android".to_owned(),
+        seen_at_ms: 1,
+        source: "udp".to_owned(),
+    })
+    .expect("a seen device");
+    db.record_audit(&AuditRecord {
+        plugin_id: "@acme/notes".to_owned(),
+        capability: "device:list".to_owned(),
+        outcome: "allowed".to_owned(),
+        at_ms: 1,
+        elapsed_ms: Some(1),
+    })
+    .expect("an audit record");
+    db.save_intent(&IntentRecord {
+        intent_id: "01c139a9-8f3c-72ce-9c96-2b2c81f14553".to_owned(),
+        state: "succeeded".to_owned(),
+        created_ms: 1,
+        updated_ms: 1,
+        origin_device: None,
+        request_id: None,
+        document: "{}".to_owned(),
+    })
+    .expect("an intent");
+
+    let before: std::collections::BTreeMap<String, i64> = db
+        .counts()
+        .expect("counts")
+        .into_iter()
+        .filter_map(|(table, count)| count.map(|count| (table, count)))
+        .collect();
+
+    // Aggressive on purpose: a retention of zero makes every finished intent and every audit record collectable, so the
+    // sweep has the maximum opportunity to take something it should not.
+    let collected = crate::runtime::intents::sweep(
+        &db,
+        crate::runtime::intents::Retention { intents_ms: 0, audit_ms: 0 },
+    );
+
+    let after: std::collections::BTreeMap<String, i64> = db
+        .counts()
+        .expect("counts")
+        .into_iter()
+        .filter_map(|(table, count)| count.map(|count| (table, count)))
+        .collect();
+
+    // ★ And nothing else moved. Listed as the tables that must be **unchanged**, so a future collection target fails this
+    // test by adding itself to the difference rather than by not being mentioned.
+    let untouched = [
+        "identity",
+        "paired_devices",
+        "plugins",
+        "plugin_versions",
+        "plugin_grants",
+        "plugin_actions",
+        "plugin_deps",
+        "sync_records",
+        "transfer_sessions",
+        "config",
+    ];
+    for table in untouched {
+        assert_eq!(
+            before.get(table),
+            after.get(table),
+            "the sweep changed `{table}`, which it is not for"
+        );
+    }
+    // And the three it is for each have a name in the list, so this cannot pass by the sweep targeting a table nobody
+    // mentioned.
+    for table in ["intents", "devices_seen", "plugin_audit"] {
+        assert!(
+            before.contains_key(table) && after.contains_key(table),
+            "`{table}` is a collection target and should appear in the counts"
+        );
+    }
+
+    // ★ **The "it did collect" assertions come last, and that ordering is deliberate.**
+    //
+    // They were first, and two controls showed why that was wrong: pointing a collection target at `paired_devices` — the
+    // exact failure the list above exists for — tripped *"the audit record was collectable"* instead, because the statement
+    // errored and the sweep reported zero. The test still failed, so it looked like a working control; what it never reached
+    // was the assertion that would have named the table it damaged. A guard the failure never reaches is a guard that is not
+    // being tested, and putting the specific assertion before the general one is what fixes it.
+    assert_ne!(collected.intents, 0, "the finished intent was collectable");
+    assert_ne!(collected.audit, 0, "the audit record was collectable");
 }
 
 #[test]
