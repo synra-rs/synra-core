@@ -44,7 +44,7 @@ now a thing that runs and reports honestly, which it was not before, and the gap
 Searching for what constructs `intent::Board` — 530 lines, 604 lines of tests, the type that owns every decision about
 when to stop asking plugins and what a user picked — returned **nothing outside its own module**. And the daemon says so
 itself, in the one place it would be inconvenient to say it
-([`apps/synra-daemon/src/runtime/reports.rs`](../../apps/synra-daemon/src/runtime/reports.rs)):
+([`apps/synra-daemon/src/runtime/reports.rs`](../apps/synra-daemon/src/runtime/reports.rs)):
 
 ```rust
 // ★ `false`, so a client does not present an installed plugin as one that is running. The kernel has loaded
@@ -52,7 +52,7 @@ itself, in the one place it would be inconvenient to say it
 "loaded": false,
 ```
 
-The CLI agrees ([`apps/synra-cli/src/session.rs`](../../apps/synra-cli/src/session.rs)): `plugin list` is served and
+The CLI agrees ([`apps/synra-cli/src/session.rs`](../apps/synra-cli/src/session.rs)): `plugin list` is served and
 install/enable/disable "are not asked for at all".
 
 ### What this means for reading the roadmap

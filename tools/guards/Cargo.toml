@@ -10,6 +10,9 @@ description = "The architectural invariants of this workspace, as executable che
 publish = false
 
 [dependencies]
+# ★ The link checks themselves, rather than a `cargo run` inside a `cargo run`: `guards` runs one of the tools it
+# guards, and shelling out to the tool that shares its target directory is the recursion that ends in a lock wait.
+doc-links = { path = "../doc-links" }
 
 [lints]
 workspace = true

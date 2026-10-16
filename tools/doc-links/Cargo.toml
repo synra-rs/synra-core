@@ -6,6 +6,15 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
+# A library as well as a program: `guards` calls the checks rather than shelling out to the binary.
+[lib]
+name = "doc_links"
+path = "src/lib.rs"
+
+[[bin]]
+name = "doc-links"
+path = "src/main.rs"
+
 # No dependencies, and that is the point: this runs over documents in other repositories, so it has to build wherever `cargo`
 # does rather than dragging a markdown parser and its tree along with it.
 [dependencies]

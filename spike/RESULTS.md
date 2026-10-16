@@ -6,7 +6,7 @@ reproduces it.
 **A spike is written to be falsified, not to make something work.** A row that says "blocked by this machine" is a
 completed spike — it names the exact missing prerequisite and the exact command that settles it once installed. What is
 *not* allowed is a row that reports a pass it did not earn, which is the mistake
-[2026-02-the-feature-matrix-was-never-buildable.md](../../NOTES/2026-02-the-feature-matrix-was-never-buildable.md)
+[2026-02-the-feature-matrix-was-never-buildable.md](../NOTES/2026-02-the-feature-matrix-was-never-buildable.md)
 already documents.
 
 | # | Spike | Verdict | One line |

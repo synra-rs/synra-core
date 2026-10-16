@@ -108,9 +108,10 @@ fn main() -> std::process::ExitCode {
     // `FAIL` — and the `Guard` shape has no room for the middle one.
     let app_ok = check_sibling_app(&root);
     let msrv_ok = check_msrv(&root);
+    let links_ok = check_document_links(&root);
 
-    if failures == 0 && app_ok && msrv_ok {
-        println!("{} guard(s) passed", guards().len() + 2);
+    if failures == 0 && app_ok && msrv_ok && links_ok {
+        println!("{} guard(s) passed", guards().len() + 3);
         std::process::ExitCode::SUCCESS
     }
     else {
@@ -265,6 +266,66 @@ fn declared_msrv(root: &Path) -> Option<String> {
             .and_then(|rest| rest.split('"').nth(1))
             .map(str::to_owned)
     })
+}
+
+/// Every link in this workspace's documents, and in the two documentation repositories beside it.
+///
+/// """ + S + """ Why this is outside the guard list rather than in it.
+///
+/// Because it has three answers rather than two. The documents live in **three** repositories: this one and two siblings, and
+/// a checkout of this repository alone is normal. When a sibling is absent the honest answer is `SKIP` with the reason — not
+/// `ok`, which would say the links were checked and found good when nothing was read. That is the failure this file already
+/// records once, in guard 5: a check that reported `ok` for months while looking for a symbol that does not exist.
+///
+/// """ + S + """ And why a document check belongs in a guard at all.
+///
+/// Because a broken link is a claim that something exists, made in a document nobody re-reads. The twenty-eighth file in a
+/// design tree is not opened by the person editing the third, so a rename in one is invisible in the other — and the reader
+/// who follows it cannot tell whether the document is wrong or their tool is.
+fn check_document_links(root: &Path) -> bool {
+    let Some(parent) = root.parent() else {
+        println!("SKIP  the workspace has no parent directory, so the sibling documents cannot be looked for");
+        return true;
+    };
+
+    let mut roots = vec![root.to_path_buf()];
+    let mut absent = Vec::new();
+    for sibling in ["design-docs", "docs"] {
+        let path = parent.join(sibling);
+        if path.is_dir() {
+            roots.push(path);
+        } else {
+            absent.push(sibling);
+        }
+    }
+
+    let mut anchors = std::collections::BTreeMap::new();
+    let mut files = 0usize;
+    let mut problems = Vec::new();
+    for directory in &roots {
+        for file in doc_links::markdown_files(directory) {
+            files += 1;
+            problems.extend(doc_links::check_file(&file, directory, &mut anchors));
+        }
+    }
+
+    if !absent.is_empty() {
+        // Named, and still reported alongside whatever was found: a skip is a fact about this checkout, not a result.
+        println!("SKIP  not checked out, so their links were not read: {}", absent.join(", "));
+    }
+    if problems.is_empty() {
+        println!("ok    every link in {files} document(s) resolves");
+        true
+    } else {
+        println!("FAIL  {} document link(s) point at something that is not there", problems.len());
+        for problem in problems.iter().take(20) {
+            println!("        {}", problem.render());
+        }
+        if problems.len() > 20 {
+            println!("        ... and {} more", problems.len() - 20);
+        }
+        false
+    }
 }
 
 /// The workspace root: the nearest ancestor whose `Cargo.toml` declares `[workspace]`.
