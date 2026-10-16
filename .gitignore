@@ -19,3 +19,5 @@ target/
 *.log
 npm-debug.log*
 pnpm-debug.log*
+# A git filter-branch working directory: never part of the tree.
+.git-rewrite/

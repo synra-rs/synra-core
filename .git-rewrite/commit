@@ -1,6 +1,0 @@
-tree dc265de600001884bbab152d4bb00cf6b4e854d2
-parent 86b2fa1365ea8b28313519b1738a1e5a94c54e3e
-author imba97 <mail@imba97.cn> 1792111849 +0800
-committer imba97 <mail@imba97.cn> 1792111849 +0800
-
-fix: a write stops when its deadline passes
