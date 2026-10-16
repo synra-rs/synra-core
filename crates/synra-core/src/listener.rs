@@ -45,6 +45,29 @@ const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// What one accepted connection produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// A transfer that finished and whose file was verified.
+///
+/// ★ **Why the listener hands these back rather than only logging them.**
+///
+/// `Decision::Finished` is where a received file stops being bytes, and until this existed the only thing the listener
+/// could do with a plugin bundle was print a line — the kernel received one and forgot it. `SyncRecord` grew the fields
+/// for a record in round 133, migration v10 gave it a table in round 135, and round 136 wrote the conversion between
+/// them; all three have had no production caller, and this is why: the place a transfer finishes had nothing to write
+/// **to**. This is the value that travels from that place to a caller that has a database.
+pub struct FinishedTransfer {
+    /// Where the file landed.
+    pub path: std::path::PathBuf,
+    /// How large it was.
+    pub byte_length: u64,
+    /// Which plugin it is a bundle for, when it is one.
+    pub bundle: Option<synra_protocol::ids::PluginId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// What one connection did, handed back to whoever served it.
+///
+/// `events` is the count a test asserts and `finished` is the value a caller writes down; `ended` is how a session
+/// that went wrong ended, and is `None` for the ordinary case of a peer that hung up.
 pub struct Served {
     /// The device on the other end, when the handshake established one.
     ///
@@ -59,6 +82,8 @@ pub struct Served {
     pub events: Vec<String>,
     /// How the session ended, when it ended badly.
     pub ended: Option<String>,
+    /// Every transfer that finished and verified on this connection, in order.
+    pub finished: Vec<FinishedTransfer>,
 }
 
 /// Serves inbound connections until asked to stop.
@@ -175,7 +200,7 @@ pub fn handle_within(
     // ★ Set on the stream before anything reads from it. A peer that connects and goes silent — a port scan, another
     // product's client — is bounded by this rather than by the process's lifetime.
     if let Err(error) = stream.set_read_timeout(Some(timeout)) {
-        return Served { peer: None, events: Vec::new(), ended: Some(error.to_string()) };
+        return Served { peer: None, events: Vec::new(), finished: Vec::new(), ended: Some(error.to_string()) };
     }
     let now = crate::reading_millis(synra_store::sqlite::now_ms());
 
@@ -205,12 +230,14 @@ pub fn handle_within(
         Err(error) => {
             // A failed handshake has no peer to name, so the address is what identifies it in a log line. The peer's own
             // identifier is exactly what the handshake was establishing, and it is not known.
-            return Served { peer: None, events: Vec::new(), ended: Some(error.to_string()) };
+            return Served { peer: None, events: Vec::new(), finished: Vec::new(), ended: Some(error.to_string()) };
         }
     };
 
     let peer = link.peer();
     let mut events = Vec::new();
+    // The transfers that finished on this connection, kept for the caller rather than only printed.
+    let mut finished = Vec::new();
     // ★ The connection's transfer state: a proposal is remembered here, and the blocks that follow it are written into the
     // file it named. Without this the loop below would see a block as an unexpected frame and close the link — which is
     // what it did before, and why `send --file` could not work.
@@ -315,7 +342,7 @@ pub fn handle_within(
                 // Nothing arrived and the wait is over. The connection ends quietly: a peer that has gone silent has not
                 // done anything wrong, and `Served::ended` is for faults.
                 Decision::Idle => {
-                    return Served { peer: Some(peer), events, ended: None };
+                    return Served { peer: Some(peer), events, finished: finished.clone(), ended: None };
                 }
                 Decision::Accepted { transfer_id, file_name } => {
                     events.push(format!("accepted {transfer_id}"));
@@ -330,6 +357,8 @@ pub fn handle_within(
                 }
                 Decision::Finished { path, byte_length, bundle } => {
                     events.push("finished".to_owned());
+                    // ★ The three facts travel together, and `bundle` is the one that says which of them this is.
+                    finished.push(FinishedTransfer { path: path.clone(), byte_length, bundle: bundle.clone() });
                     // ★ A bundle is said out loud rather than printed as another file. The kernel does not install one
                     // yet, and a line that reads like every other received file is how "not installed yet" becomes
                     // "somebody will notice later" — the state this codebase keeps replacing with a sentence that says
@@ -349,10 +378,10 @@ pub fn handle_within(
             },
             // A `Bye` is the ordinary end, and so is a peer that hung up. Neither is a fault, and both end the loop.
             Err(SessionError::Link(LinkError::Closed)) => {
-                return Served { peer: Some(peer), events, ended: None };
+                return Served { peer: Some(peer), events, finished: finished.clone(), ended: None };
             }
             Err(error) => {
-                return Served { peer: Some(peer), events, ended: Some(error.to_string()) };
+                return Served { peer: Some(peer), events, finished: Vec::new(), ended: Some(error.to_string()) };
             }
         }
     }

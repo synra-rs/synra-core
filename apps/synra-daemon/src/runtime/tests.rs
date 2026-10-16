@@ -2063,7 +2063,13 @@ fn a_file_that_reaches_the_other_side_is_measured() {
     );
     let answer = runtime.send_file(&dial_to.to_string(), &source.to_string_lossy());
     assert!(answer.is_ok(), "the send failed: {answer:?}");
-    let _ = served.join();
+    // ★ 监听端线程交回它服务过的那条连接，而这次连接上有一个真的落了地的文件 ——
+    // 第 146 轮发现「收到包的那一刻没有可写的地方」，这是把那个值送到有地方可写的人手上的第一步。
+    let served = served.join().expect("the server thread finished");
+    assert_eq!(served.finished.len(), 1, "the finished transfer was not handed back: {served:?}");
+    assert_eq!(served.finished[0].byte_length, 4_096);
+    // 而它不是插件包 —— 发送的是一份附件。
+    assert!(served.finished[0].bundle.is_none(), "{served:?}");
 
     let snapshot = runtime.metrics.snapshot();
     assert!(
