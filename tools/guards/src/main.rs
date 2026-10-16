@@ -115,9 +115,10 @@ fn main() -> std::process::ExitCode {
     let msrv_ok = check_msrv(&root);
     let links_ok = check_document_links(&root);
     let claims_ok = check_document_claims(&root);
+    let counts_ok = check_document_guard_counts(&root);
 
-    if failures == 0 && app_ok && msrv_ok && links_ok && claims_ok {
-        println!("{} guard(s) passed", guards().len() + 4);
+    if failures == 0 && app_ok && msrv_ok && links_ok && claims_ok && counts_ok {
+        println!("{} guard(s) passed", guards().len() + 5);
         std::process::ExitCode::SUCCESS
     }
     else {
@@ -419,6 +420,96 @@ fn check_document_claims(root: &Path) -> bool {
         }
         false
     }
+}
+
+/// A count the documents give for `tools/guards` must be the count it has.
+///
+/// """ + S + """ Why this is worth a check of its own.
+///
+/// The documents stated this number **three times in three different values** — 5, then 8, then the truth of 10 — because
+/// a sentence that says "it has N checks" is a fact about a list that keeps growing, and nothing was comparing the two. The
+/// first fix was to correct the number; the second was to correct it again; this is the one that stops it.
+///
+/// A document may still say how many checks there are, and if it does, it has to be right. Leaving the number out is also
+/// allowed — the rules are listed, and the list is what a reader needs. What is not allowed is a fourth wrong value.
+fn check_document_guard_counts(root: &Path) -> bool {
+    let Some(parent) = root.parent() else {
+        println!("SKIP  the workspace has no parent directory, so the documents cannot be read");
+        return true;
+    };
+    let documents = parent.join("design-docs");
+    if !documents.is_dir() {
+        println!("SKIP  the design repository is not checked out, so no count could be compared");
+        return true;
+    }
+
+    // The number this binary actually runs: the list plus the checks that need three answers rather than two.
+    let actual = guards().len() + 4;
+    let mut wrong = Vec::new();
+    for path in doc_links::markdown_files(&documents) {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        for (index, line) in text.lines().enumerate() {
+            if !line.contains("tools/guards") {
+                continue;
+            }
+            for claimed in counts_before_a_unit(line) {
+                if claimed != actual {
+                    let relative = path.strip_prefix(&documents).unwrap_or(&path);
+                    wrong.push(format!(
+                        "{}:{} says `tools/guards` has {claimed}, and it has {actual}",
+                        relative.display(),
+                        index + 1
+                    ));
+                }
+            }
+        }
+    }
+
+    if wrong.is_empty() {
+        println!("ok    every stated guard count matches the {actual} this binary runs");
+        true
+    } else {
+        println!("FAIL  a document states a guard count that is no longer true");
+        for line in wrong {
+            println!("        {line}");
+        }
+        false
+    }
+}
+
+/// The numbers on a line that are followed by a counting unit, as in `8 条` or `10 项`.
+fn counts_before_a_unit(line: &str) -> Vec<usize> {
+    let mut found = Vec::new();
+    for unit in ["条", "项"] {
+        let mut from = 0usize;
+        while let Some(at) = line[from..].find(unit) {
+            let unit_at = from + at;
+            let before = line[..unit_at].trim_end();
+            let digits: String = before
+                .chars()
+                .rev()
+                .take_while(char::is_ascii_digit)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect();
+            if let Ok(value) = digits.parse::<usize>() {
+                // ★ `第 6 条` is an ordinal — "the sixth one" — and not a count of anything.
+                //
+                // The corpus found this immediately: the check reported that a document claiming six guards was wrong,
+                // when the sentence said "the sixth check". A rule that cannot tell a number from an index reports the
+                // documents that are being *specific*.
+                let before_the_number = &before[..before.len() - digits.len()].trim_end();
+                if !before_the_number.ends_with('第') {
+                    found.push(value);
+                }
+            }
+            from = unit_at + unit.len();
+        }
+    }
+    found
 }
 
 /// The workspace root: the nearest ancestor whose `Cargo.toml` declares `[workspace]`.
