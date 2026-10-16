@@ -325,7 +325,40 @@ impl Host {
         ))
     }
 
+    /// Whether a session for this link's peer is ready to carry a message, without sending one.
+    ///
+    /// ★ **Why the read is separate from the write.**
+    ///
+    /// `Host::send` did both, and needed `&mut self` for the accounting that follows the write — so a caller holding the
+    /// host's lock held it across the write as well. A write is bounded by the socket's write timeout rather than by a
+    /// timeout alone, and that is a much smaller window than a handshake, but it is the same shape of mistake: a lock held
+    /// for the convenience of one method rather than for the state it protects.
+    ///
+    /// The session layer already writes through a link without the host (`session::send`). This is that shape, for the
+    /// paths that go through `Host`.
+    ///
+    /// # Errors
+    ///
+    /// [`HostError::NoSession`] when there is no live session for that device. A session that is not ready **is** a
+    /// refusal: the peer has not agreed yet, and a message sent now is one the other end will refuse.
+    pub fn may_send(&self, link: &PeerLink) -> Result<(), HostError> {
+        if self.sessions.live_for(link.peer()).is_none() {
+            return Err(HostError::NoSession(link.peer()));
+        }
+        Ok(())
+    }
+
+    /// Counts a message that went out, so a report can say how many did.
+    ///
+    /// The only thing the write path needed `&mut self` for, which is why it is its own call.
+    pub const fn count_sent(&mut self) {
+        self.sent = self.sent.saturating_add(1);
+    }
+
     /// Sends an envelope on a session, counting it.
+    ///
+    /// ★ **A caller that holds the host's lock should use [`Host::may_send`], `PeerLink::send` and [`Host::count_sent`]
+    /// directly** — this method is those three in one call, which is right for a test and wrong for a command.
     ///
     /// # Errors
     ///
@@ -333,11 +366,9 @@ impl Host {
     /// session that is not ready **is** a refusal: the peer has not agreed yet, and a message sent now is one the other
     /// end will refuse.
     pub fn send(&mut self, link: &mut PeerLink, envelope: &Envelope) -> Result<(), HostError> {
-        if self.sessions.live_for(link.peer()).is_none() {
-            return Err(HostError::NoSession(link.peer()));
-        }
+        self.may_send(link)?;
         link.send(envelope)?;
-        self.sent = self.sent.saturating_add(1);
+        self.count_sent();
         Ok(())
     }
 

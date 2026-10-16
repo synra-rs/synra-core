@@ -165,8 +165,13 @@ impl Kernel for Runtime {
         let mut link = host
             .adopt(dialled, handshake_now)
             .map_err(|error| refusal_of(&error))?;
-        host.send(&mut link, &envelope).map_err(|error| refusal_of(&error))?;
+        // ★ The read half of the send, under the lock that is already held; the write itself needs no host.
+        host.may_send(&link).map_err(|error| refusal_of(&error))?;
         drop(host);
+        // ★ And the write happens holding nothing, because the session layer already writes through a link
+        // without the host. Only counting it needs the host again.
+        link.send(&envelope).map_err(|error| refusal_of(&error.into()))?;
+        self.host.lock().count_sent();
 
         // The link is closed on the way out rather than kept: the daemon has nowhere to record it between requests, and a
         // link nobody is reading is one the peer sees as a connection that arrived and went silent. A session per message
@@ -553,11 +558,21 @@ impl Kernel for Runtime {
         let mut link = host
             .adopt(dialled, handshake_now)
             .map_err(|error| refusal_of(&error))?;
+        // ★ The read half of the send, and then the lock goes — because what follows waits for a **person**.
+        //
+        // This function used to hold the host's lock across the send, the blocking read and the whole answer, with the
+        // socket's deadline set to the pairing window below. So a `devices` listing waited up to that window for somebody
+        // to decide whether to accept a pairing request — the exact symptom the comment at the top of `send_text` says a
+        // guard across a network would cause, in its worst form: not a handshake's round trip but a human's attention.
+        host.may_send(&link).map_err(|error| refusal_of(&error))?;
+        drop(host);
+
         // The window a person answers within, which is longer than a handshake's. Set on the socket rather than left at
         // the handshake's deadline: a prompt answered just inside the session's window must not fail because the read
         // gave up at `HELLO_TIMEOUT`.
         link.set_read_timeout(Some(synra_protocol::session::SessionTimeouts::default().pairing));
-        host.send(&mut link, &envelope).map_err(|error| refusal_of(&error))?;
+        link.send(&envelope).map_err(|error| refusal_of(&error.into()))?;
+        self.host.lock().count_sent();
 
         // A read that times out is the window closing, which the protocol makes this side's own responsibility to
         // notice: the requesting device clears its waiting state rather than hanging for ever.
@@ -565,14 +580,12 @@ impl Kernel for Runtime {
             Ok(answer) => answer,
             Err(synra_core::LinkError::TimedOut) => {
                 let _ = link.bye("pairing timed out");
-                drop(host);
                 return Err(Refusal::new(
                     ErrorCode::DeviceOffline,
                     format!("{display_name} did not answer the pairing request in time"),
                 ));
             }
             Err(synra_core::LinkError::Closed) => {
-                drop(host);
                 return Err(Refusal::new(
                     ErrorCode::DeviceOffline,
                     format!("{display_name} closed the link without answering"),
@@ -582,13 +595,11 @@ impl Kernel for Runtime {
             // "did not answer" would make a broken network read as an unanswered prompt, and the user's next step is
             // different: check the network, not the other person.
             Err(other) => {
-                drop(host);
                 let code = error_code_for_session(&synra_core::SessionError::Link(other.clone()));
                 return Err(Refusal::new(code, other.to_string()));
             }
         };
         let _ = link.bye("pairing answered");
-        drop(host);
 
         let response: synra_protocol::session::PairResponse =
             serde_json::from_str(received.payload_str().unwrap_or("{}")).map_err(|error| {
@@ -739,8 +750,13 @@ impl Runtime {
             let mut link = host
                 .adopt(dialled, handshake_now)
                 .map_err(|error| refusal_of(&error))?;
-            host.send(&mut link, &outbound.envelope).map_err(|error| refusal_of(&error))?;
+            // ★ The read half of the send, under the lock that is already held; the write itself needs no host.
+            host.may_send(&link).map_err(|error| refusal_of(&error))?;
             drop(host);
+            // ★ And the write happens holding nothing, because the session layer already writes through a link
+            // without the host. Only counting it needs the host again.
+            link.send(&outbound.envelope).map_err(|error| refusal_of(&error.into()))?;
+            self.host.lock().count_sent();
             let _ = link.bye("intent dispatched");
 
             Ok(())
