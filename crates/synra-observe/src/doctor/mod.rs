@@ -41,7 +41,7 @@ pub use network::{
 };
 pub use result::{ProbeReport, ProbeResult, ProbeStatus};
 pub use storage::{
-    DISK_PROBE_SAMPLE_BYTES, LOW_DISK_BYTES, is_low_disk_space, probe_data_dir_writable,
+    DISK_PROBE_SAMPLE_BYTES, LOW_DISK_BYTES, free_space, is_low_disk_space, probe_data_dir_writable,
     probe_disk_space, probe_plugin_dir,
 };
 pub use targets::{HostFacts, ProbeTargets};

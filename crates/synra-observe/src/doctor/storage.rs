@@ -98,7 +98,12 @@ pub fn probe_disk_space(data_dir: &Path) -> ProbeResult {
             }
             ProbeResult::ok(
                 "disk_space",
-                "the data directory accepts writes; the free-space figure needs a platform query",
+                match free_space(data_dir) {
+                    Some(bytes) => format!("the data directory accepts writes; {bytes} bytes are free"),
+                    // The figure is still not guaranteed: a mount table with nothing matching the path is a host this
+                    // cannot answer for, and saying so is better than printing a number for the wrong volume.
+                    None => "the data directory accepts writes; this host did not report the free space".to_owned(),
+                },
             )
         }
         Err(error) => {
@@ -119,6 +124,33 @@ pub fn probe_disk_space(data_dir: &Path) -> ProbeResult {
             )
         }
     }
+}
+
+/// How much space is left where `path` lives, when this host can say.
+///
+/// ★ **Why this replaced "the free-space figure needs a platform query".**
+///
+/// That sentence was true of the standard library and false of the ecosystem. `sysinfo` reads the mount table in safe
+/// Rust — which matters here, because the workspace **forbids `unsafe_code`**, so the direct route (`GetDiskFreeSpaceExW`
+/// on Windows, `statvfs` elsewhere) is one this crate cannot take. A diagnosis that cannot say how much room is left is
+/// one a user can only answer with "free some", and the case this probe exists for is a disk that is nearly full rather
+/// than already full.
+///
+/// ★ **The longest matching mount point wins**, which is the same care the shape guard needed in the other direction: `/`
+/// is a prefix of every path, so taking the first match would report the root filesystem's free space for a path on a
+/// mounted volume — a number that is real, about the wrong disk, and therefore worse than no number.
+#[must_use]
+pub fn free_space(path: &Path) -> Option<u64> {
+    // Canonicalised because a mount point is an absolute, symlink-resolved path and `starts_with` compares text. A path
+    // that does not resolve is measured as written, which is the best this can do without failing the probe.
+    let absolute = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let disks = sysinfo::Disks::new_with_refreshed_list();
+    disks
+        .list()
+        .iter()
+        .filter(|disk| absolute.starts_with(disk.mount_point()))
+        .max_by_key(|disk| disk.mount_point().as_os_str().len())
+        .map(sysinfo::Disk::available_space)
 }
 
 /// Whether the plugin directory is usable.

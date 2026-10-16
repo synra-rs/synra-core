@@ -224,17 +224,40 @@ fn a_directory_that_cannot_be_created_fails() {
 }
 
 #[test]
-fn the_disk_probe_does_not_claim_a_figure_it_cannot_read() {
-    // A portable free-space query does not exist in the standard library, so the probe says so rather
-    // than inventing a number.
+fn the_disk_probe_reports_a_figure_it_can_read() {
+    // ★ This test asserted the opposite until round 128, and the change is the point.
+    //
+    // It used to require the detail to contain "platform query" — the probe's way of saying it could not read a
+    // free-space figure. That was true of the standard library and false of the ecosystem: `sysinfo` reads the mount table
+    // in safe Rust, which is what the workspace's `unsafe_code = "forbid"` requires. So the probe now reports a number,
+    // and the test asserts the weaker thing that actually matters — that whatever it says is something it can support.
     let dir = std::env::temp_dir().join(format!("synra-doctor-disk-{}", unique_suffix()));
     let result = probe_disk_space(&dir);
     assert!(result.status.needs_attention() || result.status == ProbeStatus::Ok);
     assert!(
-        result.detail.contains("platform query"),
-        "the probe overstated what it measured: {}",
+        result.detail.contains("bytes are free") || result.detail.contains("did not report"),
+        "the probe said something it cannot support: {}",
         result.detail
     );
+}
+
+#[test]
+fn free_space_names_a_figure_for_the_volume_the_path_is_on() {
+    // The longest-matching-mount-point rule is what makes this the *right* volume: `/` is a prefix of every path, so the
+    // first match would report the root filesystem's space for a path on a mounted disk — a real number about the wrong
+    // disk, which is worse than no number.
+    let dir = std::env::temp_dir();
+    let Some(bytes) = free_space(&dir) else {
+        // A host whose mount table does not mention the temp directory is one this cannot answer for. That is a skip, not a
+        // failure: the alternative is a test that fails on a machine it cannot see.
+        return;
+    };
+    assert!(bytes > 0, "a mounted volume reporting no free space at all: {bytes}");
+    // And a path that does not exist must not panic: the probe runs on directories a user may have deleted between the
+    // call and the check. Either answer is fine here — the parent's volume or nothing — so the call itself is the
+    // assertion. Written as a call and not as `assert!(x.is_none() || true)`, which was the first thing I typed and is a
+    // criterion that cannot fail.
+    let _ = free_space(&dir.join("no-such-directory-here"));
 }
 
 #[test]

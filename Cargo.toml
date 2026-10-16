@@ -61,6 +61,13 @@ sha2 = "0.10"
 # Digest values travel as base64 without padding, which is what `SriDigest` accepts.
 base64 = "0.22"
 
+# ── 外部：这台机器 ──
+# ★ Why this one is here. The doctor could say a disk accepted a write but not **how much room was left**, because the
+# standard library has no portable free-space query — and a diagnosis a user cannot act on beyond "free some disk space" is
+# half a diagnosis. `sysinfo` reads the mount table and reports `available_space`, in safe Rust, which matters because this
+# workspace forbids `unsafe_code`: the alternative is FFI to `GetDiskFreeSpaceExW`/`statvfs`, which cannot be written here.
+sysinfo = { version = "0.39", default-features = false, features = ["disk"] }
+
 # ── 外部：可观测性 ──
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "registry"] }

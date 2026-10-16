@@ -19,6 +19,9 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 metrics.workspace = true
 parking_lot.workspace = true
+# ★ The free-space figure the disk probe reports. Safe Rust, which the workspace requires — see the note beside it in the
+# root manifest.
+sysinfo.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
