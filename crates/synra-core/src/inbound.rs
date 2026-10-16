@@ -97,6 +97,8 @@ pub enum Decision {
         /// Carried rather than guessed from the file name: `proposed_name` builds `plugin-<id>.wasm`, and a consumer
         /// that parsed that back would be wrong the first time somebody sent a file called `plugin-notes.wasm`.
         bundle: Option<synra_protocol::ids::PluginId>,
+        /// The version the sender declared, when this is a bundle.
+        version: Option<String>,
         /// The digest the receiver checked the file against.
         ///
         /// ★ Carried because it is the only thing that answers "do these two devices hold the same bytes" — the
@@ -353,8 +355,9 @@ impl Inbox {
                 // Taken before the receiver is dropped, because this is the moment the "what it was" is about to be
                 // lost — after `self.receiving = None` there is a path and nothing else.
                 let bundle = receiving.bundle().cloned();
+                let version = receiving.version().cloned();
                 self.receiving = None;
-                Ok(Decision::Finished { path, byte_length, bundle, digest })
+                Ok(Decision::Finished { path, byte_length, bundle, digest, version })
             }
             Received::Failed { why, .. } => {
                 self.receiving = None;

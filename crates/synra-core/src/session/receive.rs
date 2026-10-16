@@ -78,12 +78,24 @@ pub fn bundle_of(meta: &synra_protocol::session::TransferMeta) -> Option<synra_p
 }
 
 /// A receiver's side of one transfer.
+    /// Which version a proposal declares, when it is a bundle.
+///
+/// Beside [`bundle_of`] and for the same reason: this is one field of the metadata, and a pure question should not need
+/// an envelope and a writable directory to answer.
+#[must_use]
+pub fn version_of(meta: &synra_protocol::session::TransferMeta) -> Option<String> {
+    match meta {
+        synra_protocol::session::TransferMeta::PluginBundle { version, .. } => Some(version.clone()),
+        _ => None,
+    }
+}
+
 pub struct Receiving {
     /// The transfer being filled.
     receiver: TransferReceiver,
     /// The trace this transfer's messages share.
     trace_id: TraceId,
-    /// Which plugin this bundle belongs to, when it is one.
+/// Which plugin this bundle belongs to, when it is one.
     ///
     /// ★ **Why the receiver holds this and `Decision::Finished` carries it.**
     ///
@@ -95,6 +107,8 @@ pub struct Receiving {
     /// The field is here because **accepting the proposal** is when this is knowable — the metadata carries it. At
     /// completion the only thing left is a path, and a path is a file name.
     bundle: Option<synra_protocol::ids::PluginId>,
+    /// The version the sender declared, when this is a bundle.
+    version: Option<String>,
 }
 
 impl std::fmt::Debug for Receiving {
@@ -122,8 +136,9 @@ impl Receiving {
         // Read here rather than at completion, which is the whole point of the field: by then the metadata is gone and
         // the only thing left is where the bytes landed.
         let bundle = bundle_of(&request.meta);
+        let version = version_of(&request.meta);
         let receiver = TransferReceiver::accept(&request, destination)?;
-        Ok(Self { receiver, trace_id, bundle })
+        Ok(Self { receiver, trace_id, bundle, version })
     }
 
     /// Which transfer this is.
@@ -142,6 +157,12 @@ impl Receiving {
     #[must_use]
     pub const fn bundle(&self) -> Option<&synra_protocol::ids::PluginId> {
         self.bundle.as_ref()
+    }
+
+    /// The version the sender declared, when this is a bundle.
+    #[must_use]
+    pub const fn version(&self) -> Option<&String> {
+        self.version.as_ref()
     }
 
     /// How many blocks have arrived.

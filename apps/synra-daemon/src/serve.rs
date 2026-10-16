@@ -292,7 +292,7 @@ fn record_received(
     let _ = db.lock().record_sync(
         plugin_id.as_str(),
         &transfer.peer.to_string(),
-        "",
+        transfer.version.as_deref().unwrap_or_default(),
         &transfer.digest,
         now,
     );
@@ -858,6 +858,7 @@ mod tests {
             ),
             peer: synra_protocol::ids::DeviceId::new(),
             digest: "sha256-test".to_owned(),
+            version: Some("1.2.0".to_owned()),
         }
     }
 
@@ -910,7 +911,7 @@ mod tests {
         // ★ 而摘要真的写进去了 —— 它是唯一能回答「两端是否持有同样的字节」的东西。
         assert_eq!(rows[0].digest, "sha256-test");
         // 版本诚实地是空的：它随传输的元数据走，而一次 `Decision` 带的是**文件证明过**的东西，那个是摘要。
-        assert!(rows[0].version.is_empty());
+        assert_eq!(rows[0].version, "1.2.0");
     }
 
     #[test]
