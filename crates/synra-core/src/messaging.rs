@@ -305,14 +305,13 @@ impl SyncResult {
 /// [`MessageError::Envelope`] when the protocol refuses the envelope, and [`MessageError::EventName`] if this build's own
 /// constant is not one the protocol accepts.
 pub fn sync_result(
-    request: &Envelope,
-    from: DeviceId,
+    context: synra_protocol::envelope::ReplyContext,
     outcome: &crate::plugin_sync::SyncOutcome,
     sent_at_ms: i64,
 ) -> Result<Envelope, MessageError> {
     let event = EventName::parse(synra_protocol::event::events::PLUGIN_SYNC_RESULT)?;
     let result = SyncResult::of(outcome);
-    Ok(Envelope::reply_to(request, event, from, sent_at_ms, Some(&result))?)
+    Ok(Envelope::reply_parts(context, event, sent_at_ms, Some(&result))?)
 }
 
 #[cfg(test)]
@@ -359,7 +358,11 @@ mod tests {
             Vec::new(),
         );
         // 内部类型 `SyncOutcome` 不上线,上线的是这四个字段的载荷。
-        let envelope = sync_result(&message("hello"), device(A), &outcome, 2_000).expect("an envelope");
+        let envelope = sync_result(
+            synra_protocol::envelope::ReplyContext::of(&message("hello"), device(A)),
+            &outcome,
+            2_000,
+        ).expect("an envelope");
 
         assert_eq!(envelope.event.as_str(), synra_protocol::event::events::PLUGIN_SYNC_RESULT);
 
@@ -380,7 +383,11 @@ mod tests {
             crate::plugin_sync::SyncSessionId::new("round-1"),
             "the signature did not verify",
         );
-        let envelope = sync_result(&message("hello"), device(A), &outcome, 2_000).expect("an envelope");
+        let envelope = sync_result(
+            synra_protocol::envelope::ReplyContext::of(&message("hello"), device(A)),
+            &outcome,
+            2_000,
+        ).expect("an envelope");
 
         let payload: serde_json::Value =
             serde_json::from_str(envelope.payload_str().expect("a payload")).expect("json");
