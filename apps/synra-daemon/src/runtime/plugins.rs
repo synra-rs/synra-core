@@ -299,6 +299,7 @@ pub fn load_installed(
     db: &synra_store::SynraDb,
     plugins_dir: &Path,
     verdict: &StartupVerdict,
+    revocations: &synra_plugin_api::revocation::RevocationList,
 ) -> LoadedSummary {
     let mut summary = LoadedSummary::default();
 
@@ -320,7 +321,7 @@ pub fn load_installed(
         if !row.should_run() {
             continue;
         }
-        match load_one(set, db, plugins_dir, &row.plugin_id) {
+        match load_one(set, db, plugins_dir, &row.plugin_id, revocations) {
             Ok(id) => summary.loaded.push(id),
             Err(reason) => summary.refused.push(Refused { plugin_id: row.plugin_id.clone(), reason }),
         }
@@ -339,6 +340,7 @@ fn load_one(
     db: &synra_store::SynraDb,
     plugins_dir: &Path,
     plugin_id: &str,
+    revocations: &synra_plugin_api::revocation::RevocationList,
 ) -> Result<PluginId, String> {
     let id = PluginId::try_from(plugin_id.to_owned()).map_err(|error| format!("the id is not usable: {error}"))?;
     let directory = plugins_dir.join(plugin_id);
@@ -346,6 +348,35 @@ fn load_one(
         .map_err(|error| format!("the manifest could not be read: {error}"))?;
     let manifest: synra_plugin_api::Manifest = serde_json::from_str(&manifest_text)
         .map_err(|error| format!("the manifest is not readable: {error}"))?;
+
+    // ★ The revocation list, checked **before** anything else about the plugin is considered.
+    //
+    // The design's behaviour for an installed revoked version is "disable immediately, and tell the user". Two things follow
+    // that are not obvious:
+    //
+    // 1. **The disable is written to the store, not just skipped here.** Refusing to load it this run would leave it enabled,
+    //    so the next start tries again — and a revocation that has to be re-discovered on every boot is one that is
+    //    re-decided on every boot.
+    // 2. **It comes before the grants.** A plugin that is revoked *and* unconfirmed is still revoked, and reporting the
+    //    missing consent would send its author looking for a permission problem.
+    if let Some(reason) = revocations.revokes(plugin_id, &manifest.version) {
+        // The stamp is the row's `updated_ms`, and this is an update: the same conversion the callers above use, saturating
+        // because the store's columns are `i64` and the clock is not.
+        let now = i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|since| since.as_millis())
+                .unwrap_or(0),
+        )
+        .unwrap_or(i64::MAX);
+        let disabled = db.set_plugin_enabled(plugin_id, false, now);
+        if let Err(error) = disabled {
+            // Reported rather than swallowed: the plugin is not loaded either way, but a user whose store refused the write
+            // will see it enabled again next start, and that is a thing they need to be told.
+            eprintln!("synra-daemon: {plugin_id} is revoked and could not be disabled in the store: {error}");
+        }
+        return Err(format!("it is revoked and has been disabled: {reason}"));
+    }
 
     let Some(headless) = manifest.runtime.headless.as_ref() else {
         return Err("the manifest declares no headless half".to_owned());

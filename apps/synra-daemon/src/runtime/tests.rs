@@ -706,6 +706,61 @@ fn loader() -> (synra_core::dispatch::PluginSet, synra_plugin_host::ScriptedBack
 }
 
 #[test]
+fn a_revoked_installed_version_is_refused_and_disabled() {
+    // ★ The design's behaviour for an installed revoked version: *"disable immediately, and tell the user"*. Both halves are
+    // asserted, because either alone is a plugin that comes back:
+    //
+    // * refusing to **load** it this run is not disabling it — the row stays enabled and the next start tries again;
+    // * disabling the **row** without saying why leaves a user with a plugin that switched itself off.
+    let dir = TempDir::new("load-revoked");
+    let runtime = runtime(dir.path());
+    write_plugin(&runtime.plugins_dir, "@bad/plugin", r#"{"cap": "log:info"}"#);
+    install(&runtime, "@bad/plugin", 1, 1);
+    consent(&runtime, "@bad/plugin", &["log:info"]);
+
+    // And without the list it loads, so the test is about the list rather than about the plugin.
+    let (mut set, _backend) = loader();
+    let without = crate::runtime::load_installed(
+        &mut set,
+        &runtime.db(),
+        &runtime.plugins_dir,
+        &synra_observe::crash::StartupVerdict::Clean,
+        &synra_plugin_api::revocation::RevocationList::empty(),
+    );
+    assert_eq!(without.len(), 1, "refused: {:?}", without.refused);
+
+    let list = synra_plugin_api::revocation::RevocationList::parse(
+        r#"{"revoked":[{"plugin":"@bad/plugin","versions":["1.2.3"],"reason":"malicious code"}]}"#,
+    )
+    .expect("a list");
+    let (mut set, _backend) = loader();
+    let summary = crate::runtime::load_installed(
+        &mut set,
+        &runtime.db(),
+        &runtime.plugins_dir,
+        &synra_observe::crash::StartupVerdict::Clean,
+        &list,
+    );
+
+    assert!(summary.is_empty(), "a revoked plugin was loaded: {:?}", summary.loaded);
+    let refused = summary.refused.first().expect("a refusal");
+    assert_eq!(refused.plugin_id, "@bad/plugin");
+    // The reason reaches the user, and it says the disable happened rather than only that loading was skipped.
+    assert!(refused.reason.contains("malicious code"), "{}", refused.reason);
+    assert!(refused.reason.contains("disabled"), "{}", refused.reason);
+
+    // ★ And the row is off, which is the half that survives a restart.
+    let row = runtime
+        .db()
+        .plugins()
+        .expect("the rows")
+        .into_iter()
+        .find(|row| row.plugin_id == "@bad/plugin")
+        .expect("the row");
+    assert!(!row.enabled, "a revoked plugin is still enabled in the store");
+}
+
+#[test]
 fn an_enabled_and_trusted_plugin_is_actually_loaded() {
     // ★ This is the test the hardcoded `"loaded": false` made impossible to write. Before the load pass existed there
     // was no code path from a database row to a compiled component, so there was nothing here to assert.
@@ -721,6 +776,7 @@ fn an_enabled_and_trusted_plugin_is_actually_loaded() {
         &runtime.db(),
         &runtime.plugins_dir,
         &synra_observe::crash::StartupVerdict::Clean,
+        &synra_plugin_api::revocation::RevocationList::empty(),
     );
 
     assert_eq!(summary.len(), 1, "the one plugin that should run did; refused: {:?}", summary.refused);
@@ -747,6 +803,7 @@ fn a_plugin_the_user_never_answered_about_is_not_loaded_even_when_it_is_trusted(
         &runtime.db(),
         &runtime.plugins_dir,
         &synra_observe::crash::StartupVerdict::Clean,
+        &synra_plugin_api::revocation::RevocationList::empty(),
     );
 
     assert!(summary.is_empty(), "nothing may be loaded: {summary:?}");
@@ -783,6 +840,7 @@ fn a_plugin_whose_manifest_changed_after_consent_needs_confirming_again() {
         &runtime.db(),
         &runtime.plugins_dir,
         &synra_observe::crash::StartupVerdict::Clean,
+        &synra_plugin_api::revocation::RevocationList::empty(),
     );
 
     assert!(summary.is_empty(), "nothing may be loaded: {summary:?}");
@@ -813,6 +871,7 @@ fn the_grants_a_plugin_runs_with_are_the_ones_the_user_gave_it() {
         &runtime.db(),
         &runtime.plugins_dir,
         &synra_observe::crash::StartupVerdict::Clean,
+        &synra_plugin_api::revocation::RevocationList::empty(),
     );
     assert_eq!(summary.len(), 1, "the plugin still runs: {:?}", summary.refused);
 
@@ -867,8 +926,13 @@ fn safe_mode_loads_nothing_and_says_why() {
         "three crashes in one location did not reach safe mode: {safe:?}"
     );
 
-    let summary =
-        crate::runtime::load_installed(&mut set, &runtime.db(), &runtime.plugins_dir, &safe);
+    let summary = crate::runtime::load_installed(
+        &mut set,
+        &runtime.db(),
+        &runtime.plugins_dir,
+        &safe,
+        &synra_plugin_api::revocation::RevocationList::empty(),
+    );
 
     assert!(summary.is_empty(), "safe mode loaded something: {:?}", summary.loaded);
     // ★ Not in `refused`: this plugin did not fail, it was never examined. Reporting it as a refusal would put a plugin
@@ -899,6 +963,7 @@ fn a_plugin_the_user_never_trusted_is_not_loaded_and_not_refused() {
         &runtime.db(),
         &runtime.plugins_dir,
         &synra_observe::crash::StartupVerdict::Clean,
+        &synra_plugin_api::revocation::RevocationList::empty(),
     );
 
     assert!(summary.is_empty(), "an untrusted plugin is not loadable");
@@ -937,6 +1002,7 @@ fn one_broken_plugin_does_not_stop_the_others() {
         &runtime.db(),
         &runtime.plugins_dir,
         &synra_observe::crash::StartupVerdict::Clean,
+        &synra_plugin_api::revocation::RevocationList::empty(),
     );
 
     assert_eq!(summary.len(), 1, "the working plugin loaded");
@@ -970,6 +1036,7 @@ fn a_ui_only_plugin_is_refused_rather_than_loaded_because_it_has_no_headless_hal
         &runtime.db(),
         &runtime.plugins_dir,
         &synra_observe::crash::StartupVerdict::Clean,
+        &synra_plugin_api::revocation::RevocationList::empty(),
     );
 
     assert!(summary.is_empty());
@@ -993,6 +1060,7 @@ fn the_report_says_what_was_loaded_and_not_a_constant() {
         &runtime.db(),
         &runtime.plugins_dir,
         &synra_observe::crash::StartupVerdict::Clean,
+        &synra_plugin_api::revocation::RevocationList::empty(),
     );
     *runtime.plugin_loads.lock() = summary;
 
@@ -1016,6 +1084,7 @@ fn the_report_names_a_plugin_it_could_not_load() {
         &runtime.db(),
         &runtime.plugins_dir,
         &synra_observe::crash::StartupVerdict::Clean,
+        &synra_plugin_api::revocation::RevocationList::empty(),
     );
     assert_eq!(summary.refused.len(), 1, "the fixture has a row and no directory");
     *runtime.plugin_loads.lock() = summary;
