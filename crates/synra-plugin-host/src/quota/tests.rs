@@ -537,3 +537,36 @@ fn a_limited_refusal_reports_its_wait() {
     assert_eq!(refusal.retry_after(), Duration::from_millis(250));
     assert!(refusal.to_string().contains("250"));
 }
+
+#[test]
+fn a_plugin_that_keeps_trapping_is_degraded() {
+    // """ + S + """ The path that was missing: the ladder listened only to rate-limit refusals.
+    //
+    // A trap is not a rate, so a plugin that trapped on every call produced no refusals, nothing counted, `bad_windows` never
+    // moved, and a plugin that could not run kept being asked. The same fixture as the refusal ladder, with misbehaviour
+    // instead of refusal, so the two are visibly one mechanism.
+    let budget = Budget::new(Quota::default());
+    assert_eq!(budget.health(), Health::Good);
+
+    for window in 0..12u64 {
+        for _ in 0..PERSISTENT_REFUSALS {
+            budget.record_misbehaviour(in_window(window));
+        }
+        if budget.health() != Health::Good {
+            break;
+        }
+    }
+
+    assert_ne!(budget.health(), Health::Good, "twelve bad windows should have moved the ladder");
+}
+
+#[test]
+fn one_misbehaviour_does_not_change_health() {
+    // And the control, so the test above cannot pass by degrading on anything: the ladder moves on **persistently** bad
+    // windows, and a single trap is an ordinary failure a plugin is allowed to have.
+    let budget = Budget::new(Quota::default());
+
+    budget.record_misbehaviour(in_window(0));
+
+    assert_eq!(budget.health(), Health::Good);
+}

@@ -283,7 +283,26 @@ impl Budget {
             *refused = refused.saturating_add(1);
         }
         self.count_refusal(kind);
+        self.note_bad_call(now_ms);
+    }
 
+    /// Records a call the plugin **misbehaved** in: a trap, exhausted fuel, a memory refusal, a timeout.
+    ///
+    /// ★ Why this exists, and what it fixes.
+    ///
+    /// The ladder was driven by **rate-limit refusals only**. A plugin that trapped on every call produced no refusals — a
+    /// trap is not a rate — so nothing counted, `bad_windows` never moved, and a plugin that could not run kept being asked
+    /// to. `12`'s own row recorded it: *""5 traps -> degraded" is not implemented; a plugin that repeatedly traps is never
+    /// degraded."*
+    ///
+    /// A misbehaviour and a refusal are the same thing to the ladder: a call in this window that the plugin should not have
+    /// made. Only the counters beside it differ, and those are for the settings screen.
+    pub fn record_misbehaviour(&self, now_ms: u64) {
+        self.note_bad_call(now_ms);
+    }
+
+    /// The ladder itself: one bad call in a window, and a window that is persistently bad moves one rung.
+    fn note_bad_call(&self, now_ms: u64) {
         let window = window_number(now_ms);
         let count = {
             let mut kind_refusals = self.refusals.lock();

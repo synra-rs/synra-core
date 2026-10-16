@@ -583,6 +583,17 @@ impl PluginSet {
             }
         };
         let outcome = Self::run_on(&self.backend, &self.host, loaded, id, handle, work, budget);
+        // ★ A call the plugin misbehaved in counts against its health, which nothing did before.
+        //
+        // The ladder in `quota::Budget` was reached only by rate-limit refusals, so a plugin that trapped on every call was
+        // never degraded: a trap is not a rate, it produced no refusals, nothing counted, and a plugin that could not run
+        // kept being asked. `12` recorded that as a missing path, and this is the missing call.
+        //
+        // Here rather than inside `run_on` because this is where the clock is and where the plugin's own `Budget` is
+        // reachable — `run_on` takes the *call* budget, which is a different type with a different job.
+        if outcome.as_ref().is_ok_and(CallOutcome::is_misbehaviour) {
+            loaded.authority.budget.record_misbehaviour(now_ms);
+        }
         let _ = loaded.pool.release(handle, now_ms);
         // ★ Drained **after** the call, not inside it: the entries are produced while the guest runs, and the ring lives
         // behind the set that the caller is borrowing. Collecting here is also what keeps the buffer one call deep.
