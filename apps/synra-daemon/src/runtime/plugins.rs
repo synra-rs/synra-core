@@ -28,7 +28,7 @@
 use std::path::Path;
 
 use synra_capability::CapabilitySet;
-use synra_plugin_host::{Backend, BackendError, InstancePolicy};
+use synra_plugin_host::{BackendError, InstancePolicy};
 use synra_protocol::ids::PluginId;
 
 use synra_core::dispatch::{PluginSet, PluginSpec};
@@ -105,7 +105,18 @@ pub fn build_set(
     metrics: &std::sync::Arc<synra_observe::metrics::RingRecorder>,
 ) -> Result<PluginSet, BackendError> {
     let kind = synra_plugin_host::BackendKind::default_for(synra_plugin_host::HostKind::Headless);
-    let engine = synra_plugin_host::engine::WasmtimeBackend::new(kind)?;
+    let backend = synra_plugin_host::Backend::new(std::sync::Arc::new(
+        synra_plugin_host::engine::WasmtimeBackend::new(kind)?,
+    ));
+    // ★ The engine is asked whether it can enforce what this host will ask of it, **before** any plugin is loaded.
+    //
+    // `first_gap` is this layer's safety argument — *"the caller refuses rather than running third-party code with a bound it
+    // does not have"* — and this is the caller. Asked here rather than per call for the reason the error variant records: a
+    // missing limit is a fact about the installation, and this is the only moment somebody can act on it.
+    synra_plugin_host::engine::check_enforceable(
+        &backend,
+        &synra_plugin_host::quota::Quota::default(),
+    )?;
     // ★ The host is what makes the capability gate run. Without one there is no session, and `linker::run` refuses
     // every host call — so the gate never ran and nothing was audited.
     let host = std::sync::Arc::new(crate::runtime::plugin_host::KernelHost::new(
@@ -146,7 +157,7 @@ pub fn build_set(
     // The recorder is created by the daemon and handed in rather than made here, because the daemon is what can *read* it —
     // a recorder built inside this function and dropped on return would be a metrics subsystem nobody can see, which is
     // exactly what these metrics were before there was a producer at all.
-    Ok(PluginSet::new(Backend::new(std::sync::Arc::new(engine)), host)
+    Ok(PluginSet::new(backend, host)
         .with_audit_sink(sink)
         .with_metrics(std::sync::Arc::clone(metrics)))
 }

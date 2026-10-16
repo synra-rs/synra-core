@@ -329,6 +329,29 @@ impl CallOutcome {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum BackendError {
+    /// This host's engine cannot enforce a limit its own budgets ask for.
+    ///
+    /// ★ Why this is a startup refusal rather than a call-time one.
+    ///
+    /// `engine/mod.rs` writes the layer's safety argument as *"a backend that cannot enforce a limit a caller asks for says so
+    /// through `Enforcement::first_gap`, and the caller refuses rather than running third-party code with a bound it does not
+    /// have"*. Nothing called it, and the reason it cannot simply be called per call is worth keeping: production budgets
+    /// **always** set a timeout (`matching.rs`'s `budget()`), while `ScriptedBackend` honestly reports `epoch: false` — so a
+    /// per-call check refuses every call made through the test double, and the double's honesty is itself pinned by a test.
+    ///
+    /// The decision this variant records is **where the question belongs**. It is asked once, where a kernel chooses its
+    /// engine, because that is the only moment a person can act on the answer: an engine missing a limit is a fact about the
+    /// installation, not about a call. A kernel that cannot bound what it runs must not start, and it must say which bound is
+    /// missing rather than running third-party code without it.
+    ///
+    /// ★ It is quiet today and that is the point: the wasmtime backend enforces everything and the default quota
+    /// asks for everything, so this never fires. The `wasmi` backend the design still lists is exactly the one that would.
+    #[error("this engine cannot enforce {missing}, which this host's budgets ask for")]
+    CannotEnforce {
+        /// Which limit, as `Enforcement::first_gap` names it.
+        missing: &'static str,
+    },
+
     /// The engine is not compiled into this build.
     ///
     /// Named separately from [`Self::Compile`] because the caller's next step is different: nothing about the artifact

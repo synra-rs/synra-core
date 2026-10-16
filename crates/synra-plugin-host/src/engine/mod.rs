@@ -23,6 +23,27 @@
 //! [`Enforcement::first_gap`](types::Enforcement::first_gap), and the caller refuses rather than running third-party
 //! code with a bound it does not have.
 
+/// Refuses an engine that cannot enforce the limits this host will ask for.
+///
+/// # Why this is the caller `first_gap` was written for, and why it is here
+///
+/// See [`BackendError::CannotEnforce`](types::BackendError::CannotEnforce) for the decision and for why it is not per call.
+/// The short version: an engine missing a limit is a fact about the installation, so it is asked once, at the only moment a
+/// person can act on it.
+///
+/// # Errors
+///
+/// [`BackendError::CannotEnforce`](types::BackendError::CannotEnforce) naming the first limit the engine cannot honour.
+pub fn check_enforceable(
+    backend: &Backend,
+    quota: &crate::quota::Quota,
+) -> Result<(), BackendError> {
+    match backend.enforcement().first_gap(&CallBudget::from_quota(quota)) {
+        Some(missing) => Err(BackendError::CannotEnforce { missing }),
+        None => Ok(()),
+    }
+}
+
 pub mod cache;
 pub mod executor;
 pub mod scripted;
