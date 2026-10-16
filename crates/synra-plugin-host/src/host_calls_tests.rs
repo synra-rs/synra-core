@@ -998,6 +998,32 @@ fn the_gate_records_its_four_metrics() {
 }
 
 #[test]
+fn a_gated_call_records_how_long_it_took() {
+    // ★ Nothing in production had ever called `histogram_observe`; only the recorder's own tests did. A histogram no
+    // caller uses is a shape rather than a measurement — and the number was already in the caller's hand, because
+    // `elapsed_ms` went into the audit entry and nowhere else.
+    //
+    // The gate metrics above answer "what was decided"; this answers "how slow is it", which is a question about a
+    // distribution and cannot be read off any number of audit rows.
+    let host = Stub::default();
+    let grants = granted(&["device:list"]);
+    let budget = budget();
+    let recorder = synra_observe::metrics::RingRecorder::new();
+    let mut audit = Vec::new();
+    let mut calls = session(&host, &grants, &budget, &mut audit).with_metrics(&recorder);
+
+    let _ = calls.call("synra:plugin/host#device-list", "");
+
+    let snapshot = recorder.snapshot();
+    // Labelled by the import, which is what a call is — the same shape `gate_denied_total` carries a capability in — and
+    // the recorder's own cardinality guard is what bounds the series a caller could create.
+    assert!(
+        snapshot.get("host_call_ms{import=synra:plugin/host#device-list}").is_some(),
+        "the duration was not recorded"
+    );
+}
+
+#[test]
 fn a_refusal_tells_a_plugin_what_it_already_holds_in_that_domain() {
     // ★ The wiring rather than the derivation.
     //
