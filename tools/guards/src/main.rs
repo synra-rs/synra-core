@@ -82,6 +82,11 @@ fn guards() -> Vec<Guard> {
             source: "11 §D2",
             run: guard_directory_deletion_is_contained,
         },
+        Guard {
+            rule: "the daemon does not dial while holding the host lock",
+            source: "11 §C4",
+            run: guard_daemon_dials_without_the_lock,
+        },
     ]
 }
 
@@ -109,7 +114,7 @@ fn main() -> std::process::ExitCode {
     }
 
     println!();
-    // Two checks outside the list, because each needs three answers rather than two — `ok`, `SKIP` with a reason, and
+    // Five checks outside the list, because each needs three answers rather than two — `ok`, `SKIP` with a reason, and
     // `FAIL` — and the `Guard` shape has no room for the middle one.
     let app_ok = check_sibling_app(&root);
     let msrv_ok = check_msrv(&root);
@@ -118,7 +123,7 @@ fn main() -> std::process::ExitCode {
     let counts_ok = check_document_guard_counts(&root);
 
     if failures == 0 && app_ok && msrv_ok && links_ok && claims_ok && counts_ok {
-        println!("{} guard(s) passed", guards().len() + 5);
+        println!("{} guard(s) passed", total_checks());
         std::process::ExitCode::SUCCESS
     }
     else {
@@ -127,6 +132,17 @@ fn main() -> std::process::ExitCode {
         }
         std::process::ExitCode::FAILURE
     }
+}
+
+/// How many checks this binary runs: the list, plus the ones that need three answers rather than two.
+///
+/// ★ **One number, in one place.** There were two, and they disagreed: the line above said the list plus five, and the
+/// document-count check compared the documents against the list plus four — counting every check but itself. A document
+/// stating the real total would have been reported as wrong, and the number that was printed was not the number that was
+/// checked. Nothing noticed because the documents stopped stating a count in round 112; a disagreement that only shows up
+/// once somebody writes the number down again is still a disagreement.
+fn total_checks() -> usize {
+    guards().len() + 5
 }
 
 /// The sibling app, built against this crate's public API.
@@ -444,7 +460,7 @@ fn check_document_guard_counts(root: &Path) -> bool {
     }
 
     // The number this binary actually runs: the list plus the checks that need three answers rather than two.
-    let actual = guards().len() + 4;
+    let actual = total_checks();
     let mut wrong = Vec::new();
     for path in doc_links::markdown_files(&documents) {
         let Ok(text) = std::fs::read_to_string(&path) else {
@@ -710,6 +726,56 @@ fn guard_directory_deletion_is_contained(root: &Path) -> Vec<String> {
     offenders
 }
 
+/// 7. A command that dials while holding the host's lock makes every other command wait for a network.
+///
+/// # ★ The rule this checks, and why it can be checked at all
+///
+/// `Host::dial` and `Host::send` are each **two** things in one call — the network, and the bookkeeping that needs
+/// `&mut self`. A caller that already holds the host's lock therefore holds it across the network. That was true in four
+/// command paths until rounds 118 and 119 split both, and the halves — `synra_core::dial_peer`, `Host::adopt`,
+/// `Host::may_send`, `Host::count_sent` — exist so that it need not be true again.
+///
+/// The compositions stay, because a caller that holds no lock should be able to dial in one line. This guard is what keeps
+/// them out of the daemon's production paths: inside `apps/synra-daemon`, a `.dial(` or a `host.send(` in code that is not
+/// test code is a call that would reacquire the lock across a network operation.
+fn guard_daemon_dials_without_the_lock(root: &Path) -> Vec<String> {
+    let mut offenders = Vec::new();
+    for path in rust_files(&root.join("apps/synra-daemon/src")) {
+        let relative = path.strip_prefix(root).unwrap_or(&path);
+        let relative = relative.to_string_lossy().replace('\\', "/");
+        let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        // Test code, by the same three rules the deletion guard uses. The daemon's own transport test dials, which is
+        // right for a test: it holds no cross-command lock, so there is nothing for a listing to wait behind.
+        if name.contains("test") || relative.split('/').any(|part| part == "tests") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        // ★ The marker has to be code, not a comment about the marker — the same rule, and for the same reason, as the
+        // guard above: a rule that cannot tell a mention from a use will always find one.
+        let boundary = text
+            .lines()
+            .position(|line| {
+                let trimmed = line.trim_start();
+                !trimmed.starts_with("//") && trimmed.starts_with("#[cfg(test)]")
+            })
+            .unwrap_or(usize::MAX);
+        for (index, line) in text.lines().enumerate() {
+            if index >= boundary {
+                continue;
+            }
+            if line.contains(".dial(") || line.contains("host.send(") {
+                offenders.push(format!(
+                    "{relative}:{} holds the host lock across a network operation",
+                    index + 1
+                ));
+            }
+        }
+    }
+    offenders
+}
+
 /// 5. A host function reachable without the gate is a capability the manifest never granted.
 ///
 /// # ★ This guard used to check for a macro that does not exist
@@ -892,6 +958,70 @@ mod tests {
         assert!(found[0].contains("elsewhere.rs"), "{found:?}");
         // And the allowed file is what is exempt, rather than the scan missing everything.
         assert!(found.iter().all(|line| !line.contains("paths.rs")), "{found:?}");
+    }
+
+    #[test]
+    fn the_deletion_guard_fires_outside_the_one_file_allowed_to_own_a_tree() {
+        // ★ This guard had no test until round 120, which is the defect the module's own documentation names: a criterion
+        // that cannot fail is not a criterion, and this one had never been shown to fail.
+        let root = Root::new("deletion");
+        root.write("crates/synra-core/src/elsewhere.rs", "fn f() { let _ = remove_dir_all(p); }");
+
+        let found = guard_directory_deletion_is_contained(root.path());
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("elsewhere.rs"), "{found:?}");
+    }
+
+    #[test]
+    fn the_deletion_guard_allows_the_sandbox_and_test_code() {
+        // The control, and it is the half that matters: a guard that fired on everything would pass the test above and be
+        // useless. These are the exemptions the rule names — the sandbox, a file whose name says test, a `tests`
+        // directory, and code below a `#[cfg(test)]` marker that is actually a marker.
+        let root = Root::new("deletion-allowed");
+        root.write("crates/synra-store/src/sandbox.rs", "fn f() { let _ = remove_dir_all(p); }");
+        root.write("crates/synra-core/src/tests.rs", "fn f() { let _ = remove_dir_all(p); }");
+        root.write("crates/synra-core/tests/it.rs", "fn f() { let _ = remove_dir_all(p); }");
+        root.write(
+            "crates/synra-core/src/below.rs",
+            "fn production() {}\n#[cfg(test)]\nmod t { fn f() { let _ = remove_dir_all(p); } }",
+        );
+
+        let found = guard_directory_deletion_is_contained(root.path());
+        assert!(found.is_empty(), "{found:?}");
+    }
+
+    #[test]
+    fn the_dial_guard_fires_on_a_command_that_dials_under_the_lock() {
+        // The shape rounds 118 and 119 removed: the guard's subject is a command that takes the host's lock and then
+        // performs the network operation while still holding it.
+        let root = Root::new("dial");
+        root.write(
+            "apps/synra-daemon/src/runtime/commands.rs",
+            "fn f() { let mut host = l(); host.dial(a, None, n)?; drop(host); }",
+        );
+
+        let found = guard_daemon_dials_without_the_lock(root.path());
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("commands.rs"), "{found:?}");
+    }
+
+    #[test]
+    fn the_dial_guard_allows_the_two_halves_and_test_code() {
+        // The control, and it is the Interesting half: the halves are precisely what a fixed call site uses, so a guard
+        // that flagged `dial_peer` would forbid the fix it exists to protect.
+        let root = Root::new("dial-allowed");
+        root.write(
+            "apps/synra-daemon/src/runtime/commands.rs",
+            "fn f() { let d = synra_core::dial_peer(&a, b, c, None, n)?; host.adopt(d, n)?; }",
+        );
+        root.write(
+            "apps/synra-daemon/src/transport/tests.rs",
+            "fn f() { let mut host = l(); host.dial(a, None, n); }",
+        );
+        root.write("apps/synra-daemon/src/x_test.rs", "fn f() { host.dial(a, None, n); }");
+
+        let found = guard_daemon_dials_without_the_lock(root.path());
+        assert!(found.is_empty(), "{found:?}");
     }
 
     #[test]
