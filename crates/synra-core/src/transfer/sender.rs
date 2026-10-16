@@ -18,7 +18,14 @@ pub struct TransferSender {
     blocks: Vec<Block>,
     /// Which blocks have been handed out, so a resend is possible without re-reading the file's plan.
     sent: ProgressBitmap,
-    file_name: String,
+    /// What kind of thing is being sent.
+    ///
+    /// ★ A field rather than a constant inside `request()`, which is where it used to be — and that meant a plugin
+    /// bundle announced itself as an attachment. The receiver believes the request: it decides where the bytes go, and
+    /// how to describe the file it wrote, from exactly these two values.
+    kind: TransferKind,
+    /// The metadata that travels with it.
+    meta: TransferMeta,
 }
 
 impl std::fmt::Debug for TransferSender {
@@ -74,31 +81,55 @@ impl TransferSender {
             digest,
             blocks,
             sent: ProgressBitmap::empty(total),
-            file_name,
+            kind: TransferKind::Attachment,
+            meta: TransferMeta::Attachment {
+                file_name,
+                mime_type: None,
+                context_id: None,
+            },
         })
     }
 
     /// The request that proposes this transfer.
     ///
-    /// # Why the kind is always `Attachment`
+    /// Opens a plugin bundle to send to a peer.
     ///
-    /// Because the other kind is a plugin bundle, which is the plugin host's to send and carries a plugin id and version
-    /// this does not have. A transfer layer that guessed would produce a message the receiver would route to the plugin
-    /// installer.
+    /// The bytes are the same bytes an attachment would carry — what differs is what the request *says* it is, and
+    /// the receiver acts on that: a `PluginBundle` is what makes a bundle land as a bundle (the `bundle` field on
+    /// `FinishedTransfer` decides it in the daemon) rather than as a file called `plugin-something.wasm`.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`TransferSender::open`]: the path cannot be read.
+    pub fn open_bundle(
+        path: &Path,
+        chunk_size: u32,
+        plugin_id: synra_protocol::ids::PluginId,
+        version: impl Into<String>,
+    ) -> Result<Self, TransferError> {
+        let mut sender = Self::open(path, chunk_size)?;
+        sender.kind = TransferKind::PluginBundle;
+        sender.meta = TransferMeta::PluginBundle {
+            plugin_id,
+            version: version.into(),
+        };
+        Ok(sender)
+    }
+
+    /// The request that announces this transfer to the other side.
+    ///
+    /// What it carries — the kind and the metadata — is what the receiver acts on: where the bytes go, what the file
+    /// is called, and what it is.
     #[must_use]
     pub fn request(&self) -> TransferRequest {
         TransferRequest {
             transfer_id: self.transfer_id,
-            kind: TransferKind::Attachment,
+            kind: self.kind,
             byte_length: self.byte_length,
             chunk_size: self.chunk_size,
             digest: self.digest.as_sri().clone(),
             sync_session_id: None,
-            meta: TransferMeta::Attachment {
-                file_name: self.file_name.clone(),
-                mime_type: None,
-                context_id: None,
-            },
+            meta: self.meta.clone(),
         }
     }
 
@@ -198,5 +229,52 @@ impl TransferSender {
     #[must_use]
     pub fn outstanding(&self) -> Vec<u32> {
         self.sent.missing()
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A real temporary file: `open` reads it and hashes it, so this cannot be faked.
+    fn a_file() -> PathBuf {
+        let path = std::env::temp_dir().join(format!("synra-sender-{}.wasm", std::process::id()));
+        std::fs::write(&path, b"\0asm\x01\0\0\0the artifact").expect("writes");
+        path
+    }
+
+    #[test]
+    fn a_bundle_announces_itself_as_one() {
+        // ★ 在这一轮之前，`request()` 把 `kind` 与 `meta` 硬编码成附件 ——
+        // 于是一个插件包会以一张截图的身份到达，而接收端**正是**据此决定它落在哪里、以及它是什么
+        // （第 139 轮的 `bundle` 字段、第 151 轮的安装）。
+        let path = a_file();
+        let plugin_id =
+            synra_protocol::ids::PluginId::try_from("@acme/chat".to_owned()).expect("an id");
+        let sender =
+            TransferSender::open_bundle(&path, 4, plugin_id.clone(), "1.2.0").expect("opens");
+        let request = sender.request();
+
+        assert_eq!(request.kind, TransferKind::PluginBundle);
+        match request.meta {
+            TransferMeta::PluginBundle { plugin_id: announced, version } => {
+                assert_eq!(announced, plugin_id);
+                assert_eq!(version, "1.2.0");
+            }
+            other => panic!("a bundle was announced as {other:?}"),
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn an_ordinary_file_is_still_an_attachment() {
+        // 另一半。没有这一条，把默认值改错会让每一次普通发送都变成插件包 ——
+        // 而那样的错在接收端看起来完全正常。
+        let path = a_file();
+        let sender = TransferSender::open(&path, 4).expect("opens");
+
+        assert_eq!(sender.request().kind, TransferKind::Attachment);
+        let _ = std::fs::remove_file(&path);
     }
 }
