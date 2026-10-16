@@ -779,6 +779,26 @@ impl Runtime {
         // as a plain success would claim knowledge this device does not have.
         //
         // So both are said. `sent` is what this device did; `confirmed` is what it heard back.
+        // ★ The design's `transfer_retries_total`: the one number that says what the network cost.
+        //
+        // Recorded only when there was a resend — a counter that always adds zero is a series nobody needs, and the
+        // recorder's own guard is about cardinality rather than about empty rows.
+        //
+        // ★ And a note about its evidence: no test covers this line. A resend happens when a report is lost, and
+        // provoking that needs a link that drops one — which the test scaffolding here does not do. The number comes
+        // from `resends`, which the `Verified`/`Resend` events already produced and which the report already showed.
+        if resends > 0 {
+            self.metrics.counter_add(
+                &synra_observe::metrics::SeriesKey::new(
+                    "transfer_retries_total",
+                    [(
+                        "kind".to_owned(),
+                        if bundle.is_some() { "bundle" } else { "attachment" }.to_owned(),
+                    )],
+                ),
+                resends as u64,
+            );
+        }
         // ★ The two things the successful path can answer: how big it was, and how long it took.
         //
         // `transfers_total{outcome}` is deliberately **not** here. This method has several early returns — a path that
