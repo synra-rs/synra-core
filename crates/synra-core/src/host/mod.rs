@@ -53,6 +53,9 @@ mod sharing;
 pub use clock::{millis_reading, reading_millis};
 pub use error::HostError;
 pub use kernel::Host;
+// ★ The two halves of a dial. Exported because a caller that holds a lock on the host must be able to perform the
+// handshake without it — the whole reason they are two functions rather than the one method they used to be.
+pub use connections::{Dialled, dial_peer};
 pub use sharing::{Attached, SharedHost, shared};
 
 #[cfg(test)]

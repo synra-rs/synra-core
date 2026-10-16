@@ -129,6 +129,13 @@ impl Kernel for Runtime {
         // That is a real cost, and it is not fixed by moving a line: it needs the host split so a handshake can be
         // performed without `&mut self` and adopted afterwards, which is a design change rather than a tidy-up. `11` §
         // records it as the open item it is; what this comment can do is stop claiming otherwise.
+        // ★ And the handshake now happens **outside** the lock, which is what round 117 found was not true.
+        //
+        // `Host::dial` needs `&mut self` — the handshake uses this device's identity and the completed session is recorded
+        // on the host — so a `devices` listing waited for a peer to finish saying `Hello`. That was not fixable by moving a
+        // line: it needed the host's dial split into "handshake, needing a clone of the peer record" and "record what the
+        // exchange proved, needing `&mut self`". `synra_core::dial_peer` and `Host::adopt` are those two halves, and this
+        // is where they are used.
         let (device_id, address, from) = {
             let host = self.host.lock();
             let device_id = host.resolve(to).map_err(|error| refusal_of(&error))?;
@@ -147,10 +154,16 @@ impl Kernel for Runtime {
         let envelope = synra_core::text_to(from, device_id, text, trace_id, now)
             .map_err(|error| Refusal::new(error_code_for(&error), error.to_string()))?;
 
+        let parts = {
+            let host = self.host.lock();
+            host.dialling_parts()
+        };
+        let handshake_now = synra_core::reading_millis(now);
+        let dialled = synra_core::dial_peer(&parts.0, parts.1, address, None, handshake_now)
+            .map_err(|error| refusal_of(&error))?;
         let mut host = self.host.lock();
-        // Dial, which is where the handshake establishes that the device on the other end really is the one asked for.
         let mut link = host
-            .dial(address, None, synra_core::reading_millis(now))
+            .adopt(dialled, handshake_now)
             .map_err(|error| refusal_of(&error))?;
         host.send(&mut link, &envelope).map_err(|error| refusal_of(&error))?;
         drop(host);
@@ -227,9 +240,19 @@ impl Kernel for Runtime {
             }
         };
 
+        // ★ The handshake runs **outside** the lock, so a `devices` listing does not wait for it.
+        // `Host::dial` needs `&mut self` to record the session; `dial_peer` needs only a clone of this device's record,
+        // and `adopt` records what the exchange proved.
+        let parts = {
+            let host = self.host.lock();
+            host.dialling_parts()
+        };
+        let handshake_now = synra_core::reading_millis(now);
+        let dialled = synra_core::dial_peer(&parts.0, parts.1, address, None, handshake_now)
+            .map_err(|error| refusal_of(&error))?;
         let mut host = self.host.lock();
         let mut link = host
-            .dial(address, None, synra_core::reading_millis(now))
+            .adopt(dialled, handshake_now)
             .map_err(|error| refusal_of(&error))?;
         // ★ Taken from the link rather than from what the user typed. The handshake is what established who is on the other
         // end, so an address that turned out to belong to a different device is reported as *that* device rather than as
@@ -516,9 +539,19 @@ impl Kernel for Runtime {
                 .map_err(|error| Refusal::new(ErrorCode::InvalidArgument, error.to_string()))?;
         let _ = request;
 
+        // ★ The handshake runs **outside** the lock, so a `devices` listing does not wait for it.
+        // `Host::dial` needs `&mut self` to record the session; `dial_peer` needs only a clone of this device's record,
+        // and `adopt` records what the exchange proved.
+        let parts = {
+            let host = self.host.lock();
+            host.dialling_parts()
+        };
+        let handshake_now = synra_core::reading_millis(now);
+        let dialled = synra_core::dial_peer(&parts.0, parts.1, address, None, handshake_now)
+            .map_err(|error| refusal_of(&error))?;
         let mut host = self.host.lock();
         let mut link = host
-            .dial(address, None, synra_core::reading_millis(now))
+            .adopt(dialled, handshake_now)
             .map_err(|error| refusal_of(&error))?;
         // The window a person answers within, which is longer than a handshake's. Set on the socket rather than left at
         // the handshake's deadline: a prompt answered just inside the session's window must not fail because the read
@@ -692,9 +725,19 @@ impl Runtime {
                 })?
             };
 
+            // ★ The handshake runs **outside** the lock, so a `devices` listing does not wait for it.
+            // `Host::dial` needs `&mut self` to record the session; `dial_peer` needs only a clone of this device's record,
+            // and `adopt` records what the exchange proved.
+            let parts = {
+                let host = self.host.lock();
+                host.dialling_parts()
+            };
+            let handshake_now = synra_core::reading_millis(now);
+            let dialled = synra_core::dial_peer(&parts.0, parts.1, address, None, handshake_now)
+                .map_err(|error| refusal_of(&error))?;
             let mut host = self.host.lock();
             let mut link = host
-                .dial(address, None, synra_core::reading_millis(now))
+                .adopt(dialled, handshake_now)
                 .map_err(|error| refusal_of(&error))?;
             host.send(&mut link, &outbound.envelope).map_err(|error| refusal_of(&error))?;
             drop(host);

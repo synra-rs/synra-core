@@ -8,40 +8,80 @@ use crate::link::PeerLink;
 use crate::sessions::RegistryEvent;
 
 use super::{Host, HostError, millis_reading};
+use crate::peer::{Flags, LocalPeer, Negotiated};
+
+/// A handshake that has finished, waiting to be recorded on a host.
+///
+/// ★ **Why the two halves of a dial are separate.**
+///
+/// `Host::dial` used to do everything: open the socket, exchange the handshake, record the session, build the link. The
+/// network half needs nothing from the host but a **clone** of this device's peer record and its flags; the state half needs
+/// `&mut Host` and touches no network at all. Keeping them in one method forced every caller to hold the host's lock across
+/// a handshake — so a `devices` listing waited for a peer to finish saying `Hello`, which is exactly the report a user runs
+/// while something is wrong.
+///
+/// The fields are private and there is no constructor but [`dial_peer`], because a `Dialled` that never completed a
+/// handshake is a value that must not exist.
+#[derive(Debug)]
+pub struct Dialled {
+    /// The connected socket, after the exchange.
+    stream: TcpStream,
+    /// What the two ends agreed.
+    negotiated: Negotiated,
+    /// The token that was presented, which the session records.
+    token: Option<LinkToken>,
+    /// Where it worked, which is the address a later attempt should use.
+    address: SocketAddr,
+}
+
+/// Completes a handshake without a host, so a caller can do it **outside** its lock.
+///
+/// # Errors
+///
+/// [`HostError::Handshake`] for a failed exchange and [`HostError::Incompatible`] when the two ends agreed on something
+/// unusable — the same failures [`Host::dial`] reports, because this is the half that produces them.
+pub fn dial_peer(
+    ours: &LocalPeer,
+    flags: Flags,
+    address: SocketAddr,
+    token: Option<LinkToken>,
+    now_ms: u64,
+) -> Result<Dialled, HostError> {
+    // Cloned before the call, because the token is also what the session records — and it is the token that was *used*,
+    // which is what a later frame has to match.
+    let offered = token.clone();
+    let (stream, negotiated) = crate::peer::dial(address, ours, token, now_ms, flags)?;
+
+    if !negotiated.is_usable() {
+        // The two reached agreement and the agreement says they cannot work together. Reported as its own failure rather
+        // than as a connection failure, because the user's next step is a version rather than a network.
+        return Err(HostError::Incompatible {
+            missing: format!("{:?}", negotiated.agreed.missing_required),
+        });
+    }
+
+    Ok(Dialled { stream, negotiated, token: offered, address })
+}
 
 // The rest of `impl Host`, whose first part is in `kernel`.
 impl Host {
-    /// Dials a candidate and completes a handshake.
+    /// This device's peer record and its flags, cloned so a caller can dial without holding the host.
     ///
-    /// # The order is the rule
-    ///
-    /// The session is created **after** the handshake, because the handshake is what establishes identity — a session
-    /// for a device whose identity is unproven is one that attributes work to the wrong peer. And the trust level rises
-    /// only once the connection completed, because a datagram is a hint and a connection is evidence.
+    /// The two things [`dial_peer`] needs and the host does not have to be present for. Everything else a dial reads or
+    /// writes — the session registry, the trust level — happens in [`Host::adopt`], after the network is done.
+    #[must_use]
+    pub fn dialling_parts(&self) -> (LocalPeer, Flags) {
+        (self.local.clone(), self.flags)
+    }
+
+    /// Records a completed handshake and returns the link. Touches no network.
     ///
     /// # Errors
     ///
-    /// [`HostError::Handshake`] for a failed exchange, and [`HostError::Incompatible`] when the two devices reached
-    /// agreement and the agreement is unusable.
-    pub fn dial(
-        &mut self,
-        address: SocketAddr,
-        token: Option<LinkToken>,
-        now_ms: u64,
-    ) -> Result<PeerLink, HostError> {
-        // Cloned before the call, because the token is also what the session records — and it is the token that was
-        // *used*, which is what a later frame has to match.
-        let offered = token.clone();
-        let (stream, negotiated) =
-            crate::peer::dial(address, &self.local, token, now_ms, self.flags)?;
-
-        if !negotiated.is_usable() {
-            // The two reached agreement and the agreement says they cannot work together. Reported as its own failure
-            // rather than as a connection failure, because the user's next step is a version rather than a network.
-            return Err(HostError::Incompatible {
-                missing: format!("{:?}", negotiated.agreed.missing_required),
-            });
-        }
+    /// [`HostError::Bind`] when the session could not be marked ready, which cannot happen for one that was just opened —
+    /// and is reported rather than dropped, because a session left in `Connecting` is one nothing routes to.
+    pub fn adopt(&mut self, dialled: Dialled, now_ms: u64) -> Result<PeerLink, HostError> {
+        let Dialled { stream, negotiated, token, address } = dialled;
 
         // ★ Now, and not before. The handshake proved which device is on the other end, so this is the first moment at
         // which recording a session attributes work correctly.
@@ -51,7 +91,7 @@ impl Host {
             negotiated.platform,
             // A token this dialler did not present is one the acceptor did not read, so the session records the token
             // that was used rather than inventing one.
-            offered.unwrap_or_else(|| LinkToken::from_bytes([0u8; LinkToken::LEN])),
+            token.unwrap_or_else(|| LinkToken::from_bytes([0u8; LinkToken::LEN])),
             now_ms,
         );
         // A dialler has agreed by definition: the handshake completed. Recording it is what moves the session to ready,
@@ -77,6 +117,32 @@ impl Host {
             negotiated.agreed,
             self.flags,
         ))
+    }
+
+    /// Dials a candidate and completes a handshake.
+    ///
+    /// # The order is the rule
+    ///
+    /// The session is created **after** the handshake, because the handshake is what establishes identity — a session
+    /// for a device whose identity is unproven is one that attributes work to the wrong peer. And the trust level rises
+    /// only once the connection completed, because a datagram is a hint and a connection is evidence.
+    ///
+    /// ★ **A caller that already holds the host's lock should not use this.** It is [`dial_peer`] and [`Host::adopt`] in
+    /// one call, which is right for a test and wrong for a command: the lock ends up held across the exchange. The four
+    /// command paths in `synra-daemon` use the halves.
+    ///
+    /// # Errors
+    ///
+    /// [`HostError::Handshake`] for a failed exchange, and [`HostError::Incompatible`] when the two devices reached
+    /// agreement and the agreement is unusable.
+    pub fn dial(
+        &mut self,
+        address: SocketAddr,
+        token: Option<LinkToken>,
+        now_ms: u64,
+    ) -> Result<PeerLink, HostError> {
+        let dialled = dial_peer(&self.local, self.flags, address, token, now_ms)?;
+        self.adopt(dialled, now_ms)
     }
 
     /// Takes a connection if one is waiting, without handshaking on it.

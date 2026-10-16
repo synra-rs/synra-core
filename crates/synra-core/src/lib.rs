@@ -92,6 +92,8 @@ pub use socket::{
     DiscoverySocket, SocketError, absorb, broadcast_addresses, is_about,
 };
 pub use host::{Attached, Host, HostError, SharedHost, millis_reading, reading_millis, shared};
+// The two halves of a dial, so a caller can perform the handshake **outside** whatever lock it holds on the host.
+pub use host::{Dialled, dial_peer};
 pub use discovery::{
     Absorbed, CANDIDATE_TTL, Candidate, DiscoveryTable, UNUSABLE_NAME, announced_address,
 };
