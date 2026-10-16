@@ -77,9 +77,21 @@ impl RemoteState {
     }
 
     /// Whether it has the plugin in any form.
+    ///
+    /// ★ **A digest counts, and that is a correction rather than a convenience.**
+    ///
+    /// This read `self.version.is_some()`, and it was wrong about the shape the **receiving** side writes: a row whose
+    /// digest the transferred file proved and whose version is empty, because a `Decision` does not carry one (round
+    /// 150). Such a peer holds the artifact — the digest is precisely what says which bytes.
+    ///
+    /// The old answer read that as "it does not have the plugin", which is the one thing a sync decision must not get
+    /// wrong: it would push the same package again on every round, forever.
+    ///
+    /// ★ The counter-example came from a test rather than from reasoning: `from_rows` loaded such a row and
+    /// `assert!(receiver.has_it())` failed (round 161). That assertion was withdrawn then, and it is back now.
     #[must_use]
     pub const fn has_it(&self) -> bool {
-        self.version.is_some()
+        self.version.is_some() || self.digest.is_some()
     }
 }
 

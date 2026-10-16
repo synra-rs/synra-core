@@ -858,13 +858,13 @@ fn a_table_loads_what_the_database_remembers() {
         .expect("the receiver's row");
     assert_eq!(receiver.version, None, "an empty version read as a claim");
     assert_eq!(receiver.digest.as_deref(), Some("sha256-def"));
-    // ★ **一处真发现，而这一轮没有改它。** `RemoteState::has_it` 是 `self.version.is_some()`，
-    // 所以这一行 —— 摘要已知而版本未知，正是**接收端**写下的形状（第 150 轮）——
-    // 会让 `has_it()` 说「没有」。而它其实有：摘要说得出它持有哪些字节。
+    // ★ 而**这一轮把它修好了**。第一版断言写的是 `assert!(receiver.has_it())`，它在上一轮失败了 ——
+    // 因为 `has_it` 当时是 `self.version.is_some()`，而这一行的版本是空的。
     //
-    // 第一版断言写的是 `assert!(receiver.has_it())`，它失败了，而失败说明的正是这件事。
-    // 改那个语义要看遍它的调用者，所以这里只**记下来**，而不是去断言一个可疑的答案 ——
-    // 一个为了通过而写的断言，比没有断言更糟。
+    // 那是一个真缺陷：接收端写下的这一行（摘要来自文件证明、版本为空）说的是
+    // 「这个对端持有这些字节」，而旧答案会读成「它没有这个插件」——
+    // 于是下一次同步会把同一个包**每一轮都再推一遍**。
+    assert!(receiver.has_it(), "a digest is evidence of holding it");
 }
 
 #[test]
