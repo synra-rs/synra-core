@@ -452,6 +452,74 @@ fn one_trapping_plugin_does_not_cost_the_user_the_others() {
     );
 }
 
+#[test]
+fn every_way_a_plugin_can_misbehave_leaves_the_others_working() {
+    // """ + S + """ The sentence `21 §5.1` says nothing asserts: *"内核仍可用 + 其它插件仍可用"*.
+    //
+    // The isolation test above covers one way a plugin fails — a trap — and a panic has its own. The rest did not exist, and
+    // they are the ones a user is most likely to meet: a plugin that reports a failure, one that runs out of its instruction
+    // budget, one that hits the memory ceiling, and one that never comes back. Each is a different condition inside the host
+    // and each could plausibly be handled by a path that abandons the whole dispatch rather than that one plugin.
+    //
+    // # What this proves and what it does not
+    //
+    // It proves the **kernel's** handling: given this outcome from a plugin, the other plugins are still asked and the user
+    // still gets a prompt. It does not prove the *engine* produces those outcomes — that is the fuel and memory tests in
+    // `synra-plugin-host`, which drive real components. Two halves of one property, and each is worthless without the other:
+    // an engine that never exhausts fuel makes this table vacuous, and a kernel that gives up on the first bad outcome makes
+    // the engine's enforcement useless.
+    let cases: [(&str, Scripted); 6] = [
+        ("a reported failure", Scripted::Failed {
+            code: "host_failed".to_owned(),
+            message: "the device is unreachable".to_owned(),
+        }),
+        ("a trap", Scripted::Trap { detail: "unreachable".to_owned() }),
+        ("an exhausted instruction budget", Scripted::FuelExhausted),
+        ("a memory ceiling", Scripted::MemoryExceeded),
+        ("a timeout", Scripted::Timeout),
+        ("a panic in the host", Scripted::Panic { message: "unwrap on None".to_owned() }),
+    ];
+
+    for (index, (what, answer)) in cases.into_iter().enumerate() {
+        let backend = ScriptedBackend::new();
+        let mut set = PluginSet::new(Backend::new(std::sync::Arc::new(backend.clone())), host());
+        // A fresh id per case, so one case's scripted answer cannot satisfy another's call.
+        let broken = format!("@synra/aaa-broken-{index}");
+        load(&mut set, &backend, &broken, answer);
+        load(
+            &mut set,
+            &backend,
+            "@synra/bbb-good",
+            Scripted::Ok(r#"{"handled":true,"title":"Good"}"#.to_owned()),
+        );
+
+        let (mut board, intent_id) = raised_board();
+        let report = Matcher::new(&mut set).match_share(&mut board, intent_id, share_json(), 1_000);
+
+        assert_eq!(report.asked, 2, "{what}: both were asked");
+        assert_eq!(
+            report.offered, 1,
+            "{what}: the working plugin's answer still reached the board"
+        );
+        assert_eq!(report.misbehaved.len(), 1, "{what}: and it is recorded");
+        assert!(!report.all_misbehaved(), "{what}: not every plugin failed");
+        assert_eq!(
+            candidates(&board, intent_id).len(),
+            1,
+            "{what}: the user still gets their prompt"
+        );
+        // """ + S + """ And the kernel is still usable **afterwards**, which is the half a per-dispatch assertion misses: a
+        // dispatch that recovered but left the set poisoned would pass everything above and fail the next share.
+        let (mut second_board, second_intent) = raised_board();
+        let second =
+            Matcher::new(&mut set).match_share(&mut second_board, second_intent, share_json(), 2_000);
+        assert_eq!(
+            second.offered, 1,
+            "{what}: the next share is served by the plugin that works"
+        );
+    }
+}
+
 /// ★ A plugin that makes the **host** panic must not take the kernel with it.
 ///
 /// This is the test behind `[profile.release] panic = "unwind"`, whose comment gives exactly one reason: that a plugin's
