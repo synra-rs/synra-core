@@ -255,10 +255,111 @@ pub fn pair_response(
     Ok(Envelope::reply_to(request, event, from, sent_at_ms, Some(answer))?)
 }
 
+/// What the receiving device tells the sending one about a sync — `16` §5.2 ⑧'s last act.
+///
+/// # Why this is not [`crate::plugin_sync::SyncOutcome`] itself
+///
+/// Because that type is this device's own bookkeeping: which duties it performed, in what order, and whether the whole set
+/// was completed. The sender needs four facts and no more, and it must not be handed a list of checks it cannot see the
+/// evidence for — a report is not a wire format.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncResult {
+    /// Whether the plugin is installed.
+    pub ok: bool,
+    /// Which version, when there is one.
+    pub installed_version: Option<String>,
+    /// Whether **this** device chose to enable it. Local by rule — `16` §5.4 rule 7 — so it is reported, not negotiated.
+    pub activated: bool,
+    /// What went wrong, when something did.
+    pub error: Option<String>,
+}
+
+impl SyncResult {
+    /// The four fields, taken from the receiver's outcome.
+    #[must_use]
+    pub fn of(outcome: &crate::plugin_sync::SyncOutcome) -> Self {
+        Self {
+            ok: outcome.installed,
+            installed_version: outcome.installed_version.clone(),
+            activated: outcome.activated,
+            error: outcome.error.clone(),
+        }
+    }
+}
+
+/// Builds the envelope that ends a sync, as ⑧ requires.
+///
+/// ★ **Why this had to exist.** [`synra_protocol::event::events::PLUGIN_SYNC_RESULT`] has been declared since the first
+/// version of the contract and appears in the inbound allow-list, but nothing ever **sent** it. So the sending device
+/// could not learn the outcome, and ⑨ — "A updates its sync state and the interface shows it" — had no source of truth:
+/// a push that failed looked exactly like one that succeeded, which is the shape this codebase keeps removing.
+///
+/// It is a reply rather than a fresh envelope, so it carries the request's id and trace: an outcome the sender cannot
+/// correlate with the transfer it asked for is one it will wait out and then retry.
+///
+/// # Errors
+///
+/// [`MessageError::Envelope`] when the protocol refuses the envelope, and [`MessageError::EventName`] if this build's own
+/// constant is not one the protocol accepts.
+pub fn sync_result(
+    request: &Envelope,
+    from: DeviceId,
+    outcome: &crate::plugin_sync::SyncOutcome,
+    sent_at_ms: i64,
+) -> Result<Envelope, MessageError> {
+    let event = EventName::parse(synra_protocol::event::events::PLUGIN_SYNC_RESULT)?;
+    let result = SyncResult::of(outcome);
+    Ok(Envelope::reply_to(request, event, from, sent_at_ms, Some(&result))?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::value::RawValue;
+
+    #[test]
+    fn a_sync_result_carries_the_four_fields_the_design_names() {
+        // ★ ⑧ 的最后一件事,而它此前**从未被发出过**:事件名从 v1 就在,入站白名单也认它,
+        // 但发起端永远等不到结局 —— ⑨「A 更新同步状态、UI 显示」因此没有信息来源。
+        let outcome = crate::plugin_sync::SyncOutcome::installed(
+            synra_protocol::ids::PluginId::try_from("@acme/chat".to_owned()).expect("a plugin id"),
+            crate::plugin_sync::SyncSessionId::new("round-1"),
+            "1.2.0",
+            true,
+            Vec::new(),
+        );
+        // 内部类型 `SyncOutcome` 不上线,上线的是这四个字段的载荷。
+        let envelope = sync_result(&message("hello"), device(A), &outcome, 2_000).expect("an envelope");
+
+        assert_eq!(envelope.event.as_str(), synra_protocol::event::events::PLUGIN_SYNC_RESULT);
+
+        let payload: serde_json::Value =
+            serde_json::from_str(envelope.payload_str().expect("a payload")).expect("json");
+        assert_eq!(payload["ok"], true, "{payload}");
+        assert_eq!(payload["installedVersion"], "1.2.0", "{payload}");
+        assert_eq!(payload["activated"], true, "{payload}");
+        assert!(payload["error"].is_null(), "{payload}");
+    }
+
+    #[test]
+    fn a_sync_result_that_failed_is_not_indistinguishable_from_one_that_worked() {
+        // 另一半,而且是这一条存在的原因:一个被拒绝的同步必须让发起端看出来。
+        // 「失败与沉默无法区分」是本仓库反复出现的形状,而这条回复是 ⑨ 唯一的输入。
+        let outcome = crate::plugin_sync::SyncOutcome::refused(
+            synra_protocol::ids::PluginId::try_from("@acme/chat".to_owned()).expect("a plugin id"),
+            crate::plugin_sync::SyncSessionId::new("round-1"),
+            "the signature did not verify",
+        );
+        let envelope = sync_result(&message("hello"), device(A), &outcome, 2_000).expect("an envelope");
+
+        let payload: serde_json::Value =
+            serde_json::from_str(envelope.payload_str().expect("a payload")).expect("json");
+        assert_eq!(payload["ok"], false, "{payload}");
+        // 没有版本,因为什么都没装上 —— 报一个版本号会让发起端更新它的同步状态。
+        assert!(payload["installedVersion"].is_null(), "{payload}");
+        assert_eq!(payload["error"], "the signature did not verify", "{payload}");
+    }
 
     const A: &str = "11111111-1111-4111-8111-111111111111";
     const B: &str = "22222222-2222-4222-8222-222222222222";
