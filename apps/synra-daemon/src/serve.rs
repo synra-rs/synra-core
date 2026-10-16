@@ -63,60 +63,62 @@ const GC_FIRST_DELAY: Duration = Duration::from_secs(60);
 ///
 /// Because a test that waited an hour to see whether the sweep ran would not be a test. The schedule is decided where the
 /// daemon is built and passed in, so the same loop can be driven with milliseconds.
-/// Runs a background loop as a task the supervisor knows about, and reports how it ended.
+/// Starts the two loops the daemon runs for its whole life, and returns what to join on shutdown.
 ///
-/// """ + S + """ Why this exists rather than a bare `std::thread::spawn`.
+/// """ + S + """ Why `run_task` rather than `std::thread::spawn`.
 ///
-/// The daemon spawns seven background threads and they were all bare. A panic inside one unwinds and **kills the thread**:
-/// the accept loop, the heartbeat or the retention sweep simply stops, the process serves on, and nothing anywhere says so.
-/// A dead task is indistinguishable from a quiet one — the same shape as a collection failure reported as zero.
+/// Both loops were bare spawns, and a bare spawn is a task whose death is indistinguishable from its silence: a panic
+/// unwinds, the thread stops, the daemon serves on, and nothing records anything. `run_task` owns the registration, the
+/// cancellation token, the restart decision and the record — **and it already existed and was already used** for the
+/// transport listener and for discovery. The fix was to use it, not to write a second one beside it.
 ///
-/// The supervisor was already there, with `RestartPolicy`, `Criticality` and a `TaskRecord` per task, and the daemon
-/// registered two services it never started. Wrapping the loop is what makes the register/start/decide cycle real: a task
-/// that panics leaves a `Failed` record with a sentence in it, which is what `is_healthy` and the shutdown report read.
-///
-/// A thread that returns normally is recorded as `Cancelled`, because the only way these loops return is being asked to
-/// stop.
-fn supervised(
+/// A task that will not start leaves nothing to join: the daemon serves without it rather than refusing to run, which is the
+/// choice the two services make as well.
+fn start_loops(
     supervisor: &Arc<synra_core::supervisor::Supervisor>,
-    id: &str,
-    body: impl FnOnce(),
+    db: &Arc<Mutex<synra_store::SynraDb>>,
+    lock_path: &std::path::Path,
+) -> (
+    Option<std::thread::JoinHandle<()>>,
+    Option<std::thread::JoinHandle<()>>,
 ) {
-    use synra_core::supervisor::{StopReason, TaskId, TaskSpec};
+    use synra_core::supervisor::{TaskId, run_task};
 
-    let task = TaskId::new(id);
-    // Reported rather than fatal, the same way the two services above are: a task that will not register is a capability
-    // this run lacks, not a reason to refuse to serve.
-    if let Err(error) = supervisor.register(TaskSpec::service(task.as_str())) {
-        eprintln!("synra-daemon: {id} could not be registered: {error}");
-    }
-    if let Err(error) = supervisor.start(&task) {
-        eprintln!("synra-daemon: {id} could not be started: {error}");
-    }
-
-    // ★ `AssertUnwindSafe` is required and is sound to give here.
-    //
-    // The closure holds a database and the supervisor, neither of which is `UnwindSafe` because both can be mutated. What
-    // makes the assertion honest is that this is the **end** of the loop: a panic unwinds out of the body, the thread is
-    // about to return, and nothing observes those values afterwards except `decide`, which takes the supervisor by
-    // reference and only records. The same reasoning the plugin host gives for catching a guest's panic.
-    let ended = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)) {
-        Ok(()) => StopReason::Cancelled,
-        Err(payload) => {
-            let detail = payload
-                .downcast_ref::<&str>()
-                .map(|text| (*text).to_owned())
-                .or_else(|| payload.downcast_ref::<String>().cloned())
-                .unwrap_or_else(|| "it panicked".to_owned());
-            // Printed as well as recorded: the record is read by a health check, and this is the one moment the reason is
-            // in hand.
-            eprintln!("synra-daemon: {id} panicked: {detail}");
-            StopReason::Failed { detail }
+    let heartbeat = {
+        // One clone for the task's body and the caller's own reference for `run_task`: the body may not hold the same
+        // `Arc` the caller is borrowing in the same expression.
+        let inner = Arc::clone(supervisor);
+        let lock_path = lock_path.to_path_buf();
+        let id = TaskId::new("heartbeat.tick");
+        match run_task(supervisor, &id, move |_token| {
+            heartbeat_loop(&inner, &lock_path);
+            Ok(())
+        }) {
+            Ok(handle) => Some(handle),
+            Err(error) => {
+                eprintln!("synra-daemon: the heartbeat did not start: {error}");
+                None
+            }
         }
     };
-    if let Err(error) = supervisor.decide(&task, &ended, synra_store::sqlite::now_ms()) {
-        eprintln!("synra-daemon: {id} could not be recorded as stopped: {error}");
-    }
+
+    let collector = {
+        let inner = Arc::clone(supervisor);
+        let db = Arc::clone(db);
+        let id = TaskId::new("gc.collect");
+        match run_task(supervisor, &id, move |_token| {
+            collect_loop(&db, &inner, gc_task());
+            Ok(())
+        }) {
+            Ok(handle) => Some(handle),
+            Err(error) => {
+                eprintln!("synra-daemon: the retention sweep did not start: {error}");
+                None
+            }
+        }
+    };
+
+    (heartbeat, collector)
 }
 
 /// The schedule this daemon collects on: the design's `GcTask`, as a value.
@@ -632,30 +634,14 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
     // ★ The heartbeat runs on its own thread because the accept loop blocks. A refresh done from the loop would only
     // happen when a client connected — so a daemon nobody was talking to would look dead after the stale window, and the
     // next start would reclaim a directory a live daemon is serving.
-    let heartbeat = {
-        let supervisor = Arc::clone(&supervisor);
-        let lock_path = plan.lock_path();
-        std::thread::spawn(move || heartbeat_loop(&supervisor, &lock_path))
-    };
-
-    // ★ The retention sweep, which until this ran nowhere.
     //
-    // `collect_intents` was written with the rule it implements and no caller: nothing removed a finished intent, so the
-    // table the design gives a 24-hour retention to kept everything for ever. A rule with no runner is a sentence in a
-    // document.
-    let collector = {
-        let supervisor = Arc::clone(&supervisor);
-        let db = Arc::clone(&shared_db);
-        {
-        let supervisor = Arc::clone(&supervisor);
-        std::thread::spawn(move || {
-            let inner = Arc::clone(&supervisor);
-            supervised(&supervisor, "gc.collect", move || {
-                collect_loop(&db, &inner, gc_task());
-            });
-        })
-    }
-    };
+    // ★ And the retention sweep, which until it had a runner ran nowhere: `collect_intents` was written with the rule it
+    // implements and no caller, so the table the design gives a 24-hour retention to kept everything for ever. A rule with
+    // no runner is a sentence in a document.
+    //
+    // Both are started by one function, which is what `serve` needs: starting a supervised task is four lines of error
+    // handling, and two of them in a function already at the workspace's complexity limit is what pushes it over.
+    let (heartbeat, collector) = start_loops(&supervisor, &shared_db, &plan.lock_path());
 
     let mut code = ExitCode::SUCCESS;
     while !supervisor.is_shutting_down() {
@@ -670,10 +656,14 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
     // ★ Asked through the supervisor rather than by setting a flag, so the two services stop the way they were started:
     // the token they were given is cancelled, and the stop order is the reverse of registration.
     let _ = supervisor.begin_shutdown();
-    let _ = heartbeat.join();
+    if let Some(handle) = heartbeat {
+        let _ = handle.join();
+    }
     // ★ Joined for the reason the heartbeat is: a sweep interrupted mid-delete is a row removed and a count never reported,
     // and the shutdown report the supervisor keeps would be missing the task that was still running.
-    let _ = collector.join();
+    if let Some(handle) = collector {
+        let _ = handle.join();
+    }
     code
 }
 
@@ -869,42 +859,5 @@ mod tests {
 
         let _ = supervisor.begin_shutdown();
         assert!(running.join().is_ok());
-    }
-
-    #[test]
-    fn a_loop_that_panics_is_recorded_rather_than_vanishing() {
-        // """ + S + """ The failure this exists for: a background thread that dies is indistinguishable from one that is quiet.
-        //
-        // Seven threads used to be spawned bare, so a panic inside the retention sweep — or the heartbeat, or the accept
-        // loop — killed that thread, left the process serving, and said nothing anywhere. The supervisor was registered with
-        // two services it never started, and no task ever reached a `Failed` record.
-        let supervisor = Arc::new(synra_core::supervisor::Supervisor::new(0));
-
-        super::supervised(&supervisor, "test.panics", || panic!("the disk went away"));
-
-        let id = synra_core::supervisor::TaskId::new("test.panics");
-        let record = supervisor.record(&id).expect("the task is known");
-        match record.last_reason {
-            Some(synra_core::supervisor::StopReason::Failed { detail }) => {
-                assert!(detail.contains("the disk went away"), "{detail}");
-            }
-            other => panic!("expected a failure, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn a_loop_that_returns_normally_is_recorded_as_stopped() {
-        // And the other half, so the first test cannot pass by recording everything as a failure.
-        let supervisor = Arc::new(synra_core::supervisor::Supervisor::new(0));
-
-        super::supervised(&supervisor, "test.finishes", || {});
-
-        let id = synra_core::supervisor::TaskId::new("test.finishes");
-        let record = supervisor.record(&id).expect("the task is known");
-        assert!(
-            matches!(record.last_reason, Some(synra_core::supervisor::StopReason::Cancelled)),
-            "{:?}",
-            record.last_reason
-        );
     }
 }
