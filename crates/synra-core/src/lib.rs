@@ -127,5 +127,5 @@ pub use supervisor::{
 };
 pub use plugin_sync::{
     ConflictPolicy, ReceiverDuty, RemoteState, SyncAction, SyncError, SyncOutcome, SyncRecord, SyncSession,
-    SyncSessionId, SyncTable, compare_versions as compare_plugin_versions, decide as decide_sync,
+    SyncInbox, SyncSessionId, SyncTable, compare_versions as compare_plugin_versions, decide as decide_sync,
 };
