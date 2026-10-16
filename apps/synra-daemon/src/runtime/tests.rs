@@ -2167,3 +2167,21 @@ fn a_bundle_arrives_as_a_bundle() {
         "the digest the receiver confirmed is missing"
     );
 }
+
+
+#[test]
+fn a_scan_is_counted_by_how_it_ended() {
+    // ★ 发现组的指标在此之前**一次都没记过** —— 而「扫了但没有候选」与「扫到了三个」是用户读 `devices` 时的
+    // 两种处境，只有一种是问题。一个从不被记录的计数会让两者变成同一件事。
+    let dir = TempDir::new("scan-metrics");
+    let runtime = runtime(dir.path());
+
+    runtime.scan(50);
+
+    let snapshot = runtime.metrics.snapshot();
+    // 这个 fixture 有没有发现套接字是它自己的事，而两条路径各记一条 ——
+    // 所以这里断言的是「记了」，不是「记了哪一个」。
+    let counted = snapshot.get("scans_total{result=ran}").is_some()
+        || snapshot.get("scans_total{result=unavailable}").is_some();
+    assert!(counted, "a scan was not counted at all");
+}

@@ -12,6 +12,10 @@ impl Runtime {
         let Some(discovery) = &self.discovery else {
             // Nothing to scan with. Reported once rather than as a failure: the answer is still the table, which is all
             // a kernel without a discovery socket can honestly offer.
+            //
+            // ★ Counted as well as returned from, because "this machine has no discovery socket" is a state a user asks
+            // about — and a `return` that only ever appears in the daemon's own log is invisible to `status`.
+            self.count_scan("unavailable");
             return;
         };
 
@@ -33,5 +37,29 @@ impl Runtime {
         // deadline after the client has been answered. The worker's own check would catch it, but only within one tick.
         let _ = discovery;
         self.scan_until_ms.store(0, std::sync::atomic::Ordering::Relaxed);
+
+        // ★ And what the scan heard, which is the question the design's discovery group exists for.
+        //
+        // "Scanned and found nothing" and "scanned and found three" are two different situations for a user reading
+        // `devices`, and only one of them is a problem. A count that is never recorded makes them the same.
+        self.count_scan("ran");
+        let found = u64::try_from(self.host.lock().discovery().len()).unwrap_or(u64::MAX);
+        self.metrics.histogram_observe(
+            &synra_observe::metrics::SeriesKey::new("candidates_found", Vec::new()),
+            found as f64,
+        );
+        self.metrics.histogram_observe(
+            &synra_observe::metrics::SeriesKey::new("scan_duration_ms", Vec::new()),
+            started.elapsed().as_secs_f64() * 1_000.0,
+        );
+    }
+
+    /// Counts one scan by how it ended.
+    fn count_scan(&self, result: &str) {
+        self.metrics
+            .counter_inc(&synra_observe::metrics::SeriesKey::new(
+                "scans_total",
+                [("result".to_owned(), result.to_owned())],
+            ));
     }
 }
