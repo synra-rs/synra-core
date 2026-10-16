@@ -247,11 +247,14 @@ fn free_space_names_a_figure_for_the_volume_the_path_is_on() {
     // first match would report the root filesystem's space for a path on a mounted disk — a real number about the wrong
     // disk, which is worse than no number.
     let dir = std::env::temp_dir();
-    let Some(bytes) = free_space(&dir) else {
-        // A host whose mount table does not mention the temp directory is one this cannot answer for. That is a skip, not a
-        // failure: the alternative is a test that fails on a machine it cannot see.
-        return;
-    };
+    // ★ This used to be `let Some(bytes) = … else { return; }` — "a host whose mount table does not mention the temp
+    // directory is one this cannot answer for, and that is a skip, not a failure". It read as caution and it was the bug:
+    // `free_space` returned `None` for **every** path on Windows, because `canonicalize` answers `\\?\C:\…` while a mount
+    // point is `C:\`, so the skip swallowed a function that did not work. Round 130 found it from the other side, when the
+    // receiver's disk gate refused three tests with "this host did not report the free space".
+    //
+    // Asked for the figure now, because there is no honest reason for a real directory on a real volume to be an unknown.
+    let bytes = free_space(&dir).expect("a real directory on a real volume has a free-space figure");
     assert!(bytes > 0, "a mounted volume reporting no free space at all: {bytes}");
     // And a path that does not exist must not panic: the probe runs on directories a user may have deleted between the
     // call and the check. Either answer is fine here — the parent's volume or nothing — so the call itself is the

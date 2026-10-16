@@ -141,10 +141,20 @@ pub fn probe_disk_space(data_dir: &Path) -> ProbeResult {
 /// mounted volume — a number that is real, about the wrong disk, and therefore worse than no number.
 #[must_use]
 pub fn free_space(path: &Path) -> Option<u64> {
-    // Canonicalised because a mount point is an absolute, symlink-resolved path and `starts_with` compares text. A path
+    // Canonicalised because a mount point is an absolute, symlink-resolved path and the comparison is textual. A path
     // that does not resolve is measured as written, which is the best this can do without failing the probe.
     let absolute = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    // ★ **And the device-namespace prefix is stripped, which is what made this return `None` for every path on Windows.**
+    //
+    // `canonicalize` answers `\\?\C:\Users\…` there, while a mount point is `C:\`, so no prefix matched and the function
+    // reported "this host did not say" about a disk it had just read. Found by the receiver check that used it as a gate:
+    // its three tests failed with *"this host did not report the free space"*, and the probe's own test had passed only
+    // because it treated `None` as a reason to skip — a check that could not fail, protecting a function that did not
+    // work. This crate's `synra-platform` already names the prefix in `PathError::DeviceNamespace`; this is the same fact.
+    let absolute = absolute.to_string_lossy();
+    let trimmed = absolute.strip_prefix(r"\\?\").unwrap_or(&absolute);
     let disks = sysinfo::Disks::new_with_refreshed_list();
+    let absolute = Path::new(trimmed);
     disks
         .list()
         .iter()
