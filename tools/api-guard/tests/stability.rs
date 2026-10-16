@@ -50,23 +50,32 @@ fn no_crate_that_makes_a_promise_breaks_it() {
         .filter(|line| line.contains("holds io::Error") || line.contains("exposes BTreeMap"))
         .collect();
 
-    // Each of the three is one line in a file, and each is a deviation: the rule is about a *public* signature, and
-    // none of these is one. They are the tool's documented false-positive surface — telling a `pub(crate) fn` at the
-    // root of a module from a `pub fn` inside a private module needs the module tree, and this tool reads lines.
+    // Each of these is one line in a file, and each is a deviation: the rule is about a *public* signature, and none of them
+    // is one. The first three are the tool's documented false-positive surface — telling a `pub(crate) fn` at the root of a
+    // module from a `pub fn` inside a private module needs the module tree, and this tool reads lines. The last two are a
+    // different kind of deviation, with a stronger reason, and the distinction is worth keeping.
     let expected = [
         // A private helper: `fn` with no visibility at all is not public API.
         //
-        // ★ The line has moved twice: 467 → 520 when `PeerLink` gained its write deadline, and 520 → 533 when the
-        // write path learned to tell a quiet peer from a broken one. The deviation is the same one — the
-        // tool reads lines and cannot tell a private `fn` from a public one without the module tree — so what changed is
-        // where it is, and a check that pinned the old number would have failed for a reason that had nothing to do with
-        // stability. It is still pinned by line rather than by name, which is the fragile part: two helpers with one
-        // signature would be indistinguishable here.
-        "crates\\synra-core\\src\\link.rs:533",
+        // ★ The line has moved three times: 467 → 520 when `PeerLink` gained its write deadline, 520 → 533 when the write
+        // path learned to tell a quiet peer from a broken one, and 533 → 590 when the link seam arrived above it. The
+        // deviation is the same one — the tool reads lines and cannot tell a private `fn` from a public one without the
+        // module tree — so what changed is where it is, and a check that pinned an old number would have failed for a reason
+        // that had nothing to do with stability. It is still pinned by line rather than by name, which is the fragile part:
+        // two helpers with one signature would be indistinguishable here.
+        "crates\\synra-core\\src\\link.rs:590",
         // `pub(crate)`: reachable inside the crate, not by a consumer.
         "crates\\synra-core\\src\\peer\\wire.rs:138",
         // `pub(super)`: reachable by the parent module, not by a consumer.
         "crates\\synra-core\\src\\peer\\wire.rs:160",
+        // ★ And these two are **not** false positives in the same sense: `MemoryStream` implements `std::io::Read` and
+        // `std::io::Write`, whose signatures *require* `std::io::Error`. There is no way to implement those traits without
+        // naming it, so the rule cannot be satisfied here — and it should not be, because the alternative is not implementing
+        // them. What makes it harmless is that `Pipe` is a private type and these are its private methods: the promise is
+        // made to `std` and to nothing else. The tool cannot see that, which is the same line-versus-tree limitation as the
+        // three above, but recording them as "the tool cannot tell" would understate it.
+        "crates\\synra-core\\src\\link\\memory.rs:85",
+        "crates\\synra-core\\src\\link\\memory.rs:119",
     ];
     let mut unexpected: Vec<&str> = reported
         .iter()

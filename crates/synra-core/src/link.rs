@@ -28,6 +28,12 @@
 use std::io::{Read, Write};
 use std::net::TcpStream;
 
+/// A byte stream backed by memory, for a link with no socket behind it.
+///
+/// Public because the end-to-end tests `04 §11` describes need to name it: a fixture inside `#[cfg(test)]` is one nobody
+/// outside this crate can substitute.
+pub mod memory;
+
 use bytes::Bytes;
 use synra_protocol::envelope::Envelope;
 use synra_protocol::frame::{
@@ -123,6 +129,57 @@ pub enum Inbound {
     },
 }
 
+/// A byte stream a link can be built on.
+///
+/// ★ Why this trait exists, and what it is not.
+///
+/// `PeerLink` held a **concrete `TcpStream`**, so the only way to exercise a link was to open a socket — and the design's
+/// end-to-end tests, which want two kernels linked in one process, had nothing to substitute. `synra-testkit` already has a
+/// `MemoryTransport`, but it moves **decoded frames** while a link decodes **bytes**, so the two are type-incompatible: the
+/// seam was missing, not the fixture. `04 §11` records exactly this, and this is the seam it asked for, at the byte layer
+/// because that is the layer the link lives at.
+///
+/// # Why the methods return this crate's error rather than `std::io::Error`
+///
+/// Because a promise about another crate's error type is a promise about its version — `api-guard` exists to refuse exactly
+/// that, and it is right to: a consumer matching on `std::io::ErrorKind` from a `synra-core` signature has tied its build to
+/// whatever `std` does next. Converting at the boundary costs one `map_err` per implementation and keeps the promise where
+/// it belongs.
+///
+/// # Why `Read` and `Write` are supertraits
+///
+/// Because the framing is above this line: a link reads bytes into its own decoder and writes encoded frames, and inventing
+/// separate `read_bytes`/`write_bytes` methods would be a second spelling of two traits that already exist and are already
+/// implemented by everything a caller might bring.
+pub trait LinkStream: Read + Write + Send + std::fmt::Debug {
+    /// Sets the deadline one `read` call runs under.
+    ///
+    /// # Errors
+    ///
+    /// [`LinkError::Transport`] when the stream refuses the deadline — which is a real case rather than a theoretical one:
+    /// Windows rejects a zero timeout outright.
+    fn set_read_deadline(&self, timeout: std::time::Duration) -> Result<(), LinkError>;
+
+    /// Sets the deadline one `write` call runs under.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::set_read_deadline`].
+    fn set_write_deadline(&self, timeout: std::time::Duration) -> Result<(), LinkError>;
+}
+
+impl LinkStream for TcpStream {
+    fn set_read_deadline(&self, timeout: std::time::Duration) -> Result<(), LinkError> {
+        self.set_read_timeout(Some(timeout))
+            .map_err(|error| LinkError::Transport { why: error.to_string() })
+    }
+
+    fn set_write_deadline(&self, timeout: std::time::Duration) -> Result<(), LinkError> {
+        self.set_write_timeout(Some(timeout))
+            .map_err(|error| LinkError::Transport { why: error.to_string() })
+    }
+}
+
 /// A socket whose handshake is done.
 ///
 /// # Why this is not the session registry's entry
@@ -132,7 +189,11 @@ pub enum Inbound {
 /// session that lost its socket is still a session with a reason to report; a link without a socket is nothing.
 #[derive(Debug)]
 pub struct PeerLink {
-    stream: TcpStream,
+    /// The bytes, behind the seam above.
+    ///
+    /// Boxed rather than generic so `PeerLink` stays one type: a generic link would put the choice of stream into every
+    /// signature that mentions a link — the session registry, the listener, the daemon's transport — and none of them cares.
+    stream: Box<dyn LinkStream>,
     decoder: FrameDecoder,
     /// This device, so an envelope's target can be checked.
     local: DeviceId,
@@ -165,14 +226,14 @@ impl PeerLink {
     /// a peer could address by claiming a different `from` — which is the check this type exists to make.
     #[must_use]
     pub fn new(
-        stream: TcpStream,
+        stream: impl LinkStream + 'static,
         local: DeviceId,
         peer: DeviceId,
         agreed: synra_protocol::handshake::Agreed,
         flags: Flags,
     ) -> Self {
         Self {
-            stream,
+            stream: Box::new(stream),
             decoder: FrameDecoder::new(),
             local,
             peer,
@@ -251,9 +312,7 @@ impl PeerLink {
     /// decision.
     fn write_frame(&mut self, encoded: &[u8]) -> Result<(), LinkError> {
         if let Some(timeout) = self.write_deadline() {
-            self.stream
-                .set_write_timeout(Some(timeout))
-                .map_err(|error| LinkError::Transport { why: error.to_string() })?;
+            self.stream.set_write_deadline(timeout)?;
         }
         match self.stream.write_all(encoded).and_then(|()| self.stream.flush()) {
             Ok(()) => Ok(()),
@@ -488,9 +547,7 @@ impl PeerLink {
     /// which is a quiet link rather than a broken one.
     fn read_frame(&mut self) -> Result<Frame, LinkError> {
         if let Some(timeout) = self.read_timeout_override.or(self.flags.timeout) {
-            self.stream
-                .set_read_timeout(Some(timeout))
-                .map_err(|error| LinkError::Transport { why: error.to_string() })?;
+            self.stream.set_read_deadline(timeout)?;
         }
 
         let mut buffer = [0u8; 8 * 1024];
@@ -536,6 +593,7 @@ fn is_a_timeout(error: &std::io::Error) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::memory::MemoryStream;
     use super::*;
     use synra_protocol::envelope::OutboundSpec;
     use synra_protocol::event::EventName;
@@ -680,6 +738,70 @@ mod tests {
             Some(other) => panic!("expected a transport failure, got {other:?}"),
             None => panic!("a closed peer absorbed sixty-four blocks"),
         }
+    }
+
+    #[test]
+    fn two_links_exchange_an_envelope_over_memory_rather_than_a_socket() {
+        // ★ The seam, proved by the only thing that can prove it: a link that was never near a socket.
+        //
+        // `04 §11` records that the design's end-to-end tests were unwritable because `PeerLink` held a concrete
+        // `TcpStream` while `synra-testkit`'s `MemoryTransport` moves decoded frames — two layers, no seam. This is the
+        // seam, and this test is the smallest thing that shows it carries a real envelope through the real framing, with the
+        // real checks (the target is ours, the sender is the peer) applied on the way.
+        let (here, there) = MemoryStream::pair();
+        let mut sender = link_with_stream(here, LOCAL, PEER);
+        let mut receiver = link_with_stream(there, PEER, LOCAL);
+
+        sender
+            .send(&envelope(LOCAL, PEER, "_plugin.chat.text"))
+            .expect("sends over memory");
+        let received = receiver.receive().expect("receives over memory");
+
+        assert_eq!(received.event.as_str(), "_plugin.chat.text");
+        assert_eq!(received.from, device(LOCAL));
+        assert_eq!(received.target, device(PEER));
+        // And the counters the report is built from moved, so this went through the same path a socket does.
+        assert_eq!(sender.sent(), 1);
+        assert_eq!(receiver.received(), 1);
+    }
+
+    #[test]
+    fn a_memory_reader_with_nothing_to_read_reports_a_quiet_link_rather_than_waiting() {
+        // ★ The deadline, over memory. A fixture that blocked forever when nothing had been written would make every
+        // test that reads before writing hang — and would make `is_a_timeout`'s distinction untestable, because the
+        // distinction is exactly "nothing arrived yet" against "the connection is broken".
+        let (here, _there) = MemoryStream::pair();
+        let mut link = link_with_stream(here, LOCAL, PEER);
+        link.set_read_timeout(Some(std::time::Duration::from_millis(20)));
+
+        let started = std::time::Instant::now();
+        let refused = link.receive().expect_err("nothing was written");
+
+        match refused {
+            LinkError::TimedOut => {}
+            other => panic!("a quiet memory link is not {other:?}"),
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "it waited {:?}, which is not a deadline",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn dropping_one_end_stops_the_other_rather_than_leaving_it_waiting() {
+        // The third property a socket has and a `Vec` does not: a closed peer is visible. The unwrap is what would hang if
+        // the close did not wake the reader.
+        let (here, there) = MemoryStream::pair();
+        let mut link = link_with_stream(here, LOCAL, PEER);
+        drop(there);
+
+        assert!(matches!(link.receive(), Err(LinkError::Closed)));
+    }
+
+    /// A link over anything that carries bytes.
+    fn link_with_stream(stream: impl LinkStream + 'static, local: &str, peer: &str) -> PeerLink {
+        PeerLink::new(stream, device(local), device(peer), agreed(), Flags::no_timeout())
     }
 
     fn link(stream: TcpStream, local: &str, peer: &str) -> PeerLink {
