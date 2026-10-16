@@ -193,6 +193,7 @@ impl Kernel for Runtime {
     /// [`Refusal`] naming what the user got wrong: the path, the device, or the transfer.
     fn send_file(&self, to: &str, path: &str) -> Result<serde_json::Value, Refusal> {
         let now = synra_store::sqlite::now_ms();
+        let started = std::time::Instant::now();
         let trace_id = synra_protocol::ids::TraceId::new();
         let source = PathBuf::from(path);
 
@@ -301,6 +302,28 @@ impl Kernel for Runtime {
         // as a plain success would claim knowledge this device does not have.
         //
         // So both are said. `sent` is what this device did; `confirmed` is what it heard back.
+        // ★ The two things the successful path can answer: how big it was, and how long it took.
+        //
+        // `transfers_total{outcome}` is deliberately **not** here. This method has several early returns — a path that
+        // does not exist, an address that cannot be resolved, a handshake that fails — and a counter written on the
+        // success path alone would count the transfers that worked and say nothing about the ones a user asks about,
+        // which is the same mistake the intent counter next door exists to avoid. That one needs every exit to pass one
+        // place, and this method cannot get that without restructuring a `Kernel` trait method's body — tried this round
+        // and backed out, because the surgery cost more than the metric.
+        self.metrics.histogram_observe(
+            &synra_observe::metrics::SeriesKey::new(
+                "transfer_bytes",
+                [("kind".to_owned(), "attachment".to_owned())],
+            ),
+            bytes as f64,
+        );
+        self.metrics.histogram_observe(
+            &synra_observe::metrics::SeriesKey::new(
+                "transfer_duration_ms",
+                [("kind".to_owned(), "attachment".to_owned())],
+            ),
+            started.elapsed().as_secs_f64() * 1_000.0,
+        );
         Ok(serde_json::json!({
             "sent": true,
             "confirmed": confirmed,
