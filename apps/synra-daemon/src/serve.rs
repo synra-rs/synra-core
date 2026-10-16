@@ -241,6 +241,7 @@ fn sleep_until_shutdown(
 /// synced" with the wrong rows, and a user reading it would have no way to tell which line was a plugin.
 fn record_received(
     db: &Mutex<synra_store::SynraDb>,
+    data_dir: &std::path::Path,
     transfer: &synra_core::listener::FinishedTransfer,
 ) -> Option<synra_core::plugin_sync::SyncOutcome> {
     let Some(plugin_id) = transfer.bundle.clone() else {
@@ -314,14 +315,26 @@ fn record_received(
     // This is the first caller `insert_plugin` and `plugin_is_installed` have had.
     let _ = db.lock().insert_plugin(plugin_id.as_str(), true, false, "unknown", now, now);
 
-    // ★ 回给对端的是**实际做过的事**。
+    // ★ 而这三项是这一侧**真的能做**的检查 —— 于是 `performed` 不再是空的。
+    //
+    // ★ 而另外四项（`PackageDigest`、`Signature`、`Manifest`、`ArchiveLimits`）与 `SessionComplete`
+    // **做不了**，理由是一个真实的设计冲突而不是省略：`ReceiverCheck::verify_digest` 与
+    // `check_session_complete` 都要一个 `SyncSession`，而传输路径用的是 `TransferReceiver` ——
+    // 两套块记账，形状不同（第 137 轮对 `SyncInbox` 的那个判断，对这里是同一个事实）。
+    // 把其中任何一项记成「做过」，都会让 ⑨ 写下一件没发生的事。
+    let mut check = synra_core::plugin_sync::ReceiverCheck::new();
+    let _ = check.check_room(data_dir, transfer.byte_length);
+    let _ = check.decide_activation(true);
+    let _ = check.keep_local_grants(true);
+
+    // ★ 回给对端的是**实际做过的事**（上面三项），而不是一份「都检查过了」的清单。
     //
     // `performed` 是空的，而那不是省略：它列的是 ⑧ 的七项**检查**义务（`PackageDigest`、`Signature`、
     // `Manifest`、`ArchiveLimits`、`SessionComplete`、`LocalActivation`、`LocalGrants`），
     // 而这个内核**一项都还没有跑** —— 它做的是安装。一个声称检查过的 outcome 会让 ⑨ 写下一件没发生的事。
     //
     // `activated` 是 `true`，因为安装时那个插件是被启用的（第 151 轮），而「启用」是这一侧的政策。
-    Some(synra_core::plugin_sync::SyncOutcome::installed(
+    Some(check.finish(
         plugin_id,
         synra_core::plugin_sync::SyncSessionId::new(
             transfer
@@ -329,8 +342,6 @@ fn record_received(
                 .map_or_else(String::new, |session| session.to_string()),
         ),
         transfer.version.clone().unwrap_or_default(),
-        true,
-        Vec::new(),
     ))
 }
 
@@ -712,10 +723,16 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
     // So writing the row needs either a second `Arc` alongside `shared_db` or a clone taken before it is consumed;
     // that is a one-line change to a signature, and it is the next round's first step. Until then this says what
     // arrived rather than pretending to have recorded it.
+    // ★ 用 `data_dir`（上面那个 `let data_dir = runtime.data_dir.clone();`）而不是 `plan.data_dir`。
+    //
+    // 这个闭包是 `move` 而且必须是 `'static`，而 `plan` 借自 `decision` —— `decision` 只在这个函数体内有效。
+    // 第一次写的是 `plan.data_dir.clone()`，编译说 "borrowed data escapes"：**表达式里提到 `plan`
+    // 就会让闭包捕获那个借用**，即使 `clone()` 的结果是 owned 的。
+    let plugins_root = std::path::PathBuf::from(&data_dir);
     let on_finished: synra_core::listener::FinishedCallback = {
         let history_db = Arc::clone(&history_db);
         Arc::new(move |transfer: &synra_core::listener::FinishedTransfer| {
-            record_received(&history_db, transfer)
+            record_received(&history_db, &plugins_root, transfer)
         })
     };
     synra_core::listener::serve(&peers, token, &data_dir, &desk, &router, &on_finished);
@@ -891,7 +908,7 @@ mod tests {
         // 以及两者之间的转换（第 136 轮）。在此之前它们各自有读者、有测试、没有调用者。
         let db = a_database();
         let transfer = a_bundle();
-        super::record_received(&db, &transfer);
+        super::record_received(&db, std::path::Path::new("."), &transfer);
 
         let rows = db.lock().sync_log(None, 10).expect("reads");
         assert_eq!(rows.len(), 1, "the bundle was not recorded: {rows:?}");
@@ -909,7 +926,7 @@ mod tests {
         let db = a_database();
         let mut attachment = a_bundle();
         attachment.bundle = None;
-        super::record_received(&db, &attachment);
+        super::record_received(&db, std::path::Path::new("."), &attachment);
 
         assert!(
             db.lock().sync_log(None, 10).expect("reads").is_empty(),
@@ -924,7 +941,7 @@ mod tests {
         // 第 134 轮建了这张表、第 136 轮做了转换、第 149 轮接上了历史 —— 到这一轮它才第一次有写者。
         let db = a_database();
         let transfer = a_bundle();
-        super::record_received(&db, &transfer);
+        super::record_received(&db, std::path::Path::new("."), &transfer);
 
         let rows = db.lock().sync_records().expect("reads");
         assert_eq!(rows.len(), 1, "what the peer holds was not recorded: {rows:?}");
@@ -941,7 +958,7 @@ mod tests {
         // ★ 这一条把两个在 `synra-store` 里写好了、测过了、而**没有任何生产代码调用过**的函数接上了：
         // `insert_plugin` 与 `plugin_is_installed`。
         let db = a_database();
-        super::record_received(&db, &a_bundle());
+        super::record_received(&db, std::path::Path::new("."), &a_bundle());
 
         assert!(
             db.lock().plugin_is_installed("@acme/chat").expect("reads"),
