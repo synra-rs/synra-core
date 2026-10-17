@@ -12,6 +12,44 @@ fn sender_of(label: &str, bytes: &[u8]) -> (std::path::PathBuf, TransferSender) 
 }
 
 #[test]
+fn the_blocks_arrive_over_a_real_link() {
+    // ★ The end-to-end shape without a socket: two `MemoryStream`s behave as one connection, so the sender's loop, the frame
+    // encoder and the receiver's decoder all run for real. A send that only ever ran against a closure could pass while
+    // producing frames no peer could read.
+    //
+    // ★ Capacity, not a deadline, is what this test needs: the default pipe holds 64 KiB per direction, and sending before
+    // reading fills it, so the write blocks and the test hangs. Room for both blocks is the fix; a read deadline would only
+    // have turned a deadlock into a timeout.
+    use crate::link::Inbound;
+    use crate::link::PeerLink;
+    use crate::link::memory::MemoryStream;
+    use crate::peer::Flags;
+    use synra_protocol::handshake::Agreed;
+    use synra_protocol::ids::DeviceId;
+
+    let (near, far) = MemoryStream::pair_with_capacity(4 * 1024 * 1024);
+    let agreed = Agreed { common: Vec::new(), missing_required: Vec::new() };
+    let local = DeviceId::new();
+    let peer = DeviceId::new();
+    let mut sending = PeerLink::new(near, local, peer, agreed.clone(), Flags::no_timeout());
+    let mut receiving = PeerLink::new(far, peer, local, agreed, Flags::no_timeout());
+
+    let (path, mut sender) = sender_of("memory", &vec![9u8; 2 * DEFAULT_CHUNK_SIZE as usize]);
+    let total = sender.blocks().len();
+
+    send_blocks(&mut sender, |index, data| sending.send_chunk(index, data), |_, _| {}).expect("it sends");
+
+    for expected in 0..total {
+        match receiving.receive_inbound().expect("a block") {
+            Inbound::Block { chunk_id, .. } => assert_eq!(chunk_id as usize, expected, "blocks arrive in order"),
+            other => panic!("expected a block, got {other:?}"),
+        }
+    }
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn every_block_is_sent_once_and_progress_is_reported() {
     // ★ Three claims: the bytes arrive complete, each block goes out once, and the progress numbers end at the total — a
     // progress bar that stops at 80% is the failure this asserts against.
