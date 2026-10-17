@@ -32,12 +32,14 @@ mod digest;
 mod error;
 mod plan;
 mod receiver;
+mod send;
 mod sender;
 
 pub use digest::ObjectDigest;
 pub use error::TransferError;
 pub use plan::{Block, DEFAULT_CHUNK_SIZE, MAX_CHUNK_SIZE, plan_blocks};
 pub use receiver::{Absorbed, TransferReceiver};
+pub use send::{SendBlocksError, send_blocks};
 pub use sender::TransferSender;
 
 #[cfg(test)]
