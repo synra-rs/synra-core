@@ -257,6 +257,60 @@ impl SigningSubject {
         missing.sort();
         missing
     }
+
+    /// The first difference between what was signed and what a package was found to contain.
+    ///
+    /// # Why this is on the subject rather than at each call site
+    ///
+    /// Because it was at each call site, and one of them did not do it. `tools/synra-plugin-cli` compared the manifest
+    /// digest, the artifact map and the manifest's coverage; `synra-plugin-host`'s verify pipeline compared **none of
+    /// the three** — so a package could carry a genuine signature over somebody else's bytes and pass every check.
+    /// Both sides now call this, and there is one place for the rule.
+    ///
+    /// # Why a sentence rather than a boolean
+    ///
+    /// Because the caller has to tell an author *what* does not agree. "The signature covers different bytes" sends
+    /// them to re-sign a package that may be perfectly good; "`plugin.wasm`: the signature covers X, the package has
+    /// Y" tells them the artifact was rebuilt after it was signed.
+    ///
+    /// The comparison is by name order, so the sentence a test asserts is stable across runs.
+    #[must_use]
+    pub fn mismatch(&self, manifest_digest: &str, artifacts: &Digests) -> Option<String> {
+        if self.manifest != manifest_digest {
+            return Some(format!(
+                "the signed manifest is {}, the package's is {manifest_digest}",
+                self.manifest
+            ));
+        }
+        if self.artifacts == *artifacts {
+            return None;
+        }
+        for (name, signed) in self.artifacts.iter() {
+            match artifacts.get(name) {
+                Some(found) if found == signed => {}
+                Some(found) => {
+                    return Some(format!("{name}: the signature covers {signed}, the package has {found}"));
+                }
+                None => {
+                    return Some(format!("{name}: the signature covers it and the package does not carry it"));
+                }
+            }
+        }
+        for name in artifacts.names() {
+            if !self.artifacts.contains(name) {
+                return Some(format!("{name}: the package carries it and the signature does not cover it"));
+            }
+        }
+        // Unreachable while `Digests` is a map of the same pairs, and kept rather than `expect`: this crate is
+        // `forbid(unsafe_code)` and `deny(unwrap_used)`, and "cannot happen" still has to return something.
+        Some("the artifact digests differ".to_owned())
+    }
+
+    /// Whether what was signed is exactly what the package contains.
+    #[must_use]
+    pub fn matches(&self, manifest_digest: &str, artifacts: &Digests) -> bool {
+        self.mismatch(manifest_digest, artifacts).is_none()
+    }
 }
 
 /// Writes a string as a JSON string literal, following the JSON rules.

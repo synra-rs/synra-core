@@ -25,7 +25,7 @@
 //! already has — rather than about the package.
 
 use synra_plugin_api::manifest::{Manifest, ManifestContext, ValidationLevel};
-use synra_plugin_api::publisher::{PluginTrust, PublisherTrustStore, SignatureFile};
+use synra_plugin_api::publisher::{Digests, PluginTrust, PublisherTrustStore, SignatureFile};
 
 use crate::host_surface;
 
@@ -136,6 +136,21 @@ pub enum VerifyError {
         reason: String,
     },
 
+    /// The signature is genuine, and it covers different bytes than the package contains.
+    ///
+    /// # Why this is not [`Self::BadSignature`]
+    ///
+    /// Because the next step differs. A bad signature is a document, a key or a transfer that was altered — signing
+    /// again is the fix. This one is a package and a signature that do not belong together: an artifact rebuilt after
+    /// signing, a manifest edited afterwards, a `signature.json` copied from another release. Re-signing is the right
+    /// answer there too, but "the signature could not be verified" would send an author to look for a corruption that
+    /// is not there.
+    #[error("the signature is valid but covers different bytes: {detail}")]
+    SignatureCoversOtherBytes {
+        /// The first difference, in a sentence naming the file.
+        detail: String,
+    },
+
     /// A signature was required and there is none.
     #[error("this package is unsigned and this host requires a signature")]
     Unsigned,
@@ -228,6 +243,17 @@ pub struct Candidate<'a> {
     pub declared_digest: Option<&'a str>,
     /// The artifact's own digest, computed by whoever fetched it.
     pub actual_digest: &'a str,
+    /// The digest of the manifest's bytes, in the same SRI form the signature uses.
+    ///
+    /// A field rather than a value this pipeline computes, because this crate is given bytes and touches neither a
+    /// filesystem nor a hash function: whoever read the package is who computes it, and a second implementation of
+    /// "which bytes, which encoding" would be a second answer to a question that has one.
+    pub manifest_digest: &'a str,
+    /// Every artifact the package contains, by file name, with the SRI digest of its bytes.
+    ///
+    /// The whole set rather than the one artifact the runtime names, because the signature covers the set: a file
+    /// added after signing makes a different package, and comparing a single digest would not see it.
+    pub artifacts: &'a Digests,
     /// The `signature.json` text, when the package carries one.
     pub signature: Option<&'a str>,
     /// Whether this host requires a signature.
@@ -456,6 +482,17 @@ pub fn verify(candidate: &Candidate<'_>, trust: &PublisherTrustStore) -> Result<
                     VerifyError::BadSignature { reason: "the signature does not verify".to_owned() },
                 ));
             };
+            // ★ A signature that verifies proves somebody signed *a* subject. This is the step that asks whether it
+            // is *this* package's subject — and until it existed, nothing did: the pipeline verified the signature and
+            // then asked no further question, so replacing `plugin.wasm` beside a genuine `signature.json` produced a
+            // package every check passed. The comparison lives on the subject rather than here because the CLI needs
+            // the same one, and "two implementations of one rule" is the shape this codebase keeps removing.
+            //
+            // Before the trust step, because a publisher prompt about a package that does not match its signature is
+            // a question about the wrong thing.
+            if let Some(detail) = document.subject.mismatch(candidate.manifest_digest, candidate.artifacts) {
+                return Err((Stage::Signature, VerifyError::SignatureCoversOtherBytes { detail }));
+            }
             steps.push(Step {
                 stage: Stage::Signature,
                 verdict: Verdict::Pass,
