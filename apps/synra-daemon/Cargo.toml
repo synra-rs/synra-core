@@ -39,6 +39,10 @@ proptest.workspace = true
 # One test needs a nil device identifier, and the protocol refuses to produce one from a string or from `Default` — so it
 # has to be built from a raw UUID.
 uuid.workspace = true
+# Signing fixtures for the scan's signature check. A hand-written `signature.json` cannot be genuine, and the case that
+# matters is a **valid** document over **other** bytes — so the test that wants it has to sign something.
+ed25519-dalek.workspace = true
+base64.workspace = true
 
 [lints]
 workspace = true

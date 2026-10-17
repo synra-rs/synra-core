@@ -260,10 +260,24 @@ pub fn record_discovered_plugins(
             });
             continue;
         };
-        if serde_json::from_str::<synra_plugin_api::Manifest>(&text).is_err() {
+        let Ok(manifest) = serde_json::from_str::<synra_plugin_api::Manifest>(&text) else {
             found.push(Discovered {
                 plugin_id,
                 problem: Some("the manifest is not readable".to_owned()),
+            });
+            continue;
+        };
+
+        // ★ A signature in the directory is checked here, because this scan is the **second** way into `plugins/`.
+        //
+        // `plugin install` runs the eleven checks; a directory copied in by hand — which is what an author does while
+        // developing, and what this scan exists for — used to be recorded as installed on the strength of a manifest.
+        // So a package whose `plugin.wasm` had been replaced beside a genuine `signature.json` became an installed
+        // plugin, and the consent prompt would then be about a document nobody had signed.
+        if let Some(problem) = signature_problem(&path, &manifest, &text) {
+            found.push(Discovered {
+                plugin_id,
+                problem: Some(problem),
             });
             continue;
         }
@@ -275,6 +289,68 @@ pub fn record_discovered_plugins(
     }
 
     found
+}
+
+/// Whether a package's own signature agrees with the bytes in its directory.
+///
+/// # Why the scan checks this and does not run the eleven checks
+///
+/// Because the scan runs at every start and the full pipeline compiles an artifact; a signature check costs one hash per
+/// file and no engine. What it catches is the case that matters for a hand-copied directory: **the signature does not
+/// describe what is here** — a replaced artifact, an edited manifest, a `signature.json` copied from another release.
+///
+/// # Why an unsigned package is not refused
+///
+/// Because that is what an author's own build produces, and this workspace's design allows a local unsigned install in
+/// development. The row it gets is untrusted and disabled, so the consent prompt is still the gate; what changes is
+/// that a *signed* package can no longer claim to be one while carrying other bytes.
+fn signature_problem(
+    directory: &Path,
+    manifest: &synra_plugin_api::Manifest,
+    manifest_json: &str,
+) -> Option<String> {
+    let text = match std::fs::read_to_string(directory.join("signature.json")) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) => return Some(format!("signature.json could not be read: {error}")),
+    };
+    let document = match synra_plugin_api::publisher::SignatureFile::parse(&text) {
+        Ok(document) => document,
+        Err(error) => return Some(format!("signature.json is not a signature document: {error}")),
+    };
+    let outcome = match document.verify() {
+        Ok(outcome) => outcome,
+        Err(error) => return Some(format!("the signature does not verify: {error}")),
+    };
+    let synra_plugin_api::publisher::VerifyOutcome::Good { fingerprint } = outcome else {
+        return Some("the signature does not verify".to_owned());
+    };
+
+    let mut digests = synra_plugin_api::publisher::Digests::new();
+    for name in super::install::artifact_names(manifest) {
+        let bytes = match std::fs::read(directory.join(&name)) {
+            Ok(bytes) => bytes,
+            Err(error) => return Some(format!("{name}, which the manifest names, could not be read: {error}")),
+        };
+        digests.insert(name, synra_core::ObjectDigest::of(&bytes).as_sri().to_string());
+    }
+    // ★ The manifest's digest is the contract's own function, not an SRI hash: `manifest_digest` hashes the bytes on
+    // disk in hex, which is what the CLI signs against. Artifacts are SRI — the two encodings differ on purpose, and
+    // using the wrong one for either side makes a genuine signature look like it covers a different document.
+    let manifest_digest = synra_plugin_api::manifest_digest(manifest_json);
+    if let Some(detail) = document.subject.mismatch(&manifest_digest, &digests) {
+        // The same wording the pipeline's own refusal uses, so two reports of one condition read alike.
+        return Some(format!("the signature covers different bytes: {detail}"));
+    }
+
+    // A revoked key, or a key that changed for a publisher this device has seen, is a refusal a user cannot consent past.
+    // An unknown publisher is not: that is the first install from somebody, and consent is where the user decides.
+    if let synra_plugin_api::publisher::PluginTrust::Untrusted { why } =
+        synra_plugin_api::publisher::PublisherTrustStore::new().classify(&document.publisher.id, &fingerprint)
+    {
+        return Some(format!("the publisher is not trusted: {why}"));
+    }
+    None
 }
 
 /// One plugin directory the daemon looked at, and what came of it.

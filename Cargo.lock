@@ -1819,7 +1819,9 @@ dependencies = [
 name = "synra-daemon"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "clap",
+ "ed25519-dalek",
  "parking_lot",
  "proptest",
  "serde",

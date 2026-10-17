@@ -191,7 +191,12 @@ pub fn from_directory(
         Vec::new()
     };
 
-    let manifest_digest = ObjectDigest::of(manifest_json.as_bytes()).as_sri().to_string();
+    // ★ The manifest's digest is the contract's own function, not a hash this module computes.
+    //
+    // `manifest_digest` hashes the bytes as they are on disk, in hex — which is what the plugin CLI signs and what the
+    // shell records a consent decision against. Computing an SRI digest here (the artifact encoding) made every signed
+    // package look like one whose signature covered a different manifest.
+    let manifest_digest = synra_plugin_api::manifest_digest(&manifest_json);
     let artifact_digest = match &headless {
         Some(name) => digests.get(name).unwrap_or_default().to_owned(),
         None => ObjectDigest::of(&[]).as_sri().to_string(),
@@ -313,7 +318,10 @@ fn discard(directory: &Path, files: &[(String, Vec<u8>)]) {
 }
 
 /// Every file the manifest says the package consists of.
-fn artifact_names(manifest: &Manifest) -> Vec<String> {
+///
+/// `pub(crate)` because the startup scan hashes the same set: an artifact list read one way by the install and another
+/// way by the scan would be two answers to "what is in this package".
+pub(crate) fn artifact_names(manifest: &Manifest) -> Vec<String> {
     let mut names = Vec::new();
     if let Some(headless) = &manifest.runtime.headless {
         names.push(headless.artifact.clone());
