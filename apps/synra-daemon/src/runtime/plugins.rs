@@ -327,7 +327,7 @@ fn signature_problem(
     };
 
     let mut digests = synra_plugin_api::publisher::Digests::new();
-    for name in super::install::artifact_names(manifest) {
+    for name in synra_core::install::artifact_names(manifest) {
         let bytes = match std::fs::read(directory.join(&name)) {
             Ok(bytes) => bytes,
             Err(error) => return Some(format!("{name}, which the manifest names, could not be read: {error}")),

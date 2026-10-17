@@ -59,6 +59,7 @@ pub mod dispatch;
 pub mod host;
 pub mod identity;
 pub mod inbound;
+pub mod install;
 pub mod intent;
 pub mod kernel;
 pub mod link;
