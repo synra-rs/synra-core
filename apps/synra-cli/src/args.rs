@@ -303,6 +303,20 @@ pub enum PluginAction {
         /// The plugin.
         plugin_id: String,
     },
+    /// Record what a plugin may do.
+    ///
+    /// # Why the capabilities are named rather than confirmed
+    ///
+    /// Because a command line has no way to ask. The interface shows what a plugin declares and the user ticks it; here
+    /// the user names what they allow, and everything declared but not named is recorded as **denied** — the same
+    /// decision, written down where a script can make it too.
+    Consent {
+        /// The plugin.
+        plugin_id: String,
+        /// A capability to allow, repeated for each one. Naming none denies everything the plugin asks for.
+        #[arg(long = "allow", value_name = "CAPABILITY")]
+        allow: Vec<String>,
+    },
     /// Remove a plugin.
     Remove {
         /// The plugin.

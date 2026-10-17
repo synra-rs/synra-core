@@ -178,6 +178,28 @@ pub trait Kernel {
         ))
     }
 
+    /// Records the user's decision about a plugin's capabilities.
+    ///
+    /// # Why the default refuses
+    ///
+    /// As [`Kernel::plugin_install`]: a kernel with no plugin store cannot record a decision, and a double should say so
+    /// rather than answer with an empty success the caller would read as "it was recorded".
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal`] when no plugin has that identifier, or when a granted capability is one the plugin does not declare;
+    /// [`ErrorCode::Unsupported`] by default.
+    fn plugin_consent(
+        &self,
+        _plugin_id: &str,
+        _granted: &[String],
+    ) -> Result<serde_json::Value, Refusal> {
+        Err(Refusal::new(
+            ErrorCode::Unsupported,
+            "this kernel does not record plugin consent",
+        ))
+    }
+
     /// Searches the plugin catalogue.
     ///
     /// # Why this has a default body
@@ -436,6 +458,7 @@ impl Server {
                 kernel.plugin_set_enabled(plugin_id, *enabled)
             }
             Request::PluginInstall { path } => kernel.plugin_install(path),
+            Request::PluginConsent { plugin_id, granted } => kernel.plugin_consent(plugin_id, granted),
             Request::IntentDispatch { mime, text } => kernel.intent_dispatch(mime, text),
             Request::IntentSnapshot { intent } => kernel.intent_snapshot(intent),
             Request::IntentDecide { intent, plugin_id, target } => {
