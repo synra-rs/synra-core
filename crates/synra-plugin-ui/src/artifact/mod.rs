@@ -22,6 +22,7 @@
 mod limits;
 mod bundle;
 mod expand;
+mod unpack;
 mod serving;
 
 #[cfg(test)]
@@ -37,3 +38,4 @@ pub use limits::{
     MAX_ARTIFACT_PATH_LEN, PathRefusal,
 };
 pub use serving::{check_path, content_type_for};
+pub use unpack::{UnpackError, bundle_dir, unpack};
