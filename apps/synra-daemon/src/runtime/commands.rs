@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use synra_control::{Kernel, Refusal};
 use synra_protocol::error::ErrorCode;
 
-use super::refusals::{error_code_for, error_code_for_session, refusal_of};
+use super::refusals::{code_for_install, error_code_for, error_code_for_session, refusal_of};
 use super::{Runtime, now_ms};
 
 /// How long one file transfer may take before the daemon stops waiting.
@@ -258,6 +258,49 @@ impl Kernel for Runtime {
             ));
         }
         self.plugins_value()
+    }
+
+    /// Installs a plugin from a directory, through the eleven checks.
+    ///
+    /// ★ The write that had no caller. `verify::verify` was written, tested against a refusal for each stage, and
+    /// called by nobody: a plugin became installed because a directory appeared, so a package whose signature covered
+    /// other bytes installed exactly as one that was genuine. This is the production caller that closes that.
+    fn plugin_install(&self, path: &str) -> Result<serde_json::Value, Refusal> {
+        // Both locks are held across the install and released before anything is reported. The set's is held because
+        // the backend inside it is what compiles the artifact, and compiling is what tells the pipeline what the
+        // plugin imports; the database's because the row is written at the end of the same act. Neither is held while
+        // the answer is built.
+        let plugins = self.plugins.lock();
+        let backend = plugins.backend();
+        let db = self.db.lock();
+        let outcome = crate::runtime::install_from_directory(
+            &db,
+            backend,
+            &self.plugins_dir,
+            std::path::Path::new(path),
+            // The runtime's clock is `u64` and the database stamps `i64`; saturating rather than `as`, the same
+            // direction as every other stamp in this host — a clock past 2262 should let the daemon run.
+            i64::try_from(now_ms()).unwrap_or(i64::MAX),
+        );
+        drop(db);
+        drop(plugins);
+
+        match outcome {
+            Ok(installed) => Ok(serde_json::json!({
+                "pluginId": installed.plugin_id,
+                "version": installed.version,
+                "path": installed.path.to_string_lossy(),
+                "warnings": installed.warnings,
+                // ★ `false`, and it is an answer rather than a detail: installing is not approving. The row this wrote
+                // is `enabled = false, trusted = false` — the design's `AwaitingConsent` in durable form — and the
+                // user's `plugin enable` is the act that changes it.
+                "enabled": false,
+            })),
+            Err(refusal) => Err(Refusal::new(
+                code_for_install(refusal.stage),
+                format!("{} refused the package: {}", refusal.stage, refusal.reason),
+            )),
+        }
     }
 
     fn logs(&self, lines: usize, verbose: bool, trace: Option<&str>) -> Result<serde_json::Value, Refusal> {

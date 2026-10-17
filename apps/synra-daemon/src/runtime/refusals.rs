@@ -46,6 +46,22 @@ pub(super) const fn error_code_for(error: &synra_core::MessageError) -> ErrorCod
     }
 }
 
+/// The code for a package an install refused.
+///
+/// # Why almost everything here is `InvalidArgument`
+///
+/// Because the argument *is* the package. A path that is not there, a manifest that does not parse, a signature that
+/// covers other bytes and a dependency cycle are all facts about what the caller pointed at, and the detail names which
+/// check refused — the code's job is only to say whose problem it is. The two that are not the caller's are the two
+/// that happen after every check passed: writing the directory and recording the row, which are this kernel failing.
+pub(super) fn code_for_install(stage: &str) -> ErrorCode {
+    match stage {
+        "write" | "record" => ErrorCode::Internal,
+        // `source`, `read`, `manifest` and every verification stage.
+        _ => ErrorCode::InvalidArgument,
+    }
+}
+
 /// The code for a transfer session that failed.
 ///
 /// # Why a transfer failure is not one code

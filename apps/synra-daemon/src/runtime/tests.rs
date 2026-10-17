@@ -10,16 +10,16 @@ use synra_store::{Paired, Seen};
 use super::{Runtime, now_ms};
 
 /// A temporary directory that removes itself.
-struct TempDir(PathBuf);
+pub(super) struct TempDir(PathBuf);
 
 impl TempDir {
-    fn new(name: &str) -> Self {
+    pub(super) fn new(name: &str) -> Self {
         let path = std::env::temp_dir().join(format!("synra-rt-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).expect("a temporary directory");
         Self(path)
     }
-    fn path(&self) -> &Path {
+    pub(super) fn path(&self) -> &Path {
         &self.0
     }
 }
@@ -31,7 +31,7 @@ impl Drop for TempDir {
 }
 
 /// A runtime over a migrated in-memory database, and a plugins directory under `dir`.
-fn runtime(dir: &Path) -> Runtime {
+pub(super) fn runtime(dir: &Path) -> Runtime {
     let mut db = synra_store::SynraDb::open_in_memory().expect("opens");
     db.migrate().expect("migrates");
     runtime_over(dir, std::sync::Arc::new(parking_lot::Mutex::new(db)))

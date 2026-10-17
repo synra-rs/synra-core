@@ -22,6 +22,7 @@
 pub mod catalog;
 mod commands;
 mod devices;
+pub mod install;
 pub mod intent;
 pub(crate) mod intents;
 pub(crate) mod plugin_host;
@@ -30,6 +31,7 @@ mod refusals;
 mod reports;
 mod state;
 
+pub use install::{InstallRefusal, Installed, from_directory as install_from_directory};
 pub use plugins::{
     Discovered, LoadedSummary, Refused, build_set, load_installed, record_discovered_plugins,
 };

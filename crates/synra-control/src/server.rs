@@ -159,6 +159,25 @@ pub trait Kernel {
     /// — the second is a success, and a caller that could not tell them apart would report a typo as a no-op.
     fn plugin_set_enabled(&self, plugin_id: &str, enabled: bool) -> Result<serde_json::Value, Refusal>;
 
+    /// Installs a plugin from a directory on this machine.
+    ///
+    /// # Why the default refuses
+    ///
+    /// For the reason [`Kernel::catalog_search`]'s does: a kernel that cannot install is a kernel, not a broken one, and
+    /// a double in this crate's tests should not have to claim an implementation it does not have. The refusal names
+    /// the absence rather than returning an empty answer, because "installed nothing" and "cannot install" are
+    /// different facts and only one of them is true of such a kernel.
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal`] naming the step that refused the package; [`ErrorCode::Unsupported`] by default.
+    fn plugin_install(&self, _path: &str) -> Result<serde_json::Value, Refusal> {
+        Err(Refusal::new(
+            ErrorCode::Unsupported,
+            "this kernel does not install plugins",
+        ))
+    }
+
     /// Searches the plugin catalogue.
     ///
     /// # Why this has a default body
@@ -416,6 +435,7 @@ impl Server {
             Request::PluginSetEnabled { plugin_id, enabled } => {
                 kernel.plugin_set_enabled(plugin_id, *enabled)
             }
+            Request::PluginInstall { path } => kernel.plugin_install(path),
             Request::IntentDispatch { mime, text } => kernel.intent_dispatch(mime, text),
             Request::IntentSnapshot { intent } => kernel.intent_snapshot(intent),
             Request::IntentDecide { intent, plugin_id, target } => {

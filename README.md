@@ -85,9 +85,10 @@ synra-core/
    `cargo test -p synra-plugin-host --features wasm-runtime` 下有真实组件的单测。**仍缺 spike 5 与 6**
    （多 WebView 独立 origin、CSP 拦 fetch）—— 这两条在桌面上就能跑，是插件 UI 承载的前置。
 3. **接下来要做的**（按依赖顺序）：
-   - **把安装链路接上 11 步校验**：`synra_plugin_host::verify::verify` 至今**没有生产调用者**，daemon 的"安装"是
-     扫描插件目录并记一行（`apps/synra-daemon/src/runtime/plugins.rs`），所以篡改检测、权限变更重新确认、
-     激活失败回滚这三条 M3 退出条件一条都不成立；
+   - ~~把安装链路接上 11 步校验~~ —— **2026-10-18 接上了本地目录这一半**：`Request::PluginInstall` →
+     `Kernel::plugin_install` → `runtime/install.rs`（11 步校验 → 原子落盘 → 写一行 `enabled=false, trusted=false`），
+     所以 `verify::verify` 不再没有生产调用者。仍然缺：registry 安装（全仓无 HTTP 客户端）、逐项授权的
+     `plugin_grants` 写入方、以及 app 侧的 `plugins_install`；
    - **一个示例插件 + 恶意插件套件的最小集**：让"越权被闸门拦住、内核与其它插件仍然可用"有测试，
      而不是只有脚本后端上的断言；
    - `synra-core` 的 `plugins` feature —— `cargo run -p matrix` 里那一行 SKIP 的唯一原因；
