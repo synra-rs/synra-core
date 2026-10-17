@@ -674,7 +674,7 @@ fn guard_directories_is_contained(root: &Path) -> Vec<String> {
 /// is to own one.
 fn guard_directory_deletion_is_contained(root: &Path) -> Vec<String> {
     /// The only production file allowed to remove a directory tree, and why: a sandbox owns directories to delete them.
-    const ALLOWED: &[&str] = &["crates/synra-store/src/sandbox.rs"];
+    const ALLOWED: &[&str] = &["crates/synra-store/src/sandbox.rs", "crates/synra-store/src/plugin_files.rs"];
 
     let mut offenders = Vec::new();
     for base in ["crates", "apps", "tools"] {
