@@ -70,6 +70,23 @@ pub struct RemoteState {
 }
 
 impl RemoteState {
+    /// Reads one entry of a peer's answer.
+    ///
+    /// # Why this is a mapping and not a `From`
+    ///
+    /// Because the two types are allowed to disagree — that is the point of having both. [`PluginSummary`] is what goes on the
+    /// wire and must not depend on the kernel; this is the kernel's opinion of it. A `From` would read as "these are the same
+    /// thing in two spellings", and the first field that means something slightly different on each side would make that a lie.
+    #[must_use]
+    pub fn from_summary(summary: &synra_protocol::session::PluginSummary) -> Self {
+        Self {
+            plugin_id: summary.plugin_id.clone(),
+            version: summary.version.clone(),
+            digest: summary.digest.clone(),
+            active: summary.active,
+        }
+    }
+
     /// A device that does not have the plugin at all.
     #[must_use]
     pub const fn absent(plugin_id: PluginId) -> Self {
