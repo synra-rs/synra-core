@@ -66,7 +66,16 @@ base64 = "0.22"
 # standard library has no portable free-space query — and a diagnosis a user cannot act on beyond "free some disk space" is
 # half a diagnosis. `sysinfo` reads the mount table and reports `available_space`, in safe Rust, which matters because this
 # workspace forbids `unsafe_code`: the alternative is FFI to `GetDiskFreeSpaceExW`/`statvfs`, which cannot be written here.
-sysinfo = { version = "0.39", default-features = false, features = ["disk"] }
+sysinfo = { version = "0.38", default-features = false, features = ["disk"] }
+# ★ **0.38 rather than 0.39, and the reason is the `rust-version` on line 34.**
+#
+# `sysinfo 0.39.0` was the first release to require rustc **1.95**; every 0.38.x release supports **1.88**, which is what
+# this workspace promises. Left at `"0.39"`, `cargo +1.88 check` failed at resolution rather than at compile time — so the
+# MSRV guard had been reporting a promise that could not be kept, and the failure named the dependency rather than the
+# promise. The APIs used (`Disks::new_with_refreshed_list`, `available_space`) are the same in both lines.
+#
+# Raising `rust-version` instead would have been the other way to green the guard, and a worse one: it would weaken the
+# promise to match one diagnostic dependency rather than keeping the dependency inside the promise.
 
 # ── 外部：可观测性 ──
 tracing = "0.1"
