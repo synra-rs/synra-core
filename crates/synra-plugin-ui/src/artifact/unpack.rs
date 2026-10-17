@@ -38,13 +38,13 @@ pub enum UnpackError {
 /// [`UnpackError`] when the archive cannot be read, an entry is refused, a limit is exceeded, or a file cannot be written.
 /// A refused archive leaves whatever was written before the refusal — the caller is expected to unpack into a directory it
 /// discards on failure, which is what `synra-core`'s install staging is for.
-pub fn unpack(archive: &Path, dest: &Path, limits: ArchiveLimits) -> Result<usize, UnpackError> {
+pub fn unpack(archive: &Path, dest: &Path, limits: ArchiveLimits) -> Result<Vec<PathBuf>, UnpackError> {
     let mut zip = zip::ZipArchive::new(std::fs::File::open(archive)?)?;
     if zip.len() > limits.max_entries {
         return Err(ArtifactError::TooManyFiles { found: zip.len(), limit: limits.max_entries }.into());
     }
 
-    let mut written = 0usize;
+    let mut written: Vec<PathBuf> = Vec::new();
     let mut total = 0u64;
     for index in 0..zip.len() {
         let mut entry = zip.by_index(index)?;
@@ -76,7 +76,7 @@ pub fn unpack(archive: &Path, dest: &Path, limits: ArchiveLimits) -> Result<usiz
         let mut file = std::fs::File::create(&target)?;
         std::io::copy(&mut entry, &mut file)?;
         file.flush()?;
-        written += 1;
+        written.push(target);
     }
     Ok(written)
 }
@@ -124,7 +124,7 @@ mod tests {
 
         let written = unpack(&zip, &dest, ArchiveLimits::artifact()).expect("it unpacks");
 
-        assert_eq!(written, 2);
+        assert_eq!(written.len(), 2);
         assert_eq!(std::fs::read(dest.join("index.html")).expect("the page"), b"<!doctype html>");
         assert!(dest.join("assets/app.js").exists(), "and its resource");
     }
