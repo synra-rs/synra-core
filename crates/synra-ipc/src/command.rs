@@ -262,6 +262,9 @@ commands! {
     // capabilities rather than a command name.
     "plugin_ui_rpc" => PluginUi, Plugin, One, true;
     "plugin_ui_ready" => PluginUi, Plugin, Unit, true;
+    // ★ `Host`, and that is the whole point of the row: opening a page is the **host's** act. A plugin page that could ask
+    // for another page would be a plugin that can spawn windows, which is not a capability this model grants.
+    "plugin_ui_open" => PluginUi, Host, Unit, true;
 
     // ── config ──
     "config_get" => Config, Host, One, false;
@@ -495,6 +498,7 @@ mod tests {
             // plugin ui
             "plugin_ui_rpc",
             "plugin_ui_ready",
+            "plugin_ui_open",
             // config
             "config_get",
             "config_set",
