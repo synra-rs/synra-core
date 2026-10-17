@@ -8,8 +8,9 @@ use super::error::{PathRefusal, PlatformError, UrlRefusal};
 use super::guard::*;
 use super::host::*;
 
-    use super::*;
-    use rstest::rstest;
+// ★ No `use super::*;` here: the four globs above are what this file uses, and the fifth was left over from when these
+// lines were inside a `mod tests { … }` whose wrapper the split removed. rustc 1.88 reports it; 1.98 had it cached.
+use rstest::rstest;
 
     /// A directory that is absolute on the platform running the test.
     ///
