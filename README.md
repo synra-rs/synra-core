@@ -92,7 +92,8 @@ synra-core/
    - **一个示例插件 + 恶意插件套件的最小集**：让"越权被闸门拦住、内核与其它插件仍然可用"有测试，
      而不是只有脚本后端上的断言；
    - `synra-core` 的 `plugins` feature —— `cargo run -p matrix` 里那一行 SKIP 的唯一原因；
-   - 前端接上：`synra-app` 注册了 21/40 条命令，事件桥还不存在。
+   - 前端接上：`synra-app` 注册了 22/40 条命令，事件桥还不存在。安装命令（`plugins_install`）已接上，
+     它调用的是同一个 `synra_core::install`；插件页还差 UI。
 
    CI 已经就位（`.github/workflows/ci.yml`：clippy / test / MSRV / guards / matrix），所以上面每一条
    落地之后都不需要再"记得跑一遍"。

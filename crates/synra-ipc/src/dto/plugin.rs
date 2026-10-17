@@ -140,6 +140,29 @@ pub enum InstallSourceDto {
     },
 }
 
+/// What an install did.
+///
+/// # Why this is not a [`PluginSnapshot`]
+///
+/// Because the two answer different questions: a snapshot describes a plugin that exists, and this describes an act that
+/// just happened — including what a user has to be **told**. A plugin that installed but whose notification action this
+/// host cannot perform is a warning, and a report that dropped it would present a plugin that half-works as one that
+/// works.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallReport {
+    /// The plugin that is now installed.
+    pub plugin_id: PluginId,
+    /// The version that landed.
+    pub version: String,
+    /// The checks that passed with a warning, in sentences an interface can show.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+    /// Whether it is enabled. **Always `false` from an install**: installing is not approving, and the field is here so
+    /// that a caller cannot read its absence as "it is probably on".
+    pub enabled: bool,
+}
+
 /// What to do with the plugin's data when removing it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use synra_control::{Kernel, Refusal};
 use synra_protocol::error::ErrorCode;
 
-use super::refusals::{code_for_install, error_code_for, error_code_for_session, refusal_of};
+use super::refusals::{error_code_for, error_code_for_session, refusal_of};
 use super::{Runtime, now_ms};
 
 /// How long one file transfer may take before the daemon stops waiting.
@@ -297,7 +297,7 @@ impl Kernel for Runtime {
                 "enabled": false,
             })),
             Err(refusal) => Err(Refusal::new(
-                code_for_install(refusal.stage),
+                refusal.code(),
                 format!("{} refused the package: {}", refusal.stage, refusal.reason),
             )),
         }
