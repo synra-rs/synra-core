@@ -81,6 +81,13 @@ pub enum KernelEvent {
         intent_id: IntentId,
     },
 
+    // ── Configuration ──
+    /// The configuration changed, in full.
+    ///
+    /// Carries the whole snapshot rather than the patch that produced it: the patch is the caller's own input, and a
+    /// reader that reassembled the two would be re-deriving what the kernel already knows.
+    ConfigUpdated(Box<crate::dto::ConfigSnapshot>),
+
     // ── Transfers ──
     /// A transfer's progress or state changed.
     TransferUpdated(Box<TransferSnapshot>),
@@ -92,8 +99,7 @@ pub enum KernelEvent {
 
     // ── Plugins ──
     /// A plugin was installed, removed, enabled, disabled or faulted.
-    PluginUpdated(Box<PluginSnapshot>),
-    /// A plugin is being installed, and this much of it has arrived.
+    PluginUpdated(Box<PluginSnapshot>),    /// A plugin is being installed, and this much of it has arrived.
     PluginInstallProgress {
         /// Which plugin.
         plugin_id: PluginId,
@@ -163,6 +169,7 @@ impl KernelEvent {
             Self::PairingResolved { .. } => "pairingResolved",
             Self::IntentUpdated(_) => "intentUpdated",
             Self::IntentFinished { .. } => "intentFinished",
+            Self::ConfigUpdated(_) => "configUpdated",
             Self::TransferUpdated(_) => "transferUpdated",
             Self::TransferFinished { .. } => "transferFinished",
             Self::PluginUpdated(_) => "pluginUpdated",
