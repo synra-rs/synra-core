@@ -1,5 +1,16 @@
 # The feature matrix had nothing to run, and the plugin host was never wired
 
+> **★ Superseded, 2026-10-18 — read this banner before the note.**
+>
+> The seam this note asks for exists now: `synra-core` names both `synra-plugin-host` and `synra-plugin-api` in
+> `dispatch/plugins.rs`, `apps/synra-daemon` constructs a `Board` and a `PluginSet` and passes one to the other, and
+> `runtime/reports.rs` reports a real `loaded` count instead of the hardcoded `false`. What remains is **the `plugins`
+> feature** the matrix row wanted, so `tools/matrix` still prints that row as a SKIP — with a reason that says so
+> rather than repeating "its source never names `synra_plugin_host`", which stopped being true.
+>
+> Kept unedited below because the value of the note is the *shape* of the mistake — a green row over an absent
+> feature — and that shape is what the matrix now refuses to produce.
+
 Two findings from building `tools/matrix`, recorded together because the second one changes what the first one is
 allowed to conclude.
 
