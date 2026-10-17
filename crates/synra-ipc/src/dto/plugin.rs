@@ -36,6 +36,13 @@ pub struct PluginSnapshot {
     /// How much of its quota it is using, for the settings screen.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub health: Option<PluginHealthDto>,
+    /// The capabilities the plugin **declares**, whether or not the user has decided about them.
+    ///
+    /// ★ Why this is not derivable from `granted` + `denied`: before the prompt has been answered both are empty, and
+    /// the prompt itself is "decide about *these*". Without it the interface can only offer "allow everything", which
+    /// is the decision per-capability consent exists to avoid making on the user's behalf.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requested: Vec<String>,
     /// The capabilities the user granted.
     #[serde(default)]
     pub granted: Vec<String>,

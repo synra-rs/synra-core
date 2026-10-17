@@ -309,6 +309,7 @@ fn a_plugin_snapshot_reports_its_state_rather_than_leaving_it_to_be_derived() {
         state: "faulted".to_owned(),
         hybrid: true,
         health: None,
+        requested: vec!["log:*".to_owned()],
         granted: vec!["log:*".to_owned()],
         denied: Vec::new(),
         update: None,
