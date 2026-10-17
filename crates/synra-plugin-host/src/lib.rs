@@ -61,6 +61,10 @@
 pub mod catalog;
 pub mod engine;
 pub mod host_calls;
+
+/// A [host_calls::Host] that refuses everything, for tests. Public so a crate can build a PluginSet in a test without
+/// copying ~170 lines of named refusals.
+pub mod testing;
 pub mod host_surface;
 pub mod lifecycle;
 pub mod pool;
