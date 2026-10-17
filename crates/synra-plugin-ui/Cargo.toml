@@ -17,6 +17,11 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 parking_lot.workspace = true
+# ★ The UI half of a plugin arrives as `ui.zip` (design 01), and unpacking it is this crate's job (design 06: "解包/校验/
+# 目录管理"). `default-features = false` plus `deflate` keeps out the compression backends a UI bundle never uses —
+#
+# and every one of them is code that would otherwise run on an attacker's input.
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 proptest.workspace = true
