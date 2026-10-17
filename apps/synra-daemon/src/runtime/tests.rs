@@ -1821,6 +1821,41 @@ fn consent_records_one_decision_per_capability_and_unlocks_the_plugin() {
 }
 
 #[test]
+fn partial_consent_loads_the_plugin_with_only_what_was_allowed() {
+    // ★ The behaviour the two hosts disagreed about, asserted where it is visible: the loader is given the **granted
+    // subset**, not the manifest's declarations. `log:*` is in the set and `device:list` is not — so the plugin runs and
+    // is refused at the gate for the capability the user declined, which is what a capability gate is for.
+    let dir = TempDir::new("consent-partial");
+    let runtime = runtime(dir.path());
+    let plugin = "@acme/partial";
+    write_plugin(&runtime.plugins_dir, plugin, r#"{"cap": "log:*"}, {"cap": "device:list"}"#);
+    install(&runtime, plugin, 1, 0);
+
+    runtime.plugin_consent(plugin, &["log:*".to_owned()]).expect("the decision is recorded");
+
+    let (mut set, _backend) = loader();
+    let summary = crate::runtime::load_installed(
+        &mut set,
+        &runtime.db(),
+        &runtime.plugins_dir,
+        &synra_observe::crash::StartupVerdict::Clean,
+        &synra_plugin_api::revocation::RevocationList::empty(),
+    );
+    assert!(
+        summary.loaded.iter().any(|loaded| loaded.to_string() == plugin),
+        "{summary:?}"
+    );
+
+    let id = synra_protocol::PluginId::try_from(plugin.to_owned()).expect("a plugin id");
+    let grants = set.grants(&id).expect("the grants the loader built");
+    assert!(grants.contains(&synra_capability::Capability::parse("log:*").expect("a capability")));
+    assert!(
+        !grants.contains(&synra_capability::Capability::parse("device:list").expect("a capability")),
+        "the declined capability must not be in the grant set"
+    );
+}
+
+#[test]
 fn consent_for_a_capability_the_plugin_did_not_ask_for_is_refused() {
     // A typo is the common case and an attempt to widen the decision is the other one; neither should become a row.
     let dir = TempDir::new("consent-unknown");
