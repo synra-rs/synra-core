@@ -384,8 +384,11 @@ pub enum ValidationLevel {
 /// time a manifest has been parsed, field order and whitespace are gone, and two files differing only in those would
 /// hash alike.
 ///
-/// SHA-256 in hex — the same construction the plugin CLI uses for an artifact and the registry uses for an integrity
-/// string, so a reader who recognises one recognises the other.
+/// SHA-256 in hex, and **not** an SRI string. Artifacts are signed and compared as SRI (`sha256-<base64>`); the manifest
+/// is a text document rather than an addressed blob, and this is the encoding the plugin CLI signs and every recorded
+/// consent decision carries. The two encodings differ on purpose — and using this function's sibling by accident is a
+/// genuine signature reported as covering a different manifest, which is why the install and scan paths both call this
+/// rather than hashing for themselves.
 #[must_use]
 pub fn manifest_digest(text: &str) -> String {
     use sha2::Digest as _;

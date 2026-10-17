@@ -850,6 +850,104 @@ fn write_plugin(plugins_dir: &Path, id: &str, capability: &str) {
     std::fs::write(directory.join("plugin.wasm"), b"\0asm\x01\0\0\0").expect("an artifact");
 }
 
+/// Writes a `signature.json` over the package's bytes — or over **other** bytes, when `swap` is set.
+///
+/// # Why this signs instead of writing a document by hand
+///
+/// Because the case that matters is a document that genuinely verifies over bytes the package does not contain: a
+/// hand-written `signature.json` fails at a different check, and a test built on one would pass against an
+/// implementation that never compared anything.
+pub(super) fn sign_plugin(directory: &Path, swap: bool) {
+    use ed25519_dalek::Signer as _;
+
+    let manifest_text = std::fs::read_to_string(directory.join("manifest.json")).expect("a manifest");
+    let wasm = std::fs::read(directory.join("plugin.wasm")).expect("the artifact");
+    let covered = if swap { b"bytes that are not here".to_vec() } else { wasm };
+    let digest = synra_core::ObjectDigest::of(&covered).as_sri().to_string();
+
+    let mut artifacts = synra_plugin_api::publisher::Digests::new();
+    artifacts.insert("plugin.wasm", digest);
+    let subject = synra_plugin_api::publisher::SigningSubject {
+        manifest: synra_plugin_api::manifest_digest(&manifest_text),
+        artifacts,
+    };
+    let signing = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+    let signature = signing.sign(&subject.canonical_bytes());
+    let document = serde_json::json!({
+        "version": synra_plugin_api::publisher::SIGNATURE_VERSION,
+        "publisher": { "id": "@acme" },
+        "algorithm": synra_plugin_api::publisher::ALGORITHM,
+        "signedAt": "unix-ms:1",
+        "pubkey": base64_of(signing.verifying_key().as_bytes()),
+        "subject": {
+            "manifest": subject.manifest,
+            "artifacts": { "plugin.wasm": subject.artifacts.get("plugin.wasm").expect("a digest") },
+        },
+        "signature": base64_of(&signature.to_bytes()),
+    });
+    std::fs::write(directory.join("signature.json"), document.to_string()).expect("a signature");
+}
+
+fn base64_of(bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+#[test]
+fn a_discovered_package_whose_signature_covers_other_bytes_is_not_recorded() {
+    // ★ The second door into `plugins/`. `plugin install` runs the eleven checks; a directory copied in by hand was
+    // recorded as installed on the strength of a manifest, so a replaced `plugin.wasm` beside a genuine
+    // `signature.json` became a plugin the user would then be asked to approve — a prompt about a document nobody
+    // had signed.
+    let dir = TempDir::new("discover-signed-swapped");
+    let runtime = runtime(dir.path());
+    let plugin = "@acme/signed";
+    write_plugin(&runtime.plugins_dir, plugin, r#"{"cap": "log:info"}"#);
+    sign_plugin(&runtime.plugins_dir.join(plugin), true);
+
+    let found = crate::runtime::record_discovered_plugins(&runtime.db(), &runtime.plugins_dir, 500);
+
+    assert_eq!(found.len(), 1);
+    let problem = found[0].problem.as_deref().expect("a reason");
+    assert!(problem.contains("different bytes"), "{problem}");
+    assert!(problem.contains("plugin.wasm"), "{problem}");
+    assert!(!runtime.db().plugin_is_installed(plugin).expect("the table"), "it must not be recorded");
+}
+
+#[test]
+fn a_genuinely_signed_directory_is_recorded() {
+    // The control. Without it, a check that refused every signed package would pass the test above.
+    let dir = TempDir::new("discover-signed-good");
+    let runtime = runtime(dir.path());
+    let plugin = "@acme/signed";
+    write_plugin(&runtime.plugins_dir, plugin, r#"{"cap": "log:info"}"#);
+    sign_plugin(&runtime.plugins_dir.join(plugin), false);
+
+    let found = crate::runtime::record_discovered_plugins(&runtime.db(), &runtime.plugins_dir, 500);
+
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].problem, None, "{found:?}");
+    assert!(runtime.db().plugin_is_installed(plugin).expect("the table"));
+}
+
+#[test]
+fn a_signature_document_that_is_not_one_is_refused_at_discovery() {
+    let dir = TempDir::new("discover-signed-broken");
+    let runtime = runtime(dir.path());
+    let plugin = "@acme/broken-signature";
+    write_plugin(&runtime.plugins_dir, plugin, r#"{"cap": "log:info"}"#);
+    std::fs::write(runtime.plugins_dir.join(plugin).join("signature.json"), "{}").expect("a file");
+
+    let found = crate::runtime::record_discovered_plugins(&runtime.db(), &runtime.plugins_dir, 500);
+
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(
+        found[0].problem.as_deref().is_some_and(|reason| reason.contains("signature")),
+        "{found:?}"
+    );
+    assert!(!runtime.db().plugin_is_installed(plugin).expect("the table"));
+}
+
 /// A loader over a scripted engine, so a test can load without compiling Wasmtime.
 fn loader() -> (synra_core::dispatch::PluginSet, synra_plugin_host::ScriptedBackend) {
     let backend = synra_plugin_host::ScriptedBackend::new();

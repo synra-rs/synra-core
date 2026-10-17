@@ -102,6 +102,38 @@ fn the_signature_file_travels_with_the_package() {
     assert!(db.plugins().expect("the table").is_empty(), "a refused install records nothing");
 }
 
+#[test]
+fn a_signed_package_with_a_genuine_signature_installs() {
+    // The control for the refusal below, and the one that caught a defect: the install pipeline computed the manifest's
+    // digest as an SRI string while the CLI signs it in hex, so every genuinely signed package looked like one whose
+    // signature covered a different document. Without this test the first signed install in the field would have been
+    // the first time anyone found out.
+    let dir = TempDir::new("install-signed-good");
+    let source = package(dir.path(), "source", &manifest(&["log:*"], "plugin.wasm"), &[("plugin.wasm", wasm())]);
+    crate::runtime::tests::sign_plugin(&source, false);
+    let db = database();
+
+    let installed = from_directory(&db, &backend(), &plugins(dir.path()), &source, 1_000).expect("installs");
+
+    assert!(installed.path.join("signature.json").is_file(), "the signature travels with it");
+    assert!(installed.warnings.is_empty(), "{:?}", installed.warnings);
+}
+
+#[test]
+fn a_signed_package_whose_signature_covers_other_bytes_is_refused_at_the_signature() {
+    let dir = TempDir::new("install-signed-swapped");
+    let source = package(dir.path(), "source", &manifest(&["log:*"], "plugin.wasm"), &[("plugin.wasm", wasm())]);
+    crate::runtime::tests::sign_plugin(&source, true);
+    let db = database();
+
+    let refusal = from_directory(&db, &backend(), &plugins(dir.path()), &source, 1_000).expect_err("refused");
+
+    assert_eq!(refusal.stage, "signature", "{}", refusal.reason);
+    assert!(refusal.reason.contains("different bytes"), "{}", refusal.reason);
+    assert!(!plugins(dir.path()).join("@acme/hello").exists());
+    assert!(db.plugins().expect("the table").is_empty());
+}
+
 // ── The paths that do not ───────────────────────────────────────────────────────────────────────────────────────
 
 #[test]
