@@ -10,8 +10,8 @@
 > | [`synra-app`](https://github.com/synra-rs/synra-app)      | Tauri 应用（桌面 + 移动 + 宿主 UI）             |
 > | [`design-docs`](https://github.com/synra-rs/design-docs)  | 设计文档（唯一权威）                           |
 >
-> ✅ **已在实现中。** 21 个 workspace 成员：15 个库、2 个二进制（`synra-cli` / `synra-daemon`）、4 个工具
-> （插件 CLI、WIT 代码生成、结构守卫、API 快照守卫）。线协议、能力 DSL、UDP 发现与 TCP 传输、配对、会话与传输、
+> ✅ **已在实现中。** 25 个 workspace 成员：16 个库、2 个二进制（`synra-cli` / `synra-daemon`）、7 个工具
+> （插件 CLI、WIT 代码生成、结构守卫、API 快照守卫、feature 矩阵、文档链接、文档数量断言）。线协议、能力 DSL、UDP 发现与 TCP 传输、配对、会话与传输、
 > SQLite 存储、可观测性、插件沙箱（能力表、配额、生命周期、实例池、执行层）都已落地并有单测。
 >
 > 未完成的部分写在每个 crate 的 `lib.rs` 顶部（"what is not here"）与 [19 路线图](https://github.com/synra-rs/design-docs/blob/main/19-roadmap.md)；
@@ -81,14 +81,20 @@ synra-core/
      与 [11 设计原则](https://github.com/synra-rs/design-docs/blob/main/11-design-principles.md)（已踩过的坑）；
    - 再读 [06 Workspace 与 Crate 规划](https://github.com/synra-rs/design-docs/blob/main/06-workspace-layout.md)。
 2. **M0 的技术验证 spike**（[19 路线图 §0.1](https://github.com/synra-rs/design-docs/blob/main/19-roadmap.md)）
-   —— UDP 局域网发现与配对已经在真机 loopback 上验证；`wasmtime` 组件模型在
-   `cargo test -p synra-plugin-host --features wasm-runtime` 下有真实组件的单测；只剩 Tauri 移动端要等 `synra-app`。
+   —— Android 交叉编译（wasmtime + rusqlite）已通过；`wasmtime` 组件模型在
+   `cargo test -p synra-plugin-host --features wasm-runtime` 下有真实组件的单测。**仍缺 spike 5 与 6**
+   （多 WebView 独立 origin、CSP 拦 fetch）—— 这两条在桌面上就能跑，是插件 UI 承载的前置。
 3. **接下来要做的**（按依赖顺序）：
-   - `synra-plugin-host` 的宿主函数绑定：`wit/synra-plugin.wit` 的 33 个函数要用组件模型的生成绑定接上
-     （表已生成，见 `host_surface`；现在导入这些函数的组件会在装载期被拒绝）；
-   - `synra-core` 的 `Kernel` 聚合与 `Supervisor`；
-   - 插件安装链路：11 步校验、`signature.json`、发布者信任、归档解包安全、registry 客户端；
-   - `justfile` / CI / `api/*.txt` 快照。
+   - **把安装链路接上 11 步校验**：`synra_plugin_host::verify::verify` 至今**没有生产调用者**，daemon 的"安装"是
+     扫描插件目录并记一行（`apps/synra-daemon/src/runtime/plugins.rs`），所以篡改检测、权限变更重新确认、
+     激活失败回滚这三条 M3 退出条件一条都不成立；
+   - **一个示例插件 + 恶意插件套件的最小集**：让"越权被闸门拦住、内核与其它插件仍然可用"有测试，
+     而不是只有脚本后端上的断言；
+   - `synra-core` 的 `plugins` feature —— `cargo run -p matrix` 里那一行 SKIP 的唯一原因；
+   - 前端接上：`synra-app` 注册了 21/40 条命令，事件桥还不存在。
+
+   CI 已经就位（`.github/workflows/ci.yml`：clippy / test / MSRV / guards / matrix），所以上面每一条
+   落地之后都不需要再"记得跑一遍"。
 
 ## NOTES
 
