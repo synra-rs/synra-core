@@ -35,6 +35,8 @@ serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+# A UI half is a `ui.zip`, so the install test has to be able to make one.
+zip = { version = "2", default-features = false, features = ["deflate"] }
 proptest.workspace = true
 # One test needs a nil device identifier, and the protocol refuses to produce one from a string or from `Default` — so it
 # has to be built from a raw UUID.

@@ -56,6 +56,69 @@ fn wasm() -> &'static [u8] {
     b"\0asm\x01\0\0\0"
 }
 
+/// A manifest with a UI half, naming both artifacts.
+fn ui_manifest(capabilities: &[&str], artifact: &str, ui: &str) -> String {
+    let declared: Vec<_> =
+        capabilities.iter().map(|cap| serde_json::json!({ "cap": cap })).collect();
+    serde_json::json!({
+        "id": "@acme/hello",
+        "version": "1.2.3",
+        "title": "Hello",
+        "publisher": { "id": "acme" },
+        "sdk": { "min": "1.0.0" },
+        "wit": synra_plugin_host::host_world(),
+        "capabilities": declared,
+        "runtime": {
+            "headless": { "artifact": artifact, "stateful": false },
+            "ui": { "artifact": ui, "entry": "index.html" }
+        }
+    })
+    .to_string()
+}
+
+/// A zip holding these entries, as the bytes a package ships.
+fn ui_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
+    use std::io::Write as _;
+
+    let mut buffer = std::io::Cursor::new(Vec::new());
+    {
+        let mut writer = zip::ZipWriter::new(&mut buffer);
+        for (name, bytes) in entries {
+            writer
+                .start_file(*name, zip::write::SimpleFileOptions::default())
+                .expect("an entry");
+            writer.write_all(bytes).expect("the bytes");
+        }
+        writer.finish().expect("a finished archive");
+    }
+    buffer.into_inner()
+}
+
+#[test]
+fn installing_a_ui_plugin_unpacks_its_bundle_beside_the_artifact() {
+    // ★ The step this asserts is the reason a UI plugin's page can be served at all: the zip is verified like any other
+    // artifact, and then written out where the `synra-plugin://` handler will look — before the rename, so a bundle that
+    // cannot be unpacked is a failed install rather than an installed plugin with a blank window.
+    let dir = TempDir::new("install-ui");
+    let ui = ui_zip(&[("index.html", b"<!doctype html>")]);
+    let source = package(
+        dir.path(),
+        "source",
+        &ui_manifest(&["log:*"], "plugin.wasm", "ui.zip"),
+        &[("plugin.wasm", wasm()), ("ui.zip", &ui)],
+    );
+    let db = database();
+
+    let installed =
+        from_directory(&db, &backend(), &plugins(dir.path()), &source, 1_000).expect("the package is installed");
+
+    assert!(
+        installed.path.join("ui").join("index.html").is_file(),
+        "the page is unpacked under ui/: {:?}",
+        installed.path
+    );
+}
+
 fn plugins(root: &Path) -> PathBuf {
     root.join("plugins")
 }
