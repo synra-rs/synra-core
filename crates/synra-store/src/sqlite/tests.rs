@@ -1033,3 +1033,23 @@ fn the_history_can_be_asked_about_one_plugin() {
     assert_eq!(chat[0].plugin_id, "@acme/chat");
     assert_eq!(db.sync_log(None, 10).expect("reads").len(), 2);
 }
+
+#[test]
+fn removing_a_plugin_takes_its_decisions_with_it() {
+    // ★ Two deletes, one transaction. A grant recorded against a plugin that no longer exists is not history worth
+    // keeping — plugin_grants is the current state — and the row left behind would let a reinstall inherit consent
+    // nobody gave about the new package. The assertion is that both tables agree afterwards, not just the one.
+
+    let mut db = migrated();
+    let plugin = "@acme/removable";
+    db.insert_plugin(plugin, true, true, "installed", 1, 1).expect("a row");
+    db.record_grants(plugin, &[("log:*".to_owned(), true)], 2, "digest").expect("a decision");
+    assert_eq!(db.plugin_grants(plugin).expect("decisions").len(), 1);
+
+    assert!(db.remove_plugin(plugin).expect("removed"), "a row was there");
+
+    assert!(!db.plugin_is_installed(plugin).expect("the table"), "no row");
+    assert!(db.plugin_grants(plugin).expect("decisions").is_empty(), "and no decisions either");
+    // A second removal answers honestly rather than claiming a success.
+    assert!(!db.remove_plugin(plugin).expect("removed"), "nothing was there");
+}
