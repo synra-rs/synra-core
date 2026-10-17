@@ -86,7 +86,13 @@ pub enum Delivery<E> {
     ///
     /// Empty when nothing was waiting, which is the ordinary case for a subscriber that is keeping up: it reads after
     /// each notification and finds one event.
-    Events(Vec<E>),
+    Events {
+        /// The events that were waiting, oldest first.
+        events: Vec<E>,
+        /// The sequence number of the **first** of them. The rest follow it: a queue is contiguous, so `first_seq + i`
+        /// is the number of `events[i]`. Zero when there are none.
+        first_seq: u64,
+    },
     /// Events were waiting, and the subscriber is **behind**: it has to re-read a snapshot.
     ///
     /// The events that survived are carried anyway. They are not sufficient — the subscriber cannot apply them to a
@@ -95,6 +101,8 @@ pub enum Delivery<E> {
     Behind {
         /// The events that survived the overflow, oldest first.
         events: Vec<E>,
+        /// The sequence number of the first survivor. The events before it are the ones that were dropped.
+        first_seq: u64,
         /// How many were dropped from this subscriber's queue.
         missed: u64,
     },
@@ -105,7 +113,23 @@ impl<E> Delivery<E> {
     #[must_use]
     pub fn events(&self) -> &[E] {
         match self {
-            Self::Events(events) | Self::Behind { events, .. } => events,
+            Self::Events { events, .. } | Self::Behind { events, .. } => events,
+        }
+    }
+
+    /// The sequence number of the first event in the batch.
+    ///
+    /// # Why this is here rather than a number per event
+    ///
+    /// Because a queue is contiguous: the events in a batch were emitted one after the other, so their numbers are
+    /// `first_seq + i`. A per-event number would be the same information, larger, and would still need `missed` to
+    /// place the gap — which is what this and [`Self::missed`] already do together.
+    ///
+    /// Zero only when the batch is empty, which a caller that received a delivery will not see.
+    #[must_use]
+    pub const fn first_seq(&self) -> u64 {
+        match self {
+            Self::Events { first_seq, .. } | Self::Behind { first_seq, .. } => *first_seq,
         }
     }
 
@@ -114,7 +138,7 @@ impl<E> Delivery<E> {
     pub const fn missed(&self) -> u64 {
         match self {
             Self::Behind { missed, .. } => *missed,
-            _ => 0,
+            Self::Events { .. } => 0,
         }
     }
 

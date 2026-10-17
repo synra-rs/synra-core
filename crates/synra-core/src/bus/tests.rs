@@ -27,6 +27,44 @@ fn the_first_event_is_numbered_one() {
 }
 
 #[test]
+fn a_delivery_names_the_sequence_of_its_first_event() {
+    // ★ The number was assigned by the bus and then thrown away: a subscriber received the events and could not say
+    // which numbers they were, so the interface's gap detector — the reason the bus numbers anything — had nothing to
+    // compare against. `first_seq + index` is the number of every event in the batch, because a queue is contiguous.
+    let bus = bus();
+    let id = bus.subscribe();
+    bus.emit(Tick(1));
+    bus.emit(Tick(2));
+
+    let delivery = bus.take(id).expect("two events");
+    assert_eq!(delivery.first_seq(), 1);
+    assert_eq!(delivery.events(), &[Tick(1), Tick(2)]);
+
+    bus.emit(Tick(3));
+    assert_eq!(bus.take(id).expect("one event").first_seq(), 3);
+}
+
+#[test]
+fn a_delivery_after_an_overflow_says_where_the_gap_is() {
+    // The survivors keep their numbers, and `missed` says how many came before the first of them — so a consumer can
+    // reconstruct the break rather than guessing from a shorter batch.
+    let bus = bus();
+    let id = bus.subscribe();
+    let total = SUBSCRIBER_QUEUE_CAPACITY + 5;
+    for seq in 1..=total {
+        bus.emit(Tick(u64::try_from(seq).expect("a count that fits")));
+    }
+
+    let delivery = bus.take(id).expect("a delivery");
+    assert!(delivery.must_refresh(), "the queue overflowed");
+    assert_eq!(delivery.missed(), 5);
+    let first = delivery.first_seq();
+    assert_eq!(first, delivery.missed() + 1, "the gap sits immediately before the first survivor");
+    assert_eq!(delivery.events().len(), SUBSCRIBER_QUEUE_CAPACITY);
+}
+
+
+#[test]
 fn the_sequence_is_the_bus_is_not_the_subscribers() {
     // Two subscribers see the same numbers, because the numbers are a property of the stream. A bus per subscriber
     // would give each its own, and two interfaces comparing what they saw would disagree about which event came
