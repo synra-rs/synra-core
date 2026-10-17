@@ -1,0 +1,160 @@
+name: checks
+
+# ★ What this workflow is.
+#
+# Every job below runs a command that already exists in this repository — `cargo test`, `cargo clippy`,
+# `cargo run -p guards`, `cargo run -p matrix` — so CI cannot drift from the local definition of "green". A check that
+# only exists in YAML is a check nobody can reproduce, and this repository has one recorded case of exactly that
+# (`NOTES/2026-02-the-feature-matrix-was-never-buildable.md`).
+#
+# ★ `cargo fmt --all --check` is deliberately absent.
+#
+# HEAD is not rustfmt-clean, and formatting a whole crate is against the recorded practice
+# (`NOTES/2026-02-do-not-cargo-fmt-a-whole-crate.md`): it produced a 94-file diff of changes nobody asked for. If the
+# tree is ever formatted deliberately, add `cargo fmt --all --check` as a step here and nowhere else.
+#
+# ★ `RUSTFLAGS: -D warnings` is deliberately absent too: it applies to dependencies, and a warning inside `wasmtime`
+# is not this repository's failure. The `-D warnings` below is a clippy argument, so it covers this workspace only.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: tests and clippy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the kernel
+        uses: actions/checkout@v4
+        with:
+          path: synra-rust-core
+
+      # ★ The sibling app, under the directory name `tools/guards` looks for, so that "the sibling app builds against
+      # this crate's public API" is a real check rather than a SKIP. Optional on purpose: the guard reports a missing
+      # app as `SKIP` with its reason, which is the honest answer for a core-only clone — and this job must not fail
+      # because the app repository is briefly unavailable.
+      - name: Check out the sibling app (optional)
+        uses: actions/checkout@v4
+        continue-on-error: true
+        with:
+          repository: synra-rs/synra-app
+          path: synra-rust-app
+
+      - name: Add clippy
+        run: rustup component add clippy
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            synra-rust-core -> target
+            synra-rust-app/src-tauri -> target
+
+      - name: Clippy
+        working-directory: synra-rust-core
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test the workspace
+        working-directory: synra-rust-core
+        run: cargo test --workspace
+
+      # ★ A second run, because `wasm-runtime` is off by default: without this step the only tests that compile and
+      # instantiate a real component never run, and "the sandbox works" would be a claim about a scripted backend.
+      - name: Test the real engine
+        working-directory: synra-rust-core
+        run: cargo test -p synra-plugin-host --features wasm-runtime
+
+  msrv:
+    name: declared MSRV
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the kernel
+        uses: actions/checkout@v4
+        with:
+          path: synra-rust-core
+
+      # ★ Pinned to the number in `Cargo.toml`, not to `stable`. `rust-version` is a promise to a downstream user with
+      # an older compiler, and the only way a promise like that stays true is being run.
+      - name: Install the MSRV toolchain
+        run: rustup toolchain install 1.88.0 --profile minimal
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: msrv
+          workspaces: synra-rust-core -> target
+
+      - name: Check on the MSRV
+        working-directory: synra-rust-core
+        run: cargo +1.88.0 check --workspace --all-targets
+
+  guards:
+    name: guards and matrix
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the kernel
+        uses: actions/checkout@v4
+        with:
+          path: synra-rust-core
+
+      - name: Check out the sibling app (optional)
+        uses: actions/checkout@v4
+        continue-on-error: true
+        with:
+          repository: synra-rs/synra-app
+          path: synra-rust-app
+
+      # ★ Both optional, and both reported as `SKIP` by the tools when absent rather than silently passing. They are
+      # here so the link and count checks read the real documents instead of saying "not checked out".
+      - name: Check out the design documents (optional)
+        uses: actions/checkout@v4
+        continue-on-error: true
+        with:
+          repository: synra-rs/design-docs
+          path: design-docs
+
+      - name: Check out the public documents (optional)
+        uses: actions/checkout@v4
+        continue-on-error: true
+        with:
+          repository: synra-rs/docs
+          path: docs
+
+      # ★ Guards run the MSRV check itself, so the toolchain it shells out to has to exist in this job too.
+      - name: Install the MSRV toolchain
+        run: rustup toolchain install 1.88.0 --profile minimal
+
+      # ★ The matrix's Android rows are `cargo check` against this target. The target's std is a download; the C
+      # toolchain for sqlite and wasmtime is not, so those rows classify themselves as SKIP with the NDK named as the
+      # remedy — which is the tool's designed answer, not a failure.
+      - name: Add the Android target
+        run: rustup target add aarch64-linux-android
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            synra-rust-core -> target
+            synra-rust-app/src-tauri -> target
+
+      - name: Guards
+        working-directory: synra-rust-core
+        run: cargo run -q -p guards
+
+      - name: Feature and target matrix
+        working-directory: synra-rust-core
+        run: cargo run -q -p matrix
