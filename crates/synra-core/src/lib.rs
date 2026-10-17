@@ -54,6 +54,7 @@
 pub mod admission;
 pub mod bus;
 pub mod config;
+pub mod consent;
 pub mod discovery;
 pub mod dispatch;
 pub mod host;
