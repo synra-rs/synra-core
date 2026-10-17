@@ -206,12 +206,12 @@ decision about the plugin's stored data that nothing has made yet"
 
 /// The request a plugin subcommand makes, when it is one this build can serve.
 ///
-/// # Why only `list`
+/// # What is asked and what is not
 ///
-/// Installing, enabling and disabling change the kernel's state, and a request that means "change something" needs an
-/// answer the kernel can give about *whether* it changed. This build has no layer that can install a plugin, so the other
-/// actions are not asked for at all: a request whose answer would be a refusal is one this layer should not invent. The
-/// caller reports them for what they are.
+/// Every action has a request except `remove`: installing changes the kernel's state and the kernel is the only process
+/// that may write to the plugin directory, so it is asked; removing needs a decision about the plugin's stored data
+/// that nothing has made, so it is not asked for at all rather than invented. An action with no request is reported by
+/// `dispatch` for what it is, which is a thing this build does not do — not a missing kernel.
 fn plugin_request(command: &Command) -> Option<Request> {
     use crate::args::PluginAction;
 
@@ -236,10 +236,14 @@ fn plugin_request(command: &Command) -> Option<Request> {
             plugin_id: plugin_id.clone(),
             enabled: false,
         }),
-        // Still nothing, and now for a reason that is true: installing needs a registry client, and removing needs a
-        // decision about the plugin's stored data that nothing has made. `question_for` cannot say any of that, so
-        // `dispatch` does.
-        PluginAction::Install { .. } | PluginAction::Remove { .. } => None,
+        // ★ Installing asks the kernel now, and it is the kernel that has to do it: verifying, writing into the plugin
+        // directory and recording a row are three things only the process that owns the data directory may do. The
+        // registry half is still absent — a `@scope/name` reaches the kernel and is refused as a path that is not a
+        // directory, which `dispatch` reports in the kernel's words.
+        PluginAction::Install { source, .. } => Some(Request::PluginInstall { path: source.clone() }),
+        // Still nothing, and now for a reason that is true: removing needs a decision about the plugin's stored data
+        // that nothing has made. `question_for` cannot say that, so `dispatch` does.
+        PluginAction::Remove { .. } => None,
     }
 }
 
@@ -381,12 +385,25 @@ mod tests {
         };
         assert_eq!(plugin_id, "@acme/x");
 
-        // And the two that remain ask nothing, which `dispatch` reports in its own words rather than as a missing kernel.
-        assert!(request(crate::args::PluginAction::Install {
-            source: "@acme/x".to_owned(),
+        // ★ And installing asks the kernel, with the path the user typed. It used to ask nothing on the grounds that
+        // there was no install layer — and there was not, which made a command in the documented list answer "you need a
+        // running kernel" while one was running.
+        assert!(matches!(
+            request(crate::args::PluginAction::Install {
+                source: "@acme/x".to_owned(),
+                version: None,
+            }),
+            Some(Request::PluginInstall { .. })
+        ));
+        let Some(Request::PluginInstall { path }) = request(crate::args::PluginAction::Install {
+            source: "./build".to_owned(),
             version: None,
-        })
-        .is_none());
+        }) else {
+            panic!("expected an install request");
+        };
+        assert_eq!(path, "./build");
+
+        // Removing still asks nothing, and `dispatch` reports it in its own words rather than as a missing kernel.
         assert!(request(crate::args::PluginAction::Remove {
             plugin_id: "@acme/x".to_owned(),
             data: false,

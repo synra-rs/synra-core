@@ -206,6 +206,25 @@ pub enum Request {
         enabled: bool,
     },
 
+    /// Install a plugin from a directory on this machine.
+    ///
+    /// # Why a path rather than a package identifier
+    ///
+    /// Because a registry install needs a fetcher, and there is none: the design's `InstallSource::Registry` has a
+    /// packument parser and an integrity check and no HTTP client, so a request naming a package would fail at the
+    /// first step for a reason the caller could not act on. A path is the source that exists, and the install pipeline
+    /// behind it is the same one a registry install will run.
+    ///
+    /// # Why the kernel installs rather than the client
+    ///
+    /// Because installing means verifying, writing into the plugin directory and recording a row — three things only
+    /// the process that owns the data directory may do. A client that copied files and asked the kernel to record them
+    /// would be a second writer of the same state.
+    PluginInstall {
+        /// The directory the package is in, as the client resolved it.
+        path: String,
+    },
+
     /// Hands the kernel something to route.
     ///
     /// # ★ Why this request had to exist
@@ -346,6 +365,7 @@ impl Request {
                 Self::IntentDispatch { .. } => "intentDispatch",
                 Self::CatalogSearch { .. } => "catalogSearch",
         Self::PluginSetEnabled { .. } => "pluginSetEnabled",
+            Self::PluginInstall { .. } => "pluginInstall",
                 Self::IntentCancel { .. } => "intentCancel",
                 Self::IntentDecide { .. } => "intentDecide",
                 Self::IntentSnapshot { .. } => "intentSnapshot",
