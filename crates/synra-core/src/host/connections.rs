@@ -384,3 +384,22 @@ impl Host {
     }
 
 }
+
+impl Dialled {
+    /// The link this handshake produced, ready to carry frames.
+    ///
+    /// # Why `local` and `flags` are arguments
+    ///
+    /// Because a dialled connection does not store its own identity: `dial_peer` was told `ours` to run the handshake, and
+    /// keeping a second copy here would be a second answer to "whose connection is this" — the field the link checks every
+    /// envelope against. The caller that dialled still has it.
+    ///
+    /// # Why this does not hand back the socket
+    ///
+    /// Because the socket is the point: a caller holding the `TcpStream` could write frames the handshake never agreed to,
+    /// and `Link` is what enforces the agreement.
+    #[must_use]
+    pub fn into_link(self, local: DeviceId, flags: Flags) -> PeerLink {
+        PeerLink::new(self.stream, local, self.negotiated.device_id, self.negotiated.agreed, flags)
+    }
+}
