@@ -682,7 +682,11 @@ impl SyncId {
 }
 
 /// 这一轮是谁推给谁。
+///
+/// `#[non_exhaustive]` 是因为这个枚举会随同步方向增加（例如将来的「双方交换」），
+/// 而 `synra-core` 是 semi-stable：加一个变体不该是下游的破坏性变更。
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SyncDirection {
     /// 本机推给对端。
     Push,
@@ -697,6 +701,7 @@ pub enum SyncDirection {
 /// 代码的 [`SyncOutcome`] 是记账 —— 同名不同物。给新的这个起一个准确的名字，
 /// 比重命名一个已经有生产调用者的类型代价小。
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SyncVerdict {
     /// 装上了。
     Succeeded,
@@ -710,6 +715,34 @@ pub enum SyncVerdict {
         /// 原因。
         error: String,
     },
+}
+
+/// Why a [`SyncRecord`] could not be turned into a row, or read back out of one.
+///
+/// # Why this is not a [`SyncError`]
+///
+/// [`SyncError`] is why a receiver *refused* a round — a fact about the sync. This is why a record that was decided
+/// correctly could not be written down — a fact about the database. A caller that collapsed the two would report a
+/// storage failure as a protocol refusal, and the user would look for the wrong problem.
+///
+/// # Why it does not hold `serde_json::Error`
+///
+/// Because `synra-core` is semi-stable: a public signature naming another crate's error type promises that crate's
+/// version, and a `serde_json` upgrade would then be this crate's breaking change. The text is kept instead, which is
+/// what a caller does with it anyway.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("the record does not survive its row: {why}")]
+pub struct SyncRecordError {
+    /// What the serialiser said.
+    why: String,
+}
+
+impl SyncRecordError {
+    /// The reason, as a sentence.
+    #[must_use]
+    pub fn why(&self) -> &str {
+        &self.why
+    }
 }
 
 /// 一次同步留下了什么，够 §5.5 的可观测性和界面用。
@@ -786,16 +819,19 @@ impl SyncRecord {
     ///
     /// # Errors
     ///
-    /// 序列化失败。对一个全是普通数据的结构体这不会发生，但返回 `Result` 好过 `panic` ——
-    /// 而且工作区禁止 `unwrap`，所以「不会发生」也必须有人接着。
-    pub fn to_row(&self) -> Result<synra_store::records::SyncLogRow, serde_json::Error> {
+    /// [`SyncRecordError`] when the record does not serialise. For a type made of plain data that cannot happen, but
+    /// the workspace forbids `unwrap`, so "cannot happen" still has to be carried by somebody.
+    pub fn to_row(&self) -> Result<synra_store::records::SyncLogRow, SyncRecordError> {
         Ok(synra_store::records::SyncLogRow {
             sync_id: self.id.as_str().to_owned(),
             plugin_id: self.plugin_id.to_string(),
             peer_device: self.peer.to_string(),
             started_at_ms: self.started_at_ms,
             finished_at_ms: self.finished_at_ms,
-            document: serde_json::to_string(self)?,
+            // ★ The external error type is not named on a line that declares anything: a `From` impl, or even a private
+            // `fn`, would put `serde_json::Error` in this semi-stable crate's public surface, and the closure keeps it
+            // to the value being converted.
+            document: serde_json::to_string(self).map_err(|error| SyncRecordError { why: error.to_string() })?,
         })
     }
 
@@ -807,9 +843,10 @@ impl SyncRecord {
     ///
     /// # Errors
     ///
-    /// 文档不是这一轮的序列化。
-    pub fn from_row(row: &synra_store::records::SyncLogRow) -> Result<Self, serde_json::Error> {
-        serde_json::from_str(&row.document)
+    /// [`SyncRecordError`] when the document is not this record's serialisation — a row written by another build, or
+    /// edited by hand, which is the case the projection columns exist to be checked against.
+    pub fn from_row(row: &synra_store::records::SyncLogRow) -> Result<Self, SyncRecordError> {
+        serde_json::from_str(&row.document).map_err(|error| SyncRecordError { why: error.to_string() })
     }
 
     /// 给记录一个身份、一个方向、一个版本和一条追踪。
