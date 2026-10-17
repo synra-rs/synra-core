@@ -522,6 +522,39 @@ pub struct TransferRequest {
     pub meta: TransferMeta,
 }
 
+/// One plugin as a peer describes it.
+///
+/// # Why this is not `synra_core::plugin_sync::RemoteState`
+///
+/// Because the wire has to be describable without the kernel: `RemoteState` is the kernel's opinion of a peer's plugin, and a
+/// protocol type that leaned on it would make the protocol depend on the implementation it exists to describe. The mapping is
+/// the kernel's, one field at a time, and it is the only place the two can disagree — which is why it is a mapping rather than
+/// a `From`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginSummary {
+    /// Which plugin.
+    pub plugin_id: PluginId,
+    /// The version this device has, if any.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub version: Option<String>,
+    /// The digest of its artifact, if this device has one.
+    ///
+    /// The comparison that matters: two devices may hold the same version string with different bytes, and comparing versions
+    /// alone would call that "already synchronised".
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub digest: Option<String>,
+    /// Whether it is running there.
+    pub active: bool,
+}
+
+/// What a device answers when another asks what plugins it has.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginList {
+    /// Every plugin the answering device knows about, by identifier.
+    pub plugins: Vec<PluginSummary>,
+}
 /// Which blocks the receiver has, as a bitmap.
 ///
 /// A bitmap rather than a list of indices: a list of a hundred thousand indices is a hundred
