@@ -313,6 +313,25 @@ pub fn from_directory(
         discard(&staging, &files);
         return Err(InstallRefusal::new("write", reason));
     }
+    // ── The UI half, unpacked beside the artifact ───────────────────────────────────────────────────────────────────
+    //
+    // The bundle's zip is already in `files` (verified like any other artifact), so this step is only "write it out where
+    // the `synra-plugin://` handler will look". It runs **before** the rename, so a UI that cannot be unpacked is a failed
+    // install rather than an installed plugin whose window is blank.
+    if let Some(ui) = manifest.runtime.ui.as_ref() {
+        let archive = staging.join(&ui.artifact);
+        if let Err(error) = synra_plugin_ui::artifact::unpack(
+            &archive,
+            &synra_plugin_ui::artifact::bundle_dir(&staging),
+            synra_plugin_ui::artifact::ArchiveLimits::artifact(),
+        ) {
+            // `unpack` removes what it wrote before refusing; `discard` removes the artifact files. Together they leave the
+            // staging directory as empty as it started.
+            discard(&staging, &files);
+            return Err(InstallRefusal::new("unpack", format!("{}: {error}", ui.artifact)));
+        }
+    }
+
     if let Err(error) = std::fs::rename(&staging, &destination) {
         discard(&staging, &files);
         return Err(InstallRefusal::new("write", format!("{}: {error}", destination.display())));

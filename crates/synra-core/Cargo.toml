@@ -12,6 +12,9 @@ authors.workspace = true
 synra-protocol = { path = "../synra-protocol" }
 synra-capability = { path = "../synra-capability" }
 synra-plugin-api = { path = "../synra-plugin-api" }
+# The installer unpacks a plugin's UI bundle, and `synra-plugin-ui` is the crate that owns unpacking (design 06). No cycle:
+# it depends on protocol/api/capability only.
+synra-plugin-ui = { path = "../synra-plugin-ui" }
 synra-plugin-host = { path = "../synra-plugin-host" }
 synra-net = { path = "../synra-net" }
 synra-store = { path = "../synra-store" }
