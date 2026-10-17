@@ -717,6 +717,14 @@ fn guard_directory_deletion_is_contained(root: &Path) -> Vec<String> {
                 })
                 .unwrap_or(usize::MAX);
             for (index, line) in text.lines().enumerate() {
+                // ★ A mention is not a use, in the scan too and not only in the boundary above.
+                //
+                // A module that explains why it does **not** call this has to name it, and the first file to need that
+                // was found by this guard reporting its own documentation — a comment is not a call site, and a rule
+                // that cannot tell them apart makes writing the reason down a lint error.
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
                 if index < boundary && line.contains("remove_dir_all") {
                     offenders.push(format!("{relative}:{} removes a directory tree", index + 1));
                 }
@@ -970,6 +978,21 @@ mod tests {
         let found = guard_directory_deletion_is_contained(root.path());
         assert_eq!(found.len(), 1, "{found:?}");
         assert!(found[0].contains("elsewhere.rs"), "{found:?}");
+    }
+
+    #[test]
+    fn the_deletion_guard_reads_a_mention_as_a_mention() {
+        // ★ A module that explains why it does not delete a tree names the call it does not make. The first such file
+        // was reported by this guard, which made writing the reason down a violation — the same confusion as the
+        // `#[cfg(test)]` boundary above, one line further down.
+        let root = Root::new("deletion-mention");
+        root.write(
+            "crates/synra-core/src/explains.rs",
+            "/// # Why not `remove_dir_all`\n///\n/// Because the guard forbids it.\nfn f() {}",
+        );
+
+        let found = guard_directory_deletion_is_contained(root.path());
+        assert!(found.is_empty(), "{found:?}");
     }
 
     #[test]
