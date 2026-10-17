@@ -36,15 +36,36 @@ pub enum UnpackError {
 /// # Errors
 ///
 /// [`UnpackError`] when the archive cannot be read, an entry is refused, a limit is exceeded, or a file cannot be written.
-/// A refused archive leaves whatever was written before the refusal — the caller is expected to unpack into a directory it
-/// discards on failure, which is what `synra-core`'s install staging is for.
+/// **A refused archive leaves nothing behind**: the files written before the refusal are removed again, so a caller does not
+/// have to guess which half of a bundle reached the disk. The caller still owns the destination directory — this removes the
+/// files it wrote, not directories that were already there.
 pub fn unpack(archive: &Path, dest: &Path, limits: ArchiveLimits) -> Result<Vec<PathBuf>, UnpackError> {
+    let mut written: Vec<PathBuf> = Vec::new();
+    match write_all(archive, dest, limits, &mut written) {
+        Ok(()) => Ok(written),
+        Err(error) => {
+            // Best effort, and deliberately ignoring the failures: the caller is already being told about one error, and a
+            // second one about a file it cannot use says nothing it can act on.
+            for path in written.iter().rev() {
+                let _ = std::fs::remove_file(path);
+            }
+            Err(error)
+        }
+    }
+}
+
+/// The body, collecting what it writes so [`unpack`] can undo it.
+fn write_all(
+    archive: &Path,
+    dest: &Path,
+    limits: ArchiveLimits,
+    written: &mut Vec<PathBuf>,
+) -> Result<(), UnpackError> {
     let mut zip = zip::ZipArchive::new(std::fs::File::open(archive)?)?;
     if zip.len() > limits.max_entries {
         return Err(ArtifactError::TooManyFiles { found: zip.len(), limit: limits.max_entries }.into());
     }
 
-    let mut written: Vec<PathBuf> = Vec::new();
     let mut total = 0u64;
     for index in 0..zip.len() {
         let mut entry = zip.by_index(index)?;
@@ -78,7 +99,7 @@ pub fn unpack(archive: &Path, dest: &Path, limits: ArchiveLimits) -> Result<Vec<
         file.flush()?;
         written.push(target);
     }
-    Ok(written)
+    Ok(())
 }
 
 /// Where a bundle's files go, given the plugin directory.
@@ -157,6 +178,18 @@ mod tests {
 
         assert!(matches!(refused, UnpackError::Artifact(ArtifactError::BadPath { .. })), "got {refused:?}");
         assert!(!dest.parent().unwrap_or(&dest).join("identity.toml").exists(), "nothing escaped");
+    }
+
+    #[test]
+    fn a_refused_archive_leaves_nothing_behind() {
+        // ★ The property the installer needs: a bundle that is refused halfway must not leave half of itself in staging. The
+        // first entry is written before the second is refused, so this only passes if `unpack` undoes its own work.
+        let zip = archive("unpack-undo", &[("index.html", b"written first"), ("../identity.toml", b"refused second")]);
+        let dest = scratch("unpack-undo-dest");
+
+        unpack(&zip, &dest, ArchiveLimits::artifact()).expect_err("it is refused");
+
+        assert!(!dest.join("index.html").exists(), "the file written before the refusal is gone");
     }
 
     #[test]
