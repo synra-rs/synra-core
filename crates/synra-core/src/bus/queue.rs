@@ -3,8 +3,12 @@
 use std::collections::VecDeque;
 
 /// One subscriber's queue and what it has to say about itself.
+///
+/// The queue holds `(sequence, event)` pairs rather than events alone: the number is assigned by the bus at `emit`, and
+/// a subscriber that received the event without it could not tell a gap from a shorter batch. That is the whole reason
+/// the bus numbers anything.
 pub(super) struct Subscriber<E> {
-    pub(super) queue: VecDeque<E>,
+    pub(super) queue: VecDeque<(u64, E)>,
     pub(super) delivered: u64,
     pub(super) dropped: u64,
     pub(super) overflowed: bool,

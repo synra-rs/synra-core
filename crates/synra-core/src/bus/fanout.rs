@@ -7,6 +7,14 @@ use parking_lot::Mutex;
 
 use super::queue::Subscriber;
 use super::subscription::{Delivery, SUBSCRIBER_QUEUE_CAPACITY, SubscriberId, SubscriberReport};
+
+/// What a drain leaves behind: the numbered events still queued, whether the queue overflowed, and how many were
+/// dropped.
+///
+/// Named rather than written inline because `type_complexity` is right: a five-tuple in a signature is one a reader has
+/// to unpack positionally at every call site, and the three facts deserve to be named once.
+type Drained<E> = (Vec<(u64, E)>, bool, u64);
+
 /// The kernel's event bus.
 ///
 /// # Why one bus and not one per subscriber
@@ -33,6 +41,21 @@ struct Inner<E> {
 impl<E> Default for EventBus<E> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Hand-written rather than derived, and deliberately not requiring `E: Debug`.
+///
+/// A bus's state is its counters, not its events: an event type that cannot be printed (a wire payload holding
+/// something unprintable) should not make the bus unprintable, and a derived `Debug` would print a queue that belongs
+/// to each subscriber rather than the bus.
+impl<E> std::fmt::Debug for EventBus<E> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("EventBus")
+            .field("subscribers", &self.subscriber_count())
+            .field("next_seq", &self.next_sequence())
+            .finish()
     }
 }
 
@@ -113,7 +136,7 @@ impl<E: Clone> EventBus<E> {
     /// Returns the sequence number the event was given.
     pub fn emit(&self, event: E) -> u64 {
         let seq = self.allocate_sequence();
-        self.fan_out(&event);
+        self.fan_out(seq, &event);
         seq
     }
 
@@ -134,7 +157,7 @@ impl<E: Clone> EventBus<E> {
     /// Its own method for the same reason as [`Self::allocate_sequence`], and separately so that the two locks are
     /// visibly not held at once: `allocate_sequence` has returned before this is called, and a deadlock needs two
     /// guards.
-    fn fan_out(&self, event: &E) {
+    fn fan_out(&self, seq: u64, event: &E) {
         let mut subscribers = self.inner.subscribers.lock();
         for (_, subscriber) in subscribers.iter_mut() {
             if subscriber.queue.len() >= SUBSCRIBER_QUEUE_CAPACITY {
@@ -143,7 +166,7 @@ impl<E: Clone> EventBus<E> {
                 subscriber.dropped = subscriber.dropped.saturating_add(1);
                 subscriber.overflowed = true;
             }
-            subscriber.queue.push_back(event.clone());
+            subscriber.queue.push_back((seq, event.clone()));
             subscriber.delivered = subscriber.delivered.saturating_add(1);
         }
     }
@@ -161,14 +184,19 @@ impl<E: Clone> EventBus<E> {
         // ★ The lock is released before the `Delivery` is built. Clippy's `significant_drop_in_scrutinee` is about
         // resource contention rather than about correctness, and it is right here: a guard held while a `Vec` is moved
         // into an enum keeps every other emitter waiting for a construction that does not touch the guarded data.
-        let (events, overflowed, missed) = self.drain(id)?;
+        let (drained, overflowed, missed) = self.drain(id)?;
+        // The number of the **first** event survives into the delivery, and the rest follow from it: the queue is in
+        // emit order and contiguous except after an overflow, which is what `missed` reports. A subscriber can then
+        // say `first_seq + index` for each event and know exactly where the gap is.
+        let first_seq = drained.first().map_or(0, |(seq, _)| *seq);
+        let events: Vec<E> = drained.into_iter().map(|(_, event)| event).collect();
         if overflowed {
-            return Some(Delivery::Behind { events, missed });
+            return Some(Delivery::Behind { events, first_seq, missed });
         }
         if events.is_empty() {
             return None;
         }
-        Some(Delivery::Events(events))
+        Some(Delivery::Events { events, first_seq })
     }
 
     /// Empties a subscriber's queue and reports its overflow state, with the lock held for nothing else.
@@ -177,7 +205,7 @@ impl<E: Clone> EventBus<E> {
     /// subscriber: telling it again on the next read would report the same loss twice, and a caller that reacted to each
     /// report would re-read a snapshot per read. The *count* is not cleared, because a diagnostic wants the total rather
     /// than the per-read figure.
-    fn drain(&self, id: SubscriberId) -> Option<(Vec<E>, bool, u64)> {
+    fn drain(&self, id: SubscriberId) -> Option<Drained<E>> {
         let mut subscribers = self.inner.subscribers.lock();
         // ★ `match` rather than `?`, and the reason is a lint rather than taste: `significant_drop_in_scrutinee` reads
         // an early `return` as "the guard can be dropped here", which is true of this one and is the point — the guard
@@ -187,7 +215,7 @@ impl<E: Clone> EventBus<E> {
             drop(subscribers);
             return None;
         };
-        let events: Vec<E> = subscriber.queue.drain(..).collect();
+        let events: Vec<(u64, E)> = subscriber.queue.drain(..).collect();
         let missed = subscriber.dropped;
         let overflowed = subscriber.overflowed;
         subscriber.overflowed = false;
@@ -202,21 +230,23 @@ impl<E: Clone> EventBus<E> {
     #[must_use]
     pub fn peek(&self, id: SubscriberId) -> Option<Delivery<E>> {
         // Read under the lock, decide, and release before building the delivery — the same reasoning as `take`.
-        let (events, overflowed, missed) = {
+        let (queued, overflowed, missed) = {
             let subscribers = self.inner.subscribers.lock();
             match subscribers.iter().find(|(existing, _)| *existing == id) {
                 Some((_, subscriber)) => (
-                    subscriber.queue.iter().cloned().collect::<Vec<E>>(),
+                    subscriber.queue.iter().cloned().collect::<Vec<(u64, E)>>(),
                     subscriber.overflowed,
                     subscriber.dropped,
                 ),
                 None => return None,
             }
         };
+        let first_seq = queued.first().map_or(0, |(seq, _)| *seq);
+        let events: Vec<E> = queued.into_iter().map(|(_, event)| event).collect();
         if overflowed {
-            return Some(Delivery::Behind { events, missed });
+            return Some(Delivery::Behind { events, first_seq, missed });
         }
-        Some(Delivery::Events(events))
+        Some(Delivery::Events { events, first_seq })
     }
 
     /// What a subscriber has to say about itself.
