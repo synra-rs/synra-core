@@ -255,6 +255,46 @@ pub fn pair_response(
     Ok(Envelope::reply_to(request, event, from, sent_at_ms, Some(answer))?)
 }
 
+/// Asks a peer which plugins it has.
+///
+/// # Why the request carries no payload
+///
+/// Because there is nothing to narrow: the answer is the whole list, and a request that offered filters would be a request the
+/// answering side has to validate — a second grammar for a question with one form.
+///
+/// # Errors
+///
+/// [`MessageError::EventName`] if this build's own constant is not one the protocol accepts.
+pub fn plugin_list_request(
+    from: DeviceId,
+    to: DeviceId,
+    trace_id: TraceId,
+    sent_at_ms: i64,
+) -> Result<Envelope, MessageError> {
+    let event = EventName::parse(synra_protocol::event::events::PLUGIN_LIST_REQUEST)?;
+    Ok(Envelope::outbound(
+        OutboundSpec { event, target: to, from, trace_id, sent_at_ms, ttl_ms: None },
+        None::<&synra_protocol::session::PluginList>,
+    )?)
+}
+
+/// Answers which plugins this device has.
+///
+/// # Errors
+///
+/// [`MessageError::EventName`] if this build's own constant is not one the protocol accepts, and
+/// [`MessageError::Envelope`] when the protocol refuses the envelope — a list too large for one frame is the case that
+/// matters, and it is refused here rather than truncated: a truncated list would read as "this device has fewer plugins".
+pub fn plugin_list_response(
+    request: &Envelope,
+    from: DeviceId,
+    list: &synra_protocol::session::PluginList,
+    sent_at_ms: i64,
+) -> Result<Envelope, MessageError> {
+    let event = EventName::parse(synra_protocol::event::events::PLUGIN_LIST_RESPONSE)?;
+    Ok(Envelope::reply_to(request, event, from, sent_at_ms, Some(list))?)
+}
+
 /// What the receiving device tells the sending one about a sync — `16` §5.2 ⑧'s last act.
 ///
 /// # Why this is not [`crate::plugin_sync::SyncOutcome`] itself
