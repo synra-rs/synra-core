@@ -223,11 +223,40 @@ impl SynraDb {
         Ok(written)
     }
 
-    // ★ Writing grants is deliberately absent.
-    //
-    // It needs a delete and inserts to land together, which means a transaction, and a transaction means `&mut self` —
-    // which `migrate` already takes and everything else does not. Writing it as two `&self` statements would leave a
-    // window in which every capability is revoked and none granted, which is a plugin that was working and then silently
-    // is not, with the cause invisible from the table. It arrives with the consent command, taking `&mut self`, rather
-    // than arriving now with the guarantee quietly dropped.
+    /// Removes a plugin's record: its row and every consent decision recorded against it.
+    ///
+    /// # Why `&mut self`
+    ///
+    /// Because the two deletes have to land **together**. A window in which the row is gone and the grants remain is a
+    /// plugin the interface no longer lists but whose permissions still authorise calls; the opposite window leaves a
+    /// plugin with no permissions that the list still offers. Neither is a state a user could see and repair, and a
+    /// transaction is what rules both out.
+    ///
+    /// # Returns
+    ///
+    /// Whether a row was removed, so a caller can tell "removed" from "there was nothing there" — a second removal is
+    /// answered honestly rather than reported as a success.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::Statement`] when either delete is refused. The transaction is dropped unfinished, so nothing changed.
+    pub fn remove_plugin(&mut self, plugin_id: &str) -> Result<bool, DbError> {
+        let transaction = self
+            .connection
+            .transaction()
+            .map_err(|error| DbError::Statement { why: error.to_string() })?;
+        let removed = transaction
+            .execute("DELETE FROM plugins WHERE plugin_id = ?1", params![plugin_id])
+            .map_err(|error| DbError::Statement { why: error.to_string() })?;
+        // ★ The decisions go with it. A grant recorded against a plugin that no longer exists is not history worth
+        // keeping — `plugin_grants` is the current state, not a log — and leaving the rows would mean a reinstall
+        // inherited the old consent, which is the one thing consent must never do.
+        transaction
+            .execute("DELETE FROM plugin_grants WHERE plugin_id = ?1", params![plugin_id])
+            .map_err(|error| DbError::Statement { why: error.to_string() })?;
+        transaction
+            .commit()
+            .map_err(|error| DbError::Statement { why: error.to_string() })?;
+        Ok(removed > 0)
+    }
 }
