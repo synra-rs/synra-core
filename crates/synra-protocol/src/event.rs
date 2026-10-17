@@ -348,6 +348,13 @@ pub mod events {
     pub const PAIR_RESPONSE: &str = "device.pairing.response";
     /// Ends a pairing.
     pub const UNPAIR: &str = "device.pairing.unpair";
+    /// Asks a device which plugins it has.
+    ///
+    /// Internal rather than public: the answer is a list of what somebody installed, and a plugin able to see it would learn
+    /// what the user has on another machine.
+    pub const PLUGIN_LIST_REQUEST: &str = "_synra.plugin.list.request";
+    /// Answers which plugins this device has.
+    pub const PLUGIN_LIST_RESPONSE: &str = "_synra.plugin.list.response";
     /// Asks a device to run an action.
     pub const INTENT_INVOKE: &str = "_synra.intent.invoke";
     /// Reports an action's outcome.
