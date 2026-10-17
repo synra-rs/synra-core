@@ -118,6 +118,23 @@ mod tests {
     }
 
     #[test]
+    fn the_answer_names_files_the_installer_can_delete() {
+        // ★ The installer rolls back through the list this function answers with, so every entry has to be a real file inside
+        // the destination: a path that does not exist is a rollback that silently leaves the file behind, and one outside
+        // the destination is a rollback that deletes somebody else's data.
+        let zip = archive("unpack-list", &[("index.html", b"<p>"), ("assets/app.js", b"export {}")]);
+        let dest = scratch("unpack-list-dest");
+
+        let written = unpack(&zip, &dest, ArchiveLimits::artifact()).expect("it unpacks");
+
+        assert_eq!(written.len(), 2);
+        for path in &written {
+            assert!(path.starts_with(&dest), "{} is inside the destination", path.display());
+            assert!(path.is_file(), "{} exists", path.display());
+        }
+    }
+
+    #[test]
     fn a_bundle_is_written_out() {
         let zip = archive("unpack-ok", &[("index.html", b"<!doctype html>"), ("assets/app.js", b"export {}")]);
         let dest = scratch("unpack-ok-dest");
