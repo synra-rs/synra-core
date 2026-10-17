@@ -1860,6 +1860,7 @@ dependencies = [
  "thiserror",
  "tracing",
  "uuid",
+ "zip",
 ]
 
 [[package]]
