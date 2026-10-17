@@ -38,6 +38,7 @@ mod intents;
 mod migrations;
 mod pairing;
 mod sync;
+mod versions;
 mod sync_log;
 mod plugins;
 mod storage;
