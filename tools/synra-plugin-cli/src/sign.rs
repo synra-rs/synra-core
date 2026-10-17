@@ -415,17 +415,15 @@ pub fn verify(
     })?;
 
     let (manifest, manifest_digest) = read_manifest(root)?;
-    if document.subject.manifest != manifest_digest {
-        // The manifest on disk is not the one that was signed. Checked before the signature, because a signature over
-        // another manifest would verify perfectly and mean nothing.
-        return Err(SignError::Mismatch);
-    }
     if !document.subject.covers(&manifest).is_empty() {
         return Err(SignError::Mismatch);
     }
 
     let found = collect_artifacts(root, &manifest)?;
-    if found != document.subject.artifacts {
+    // ★ The same comparison the host's verify pipeline runs (`SigningSubject::matches`), rather than a second
+    // hand-written version of it. The manifest digest, every artifact's digest and the "signature covers a subset"
+    // question are one question — is this subject this package? — and the two sides had two answers until this call.
+    if !document.subject.matches(&manifest_digest, &found) {
         return Err(SignError::Mismatch);
     }
 

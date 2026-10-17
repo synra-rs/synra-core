@@ -6,7 +6,7 @@
 
 use ed25519_dalek::{Signer as _, SigningKey};
 use synra_plugin_api::publisher::{
-    ALGORITHM, Fingerprint, PublisherTrustStore, SIGNATURE_VERSION, SigningSubject,
+    ALGORITHM, Digests, Fingerprint, PublisherTrustStore, SIGNATURE_VERSION, SigningSubject,
 };
 
 use super::*;
@@ -40,16 +40,25 @@ struct Fixture {
     manifest: String,
     artifact: Vec<u8>,
     digest: String,
+    manifest_digest: String,
+    artifacts: Digests,
     imports: Vec<String>,
     graph: DependencyGraph,
 }
 
 impl Fixture {
     fn new() -> Self {
+        // The digests the subject below is signed over, so a signed fixture describes the package it is attached to.
+        // A fixture whose subject was about other bytes would make every signature test fail at the coverage check
+        // instead of at the thing the test is named for.
+        let mut artifacts = Digests::new();
+        artifacts.insert("plugin.wasm", "sha256-abc");
         Self {
             manifest: manifest_json(&["log:*"]),
             artifact: b"\0asm\x01\0\0\0".to_vec(),
             digest: "sha256-abc".to_owned(),
+            manifest_digest: "sha256-manifest".to_owned(),
+            artifacts,
             imports: Vec::new(),
             graph: DependencyGraph::new(),
         }
@@ -63,6 +72,8 @@ impl Fixture {
             artifact: &self.artifact,
             declared_digest: Some(&self.digest),
             actual_digest: &self.digest,
+            manifest_digest: &self.manifest_digest,
+            artifacts: &self.artifacts,
             signature,
             signature_required: required,
             imports: &self.imports,
@@ -179,6 +190,64 @@ fn a_tampered_subject_stops_at_the_signature() {
         other => panic!("expected a signature refusal, got {other:?}"),
     }
 }
+
+#[test]
+fn a_genuine_signature_over_other_bytes_stops_at_the_signature() {
+    // ★ The direction the previous test cannot reach: the document is untouched, the key is the publisher's, and the
+    // signature genuinely verifies — over a package that is not this one. Before the subject was compared, this was
+    // the whole attack: take a signed package, replace `plugin.wasm`, keep `signature.json`, and every check passed.
+    let fixture = Fixture::new();
+    let text = signed(&subject(), "acme", 7);
+    let mut swapped = Digests::new();
+    swapped.insert("plugin.wasm", "sha256-something-else");
+    let candidate = Candidate { artifacts: &swapped, ..fixture.candidate(Some(&text), true) };
+
+    match verify(&candidate, &PublisherTrustStore::new()) {
+        Err((stage, VerifyError::SignatureCoversOtherBytes { detail })) => {
+            assert_eq!(stage, Stage::Signature);
+            assert!(detail.contains("plugin.wasm"), "{detail}");
+            assert!(detail.contains("sha256-something-else"), "{detail}");
+        }
+        other => panic!("expected a coverage refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_manifest_edited_after_signing_stops_at_the_signature() {
+    // The artifact still matches; the manifest the plugin declares is not the one that was signed — which is how a
+    // capability gets added to a package whose signature nobody will look at again.
+    let fixture = Fixture::new();
+    let text = signed(&subject(), "acme", 7);
+    let candidate = Candidate { manifest_digest: "sha256-edited", ..fixture.candidate(Some(&text), true) };
+
+    match verify(&candidate, &PublisherTrustStore::new()) {
+        Err((stage, VerifyError::SignatureCoversOtherBytes { detail })) => {
+            assert_eq!(stage, Stage::Signature);
+            assert!(detail.contains("manifest"), "{detail}");
+        }
+        other => panic!("expected a coverage refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn an_extra_artifact_the_signature_does_not_cover_is_refused() {
+    // A signature over a subset is a signature over a different package: the file added afterwards is the half nobody
+    // signed, and it is the half that would be swapped.
+    let fixture = Fixture::new();
+    let text = signed(&subject(), "acme", 7);
+    let mut widened = fixture.artifacts.clone();
+    widened.insert("ui.zip", "sha256-unsigned");
+    let candidate = Candidate { artifacts: &widened, ..fixture.candidate(Some(&text), true) };
+
+    match verify(&candidate, &PublisherTrustStore::new()) {
+        Err((stage, VerifyError::SignatureCoversOtherBytes { detail })) => {
+            assert_eq!(stage, Stage::Signature);
+            assert!(detail.contains("ui.zip"), "{detail}");
+        }
+        other => panic!("expected a coverage refusal, got {other:?}"),
+    }
+}
+
 
 #[test]
 fn a_revoked_publisher_stops_at_the_trust_step_with_the_reason() {
