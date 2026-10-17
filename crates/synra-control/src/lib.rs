@@ -225,6 +225,26 @@ pub enum Request {
         path: String,
     },
 
+    /// Records the user's decision about what a plugin may do.
+    ///
+    /// # Why this is a request and not a field on the install
+    ///
+    /// Because installing and approving are two acts. The design puts `AwaitingConsent` between them so that a package
+    /// which arrived — from a registry, a file, or a peer — has not acquired any authority by arriving. An install that
+    /// carried its own consent would make "I installed it" and "I let it read my clipboard" the same click.
+    ///
+    /// # Why the granted set rather than a yes/no
+    ///
+    /// Because consent is per capability, and a plugin is often useful with fewer than it asks for. A boolean would
+    /// collapse "it may log but not open my browser" into "it may do everything it declared", which is the decision the
+    /// capability model exists to avoid making on the user's behalf.
+    PluginConsent {
+        /// Which plugin.
+        plugin_id: String,
+        /// The capabilities the user allowed. Everything else the manifest declares is recorded as denied.
+        granted: Vec<String>,
+    },
+
     /// Hands the kernel something to route.
     ///
     /// # ★ Why this request had to exist
@@ -366,6 +386,7 @@ impl Request {
                 Self::CatalogSearch { .. } => "catalogSearch",
         Self::PluginSetEnabled { .. } => "pluginSetEnabled",
             Self::PluginInstall { .. } => "pluginInstall",
+            Self::PluginConsent { .. } => "pluginConsent",
                 Self::IntentCancel { .. } => "intentCancel",
                 Self::IntentDecide { .. } => "intentDecide",
                 Self::IntentSnapshot { .. } => "intentSnapshot",

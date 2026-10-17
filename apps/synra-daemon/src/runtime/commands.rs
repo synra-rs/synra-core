@@ -303,6 +303,58 @@ impl Kernel for Runtime {
         }
     }
 
+    /// Records the user's decision about a plugin's capabilities.
+    ///
+    /// ★ The writer `plugin_grants` had only in tests. The loader has read decisions since it stopped treating a
+    /// manifest as its own authorisation, so a plugin could not run without consent — and nothing could record consent
+    /// except a test helper. A plugin was therefore installable, visible, enable-able and permanently unloadable.
+    fn plugin_consent(&self, plugin_id: &str, granted: &[String]) -> Result<serde_json::Value, Refusal> {
+        // The manifest on disk is the document the decision is about. Its digest is what makes a later edit — or an
+        // update that adds a capability — visible to the loader, instead of silently inheriting the old consent.
+        let text = std::fs::read_to_string(self.plugins_dir.join(plugin_id).join("manifest.json")).map_err(|_| {
+            Refusal::new(
+                ErrorCode::PluginNotInstalled,
+                format!("no plugin is installed as `{plugin_id}`"),
+            )
+        })?;
+        let manifest = synra_plugin_api::Manifest::from_json(&text)
+            .map_err(|error| Refusal::new(ErrorCode::Internal, error.to_string()))?;
+
+        let requested: Vec<&str> =
+            manifest.capabilities.iter().map(|declared| declared.cap.as_str()).collect();
+        // ★ A grant for something the plugin did not ask for is refused rather than stored.
+        //
+        // It is usually a typo — the user meant another capability and would believe they had granted it — and when it
+        // is not, it is a client trying to widen a decision, which the row would then carry as if the user made it.
+        if let Some(unknown) = granted.iter().find(|capability| !requested.contains(&capability.as_str())) {
+            return Err(Refusal::new(
+                ErrorCode::InvalidArgument,
+                format!("`{plugin_id}` does not ask for `{unknown}`"),
+            ));
+        }
+
+        let decisions: Vec<(String, bool)> = requested
+            .iter()
+            .map(|capability| ((*capability).to_owned(), granted.iter().any(|allowed| allowed.as_str() == *capability)))
+            .collect();
+        let now = i64::try_from(now_ms()).unwrap_or(i64::MAX);
+        let digest = synra_plugin_api::manifest_digest(&text);
+        // ★ Trust means "this plugin may run at all", so a decision that denies every capability is not trust. `should_run`
+        // is `enabled && trusted`, so a full denial leaves the row unable to run even if an enable arrives later — which
+        // is what the design asks a complete refusal to be.
+        let trusted = !granted.is_empty();
+        {
+            // Scoped so the guard is gone before `plugins_value` reads the same table: this mutex is not reentrant, and a
+            // second lock on this thread would be a hang rather than an error.
+            let db = self.db.lock();
+            db.record_grants(plugin_id, &decisions, now, &digest)
+                .map_err(|error| Refusal::new(ErrorCode::Internal, error.to_string()))?;
+            db.set_plugin_trusted(plugin_id, trusted, now)
+                .map_err(|error| Refusal::new(ErrorCode::Internal, error.to_string()))?;
+        }
+        self.plugins_value()
+    }
+
     fn logs(&self, lines: usize, verbose: bool, trace: Option<&str>) -> Result<serde_json::Value, Refusal> {
         self.logs_value(lines, verbose, trace)
     }

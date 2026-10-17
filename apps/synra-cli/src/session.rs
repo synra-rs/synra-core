@@ -241,6 +241,12 @@ fn plugin_request(command: &Command) -> Option<Request> {
         // registry half is still absent — a `@scope/name` reaches the kernel and is refused as a path that is not a
         // directory, which `dispatch` reports in the kernel's words.
         PluginAction::Install { source, .. } => Some(Request::PluginInstall { path: source.clone() }),
+        // ★ The decision the loader waits for. Without it a plugin is installed, listed, enable-able and permanently
+        // unloadable: `load_one` refuses a plugin with no decisions on record, and the only writer was a test helper.
+        PluginAction::Consent { plugin_id, allow } => Some(Request::PluginConsent {
+            plugin_id: plugin_id.clone(),
+            granted: allow.clone(),
+        }),
         // Still nothing, and now for a reason that is true: removing needs a decision about the plugin's stored data
         // that nothing has made. `question_for` cannot say that, so `dispatch` does.
         PluginAction::Remove { .. } => None,
@@ -402,6 +408,19 @@ mod tests {
             panic!("expected an install request");
         };
         assert_eq!(path, "./build");
+
+        // And consent carries the capabilities the user named, because a request that dropped them would record a
+        // decision nobody made — every capability denied.
+        let Some(Request::PluginConsent { plugin_id, granted }) =
+            request(crate::args::PluginAction::Consent {
+                plugin_id: "@acme/x".to_owned(),
+                allow: vec!["log:*".to_owned(), "platform:open-url".to_owned()],
+            })
+        else {
+            panic!("expected a consent request");
+        };
+        assert_eq!(plugin_id, "@acme/x");
+        assert_eq!(granted, ["log:*", "platform:open-url"]);
 
         // Removing still asks nothing, and `dispatch` reports it in its own words rather than as a missing kernel.
         assert!(request(crate::args::PluginAction::Remove {
