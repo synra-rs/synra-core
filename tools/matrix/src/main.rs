@@ -140,9 +140,14 @@ fn rows() -> Vec<Row> {
                 "plugins",
             ],
             blocked_by: Some(
-                "`synra-core` declares no `plugins` feature, and could not usefully gain one: its source never names \
-                 `synra_plugin_host` or `synra_plugin_api`, so there is no subsystem for the flag to switch off. The \
-                 wiring is the missing piece — see NOTES/2026-02-the-plugin-host-was-never-wired.md.",
+                "`synra-core` declares no `plugins` feature. The subsystem **does** exist now — `dispatch/plugins.rs` \
+                 loads an artefact, builds the instance pool and runs `can-handle`/`execute` through the host, and the \
+                 daemon passes it a `Board` — so what is missing is not the wiring but a flag that switches it off. \
+                 Adding one means making `synra-plugin-host` and `synra-plugin-api` optional dependencies and gating \
+                 the dispatch seam; until that is done this row is a SKIP rather than an `ok`, because an `ok` would \
+                 claim the kernel can be built without plugins and it cannot. (The older reason here — \"its source \
+                 never names `synra_plugin_host`\" — was true when written and stopped being true when the seam was \
+                 wired; see NOTES/2026-02-the-plugin-host-was-never-wired.md.)",
             ),
         },
         Row {
