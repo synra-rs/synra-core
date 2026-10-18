@@ -248,6 +248,12 @@ pub struct InstallPreviewDto {
     /// A name to show, when the manifest has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub publisher_name: Option<String>,
+    /// The fingerprint a static directory lists for the publisher, when it lists one.
+    ///
+    /// ★ A claim beside the index, not a verification: the signature is checked on the downloaded bytes, and this gives the
+    /// dialog a second statement to compare that result with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publisher_key: Option<String>,
     /// What it asks to be allowed, as the manifest spells it.
     #[serde(default)]
     pub capabilities: Vec<String>,

@@ -49,6 +49,12 @@ struct Index {
     #[serde(default)]
     latest: Option<String>,
     versions: Vec<Entry>,
+    /// The keys the directory says belong to each publisher, by publisher id.
+    ///
+    /// A **claim**, like everything else here: it lets the install dialog show the fingerprint the directory published
+    /// before the tarball is downloaded, and a disagreement with the signature is a fact for the user, not a verdict.
+    #[serde(default)]
+    publishers: BTreeMap<String, String>,
 }
 
 /// One version in the index.
@@ -67,6 +73,15 @@ struct Entry {
     manifest: Option<synra_plugin_api::Manifest>,
 }
 
+/// A parsed static index: the document the install reads, and what the directory says about publisher keys.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StaticIndex {
+    /// The metadata, in the shape an npm packument produces.
+    pub document: Packument,
+    /// Fingerprints the directory lists for publisher ids; empty when it lists none.
+    pub publishers: BTreeMap<String, String>,
+}
+
 /// Parses a static index into the shape the install pipeline already reads.
 ///
 /// # Errors
@@ -74,7 +89,7 @@ struct Entry {
 /// [`PackumentError::Unreadable`] when the text is not JSON, names no versions, lists one twice, or names a `latest` that
 /// the list does not carry. The last is a refusal rather than a fallback: a document that says one thing and lists another
 /// is not a document this build guesses about.
-pub fn parse(text: &str) -> Result<Packument, PackumentError> {
+pub fn parse(text: &str) -> Result<StaticIndex, PackumentError> {
     let index: Index = serde_json::from_str(text)
         .map_err(|error| PackumentError::Unreadable(error.to_string()))?;
     if index.versions.is_empty() {
@@ -121,7 +136,10 @@ pub fn parse(text: &str) -> Result<Packument, PackumentError> {
 
     let mut dist_tags = BTreeMap::new();
     dist_tags.insert("latest".to_owned(), latest);
-    Ok(Packument { name: index.name, dist_tags, versions })
+    Ok(StaticIndex {
+        document: Packument { name: index.name, dist_tags, versions },
+        publishers: index.publishers,
+    })
 }
 
 #[cfg(test)]
@@ -148,9 +166,9 @@ mod tests {
     #[test]
     fn a_stated_latest_wins() {
         let index = parse(&document(&["1.0.0", "1.2.0"], Some("1.0.0"))).expect("an index");
-        assert_eq!(index.latest().expect("a latest").version, "1.0.0");
+        assert_eq!(index.document.latest().expect("a latest").version, "1.0.0");
         assert_eq!(
-            index.latest().expect("a latest").dist.tarball,
+            index.document.latest().expect("a latest").dist.tarball,
             "https://static.example.com/hello-1.0.0.tgz"
         );
     }
@@ -160,7 +178,7 @@ mod tests {
         // ★ The order the author wrote, not a version comparison: this crate has no semver, and `1.9.0` sorts after
         // `1.10.0` as text — a fallback someone could not see would be wrong exactly where releases are.
         let index = parse(&document(&["1.10.0", "1.9.0"], None)).expect("an index");
-        assert_eq!(index.latest().expect("a latest").version, "1.9.0");
+        assert_eq!(index.document.latest().expect("a latest").version, "1.9.0");
     }
 
     #[test]
@@ -198,8 +216,22 @@ mod tests {
         })
         .to_string();
         let index = parse(&body).expect("an index");
-        let manifest = index.at("1.2.0").expect("the version").synra.as_ref().expect("the manifest");
+        let manifest = index.document.at("1.2.0").expect("the version").synra.as_ref().expect("the manifest");
         assert_eq!(manifest.capabilities.first().expect("a capability").cap, "log:*");
+    }
+
+    #[test]
+    fn the_directory_may_list_publisher_keys() {
+        // ★ A claim beside the index, not a trust decision: the dialog shows it before the tarball is downloaded, and the
+        // signature is still checked on the bytes.
+        let body = serde_json::json!({
+            "name": "@acme/hello",
+            "publishers": { "@acme": "AB12 CD34 EF56 7890" },
+            "versions": [{ "version": "1.2.0", "tarball": "https://static.example.com/hello-1.2.0.tgz" }]
+        })
+        .to_string();
+        let index = parse(&body).expect("an index");
+        assert_eq!(index.publishers.get("@acme").map(String::as_str), Some("AB12 CD34 EF56 7890"));
     }
 
     #[test]
