@@ -436,14 +436,33 @@ pub fn reinstall(
 ///
 /// # Why a parameter
 ///
-/// Because the interesting part is the decision — install this, skip that, stop and name the refusal — and a test should
-/// be able to drive it without a listening kernel. `reinstall` is the thin part that connects and says hello.
+/// Because the interesting part is the decision — clear this, install that, skip the one with no origin, stop and name the
+/// refusal — and a test should be able to drive it without a listening kernel. `reinstall` is the thin part that connects
+/// and says hello.
+///
+/// # Why the row is removed before the install
+///
+/// Because the import restored the **database** and nothing else: the plugin rows say installed while their artifact
+/// directories are gone. The installer refuses an identifier it believes is already here, so a reinstall that went
+/// straight to `PluginInstall` would fail for every plugin the container lists. Removing the row (keeping the sandbox) is
+/// what turns "already installed" into an install that can actually happen.
 fn reinstall_with(
     entries: Vec<synra_store::PluginEntry>,
     format: Option<crate::args::OutputFormat>,
     mut ask: impl FnMut(&Request) -> Result<Response, synra_control::SocketError>,
 ) -> crate::session::CommandOutcome {
     use crate::session::CommandOutcome;
+
+    let present = match ask(&Request::Plugins) {
+        Ok(Response::Ok { value }) => installed_ids(&value),
+        Ok(Response::Failed { message, .. }) => {
+            return CommandOutcome::Failed(format!("the installed plugins could not be listed: {message}"));
+        }
+        Ok(other) => {
+            return CommandOutcome::Failed(format!("unexpected answer to the plugin list: {other:?}"));
+        }
+        Err(error) => return transport_failure(&error),
+    };
 
     let mut installed: Vec<String> = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
@@ -454,6 +473,24 @@ fn reinstall_with(
             skipped.push(entry.plugin_id);
             continue;
         };
+        if present.contains(&entry.plugin_id) {
+            let response = match ask(&Request::PluginRemove {
+                plugin_id: entry.plugin_id.clone(),
+                // The container does not carry the sandbox either, but the import did not delete it: keeping it is what
+                // the removal's default already does, and the data the user had is the data the importing device still
+                // has.
+                remove_data: false,
+            }) {
+                Ok(response) => response,
+                Err(error) => return transport_failure(&error),
+            };
+            if let Response::Failed { message, .. } = &response {
+                return CommandOutcome::Failed(format!(
+                    "{} could not be cleared before reinstalling: {message}",
+                    entry.plugin_id
+                ));
+            }
+        }
         let response = match ask(&Request::PluginInstall { path: source }) {
             Ok(response) => response,
             Err(error) => return transport_failure(&error),
@@ -481,6 +518,28 @@ fn reinstall_with(
             CommandOutcome::Lines(lines)
         }
     }
+}
+
+/// The identifiers in a `Plugins` answer.
+///
+/// An answer this build does not recognise is treated as "nothing installed", which leaves the reinstall to fail at the
+/// install with the kernel's own sentence rather than inventing a reason here.
+fn installed_ids(value: &serde_json::Value) -> std::collections::HashSet<String> {
+    value
+        .get("plugins")
+        .and_then(serde_json::Value::as_array)
+        .map(|plugins| {
+            plugins
+                .iter()
+                .filter_map(|plugin| {
+                    plugin
+                        .get("pluginId")
+                        .and_then(serde_json::Value::as_str)
+                        .map(ToOwned::to_owned)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// What the user sees when the kernel could not be reached.
@@ -844,23 +903,43 @@ mod tests {
     }
 
     #[test]
-    fn a_reinstall_installs_every_recorded_source_and_skips_the_rest() {
-        // ★ The last step of the restore flow: the container says what to install and where it came from, and this walks
-        // the list one install at a time. A plugin with no origin is named rather than silently omitted.
+    fn a_reinstall_clears_the_restored_row_then_installs_every_recorded_source() {
+        // ★ The import restored the database, so the row says installed while the artifact directory is gone. The installer
+        // refuses an identifier it believes is already here, which is why the row is removed first — and why this test
+        // checks the **order**, not only that both requests happen.
         let entries = vec![
             plugin_entry("@acme/a", Some("/tmp/packages/a.synra")),
             plugin_entry("@acme/b", None),
         ];
         let asked = std::cell::RefCell::new(Vec::new());
         let outcome = reinstall_with(entries, Some(OutputFormat::Text), |request| {
-            let Request::PluginInstall { path } = request else {
-                panic!("expected an install, got {request:?}");
-            };
-            asked.borrow_mut().push(path.clone());
-            Ok(Response::ok(serde_json::json!({"pluginId": "@acme/a"})))
+            match request {
+                Request::Plugins => {
+                    asked.borrow_mut().push("list".to_owned());
+                    Ok(Response::ok(serde_json::json!({"plugins": [{"pluginId": "@acme/a"}]})))
+                }
+                Request::PluginRemove { plugin_id, remove_data } => {
+                    asked
+                        .borrow_mut()
+                        .push(format!("remove {plugin_id} data={remove_data}"));
+                    Ok(Response::ok(serde_json::json!({})))
+                }
+                Request::PluginInstall { path } => {
+                    asked.borrow_mut().push(format!("install {path}"));
+                    Ok(Response::ok(serde_json::json!({"pluginId": "@acme/a"})))
+                }
+                other => panic!("unexpected request {other:?}"),
+            }
         });
 
-        assert_eq!(asked.into_inner(), vec!["/tmp/packages/a.synra".to_owned()]);
+        assert_eq!(
+            asked.into_inner(),
+            vec![
+                "list".to_owned(),
+                "remove @acme/a data=false".to_owned(),
+                "install /tmp/packages/a.synra".to_owned()
+            ]
+        );
         match outcome {
             crate::session::CommandOutcome::Lines(lines) => {
                 assert!(lines.iter().any(|line| line.contains("reinstalled @acme/a")), "{lines:?}");
@@ -874,12 +953,40 @@ mod tests {
     }
 
     #[test]
+    fn a_reinstall_does_not_remove_a_row_that_is_not_there() {
+        // The ordinary first-install case: nothing to clear, and a removal request would be a needless refusal to explain.
+        let entries = vec![plugin_entry("@acme/a", Some("/tmp/packages/a.synra"))];
+        let asked = std::cell::RefCell::new(Vec::new());
+        let outcome = reinstall_with(entries, Some(OutputFormat::Text), |request| {
+            match request {
+                Request::Plugins => {
+                    asked.borrow_mut().push("list".to_owned());
+                    Ok(Response::ok(serde_json::json!({"plugins": []})))
+                }
+                Request::PluginInstall { path } => {
+                    asked.borrow_mut().push(format!("install {path}"));
+                    Ok(Response::ok(serde_json::json!({})))
+                }
+                other => panic!("unexpected request {other:?}"),
+            }
+        });
+
+        assert_eq!(
+            asked.into_inner(),
+            vec!["list".to_owned(), "install /tmp/packages/a.synra".to_owned()],
+            "a plugin that is not installed must not be removed"
+        );
+        assert!(matches!(outcome, crate::session::CommandOutcome::Lines(_)), "{outcome:?}");
+    }
+
+    #[test]
     fn a_refused_reinstall_stops_and_names_the_plugin() {
         // ★ The kernel's refusal is about one package; reporting it as "@acme/a could not be reinstalled: …" is what lets
         // the user fix the package rather than the whole sequence.
         let entries = vec![plugin_entry("@acme/a", Some("/tmp/packages/a.synra"))];
-        let outcome = reinstall_with(entries, Some(OutputFormat::Text), |_| {
-            Ok(Response::failed("consent", "the plugin needs consent", false))
+        let outcome = reinstall_with(entries, Some(OutputFormat::Text), |request| match request {
+            Request::Plugins => Ok(Response::ok(serde_json::json!({"plugins": []}))),
+            _ => Ok(Response::failed("consent", "the plugin needs consent", false)),
         });
         match outcome {
             crate::session::CommandOutcome::Failed(message) => {
