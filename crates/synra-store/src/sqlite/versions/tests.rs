@@ -64,6 +64,40 @@ fn a_recorded_version_is_the_one_that_counts() {
 }
 
 #[test]
+fn the_active_version_names_the_artifact_it_installed() {
+    // ★ The plan reads two columns; sending reads three. The artifact is a **file name** relative to the plugin's
+    // directory — a path here would point into whatever data directory the row was written in.
+    let (db, plugin) = with_two_versions();
+
+    let active = db.active_plugin(&plugin).expect("a read").expect("an active version");
+
+    assert_eq!(active.version, "2.0.0");
+    assert_eq!(active.artifact, "plugin.wasm");
+    assert_eq!(active.digest, "sha256-new");
+    // And the older reader still agrees, because both are one query.
+    assert_eq!(
+        db.active_plugin_version(&plugin).expect("a read"),
+        Some((active.version, active.digest))
+    );
+}
+
+#[test]
+fn a_ui_only_plugin_has_an_empty_artifact_name() {
+    // The install records "" for a plugin with no headless half. The reader reports it rather than inventing a name; the
+    // caller that needs bytes has to say what that means.
+    let mut db = SynraDb::open_in_memory().expect("an in-memory database");
+    db.migrate().expect("migrates");
+    db.insert_plugin("@acme/hello", true, true, "active", 1_000, 1_000).expect("a plugin");
+    db.record_plugin_version("@acme/hello", "1.2.3", "", "", "{}", 1_000)
+        .expect("a version with no artifact");
+
+    let active = db.active_plugin("@acme/hello").expect("a read").expect("an active version");
+
+    assert_eq!(active.artifact, "");
+    assert_eq!(active.digest, "");
+}
+
+#[test]
 fn recording_a_second_version_moves_the_active_row_and_keeps_the_old_one() {
     // ★ Two facts in one test, because they are the same act. Exactly one row is active — a second active row would make "which
     // version is this device running" have two answers — and the previous row survives, because the directory it describes does.

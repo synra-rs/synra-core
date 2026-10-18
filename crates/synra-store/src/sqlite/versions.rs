@@ -67,6 +67,36 @@ impl SynraDb {
         Ok(())
     }
 
+    /// The active version, the artifact it names and the digest of that artifact.
+    ///
+    /// # Why this exists next to [`SynraDb::active_plugin_version`]
+    ///
+    /// Because sending a package needs the file, not only the comparison. `active_plugin_version` answers "is the peer's
+    /// copy the same", and it was written first; this is the same row with its third column, and the two answers come from
+    /// one query so they cannot disagree about which version is in effect.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::Statement`] when the row cannot be read, which for a migrated database means the table is absent.
+    pub fn active_plugin(&self, plugin_id: &str) -> Result<Option<crate::records::ActiveVersion>, DbError> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT version, artifact, digest FROM plugin_versions WHERE plugin_id = ?1 AND active = 1")
+            .map_err(|error| DbError::Statement { why: error.to_string() })?;
+        let mut rows = statement
+            .query([plugin_id])
+            .map_err(|error| DbError::Statement { why: error.to_string() })?;
+        let row = rows.next().map_err(|error| DbError::Statement { why: error.to_string() })?;
+
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let version: String = row.get(0).map_err(|error| DbError::Statement { why: error.to_string() })?;
+        let artifact: String = row.get(1).map_err(|error| DbError::Statement { why: error.to_string() })?;
+        let digest: String = row.get(2).map_err(|error| DbError::Statement { why: error.to_string() })?;
+        Ok(Some(crate::records::ActiveVersion { version, artifact, digest }))
+    }
+
     /// The version and artifact digest of the plugin's active row, or `None` when it has no active version.
     ///
     /// # Why `active` and not the newest
@@ -79,21 +109,9 @@ impl SynraDb {
     ///
     /// [`DbError::Statement`] when the row cannot be read, which for a migrated database means the table is absent.
     pub fn active_plugin_version(&self, plugin_id: &str) -> Result<Option<(String, String)>, DbError> {
-        let mut statement = self
-            .connection
-            .prepare("SELECT version, digest FROM plugin_versions WHERE plugin_id = ?1 AND active = 1")
-            .map_err(|error| DbError::Statement { why: error.to_string() })?;
-        let mut rows = statement
-            .query([plugin_id])
-            .map_err(|error| DbError::Statement { why: error.to_string() })?;
-        let row = rows.next().map_err(|error| DbError::Statement { why: error.to_string() })?;
-
-        let Some(row) = row else {
-            return Ok(None);
-        };
-        let version: String = row.get(0).map_err(|error| DbError::Statement { why: error.to_string() })?;
-        let digest: String = row.get(1).map_err(|error| DbError::Statement { why: error.to_string() })?;
-        Ok(Some((version, digest)))
+        Ok(self
+            .active_plugin(plugin_id)?
+            .map(|active| (active.version, active.digest)))
     }
 }
 

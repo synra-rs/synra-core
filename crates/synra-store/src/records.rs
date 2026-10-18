@@ -293,9 +293,10 @@ impl SyncLogRow {
 /// **current state** (one per device, replaced on each round). This one answers "does the peer already have it", which is
 /// the question that decides whether to send the package at all.
 ///
-/// The table has existed since the first migration and **nothing has ever written to it** — so the in-memory
-/// [`crate::plugin_sync::SyncTable`] knew what a peer had only until the process ended, and a restart made every device
-/// look like it had nothing. That is the duplicate transfer the design's third step exists to avoid.
+/// ★ **2026-10-18: the table has writers now** — a received bundle records it, a sent bundle records what the receiver
+/// answered, and a sync plan records what each peer said it holds. Before that it was created by the first migration and
+/// written by nothing, so a restart made every device look like it had nothing: the duplicate transfer the design's third
+/// step exists to avoid.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyncRow {
     /// Which plugin.
@@ -331,6 +332,27 @@ impl SyncRow {
             synced_at_ms: required(synced_at_ms, "synced_at_ms")?,
         })
     }
+}
+
+/// The version of a plugin that is in effect, with the artifact it names.
+///
+/// # Why the artifact is a file name and not a path
+///
+/// Because the directory is the caller's: [`crate::Paths::plugin_dir`] decides where a plugin lives, and a row that
+/// stored an absolute path would point into the wrong data directory the moment one moved. The name is joined to that
+/// directory by whoever needs the bytes.
+///
+/// ★ **It can be empty**, and that is not a defect: a UI-only plugin has no headless artifact, and the install records
+/// an empty name rather than inventing one. A caller that needs bytes has to decide what an empty name means — the sync
+/// runner refuses it with a sentence rather than opening the plugin's directory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveVersion {
+    /// The version string.
+    pub version: String,
+    /// The artifact's file name inside the plugin's directory, or empty when there is no headless half.
+    pub artifact: String,
+    /// The artifact's digest, as the install computed it. Empty for a plugin with no artifact.
+    pub digest: String,
 }
 
 /// One intent, as the `intents` table keeps it.
