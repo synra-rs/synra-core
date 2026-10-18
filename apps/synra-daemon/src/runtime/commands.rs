@@ -16,6 +16,14 @@ use super::{Runtime, now_ms};
 /// *scan* listens, not how long a file takes to move.
 const TRANSFER_DEADLINE: std::time::Duration = std::time::Duration::from_secs(300);
 
+/// How long a dispatched action's outcome is waited for before the intent stays dispatching.
+///
+/// Three seconds, not the plugin's full budget: the control socket serves one client at a time, so this wait is time a
+/// `status` or a `devices` call spends queued. A local-network plugin call fits comfortably; a receiver slower than this
+/// answers into a closed link, and this side says "dispatching" rather than inventing an outcome. The limitation is
+/// written down in 07 §"远程 target" as well.
+const REMOTE_RESULT_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+
 impl Kernel for Runtime {
     fn version(&self) -> String {
         self.version.clone()
@@ -470,7 +478,7 @@ impl Kernel for Runtime {
         plugin_id: Option<&str>,
         target: Option<&str>,
     ) -> Result<serde_json::Value, Refusal> {
-        let decided = crate::runtime::intent::decide(
+        let mut decided = crate::runtime::intent::decide(
             &self.plugins,
             &self.board,
             self.identity.device_id,
@@ -490,8 +498,27 @@ impl Kernel for Runtime {
         // The order matters: the intent is already `Dispatching` with this request identifier, so a send that fails leaves
         // a recorded request the far side may still have received. Reporting the failure and leaving the state alone is
         // the honest pair — un-dispatching it would claim the message did not arrive when it may have.
-        if let Some(outbound) = &decided.outbound {
-            self.send_outbound(outbound)?;
+        if let Some(outbound) = decided.outbound.take() {
+            match self.send_outbound(&outbound, true)? {
+                // ★ The far side answered inside the wait, and the answer has been applied to the board. The reply
+                // replaces "in flight" with what actually happened: returning `dispatching` after holding the outcome would
+                // make the interface show work still running that has already finished.
+                Some(result) => {
+                    decided.ok = result.ok;
+                    decided.result = result.result;
+                    decided.error = result.error;
+                    decided.state = self
+                        .board
+                        .lock()
+                        .get(decided.intent_id)
+                        .map_or("failed", |found| found.state.name());
+                }
+                // No answer in the wait. It may still be running over there, and the honest answer stays `dispatching`.
+                // ★ And it is **not** retried on another connection: the receiver answers on this link or not at all, so
+                // an outcome slower than the wait is one this side never learns. Saying that here is the difference
+                // between a limitation and a bug report that cannot be answered.
+                None => decided.outbound = Some(outbound),
+            }
         }
 
         // ★ After the send, not before: a send that fails leaves the intent dispatching, and what must be written down is
@@ -525,7 +552,8 @@ impl Kernel for Runtime {
         // Without this, the other device finishes work the user withdrew and reports a result for it — and from this side
         // that looks like a cancellation that quietly did not take.
         if let Some(outbound) = &change.outbound {
-            self.send_outbound(outbound)?;
+            // A cancellation is not answered, so there is nothing to wait for.
+            let _ = self.send_outbound(outbound, false)?;
         }
 
         self.checkpoint_intent(intent);
@@ -1015,7 +1043,11 @@ impl Runtime {
         ///
         /// [`Refusal`] naming what the user can act on: the device has never been seen on this network, or the link could not
         /// be established.
-        fn send_outbound(&self, outbound: &synra_core::intent::remote::Outbound) -> Result<(), Refusal> {
+        fn send_outbound(
+            &self,
+            outbound: &synra_core::intent::remote::Outbound,
+            wait_for_result: bool,
+        ) -> Result<Option<synra_core::intent::remote::InvokeResult>, Refusal> {
             let now = synra_store::sqlite::now_ms();
             // Resolve and read the address under the lock; dial outside it, for the reason `send_text` gives — a `dial` blocks
             // for as long as a connection takes, and a host guard living across it would make a devices listing wait for a
@@ -1054,8 +1086,63 @@ impl Runtime {
             // without the host. Only counting it needs the host again.
             link.send(&outbound.envelope).map_err(|error| refusal_of(&error.into()))?;
             self.host.lock().count_sent();
-            let _ = link.bye("intent dispatched");
 
-            Ok(())
+            // ★ An invocation is answered on **this** connection, so the answer is read before the link is closed. The
+            // sender used to say `bye` immediately after the write, which made the request fire-and-forget: the far side
+            // ran the action and then had no connection to reply on, and this side left the intent dispatching for ever.
+            let outcome = if wait_for_result {
+                // The wait, and the reason it is bounded rather than generous, is `REMOTE_RESULT_WAIT`'s doc.
+                link.set_read_timeout(Some(REMOTE_RESULT_WAIT));
+                match link.receive() {
+                    Ok(reply)
+                        if reply.event.as_str() == synra_protocol::event::events::INTENT_RESULT =>
+                    {
+                        match synra_core::dispatch::orchestrate::apply_result(&self.board, &reply) {
+                            Ok(Some(id)) => {
+                                // Written down now: the outcome is the state, and a crash before the next sweep would
+                                // otherwise persist a "dispatching" for work that has finished.
+                                self.checkpoint_intent(&id.to_string());
+                                synra_core::intent::remote::result_from(&reply).ok()
+                            }
+                            // A reply this device is not waiting on. Nothing to apply, and nothing to report: the
+                            // intent may have been cancelled while the answer was in flight.
+                            Ok(None) => None,
+                            Err(error) => {
+                                eprintln!("synra-daemon: the result could not be applied: {error}");
+                                None
+                            }
+                        }
+                    }
+                    Ok(other) => {
+                        eprintln!(
+                            "synra-daemon: {} answered with {} instead of an intent result",
+                            outbound.to, other.event
+                        );
+                        None
+                    }
+                    // A timeout is not a failed dispatch: the action may still be running over there, so the intent stays
+                    // dispatching. The answer is not retried, which is the limitation `REMOTE_RESULT_WAIT` documents.
+                    Err(synra_core::link::LinkError::TimedOut) => {
+                        eprintln!(
+                            "synra-daemon: {} did not answer the intent within the wait; it stays dispatching",
+                            outbound.to
+                        );
+                        None
+                    }
+                    Err(error) => {
+                        eprintln!(
+                            "synra-daemon: the intent answer from {} could not be read: {error}",
+                            outbound.to
+                        );
+                        None
+                    }
+                }
+            }
+            else {
+                None
+            };
+
+            let _ = link.bye(if wait_for_result { "intent answered" } else { "intent dispatched" });
+            Ok(outcome)
         }
 }

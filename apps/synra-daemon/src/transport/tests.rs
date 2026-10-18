@@ -20,7 +20,7 @@ use parking_lot::Mutex;
 
 use synra_core::host::Host;
 use synra_core::link::PeerLink;
-use synra_core::listener::{bind, handle_within, is_open};
+use synra_core::listener::{bind, handle_within, handle_within_with, is_open};
 
         use synra_core::identity::Identity;
 
@@ -440,6 +440,90 @@ use synra_core::listener::{bind, handle_within, is_open};
             Some(&synra_observe::metrics::Value::Counter(1)),
             "a handshaked peer that hangs up ends as closed: {:?}",
             recorder.snapshot()
+        );
+    }
+
+    #[test]
+    fn a_kernel_event_is_answered_on_the_connection_that_asked() {
+        // ★ The receiver half of remote dispatch. It used to be absent: an `INTENT_INVOKE` arrived, was counted, and was
+        // dropped — the sender's intent stayed `dispatching` and the action never ran. The assertion is on the reply the
+        // client actually receives, not on the callback having been called: a callback whose answer is thrown away would
+        // pass the second and fail a user.
+        let inbox = TempDir::new("inbox-intent");
+        let (host, address) = listening(A, "Laptop");
+        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let events: Arc<synra_core::listener::KernelEventCallback> = {
+            let asked = Arc::clone(&asked);
+            Arc::new(move |envelope: &synra_protocol::envelope::Envelope| {
+                assert_eq!(envelope.event.as_str(), "_synra.intent.invoke");
+                asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let event = synra_protocol::event::EventName::parse("_synra.intent.result")
+                    .expect("an event name");
+                // Answered by the device the request was addressed to, on the connection it arrived on.
+                let reply = synra_protocol::envelope::Envelope::reply_to(
+                    envelope,
+                    event,
+                    envelope.target,
+                    2_000,
+                    None::<&serde_json::Value>,
+                )
+                .expect("a reply");
+                synra_core::listener::KernelEventOutcome::Reply(Box::new(reply))
+            })
+        };
+        let progress: Arc<synra_core::listener::ProgressCallback> = Arc::new(|_event| {});
+        let offer: Arc<synra_core::inbound::OfferCallback> = Arc::new(synra_core::inbound::auto_accept);
+        let cancel: Arc<synra_core::listener::CancelCallback> = Arc::new(|_transfer| false);
+
+        let served = std::thread::spawn(move || {
+            let taken = accept_within(&host, Duration::from_secs(5)).expect("a connection");
+            handle_within_with(
+                &Arc::clone(&host),
+                taken,
+                inbox.path(),
+                Duration::from_secs(2),
+                &test_desk(),
+                &test_router(),
+                &synra_core::listener::no_answer(),
+                &progress,
+                &offer,
+                &cancel,
+                &events,
+            )
+        });
+
+        let (mut client, _db) = client_host(B, "Phone");
+        let mut link = client.dial(dialable(address), None, 1_000).expect("dials");
+        link.set_read_timeout(Some(Duration::from_secs(2)));
+        let invoke = synra_core::intent::remote::invoke(
+            device(B),
+            device(A),
+            &synra_core::intent::remote::Invoke {
+                plugin_id: synra_protocol::ids::PluginId::try_from("@acme/opener".to_owned())
+                    .expect("a plugin"),
+                plugin_version: "1.0.0".to_owned(),
+                action: "open".to_owned(),
+                args: serde_json::json!({ "url": "https://example.com" }),
+            },
+            synra_protocol::ids::TraceId::new(),
+            1_000,
+        )
+        .expect("an invocation");
+        client.send(&mut link, &invoke).expect("sends");
+
+        let reply = link.receive().expect("the answer");
+        assert_eq!(reply.event.as_str(), "_synra.intent.result");
+        // ★ The reply names the request it answers; without that the sender cannot tell which of its dispatches it belongs
+        // to — and the whole round trip exists to give one dispatch its outcome.
+        assert_eq!(reply.reply_to, Some(invoke.request_id));
+        let _ = link.bye("done");
+
+        let served = served.join().expect("the acceptor finished");
+        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(
+            served.events.iter().any(|event| event.contains("answered _synra.intent.invoke")),
+            "{:?}",
+            served.events
         );
     }
 

@@ -332,6 +332,30 @@ impl IntentState {
             Self::Cancelled { .. } => "cancelled",
         }
     }
+
+    /// The name the control protocol and the interface use, which is not [`Self::kind`].
+    ///
+    /// # Why two names
+    ///
+    /// Because they answer two readers. `kind` is a storage and metric label, where a hyphen is the separator a dashboard
+    /// groups by. The interface has always received camelCase (`noHandler`, `timedOut`), and changing that to match the
+    /// storage would rename every state the window already knows. One definition each, and this is where the difference is
+    /// written down rather than in a `match` on the other side of the crate.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        match self {
+            Self::Matching { .. } => "matching",
+            Self::Choosing { .. } => "choosing",
+            Self::Confirming { .. } => "confirming",
+            Self::Dispatching { .. } => "dispatching",
+            Self::Succeeded { .. } => "succeeded",
+            Self::Failed { .. } => "failed",
+            Self::NoHandler => "noHandler",
+            Self::TimedOut { .. } => "timedOut",
+            Self::Refused { .. } => "refused",
+            Self::Cancelled { .. } => "cancelled",
+        }
+    }
 }
 
 /// What a caller learns when a move is not legal from where the intent is.

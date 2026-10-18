@@ -521,6 +521,12 @@ mod tests {
         assert_eq!(outbound.to.to_string(), phone);
         assert_eq!(outbound.envelope.event.as_str(), "_synra.intent.invoke");
         assert_eq!(outbound.request_id, decided.request_id, "the id a resend is recognised by");
+        // ★ And the envelope says so too. It used to carry a freshly minted id while the board kept `confirm`'s, so the
+        // reply came back addressed to a request nothing on this side was waiting for.
+        assert_eq!(
+            outbound.envelope.request_id, decided.request_id,
+            "the envelope carries the request id the board records"
+        );
         let payload = synra_core::intent::remote::invoke_from(&outbound.envelope)
             .expect("a readable invocation");
         assert_eq!(payload.action, "open");
@@ -529,6 +535,54 @@ mod tests {
         // And the plugin did not run: its scripted backend would have answered "opened" had it been called.
         let snapshot = snapshot(&board, &intent).expect("a snapshot");
         assert_eq!(snapshot["state"], "dispatching", "and it stays in flight: {snapshot}");
+    }
+
+    #[test]
+    fn a_remote_answer_turns_the_dispatch_into_the_outcome_it_reports() {
+        // ★ The half nobody had: the sender's intent stayed `dispatching` for ever, because nothing applied the reply. The
+        // far side could have run the action and this side would still be showing it as in flight.
+        let plugins = set_that_accepts_without_a_place("@acme/opener");
+        let board = Arc::new(Mutex::new(synra_core::intent::Board::new()));
+        let routed = dispatch(&plugins, &board, &item(), 1_000).expect("routed");
+        let intent = routed["intent"].as_str().expect("an id").to_owned();
+        let phone = "00000000-0000-4000-8000-0000000000ff";
+        let target: DeviceId = phone.parse().expect("a device id");
+
+        let decided = decide(&plugins, &board, local_device(), &intent, None, Some(phone), 2_000)
+            .expect("dispatched rather than refused");
+        assert_eq!(decided.to_json()["state"], "dispatching", "nothing has happened yet");
+        let outbound = decided.outbound.expect("an envelope to send");
+        let invoke = outbound.envelope;
+
+        let mut reply = synra_core::intent::remote::result(
+            target,
+            invoke.from,
+            &synra_core::intent::remote::InvokeResult {
+                ok: true,
+                result: "opened".to_owned(),
+                error: None,
+                elapsed_ms: 2,
+            },
+            invoke.trace_id,
+            3_000,
+        )
+        .expect("a result");
+        // ★ The reply names the request it answers. Without it there is nothing to correlate, and the outcome would belong
+        // to no dispatch at all.
+        reply.reply_to = Some(invoke.request_id);
+
+        let applied = synra_core::dispatch::orchestrate::apply_result(&board, &reply)
+            .expect("the answer applies");
+        assert_eq!(applied.map(|id| id.to_string()).as_deref(), Some(intent.as_str()));
+
+        let after = snapshot(&board, &intent).expect("a snapshot");
+        assert_eq!(after["state"], "succeeded", "{after}");
+        // And a second copy of the same answer finds nothing in flight: the state is already final.
+        assert_eq!(
+            synra_core::dispatch::orchestrate::apply_result(&board, &reply)
+                .expect("a repeated answer is ignored"),
+            None
+        );
     }
 
     #[test]

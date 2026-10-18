@@ -369,6 +369,26 @@ fn confirming_produces_a_dispatch_and_the_envelope_id_it_carries() {
 }
 
 #[test]
+fn a_dispatch_is_found_by_the_request_and_the_device_it_went_to() {
+    // ★ Both halves of the pair, because a reply carries both: the request it answers (`reply_to`) and the device that
+    // answered. A lookup on either one alone would apply one device's outcome to another device's work.
+    let mut board = board();
+    let target = DeviceId::new();
+    let (id, ..) = board.raise(share(), Choice::Automatic, None, None, NOW);
+    let _ = board.offer(id, candidate("@acme/browser", "open", Some(target)));
+    let _ = board.settle(id, after_window());
+    let (_, request) = board.confirm(id).expect("a dispatch");
+
+    assert_eq!(board.dispatched_to(request, target), Some(id));
+    assert_eq!(board.dispatched_to(request, DeviceId::new()), None, "another device is another dispatch");
+    assert_eq!(board.dispatched_to(RequestId::new(), target), None, "another request is another dispatch");
+
+    // Once it concludes it is no longer dispatched to anything, which is what stops a late duplicate from being applied.
+    let _ = board.conclude(id, true, "\"opened\"", None, 1);
+    assert_eq!(board.dispatched_to(request, target), None);
+}
+
+#[test]
 fn confirming_something_that_is_not_waiting_is_refused_with_both_states_named() {
     let mut board = board();
     let (id, ..) = board.raise(share(), Choice::Automatic, None, None, NOW);

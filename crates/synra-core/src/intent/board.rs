@@ -541,6 +541,27 @@ impl Board {
         self.find_request(origin, request).and_then(|id| self.intents.get(&id))
     }
 
+    /// The intent a request was dispatched to a device under, if it is still in flight.
+    ///
+    /// # Why both halves of the pair
+    ///
+    /// Because a reply names the request it answers (`reply_to`) and the device that answered. The request alone is not
+    /// enough — one device may be running several dispatches — and the device alone is not either. Only the pair says which
+    /// dispatch this outcome belongs to.
+    #[must_use]
+    pub fn dispatched_to(&self, request: RequestId, target: DeviceId) -> Option<IntentId> {
+        self.intents
+            .values()
+            .find(|intent| {
+                matches!(
+                    &intent.state,
+                    IntentState::Dispatching { request_id, target: named, .. }
+                        if *request_id == request && *named == target
+                )
+            })
+            .map(|intent| intent.id)
+    }
+
     /// Drops the finished intents a board no longer needs.
     ///
     /// # Two rules, and why both

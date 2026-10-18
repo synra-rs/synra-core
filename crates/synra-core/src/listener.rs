@@ -36,6 +36,7 @@ pub use crate::inbound::{Decision, Inbox, PairingAnswer};
 use crate::host::Host;
 use crate::SessionError;
 use crate::link::{LinkError, PeerLink};
+use synra_protocol::envelope::Envelope;
 
 /// How long the accept loop waits between polls when nothing is waiting.
 ///
@@ -116,6 +117,35 @@ fn no_cancel() -> Arc<CancelCallback> {
     Arc::new(|_: &str| false)
 }
 
+/// What a host did with a kernel event that arrived on a link.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum KernelEventOutcome {
+    /// The host does not handle this event.
+    Ignored,
+    /// The host handled it, and there is nothing to send back.
+    Handled,
+    /// The answer to send back on the same link.
+    Reply(Box<Envelope>),
+    /// The event was understood and refused, with a sentence for the log.
+    Refused(String),
+}
+
+/// Answers a kernel event (`INTENT_INVOKE`, `INTENT_CANCEL`) that arrived on a link.
+///
+/// # Why a callback rather than code here
+///
+/// Because running an action needs the plugin set and the intent board, which belong to the host; the listener owns the
+/// connection, not the runtime. The callback is the same seam `FinishedCallback` uses, and it exists for the same reason:
+/// a reply belongs on the connection that asked, so the answer has to be produced **while the link is still open**.
+pub type KernelEventCallback = dyn Fn(&Envelope) -> KernelEventOutcome + Send + Sync;
+
+/// A kernel-event callback for a host that runs no kernel events.
+#[must_use]
+pub fn no_kernel_events() -> Arc<KernelEventCallback> {
+    Arc::new(|_event: &Envelope| KernelEventOutcome::Ignored)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// What one connection did, handed back to whoever served it.
 ///
@@ -153,12 +183,24 @@ pub fn serve(
     desk: &Arc<crate::pairing::PairingDesk>,
     router: &Arc<crate::dispatch::orchestrate::Router>,
     on_finished: &FinishedCallback,
+    on_kernel_events: &Arc<KernelEventCallback>,
 ) {
     // A listener that nobody asked to observe has the same behaviour it always had; only the callbacks differ.
     let on_progress: Arc<ProgressCallback> = Arc::new(|_event: &InboundProgressEvent| {});
     let offer: Arc<crate::inbound::OfferCallback> = Arc::new(crate::inbound::auto_accept);
     let should_cancel = no_cancel();
-    serve_with(host, cancel, data_dir, desk, router, on_finished, &on_progress, &offer, &should_cancel);
+    serve_with(
+        host,
+        cancel,
+        data_dir,
+        desk,
+        router,
+        on_finished,
+        &on_progress,
+        &offer,
+        &should_cancel,
+        on_kernel_events,
+    );
 }
 
 /// Serves inbound connections, reporting each step of an inbound transfer.
@@ -179,6 +221,7 @@ pub fn serve_with(
     on_progress: &Arc<ProgressCallback>,
     offer: &Arc<crate::inbound::OfferCallback>,
     should_cancel: &Arc<CancelCallback>,
+    on_kernel_events: &Arc<KernelEventCallback>,
 ) {
     // Owned, because each connection is handed to its own thread and a thread cannot borrow the caller's stack.
     let data_dir = data_dir.to_path_buf();
@@ -190,6 +233,7 @@ pub fn serve_with(
     // kernel's plugins and intents, not with a per-connection copy of them.
     let shared_router = Arc::clone(router);
     let shared_cancel = Arc::clone(should_cancel);
+    let shared_kernel_events = Arc::clone(on_kernel_events);
     // ★ Non-blocking, so the loop comes round often enough to notice the stop flag. Set once rather than per iteration:
     // it is a property of the socket, and re-setting it fifty times a second would be a syscall per poll for nothing.
     match host.lock().listen_nonblocking() {
@@ -218,6 +262,7 @@ pub fn serve_with(
                 let offer = Arc::clone(&shared_offer);
                 let router = Arc::clone(&shared_router);
                 let should_cancel = Arc::clone(&shared_cancel);
+                let kernel_events = Arc::clone(&shared_kernel_events);
                 // A thread per connection, because a link's lifetime is a peer's to decide. Nothing joins it: a link that
                 // ended is one whose thread returns, and one that is still open is doing useful work.
                 // ★ The callback is cloned per connection, and it has to be `Send + Sync + 'static`: the thread below
@@ -241,6 +286,7 @@ pub fn serve_with(
                         &on_progress,
                         &offer,
                         &should_cancel,
+                        &kernel_events,
                     );
                     if let Some(ended) = &served.ended {
                         let who = served
@@ -278,7 +324,18 @@ pub fn handle(
 ) -> Served {
     let on_progress: Arc<ProgressCallback> = Arc::new(|_event: &InboundProgressEvent| {});
     let offer: Arc<crate::inbound::OfferCallback> = Arc::new(crate::inbound::auto_accept);
-    handle_with(host, stream, data_dir, desk, router, on_finished, &on_progress, &offer, &no_cancel())
+    handle_with(
+        host,
+        stream,
+        data_dir,
+        desk,
+        router,
+        on_finished,
+        &on_progress,
+        &offer,
+        &no_cancel(),
+        &no_kernel_events(),
+    )
 }
 
 /// Handles one connection, reporting each step of an inbound transfer.
@@ -295,6 +352,7 @@ pub fn handle_with(
     on_progress: &Arc<ProgressCallback>,
     offer: &Arc<crate::inbound::OfferCallback>,
     should_cancel: &Arc<CancelCallback>,
+    on_kernel_events: &Arc<KernelEventCallback>,
 ) -> Served {
     handle_within_with(
         host,
@@ -307,6 +365,7 @@ pub fn handle_with(
         on_progress,
         offer,
         should_cancel,
+        on_kernel_events,
     )
 }
 
@@ -331,7 +390,19 @@ pub fn handle_within(
 ) -> Served {
     let on_progress: Arc<ProgressCallback> = Arc::new(|_event: &InboundProgressEvent| {});
     let offer: Arc<crate::inbound::OfferCallback> = Arc::new(crate::inbound::auto_accept);
-    handle_within_with(host, stream, data_dir, timeout, desk, router, on_finished, &on_progress, &offer, &no_cancel())
+    handle_within_with(
+        host,
+        stream,
+        data_dir,
+        timeout,
+        desk,
+        router,
+        on_finished,
+        &on_progress,
+        &offer,
+        &no_cancel(),
+        &no_kernel_events(),
+    )
 }
 
 /// Handles one connection, reporting each step of an inbound transfer, with a chosen handshake deadline.
@@ -351,6 +422,7 @@ pub fn handle_within_with(
     on_progress: &Arc<ProgressCallback>,
     offer: &Arc<crate::inbound::OfferCallback>,
     should_cancel: &Arc<CancelCallback>,
+    on_kernel_events: &Arc<KernelEventCallback>,
 ) -> Served {
     // ★ Read before the handshake consumes the stream, and kept as text. It is the one fact about the requester this side
     // *observed* rather than was told: a prompt shows the name the device chose, and the address is what lets a user
@@ -461,6 +533,21 @@ pub fn handle_within_with(
                                 ),
                             }
                         }
+                        // ★ A kernel event that runs an action, or withdraws one. It is answered **here**, on the
+                        // connection that asked, because the answer is a reply: a host that ran the action and sent the
+                        // result on a second connection would be answering a question nobody is listening for.
+                        None
+                            if event == synra_protocol::event::events::INTENT_INVOKE
+                                || event == synra_protocol::event::events::INTENT_CANCEL =>
+                        {
+                            let Some(envelope) = request else {
+                                eprintln!(
+                                    "synra-daemon: {peer} sent {event} without an envelope to answer"
+                                );
+                                continue;
+                            };
+                            answer_kernel_event(&mut link, &envelope, on_kernel_events, &mut events);
+                        }
                         // ★ **A question this kernel can answer by itself.** "What plugins do you have" is a read of
                         // this device's own store — `plugins` joined to the active row of `plugin_versions` — and the
                         // answer is what the asker's plan compares. It is answered here rather than by a host callback
@@ -539,7 +626,7 @@ pub fn handle_within_with(
                             synra_protocol::event::events::PAIR_RESPONSE,
                         ) {
                             Ok(event) => {
-                                match synra_protocol::envelope::Envelope::reply_to(
+                                match Envelope::reply_to(
                                     &request,
                                     event,
                                     link.local(),
@@ -676,6 +763,36 @@ pub fn handle_within_with(
                 return Served { peer: Some(peer), events, finished: Vec::new(), ended: Some(error.to_string()) };
             }
         }
+    }
+}
+
+/// Answers one kernel event on the connection it arrived on.
+///
+/// # Why this is a function rather than an arm
+///
+/// Because the connection loop is long enough that adding four outcomes to one of its arms pushed it past the complexity
+/// budget — and the budget is right: a reader of the loop should see "an intent event is answered here", not four branches
+/// about what kind of answer it was.
+fn answer_kernel_event(
+    link: &mut PeerLink,
+    envelope: &Envelope,
+    on_kernel_events: &Arc<KernelEventCallback>,
+    events: &mut Vec<String>,
+) {
+    let event = envelope.event.as_str();
+    match on_kernel_events(envelope) {
+        KernelEventOutcome::Handled => events.push(format!("handled {event}")),
+        KernelEventOutcome::Reply(reply) => {
+            events.push(format!("answered {event}"));
+            if let Err(error) = link.send(&reply) {
+                eprintln!("synra-daemon: the answer to {event} could not be sent: {error}");
+            }
+        }
+        KernelEventOutcome::Refused(why) => {
+            eprintln!("synra-daemon: {event} could not be handled: {why}");
+        }
+        // Not an error: an event this kernel does not run is one it must not guess at.
+        KernelEventOutcome::Ignored => events.push(format!("unhandled {event}")),
     }
 }
 

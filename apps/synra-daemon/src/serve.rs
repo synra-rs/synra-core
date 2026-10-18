@@ -574,6 +574,8 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
         // runtime. A `runtime.plugins` moved into the closure would make `serve_one(&runtime)` a use after move.
         let receive_plugins = Arc::clone(&runtime.plugins);
         let receive_plugins_dir = runtime.data_dir.join("plugins");
+        let receive_board = Arc::clone(&runtime.board);
+        let local_device = runtime.identity.device_id;
         let id = synra_core::supervisor::TaskId::new("transport.accept");
         // The token is the loop's stop condition, so cancelling the task *is* stopping the listener — there is no second
         // flag for the two to disagree about.
@@ -617,7 +619,44 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
                     }
                 })
             };
-    synra_core::listener::serve(&peers, token, &data_dir, &desk, &router, &on_finished);
+    // ★ A kernel event is run here, on the connection that asked, because the answer is a reply. The listener owns the
+    // link and this host owns the plugins and the board; the callback is the seam between them — and without it an
+    // `INTENT_INVOKE` arrived, was counted and was dropped: the sender waited for an outcome that no side produced.
+    let on_kernel_events: Arc<synra_core::listener::KernelEventCallback> = {
+        use synra_core::dispatch::orchestrate::{accept_cancel, accept_remote};
+        use synra_core::listener::KernelEventOutcome;
+        use synra_protocol::event::events;
+
+        let plugins = Arc::clone(&receive_plugins);
+        let board = Arc::clone(&receive_board);
+        let local = local_device;
+        Arc::new(move |envelope: &synra_protocol::envelope::Envelope| {
+            let now = synra_store::sqlite::now_ms();
+            match envelope.event.as_str() {
+                events::INTENT_INVOKE => match accept_remote(&plugins, &board, local, envelope, now) {
+                    Ok(Some(reply)) => KernelEventOutcome::Reply(Box::new(reply)),
+                    // The same request twice, with the first copy still running: there is nothing truthful to say yet,
+                    // and the first copy answers on its own.
+                    Ok(None) => KernelEventOutcome::Handled,
+                    Err(error) => KernelEventOutcome::Refused(error.to_string()),
+                },
+                events::INTENT_CANCEL => match accept_cancel(&board, envelope) {
+                    Ok(_) => KernelEventOutcome::Handled,
+                    Err(error) => KernelEventOutcome::Refused(error.to_string()),
+                },
+                _ => KernelEventOutcome::Ignored,
+            }
+        })
+    };
+    synra_core::listener::serve(
+        &peers,
+        token,
+        &data_dir,
+        &desk,
+        &router,
+        &on_finished,
+        &on_kernel_events,
+    );
             Ok(())
         }) {
             eprintln!("synra-daemon: the transport listener did not start: {error}");

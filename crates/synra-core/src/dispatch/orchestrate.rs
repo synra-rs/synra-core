@@ -428,7 +428,57 @@ pub fn snapshot(board: &Arc<Mutex<Board>>, intent: &str) -> Result<IntentView, R
     Ok(answer)
 }
 
-/// Applies the user's answer, and runs what they chose.
+/// Applies the outcome a device reported for an action this one dispatched.
+///
+/// # Why the reply's two fields are both needed
+///
+/// Because `reply_to` says which request this answers and `from` says which device answered it. A result with no
+/// `reply_to` cannot be matched to anything, and one whose sender is not the device the action was dispatched to is not an
+/// answer to this dispatch — it is either a mistake or somebody else's reply.
+///
+/// # Errors
+///
+/// [`RouteError`] when the envelope is not a readable result, or when the intent it names cannot take the outcome.
+pub fn apply_result(
+    board: &Arc<Mutex<Board>>,
+    envelope: &synra_protocol::envelope::Envelope,
+) -> Result<Option<synra_protocol::ids::IntentId>, RouteError> {
+    let reported = crate::intent::remote::result_from(envelope).map_err(|error| {
+        RouteError::new(synra_protocol::ErrorCode::InvalidArgument, error.to_string())
+    })?;
+    let Some(request) = envelope.reply_to else {
+        return Err(RouteError::new(
+            synra_protocol::ErrorCode::InvalidArgument,
+            "this result does not name the request it answers",
+        ));
+    };
+    let found = {
+        let intents = board.lock();
+        let id = intents.dispatched_to(request, envelope.from);
+        // Released rather than left to the end of the block: the conclude below takes the same board, and holding one
+        // guard while asking for the second is a deadlock rather than a slow path.
+        drop(intents);
+        id
+    };
+    let Some(id) = found else {
+        // An outcome for a request this device is not waiting on. Ignored rather than refused: a retry, a duplicate or a
+        // reply to work that was cancelled is not a protocol error, and saying so keeps a link open.
+        return Ok(None);
+    };
+    board
+        .lock()
+        .conclude(
+            id,
+            reported.ok,
+            &reported.result,
+            reported
+                .error
+                .map(|error| synra_protocol::SynraError::new(synra_protocol::ErrorCode::Internal, error)),
+            reported.elapsed_ms,
+        )
+        .map_err(|error| refuse_intent(&error))?;
+    Ok(Some(id))
+}
 ///
 /// # ★ Why this is the one place an action happens
 ///
@@ -559,7 +609,7 @@ pub fn decide(
             drop(intents);
             answer
         };
-        let envelope = crate::intent::remote::invoke(
+        let mut envelope = crate::intent::remote::invoke(
             local_device,
             device,
             &crate::intent::remote::Invoke {
@@ -575,6 +625,11 @@ pub fn decide(
         .map_err(|error| {
             RouteError::new(synra_protocol::ErrorCode::Internal, error.to_string())
         })?;
+        // ★ The envelope carries the id `confirm` produced, not the one `Envelope::outbound` minted. That id is what the
+        // board records, what a resend reuses, and what the reply's `reply_to` returns — a fresh one here made the sender
+        // unable to match the answer to its own dispatch, and the receiving side's idempotency keyed on a different id
+        // than the one the board kept.
+        envelope.request_id = request_id;
 
         return Ok(Decided {
             intent_id: id,
@@ -965,20 +1020,8 @@ fn candidates_of(board: &Board, id: synra_protocol::ids::IntentId) -> Vec<Candid
 
 /// A stable name for a state, for a client that switches on it.
 const fn state_name(state: &crate::intent::IntentState) -> &'static str {
-    use crate::intent::IntentState;
-    match state {
-        IntentState::Matching { .. } => "matching",
-        IntentState::Choosing { .. } => "choosing",
-        IntentState::Confirming { .. } => "confirming",
-        IntentState::Dispatching { .. } => "dispatching",
-        IntentState::NoHandler => "noHandler",
-        IntentState::TimedOut { .. } => "timedOut",
-        IntentState::Refused { .. } => "refused",
-        IntentState::Cancelled { .. } => "cancelled",
-        IntentState::Succeeded { .. } => "succeeded",
-        IntentState::Failed { .. } => "failed",
-        // No wildcard: `IntentState` is `#[non_exhaustive]`, which binds callers in *other* crates and not this
-        // one, so a state added later is a compile error here — which is where the missing arm should be noticed.
-    }
+    // One definition, in `IntentState::name`. The match that used to stand here was a second copy, and the two names
+    // (`kind` for storage, `name` for the wire) are documented where the states are.
+    state.name()
 }
 
