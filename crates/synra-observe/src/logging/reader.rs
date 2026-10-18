@@ -117,6 +117,31 @@ pub struct FollowSummary {
     pub lines: usize,
 }
 
+/// How many opening bytes of a log identify it where the platform reports no file id.
+///
+/// 256 is long enough that two different logs do not share it — every line begins with a timestamp, and a quarter of a
+/// kilobyte spans several lines — and short enough that comparing it on every poll is a read of a few cache lines.
+const HEAD_BYTES: usize = 256;
+
+/// The first `count` bytes of a file, or fewer when it is shorter.
+fn head_of(path: &Path, count: usize) -> Option<Vec<u8>> {
+    use std::io::Read as _;
+
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut buffer = vec![0u8; count];
+    let mut read = 0;
+    while read < count {
+        match file.read(buffer.get_mut(read..)?) {
+            Ok(0) => break,
+            Ok(size) => read += size,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => return None,
+        }
+    }
+    buffer.truncate(read);
+    Some(buffer)
+}
+
 /// A file's identity, when the platform reports one.
 ///
 /// # Why identity rather than length
@@ -131,9 +156,8 @@ pub struct FollowSummary {
 /// Because neither stable fact identifies a file there. `std::os::windows::fs::MetadataExt::file_index` is still behind
 /// `windows_by_handle` on this toolchain, and the creation time is **tunneled**: a new file created under a name that just
 /// existed inherits the old file's creation time (measured: the two are equal), so it would answer "same file" for a
-/// rotation. Windows therefore keeps the length fallback — a new file shorter than what this reader has consumed is
-/// detected, and a rotation whose new file is already longer is not. In practice rotation starts an empty file and the
-/// poll is short, so the missed case needs a tiny offset and a flood within one poll to occur.
+/// rotation. Windows therefore compares the file's opening bytes instead — see [`head_of`] — which is the identity that
+/// does not depend on the filesystem.
 #[allow(clippy::missing_const_for_fn)] // On unix the body reads the inode, which is not a const operation.
 fn file_id(metadata: &std::fs::Metadata) -> Option<u64> {
     #[cfg(unix)]
@@ -222,6 +246,9 @@ where
     let path = path_in(directory);
     let mut open: Option<std::fs::File> = None;
     let mut offset = 0u64;
+    // The opening bytes of the file this reader holds, for the platforms with no file id. Filled from what was read, so
+    // it costs no extra read; cleared when the reader switches files.
+    let mut head: Vec<u8> = Vec::new();
     let mut pending: Vec<u8> = Vec::new();
     let mut collected: Vec<String> = Vec::new();
     let mut initial = true;
@@ -243,9 +270,20 @@ where
         // already consumed** is a truncation. The second test has to use the offset, not the handle's current length: after
         // an in-place truncation the handle reports the new, smaller length too, so comparing the two lengths sees "equal"
         // and the follower then waits at an offset the file will never reach.
-        let replaced = held.is_some_and(|held_id| {
+        let mut replaced = held.is_some_and(|held_id| {
             held_id.zip(path_id).is_some_and(|(held_id, current)| held_id != current) || length < offset
         });
+        // ★ Where the platform reports no file id (Windows), the opening bytes are the identity: a rotation starts a file
+        // whose first bytes are not the ones this reader has already seen. Without this, a rotation whose new file was
+        // already longer than the offset was invisible, and the new file was read from the old offset.
+        if !replaced
+            && held == Some(None)
+            && !head.is_empty()
+            && length >= u64::try_from(head.len()).unwrap_or(u64::MAX)
+            && head_of(&path, head.len()).is_some_and(|current| current != head)
+        {
+            replaced = true;
+        }
         if replaced {
             if let Some(held) = open.as_ref()
                 && let Ok(mut clone) = held.try_clone()
@@ -262,6 +300,7 @@ where
             }
             // The end of the old file is not the start of the new one.
             pending.clear();
+            head.clear();
             open = None;
             offset = 0;
         }
@@ -279,6 +318,13 @@ where
                     let mut chunk = Vec::new();
                     if file.read_to_end(&mut chunk).is_ok() {
                         offset = offset.saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
+                        if head.len() < HEAD_BYTES {
+                            let wanted = HEAD_BYTES.saturating_sub(head.len());
+                            let taken = chunk.len().min(wanted);
+                            if let Some(bytes) = chunk.get(..taken) {
+                                head.extend_from_slice(bytes);
+                            }
+                        }
                         pending.extend_from_slice(&chunk);
                         read_something = true;
                     }
@@ -418,13 +464,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&directory);
     }
 
-    #[cfg(unix)]
     #[test]
     fn lines_written_just_before_a_rotation_are_not_lost() {
         // ★ The old file's unread bytes belong to the old handle. A follower that reopened by path on every poll would
         // miss them and then read the *new* file from the old offset — two half-lines of garbage where two real lines were.
-        // The new file is deliberately **longer** than the old, so a length comparison would read it as "it grew"; only
-        // the inode catches it, which is why this test is unix-only (see `file_id` for the Windows limitation).
+        // The new file is deliberately **longer** than the old, so a length comparison would read it as "it grew"; the
+        // inode catches it on unix, and the opening bytes catch it where no file id exists (Windows).
         let directory = scratch("rotation-loss");
         let path = path_in(&directory);
         std::fs::write(&path, "one\n").expect("a log");
