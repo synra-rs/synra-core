@@ -64,6 +64,25 @@ fn upload(args: &crate::args::UploadArgs) -> Result<Vec<String>, Vec<String>> {
             }
         }
     }
+
+    // ★ Upload success is not publish success: a bucket can accept every PUT and still serve the wrong bytes. The check is
+    // the one `publish --verify` already performs, so the two commands cannot disagree about what "published" means.
+    // A dry run uploaded nothing, so there is nothing new to read back.
+    if args.verify && !args.dry_run {
+        let outcome = crate::publish::publish_plugin(&crate::args::PublishArgs {
+            index: args.index.clone(),
+            base: Some(args.base.clone()),
+            verify: true,
+        });
+        let Outcome::Reported { lines: remote, failure, .. } = outcome else {
+            return Err(vec!["the verification produced no report".to_owned()]);
+        };
+        lines.extend(remote);
+        if failure {
+            return Err(lines);
+        }
+    }
+
     Ok(lines)
 }
 
@@ -172,6 +191,7 @@ mod tests {
             base: "https://bucket.example/plugins".to_owned(),
             command: "aws s3 cp {file} {url}".to_owned(),
             dry_run: true,
+            verify: false,
         })
         .expect("a plan");
 
@@ -206,8 +226,7 @@ mod tests {
     }
 
     #[test]
-    fn a_dry_run_runs_nothing_and_says_what_it_would_do() {
-        let root = scratch("dry");
+    fn a_dry_run_runs_nothing_and_says_what_it_would_do() {        let root = scratch("dry");
         let index = packed(&root, "1.0.0");
 
         let outcome = upload_plugin(&crate::args::UploadArgs {
@@ -215,6 +234,7 @@ mod tests {
             base: "https://bucket.example/plugins".to_owned(),
             command: "aws s3 cp {file} {url}".to_owned(),
             dry_run: true,
+            verify: false,
         });
 
         let crate::run::Outcome::Reported { lines, code, .. } = outcome else {
@@ -222,6 +242,28 @@ mod tests {
         };
         assert_eq!(code, 0, "{lines:?}");
         assert_eq!(lines.iter().filter(|line| line.contains("would run")).count(), 2);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_dry_run_does_not_read_the_bucket_back() {
+        // ★ `--dry-run --verify` uploaded nothing, so there is nothing to verify. The address is unreachable on purpose:
+        // a dry run that still fetched would fail here.
+        let root = scratch("dry-verify");
+        let index = packed(&root, "1.0.0");
+
+        let outcome = upload_plugin(&crate::args::UploadArgs {
+            index,
+            base: "https://127.0.0.1:1/plugins".to_owned(),
+            command: "aws s3 cp {file} {url}".to_owned(),
+            dry_run: true,
+            verify: true,
+        });
+
+        let crate::run::Outcome::Reported { lines, code, .. } = outcome else {
+            panic!("expected a report");
+        };
+        assert_eq!(code, 0, "{lines:?}");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

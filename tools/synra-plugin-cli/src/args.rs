@@ -145,6 +145,10 @@ pub struct UploadArgs {
     /// Print the commands without running them.
     #[arg(long)]
     pub dry_run: bool,
+
+    /// Read the bucket back after a successful upload and compare it with the local files.
+    #[arg(long)]
+    pub verify: bool,
 }
 
 /// Options for `new`.
