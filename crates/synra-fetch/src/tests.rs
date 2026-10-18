@@ -154,6 +154,59 @@ fn get(url: &str) -> Request {
     }
 }
 
+/// A server that answers one request with raw bytes, for the fetch that must not decode them.
+///
+/// It answers exactly one connection and exits: the test makes one request, and a second accept would keep the thread
+/// alive past the assertion for no reason.
+fn raw_server(body: Vec<u8>) -> SocketAddr {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("a port");
+    let address = listener.local_addr().expect("an address");
+    std::thread::spawn(move || {
+        let Ok((mut stream, _)) = listener.accept() else { return };
+        let mut scratch = [0u8; 1024];
+        let _ = stream.read(&mut scratch);
+        let header = format!(
+            "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+            body.len()
+        );
+        let _ = stream.write_all(header.as_bytes());
+        let _ = stream.write_all(&body);
+        let _ = stream.flush();
+    });
+    address
+}
+
+#[test]
+fn a_binary_body_comes_back_unchanged() {
+    // ★ The reason this entry point exists: a registry tarball is not UTF-8, and decoding it as text would corrupt it
+    // before the signature could check it (16 §4.1).
+    let bytes = vec![0x00, 0xFF, 0xFE, b'P', b'K', 0x03, 0x04];
+    let address = raw_server(bytes.clone());
+    let url = format!("http://{address}/package.synra");
+
+    let response = client().fetch_bytes(&get(&url)).expect("fetched");
+
+    assert_eq!(response.status, 200);
+    assert_eq!(response.url, url);
+    assert_eq!(response.body, bytes, "the bytes were altered on the way back");
+}
+
+#[test]
+fn the_binary_body_has_the_same_ceiling_as_a_text_one() {
+    let address = raw_server(vec![7u8; 16]);
+    let url = format!("http://{address}/big");
+    let client = Client::new(
+        NetworkGuard::for_hosts(&["127.0.0.1".to_owned()])
+            .allowing_insecure(true)
+            .with_policy(IpPolicy { allow_loopback: true, ..IpPolicy::default() }),
+        Limits { max_response_bytes: 4, ..Limits::default() },
+    );
+
+    let refused = client.fetch_bytes(&get(&url)).expect_err("over the ceiling");
+
+    assert_eq!(refused.code, ErrorCode::ResponseTooLarge, "{refused}");
+}
+
 #[test]
 fn a_request_reaches_the_server_and_the_answer_comes_back() {
     // The base case, and the one that proves the resolver did not send the request somewhere else: the server has to have

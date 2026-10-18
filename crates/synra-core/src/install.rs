@@ -452,7 +452,7 @@ fn signed_publisher(signature: &str) -> Option<SignedPublisher> {
     Some(SignedPublisher {
         publisher_id: document.publisher.id.clone(),
         fingerprint: fingerprint.as_str().to_owned(),
-        pubkey: document.pubkey.clone(),
+        pubkey: document.pubkey,
     })
 }
 

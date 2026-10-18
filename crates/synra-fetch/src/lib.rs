@@ -27,6 +27,12 @@
 //! The **body is a string**, not parsed JSON, because a response is not always JSON — a plugin fetching a CSV or a web
 //! page is doing something ordinary, and a host that parsed the body would be a host that refused most of the web.
 //!
+//! # Two entries, one body policy
+//!
+//! [`Client::fetch`] is the plugin-facing one: text, lossy UTF-8 at the edge. [`Client::fetch_bytes`] answers raw bytes
+//! for the cases where decoding is corruption — a registry tarball (16 §4.1). Both go through the same guard, the same
+//! redirect loop and the same ceiling; the only difference is the last step.
+//!
 //! # The order of the checks, which is the whole design
 //!
 //! `10 §4.4` names seven steps and this module is the first four; the remaining three are limits, and they are
@@ -197,6 +203,50 @@ pub struct Client {
     in_flight: Arc<Mutex<usize>>,
 }
 
+/// What came back, as bytes.
+///
+/// The text [`Response`] refuses a body that is not UTF-8 — deliberately, because it is for a plugin reading a page. A
+/// registry tarball is the other case: it is bytes by definition, and decoding it as text would corrupt it before the
+/// signature could check it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BinaryResponse {
+    /// The status code, as it arrived.
+    pub status: u16,
+    /// The reason phrase, when the status has one.
+    pub status_text: String,
+    /// The response headers, lowercased.
+    pub headers: std::collections::BTreeMap<String, String>,
+    /// The address the response actually came from, after any redirects.
+    pub url: String,
+    /// Whether at least one redirect was followed to get here.
+    pub redirected: bool,
+    /// The body, unmodified.
+    pub body: Vec<u8>,
+}
+
+/// How a body is read. The two answers are the two response types, and a caller chooses one rather than a client
+/// guessing from the bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BodyMode {
+    /// A string, for a plugin reading a page or an API.
+    Text,
+    /// Bytes, for a package or any other artefact.
+    Bytes,
+}
+
+/// What one request produced, before it is shaped into a [`Response`] or a [`BinaryResponse`].
+#[derive(Debug)]
+struct Fetched {
+    status: u16,
+    status_text: String,
+    headers: std::collections::BTreeMap<String, String>,
+    url: String,
+    redirected: bool,
+    text: Option<String>,
+    bytes: Option<Vec<u8>>,
+}
+
 impl Client {
     /// A fetcher for one plugin.
     #[must_use]
@@ -212,6 +262,39 @@ impl Client {
     /// `responseTooLarge`, `timeout`, `rateLimited`, or `hostFailed` for a transport failure. The code is what a plugin
     /// branches on and the sentence is what a person reads, as everywhere else.
     pub fn fetch(&self, request: &Request) -> Result<Response, Refusal> {
+        let fetched = self.request(request, BodyMode::Text)?;
+        Ok(Response {
+            status: fetched.status,
+            status_text: fetched.status_text,
+            headers: fetched.headers,
+            url: fetched.url,
+            redirected: fetched.redirected,
+            body: fetched.text.unwrap_or_default(),
+        })
+    }
+
+    /// Fetches one URL, answering the body as bytes.
+    ///
+    /// Same guards, same limits, same redirect loop as [`Client::fetch`]; the only difference is that the body is not
+    /// decoded. A registry tarball is the reason this exists (16 §4.1).
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::fetch`].
+    pub fn fetch_bytes(&self, request: &Request) -> Result<BinaryResponse, Refusal> {
+        let fetched = self.request(request, BodyMode::Bytes)?;
+        Ok(BinaryResponse {
+            status: fetched.status,
+            status_text: fetched.status_text,
+            headers: fetched.headers,
+            url: fetched.url,
+            redirected: fetched.redirected,
+            body: fetched.bytes.unwrap_or_default(),
+        })
+    }
+
+    /// The checks both fetches share, then the request itself.
+    fn request(&self, request: &Request, mode: BodyMode) -> Result<Fetched, Refusal> {
         if request.method.trim().is_empty() {
             return Err(Refusal::new(ErrorCode::InvalidArgument, "the method is empty"));
         }
@@ -230,7 +313,7 @@ impl Client {
         // ★ Taken **after** the cheap refusals and **before** anything that can block. A request refused for a bad URL
         // must not hold a slot, or a plugin sending rubbish would exhaust its own concurrency with work it never started.
         let slot = self.take_slot()?;
-        let outcome = self.send(request, body);
+        let outcome = self.send(request, body, mode);
         drop(slot);
 
         outcome
@@ -259,7 +342,7 @@ impl Client {
     }
 
     /// The request itself, with the redirect loop.
-    fn send(&self, request: &Request, body: &str) -> Result<Response, Refusal> {
+    fn send(&self, request: &Request, body: &str, mode: BodyMode) -> Result<Fetched, Refusal> {
         let started = Instant::now();
         let mut url = request.url.clone();
 
@@ -313,15 +396,29 @@ impl Client {
             // is one byte tighter than the one it is held to. Passing `limit + 1` makes "more than the limit is refused"
             // mean what it says, at both boundaries.
             let ceiling = self.limits.max_response_bytes.saturating_add(1);
-            let body = response
-                .body_mut()
-                .with_config()
-                .limit(ceiling)
-                .read_to_string()
-                .map_err(|error| body_refusal(&url, self.limits.max_response_bytes, &error))?;
+            let (text, bytes) = match mode {
+                BodyMode::Text => {
+                    let text = response
+                        .body_mut()
+                        .with_config()
+                        .limit(ceiling)
+                        .read_to_string()
+                        .map_err(|error| body_refusal(&url, self.limits.max_response_bytes, &error))?;
+                    (Some(text), None)
+                }
+                BodyMode::Bytes => {
+                    let bytes = response
+                        .body_mut()
+                        .with_config()
+                        .limit(ceiling)
+                        .read_to_vec()
+                        .map_err(|error| body_refusal(&url, self.limits.max_response_bytes, &error))?;
+                    (None, Some(bytes))
+                }
+            };
 
             let redirected = url != request.url;
-            return Ok(Response { status, status_text, headers, url, redirected, body });
+            return Ok(Fetched { status, status_text, headers, url, redirected, text, bytes });
         }
 
         // The loop returns on the last iteration's non-redirect, so this is reached only when every hop redirected —
