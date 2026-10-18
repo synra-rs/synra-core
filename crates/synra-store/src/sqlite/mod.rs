@@ -43,9 +43,11 @@ mod sync_log;
 mod plugins;
 mod storage;
 mod settings;
+mod publishers;
 
 pub use migrations::migration_versions;
 pub use pairing::Paired;
+pub use publishers::{PublisherRow, TRUST_REVOKED, TRUST_SEEN, TRUST_TRUSTED};
 pub use settings::ConfigChange;
 
 #[cfg(test)]

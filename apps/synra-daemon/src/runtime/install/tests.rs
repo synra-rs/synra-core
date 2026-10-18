@@ -189,6 +189,12 @@ fn a_signed_package_with_a_genuine_signature_installs() {
 
     assert!(installed.path.join("signature.json").is_file(), "the signature travels with it");
     assert!(installed.warnings.is_empty(), "{:?}", installed.warnings);
+    // ★ The publisher is recorded as "seen", not "trusted": the key signed this package, and only a user can decide
+    // whether it is a key they trust.
+    let publishers = db.publishers().expect("the publisher table");
+    assert_eq!(publishers.len(), 1);
+    assert_eq!(publishers[0].publisher_id, "@acme");
+    assert_eq!(publishers[0].trust, synra_store::TRUST_SEEN);
 }
 
 #[test]
@@ -204,6 +210,34 @@ fn a_signed_package_whose_signature_covers_other_bytes_is_refused_at_the_signatu
     assert!(refusal.reason.contains("different bytes"), "{}", refusal.reason);
     assert!(!plugins(dir.path()).join("@acme/hello").exists());
     assert!(db.plugins().expect("the table").is_empty());
+}
+
+#[test]
+fn a_revoked_publisher_is_refused_even_with_a_valid_signature() {
+    // ★ A revocation is not a cryptographic fact — the signature is genuine — so it is checked at the publisher-trust
+    // step, from the table. Without loading that table every revoked key would install again.
+    let dir = TempDir::new("install-revoked");
+    let source = package(dir.path(), "source", &manifest(&["log:*"], "plugin.wasm"), &[("plugin.wasm", wasm())]);
+    crate::runtime::tests::sign_plugin(&source, false);
+    let mut db = database();
+
+    let text = std::fs::read_to_string(source.join("signature.json")).expect("a signature");
+    let document = synra_plugin_api::publisher::SignatureFile::parse(&text).expect("a document");
+    let synra_plugin_api::publisher::VerifyOutcome::Good { fingerprint } =
+        document.verify().expect("a genuine signature")
+    else {
+        panic!("the fixture must sign correctly");
+    };
+    db.record_publisher("@acme", fingerprint.as_str(), &document.pubkey, 1_000)
+        .expect("the publisher is known");
+    db.set_publisher_trust("@acme", synra_store::TRUST_REVOKED, 2_000)
+        .expect("the key is revoked");
+
+    let refusal = from_directory(&mut db, &backend(), &plugins(dir.path()), &source, 3_000)
+        .expect_err("a revoked key must not install");
+
+    assert_eq!(refusal.stage, "publisher-trust", "{}", refusal.reason);
+    assert!(!plugins(dir.path()).join("@acme/hello").exists());
 }
 
 // ── The paths that do not ───────────────────────────────────────────────────────────────────────────────────────

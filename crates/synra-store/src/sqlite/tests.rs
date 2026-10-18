@@ -505,6 +505,31 @@ fn a_paired_device_that_is_also_heard_from_keeps_both_records() {
 // ── Settings ─────────────────────────────────────────────────────────────────────────────────────
 
 #[test]
+fn a_publisher_is_recorded_once_and_a_decision_survives_later_sightings() {
+    // ★ "Seen" is not "trusted": an install may record that a key signed a package, and only a user decision may promote
+    // it. A second sighting must not reset a decision either — that would make every update forget the answer.
+    let db = migrated();
+    assert!(db.publishers().expect("reads").is_empty(), "a fresh install has met nobody");
+
+    db.record_publisher("@acme", "AB12 CD34 EF56 7890", "a2V5", 1_000)
+        .expect("records");
+    let rows = db.publishers().expect("reads");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].trust, crate::TRUST_SEEN);
+    assert_eq!(rows[0].decided_ms, None);
+
+    assert!(db.set_publisher_trust("@acme", crate::TRUST_TRUSTED, 2_000).expect("updates"));
+    db.record_publisher("@acme", "AB12 CD34 EF56 7890", "a2V5", 3_000)
+        .expect("records again");
+    let rows = db.publishers().expect("reads");
+    assert_eq!(rows[0].trust, crate::TRUST_TRUSTED, "the decision survives");
+    assert_eq!(rows[0].decided_ms, Some(2_000));
+
+    // A decision about a publisher nobody has met is not a decision: there is no row for the installer to consult.
+    assert!(!db.set_publisher_trust("@ghost", crate::TRUST_TRUSTED, 4_000).expect("updates"));
+}
+
+#[test]
 fn a_setting_written_as_a_string_reads_back_as_a_string_not_as_text() {
     // ★ The reason `set_config` serialises rather than taking text.
     //

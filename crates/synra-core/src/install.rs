@@ -36,7 +36,9 @@
 use std::path::{Path, PathBuf};
 
 use synra_plugin_api::Manifest;
-use synra_plugin_api::publisher::{Digests, PublisherTrustStore};
+use synra_plugin_api::publisher::{
+    Digests, Fingerprint, PublisherTrustStore, SignatureFile, VerifyOutcome,
+};
 use synra_plugin_host::Backend;
 use synra_plugin_host::verify::{self, Candidate, DependencyGraph, HostFacts};
 
@@ -263,7 +265,11 @@ pub fn from_directory(
     // The publisher store is empty, which is the honest state of a daemon that has never recorded a publisher: every
     // publisher is new, and the pipeline reports that so the interface can ask rather than refusing the first install
     // from anybody. Persisting it is `PublisherTrustStore`'s own gap, not this module's.
-    let report = verify::verify(&candidate, &PublisherTrustStore::new())
+    // ★ The decisions this device has made, in the shape the verifier takes. An unknown publisher still installs — the
+    // pipeline's own rule — but a trusted one installs as trusted, and a revoked key is refused here rather than at the
+    // signature check, because "the user revoked it" is not a cryptographic fact.
+    let trust = trust_store(db);
+    let report = verify::verify(&candidate, &trust)
         .map_err(|(stage, error)| InstallRefusal::new(stage.as_str(), error.to_string()))?;
 
     let warnings: Vec<String> = report
@@ -384,7 +390,51 @@ pub fn from_directory(
         return Err(InstallRefusal::new("record", error.to_string()));
     }
 
+    // ★ Recorded after the install succeeded, not before: a package that failed a check did not make its publisher a
+    // part of this device's history, and a row written for it would make the next prompt say "seen before" about a
+    // signature this device refused.
+    if let Some(text) = &signature {
+        note_publisher(db, text, now_ms);
+    }
+
     Ok(Installed { plugin_id, version, path: destination, warnings })
+}
+
+/// The publisher decisions this device has made, in the shape the verifier takes.
+///
+/// A malformed fingerprint is skipped rather than failing the install: the row is this device's own record, and a
+/// package must not be refused because a storage row cannot be read — the signature was checked regardless.
+fn trust_store(db: &synra_store::SynraDb) -> PublisherTrustStore {
+    let mut store = PublisherTrustStore::new();
+    for row in db.publishers().unwrap_or_default() {
+        let Ok(fingerprint) = Fingerprint::parse(&row.fingerprint) else {
+            continue;
+        };
+        match row.trust.as_str() {
+            synra_store::TRUST_TRUSTED => store.trust(row.publisher_id, fingerprint),
+            synra_store::TRUST_REVOKED => store.revoke(fingerprint, "the user revoked this key"),
+            _ => {}
+        }
+    }
+    store
+}
+
+/// Notes the publisher of a signature this device just installed.
+///
+/// `DO NOTHING` in the store means a decision is never overwritten by a later sighting; see [`SynraDb::record_publisher`].
+fn note_publisher(db: &synra_store::SynraDb, signature: &str, now_ms: i64) {
+    let Ok(document) = SignatureFile::parse(signature) else {
+        return;
+    };
+    let Ok(VerifyOutcome::Good { fingerprint }) = document.verify() else {
+        return;
+    };
+    let _ = db.record_publisher(
+        &document.publisher.id,
+        fingerprint.as_str(),
+        &document.pubkey,
+        now_ms,
+    );
 }
 
 /// Installs a plugin from a `.synra` archive.

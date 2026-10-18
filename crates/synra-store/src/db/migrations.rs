@@ -336,6 +336,24 @@ pub const MIGRATIONS: &[Migration] = &[
              WHERE capability = 'platform:clipboard:write'",
         ],
     },
+    Migration {
+        version: 12,
+        name: "publisher-trust",
+        statements: &[
+            // What this device knows about the keys that sign packages. `trust` is one of `seen`, `trusted`, `revoked`:
+            // a signature is checked on every install, and this table is what turns "a key I have met" into "a key the
+            // user chose". `pubkey` is kept because a fingerprint cannot be turned back into a key.
+            "CREATE TABLE publishers (
+                publisher_id  TEXT PRIMARY KEY,
+                fingerprint   TEXT NOT NULL,
+                pubkey        TEXT NOT NULL,
+                trust         TEXT NOT NULL,
+                first_seen_ms INTEGER NOT NULL,
+                decided_ms    INTEGER
+            )",
+            "CREATE INDEX publishers_by_fingerprint ON publishers (fingerprint)",
+        ],
+    },
 ];
 
 /// The schema version this build expects.
