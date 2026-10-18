@@ -45,6 +45,10 @@ impl Capability {
             (Domain::Platform, "open-url") => "open links in your browser".to_owned(),
             (Domain::Platform, "notify") => "show notifications".to_owned(),
             (Domain::Platform, "simulate-keys") => "type on your behalf".to_owned(),
+            (Domain::Platform, "read-clipboard") => "read your clipboard".to_owned(),
+            (Domain::Platform, "write-clipboard") => "change your clipboard".to_owned(),
+            // Kept for a legacy declaration that reached this far without canonicalisation; the manifest reader and the
+            // store migration are what make it rare, and the prompt still has to say something a user can read.
             (Domain::Platform, "clipboard") => match self.qualifier.first() {
                 Some(action) if action.as_str() == "read" => "read your clipboard".to_owned(),
                 Some(action) if action.as_str() == "write" => "change your clipboard".to_owned(),

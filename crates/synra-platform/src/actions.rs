@@ -43,8 +43,8 @@ impl PlatformAction {
             Self::OpenPath => "platform:open-path",
             Self::RevealPath => "platform:reveal-path",
             Self::SimulateKeys => "platform:simulate-keys",
-            Self::ReadClipboard => "platform:clipboard:read",
-            Self::WriteClipboard => "platform:clipboard:write",
+            Self::ReadClipboard => "platform:read-clipboard",
+            Self::WriteClipboard => "platform:write-clipboard",
             Self::Notify => "platform:notify",
         }
     }

@@ -30,6 +30,19 @@ impl Manifest {
         }
         // Normalised, so a later comparison does not have to remember that it is optional in the file.
         manifest.schema = Some(MANIFEST_SCHEMA.to_owned());
+
+        // ★ Legacy capability spellings, corrected where the text enters the kernel.
+        //
+        // The generated contract has always required `platform:read-clipboard` / `platform:write-clipboard`, while this
+        // workspace's documentation used `platform:clipboard:read` / `platform:clipboard:write`. A manifest written from
+        // the documentation therefore declared a permission the gate never checked. Correcting it here means the
+        // consent prompt, the grant row and the gate all speak one name; teaching the matcher both would make the old
+        // spelling permanent instead.
+        for declared in &mut manifest.capabilities {
+            if let Some(canonical) = synra_capability::canonical_spelling(&declared.cap) {
+                declared.cap = canonical.to_owned();
+            }
+        }
         Ok(manifest)
     }
 

@@ -31,7 +31,7 @@ fn real_capabilities_parse() {
         "file:transfer:receive",
         "platform:open-url",
         "platform:simulate-keys",
-        "platform:clipboard:read",
+        "platform:read-clipboard",
         "action:declare:format-date",
         "action:invoke:*:format-date",
         "ui:page",
@@ -331,7 +331,7 @@ fn every_capability_has_a_human_description() {
         "device:send:@synra-pc",
         "device:list",
         "platform:open-url",
-        "platform:clipboard:read",
+        "platform:read-clipboard",
         "storage:local:read",
         "file:transfer:send",
         "event:emit:_plugin.chat.*",
@@ -366,4 +366,18 @@ fn display_and_parse_round_trip() {
     }
 
     assert!(Capability::parse(&Capability::parse("ui:page").expect("valid").to_string()).is_ok());
+}
+
+#[test]
+fn the_legacy_clipboard_spelling_is_recognised_and_corrected() {
+    // ★ The boundary correction, not a second name in the matcher. The generated contract has always required
+    // `platform:read-clipboard`; the documentation used the nested spelling, so a manifest written from it declared a
+    // permission the gate never checked. `canonical_spelling` is what the manifest reader and the store migration use to
+    // turn one into the other — and a capability that is already canonical is left alone.
+    assert_eq!(crate::canonical_spelling("platform:clipboard:read"), Some("platform:read-clipboard"));
+    assert_eq!(crate::canonical_spelling("platform:clipboard:write"), Some("platform:write-clipboard"));
+    assert_eq!(crate::canonical_spelling("platform:read-clipboard"), None);
+    assert_eq!(crate::canonical_spelling("platform:write-clipboard"), None);
+    assert_eq!(crate::canonical_spelling("platform:open-url"), None);
+    assert_eq!(crate::canonical_spelling("log:*"), None);
 }

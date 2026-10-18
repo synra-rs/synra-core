@@ -34,7 +34,7 @@
 //! device:send:@synra-pc
 //! network:fetch:api.github.com:POST
 //! fs:read:/data/**
-//! platform:clipboard:read
+//! platform:read-clipboard
 //! event:emit:_plugin.chat.*
 //! ```
 //!
@@ -87,3 +87,24 @@ pub use capability::{Capability, CapabilityError, Segment};
 pub use domain::{Domain, DomainId, DomainMask};
 pub use gate::{CallGate, GateOutcome, GateRefusal};
 pub use set::{CapabilitySet, EffectiveCaps, ImportSet, VerifyError, verify_effective_caps};
+
+/// The spelling this build checks for a capability whose historical name differs.
+///
+/// # Why a compatibility table exists at all
+///
+/// The generated host contract and the gate have always spelled the two clipboard capabilities
+/// `platform:read-clipboard` and `platform:write-clipboard`, while this crate's own documentation and
+/// `PlatformAction::capability` used `platform:clipboard:read` / `platform:clipboard:write`. Only the first spelling is
+/// enforced, so a manifest written from the documentation declared a permission that never authorised anything.
+///
+/// The correction happens at the **boundary** — a manifest being read, a grant row from an older database — rather than
+/// in the matcher. Teaching [`Capability::matches`] both names would make the second spelling permanent, and every check
+/// after that would have to ask which one it meant.
+#[must_use]
+pub fn canonical_spelling(text: &str) -> Option<&'static str> {
+    match text {
+        "platform:clipboard:read" => Some("platform:read-clipboard"),
+        "platform:clipboard:write" => Some("platform:write-clipboard"),
+        _ => None,
+    }
+}

@@ -319,11 +319,8 @@ pub fn host_requirement(capability: &Capability) -> Option<PlatformAction> {
         "open-path" => Some(PlatformAction::OpenPath),
         "reveal-path" => Some(PlatformAction::RevealPath),
         "simulate-keys" => Some(PlatformAction::SimulateKeys),
-        "clipboard" => match capability.qualifier().first().map(synra_capability::Segment::as_str) {
-            Some("read") => Some(PlatformAction::ReadClipboard),
-            Some("write") => Some(PlatformAction::WriteClipboard),
-            _ => None,
-        },
+        "read-clipboard" => Some(PlatformAction::ReadClipboard),
+        "write-clipboard" => Some(PlatformAction::WriteClipboard),
         "notify" => Some(PlatformAction::Notify),
         _ => None,
     }
@@ -601,8 +598,8 @@ mod tests {
             ("platform:open-path", PlatformAction::OpenPath),
             ("platform:reveal-path", PlatformAction::RevealPath),
             ("platform:simulate-keys", PlatformAction::SimulateKeys),
-            ("platform:clipboard:read", PlatformAction::ReadClipboard),
-            ("platform:clipboard:write", PlatformAction::WriteClipboard),
+            ("platform:read-clipboard", PlatformAction::ReadClipboard),
+            ("platform:write-clipboard", PlatformAction::WriteClipboard),
             ("platform:notify", PlatformAction::Notify),
         ];
         for (text, action) in expected {
@@ -624,7 +621,8 @@ mod tests {
         // `platform:*` is a grant over the domain with no specific action, so there is nothing for the host to be
         // asked about. It is still a capability the plugin must hold, which step 5 covers.
         assert_eq!(host_requirement(&capability("platform:*")), None);
-        assert_eq!(host_requirement(&capability("platform:clipboard")), None);
+        // A platform resource with no action this host knows: still a capability, still nothing to ask the OS about.
+        assert_eq!(host_requirement(&capability("platform:unknown")), None);
     }
 
     #[test]

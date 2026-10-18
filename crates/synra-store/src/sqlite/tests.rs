@@ -1153,3 +1153,57 @@ fn an_action_cannot_outlive_its_plugin() {
 
     assert!(refused.is_err(), "an action was recorded for a plugin nobody installed");
 }
+
+#[test]
+fn the_clipboard_capability_is_renamed_to_the_name_the_gate_checks() {
+    // ★ A data migration, so it is tested the only way a data migration can be: build a database at the version
+    // **before** this step, put the legacy rows in, and run this step's own statements.
+    //
+    // The database is assembled from `MIGRATIONS` rather than from a hand-written schema — a fixture that spelled the
+    // tables itself would drift from the migration list and stop noticing the step it is testing.
+    let migration = MIGRATIONS
+        .iter()
+        .find(|migration| migration.version == 11)
+        .expect("the clipboard migration");
+    let db = SynraDb::open_in_memory().expect("opens");
+    for earlier in MIGRATIONS.iter().filter(|migration| migration.version < 11) {
+        for statement in earlier.statements {
+            db.connection.execute_batch(statement).expect("an earlier migration");
+        }
+    }
+
+    // A legacy grant row, a canonical row that must not be touched, and a plugin that somehow has both.
+    db.insert_plugin("@acme/legacy", true, true, "installed", 1, 1).expect("a row");
+    db.record_grants("@acme/legacy", &[("platform:clipboard:read".to_owned(), true)], 2, "digest")
+        .expect("a legacy decision");
+
+    db.insert_plugin("@acme/canonical", true, true, "installed", 1, 1).expect("a row");
+    db.record_grants("@acme/canonical", &[("platform:read-clipboard".to_owned(), false)], 2, "digest")
+        .expect("a canonical decision");
+
+    db.insert_plugin("@acme/both", true, true, "installed", 1, 1).expect("a row");
+    db.record_grants("@acme/both", &[("platform:read-clipboard".to_owned(), false)], 2, "digest")
+        .expect("the canonical decision");
+    db.record_grants("@acme/both", &[("platform:clipboard:read".to_owned(), true)], 2, "digest")
+        .expect("and the legacy one");
+
+    for statement in migration.statements {
+        db.connection.execute_batch(statement).expect("the migration applies");
+    }
+
+    let legacy = db.plugin_grants("@acme/legacy").expect("the decisions");
+    assert_eq!(legacy.len(), 1, "{legacy:?}");
+    assert_eq!(legacy[0].capability, "platform:read-clipboard");
+    assert!(legacy[0].granted, "the user's answer survived the rename");
+
+    let canonical = db.plugin_grants("@acme/canonical").expect("the decisions");
+    assert_eq!(canonical.len(), 1);
+    assert_eq!(canonical[0].capability, "platform:read-clipboard");
+    assert!(!canonical[0].granted, "a refusal is not turned into a grant");
+
+    // The collision the primary key would otherwise refuse: one row, and it is the canonical one's decision.
+    let both = db.plugin_grants("@acme/both").expect("the decisions");
+    assert_eq!(both.len(), 1, "the rename left two rows: {both:?}");
+    assert_eq!(both[0].capability, "platform:read-clipboard");
+    assert!(!both[0].granted, "the canonical decision was replaced by the legacy one");
+}

@@ -49,6 +49,21 @@ use super::version::*;
     }
 
     #[test]
+    fn a_legacy_capability_spelling_is_corrected_when_the_manifest_is_read() {
+        // ★ The contract has always checked `platform:read-clipboard`, and this workspace's documentation used
+        // `platform:clipboard:read`. A manifest written from the documentation therefore asked for a permission that
+        // could never authorise anything. Correcting at the boundary means everything after this point — the consent
+        // prompt, the grant row, the gate — sees one name.
+        let manifest = parse(&MINIMAL.replace(r#""log:*""#, r#""platform:clipboard:read""#));
+
+        assert_eq!(manifest.capabilities[0].cap, "platform:read-clipboard");
+
+        // And an ordinary capability is untouched: this is a correction table, not a rewriting of the vocabulary.
+        let untouched = parse(&MINIMAL.replace(r#""log:*""#, r#""network:fetch:api.example.com""#));
+        assert_eq!(untouched.capabilities[0].cap, "network:fetch:api.example.com");
+    }
+
+    #[test]
     fn the_schema_field_is_normalised_and_an_unknown_one_is_refused() {
         let manifest = minimal();
         assert_eq!(manifest.schema.as_deref(), Some(MANIFEST_SCHEMA));

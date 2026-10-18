@@ -307,6 +307,35 @@ pub const MIGRATIONS: &[Migration] = &[
             "CREATE INDEX sync_log_by_plugin ON sync_log (plugin_id, started_at_ms)",
         ],
     },
+    Migration {
+        version: 11,
+        name: "clipboard-capability",
+        statements: &[
+            // ★ One permission, one name. The gate has always required `platform:read-clipboard` /
+            // `platform:write-clipboard`; the capability documentation used `platform:clipboard:read` /
+            // `platform:clipboard:write`, so a manifest written from it produced grant rows the gate never consulted.
+            // The manifest reader now canonicalises new declarations; this step repairs the rows already on disk.
+            //
+            // The DELETE-then-UPDATE pair handles a plugin that managed to record both spellings: the primary key is
+            // `(plugin_id, capability)`, so a plain UPDATE would fail on the collision, and `UPDATE OR REPLACE` would
+            // silently drop the canonical row's own decision. Keeping the canonical row and removing the legacy one is
+            // the only outcome that does not lose a decision the user can still see.
+            "DELETE FROM plugin_grants WHERE capability = 'platform:clipboard:read' AND EXISTS (
+                 SELECT 1 FROM plugin_grants AS canonical
+                 WHERE canonical.plugin_id = plugin_grants.plugin_id
+                   AND canonical.capability = 'platform:read-clipboard'
+             )",
+            "UPDATE plugin_grants SET capability = 'platform:read-clipboard'
+             WHERE capability = 'platform:clipboard:read'",
+            "DELETE FROM plugin_grants WHERE capability = 'platform:clipboard:write' AND EXISTS (
+                 SELECT 1 FROM plugin_grants AS canonical
+                 WHERE canonical.plugin_id = plugin_grants.plugin_id
+                   AND canonical.capability = 'platform:write-clipboard'
+             )",
+            "UPDATE plugin_grants SET capability = 'platform:write-clipboard'
+             WHERE capability = 'platform:clipboard:write'",
+        ],
+    },
 ];
 
 /// The schema version this build expects.
