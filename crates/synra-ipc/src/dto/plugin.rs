@@ -204,6 +204,40 @@ pub struct InstallReport {
     pub fingerprint: Option<String>,
 }
 
+/// What a registry package would install, before any of it is downloaded.
+///
+/// ★ Read from the packument's inline manifest (16 §4.1), which is the publisher's claim and not yet a verified fact: the
+/// signature check happens on the bytes. A preview is a question — "these are the permissions it asks for, do you want to
+/// fetch and install it?" — not an approval.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InstallPreviewDto {
+    /// The plugin the package would install.
+    pub plugin_id: PluginId,
+    /// The version that would be installed.
+    pub version: String,
+    /// The name shown to a person.
+    pub title: String,
+    /// A sentence describing it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// The publisher's identifier.
+    pub publisher: String,
+    /// A name to show, when the manifest has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publisher_name: Option<String>,
+    /// What it asks to be allowed, as the manifest spells it.
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    /// Whether it runs without an interface.
+    pub headless: bool,
+    /// Whether it adds pages to the interface.
+    pub has_ui: bool,
+    /// The published size in bytes, when the packument states one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
+}
+
 /// What to do with the plugin's data when removing it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

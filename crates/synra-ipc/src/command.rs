@@ -244,6 +244,7 @@ commands! {
     // ── plugins ──
     "plugins_list" => Plugins, Host, Many, false;
     "plugins_catalog_search" => Plugins, Host, Many, false;
+    "plugins_preview" => Plugins, Host, One, false;
     "plugins_install" => Plugins, Host, One, true;
     "plugins_uninstall" => Plugins, Host, One, true;
     "plugins_enable" => Plugins, Host, Unit, true;
@@ -488,6 +489,7 @@ mod tests {
             // plugins
             "plugins_list",
             "plugins_catalog_search",
+            "plugins_preview",
             "plugins_install",
             "plugins_uninstall",
             "plugins_enable",
