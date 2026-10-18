@@ -135,6 +135,13 @@ pub struct Runtime {
     /// not claim it is keeping up with one. The counts come from the writer's own [`LogStats`](synra_observe::logging::LogStats),
     /// so `synra logs` reports the same numbers the writer recorded rather than an estimate.
     pub log_stats: Option<std::sync::Arc<synra_observe::logging::LogStats>>,
+
+    /// A cloneable handle that waits for the log writer to catch up.
+    ///
+    /// `None` when logging is not running, for the same reason as `verbosity`: a daemon with no log must not claim to have
+    /// flushed one. `synra logs` calls it before reading the file, because the writer is asynchronous and the command's
+    /// whole purpose is to show what has just been written.
+    pub log_flush: Option<synra_observe::logging::LogFlush>,
 }
 
 impl Runtime {

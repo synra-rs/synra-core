@@ -33,7 +33,7 @@ pub use stats::LogStats;
 pub use verbosity::{VERBOSE_WINDOW, Verbosity};
 pub use writer::{DEFAULT_REDACTED_FIELDS, RedactingWriter, redact_line};
 pub use file::{DEFAULT_KEEP, DEFAULT_MAX_BYTES, LOG_FILE_NAME, RotatingFile};
-pub use init::{LogConfig, LogError, LogGuard, init, stats_of};
+pub use init::{LogConfig, LogError, LogFlush, LogGuard, init, stats_of};
 pub use nonblocking::DEFAULT_QUEUE_CAPACITY;
 pub use reader::{
     DEFAULT_TAIL_LINES, FOLLOW_POLL, FollowSummary, LogTail, follow, is_debug_or_trace, newest_file, path_in,

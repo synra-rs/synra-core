@@ -75,6 +75,30 @@ impl Write for QueueWriter {
     }
 }
 
+/// A cloneable way to ask the worker to catch up, held by a host that does not own the guard.
+///
+/// # Why a separate handle
+///
+/// Because the daemon answers `synra logs` on a thread that does not own the `LogGuard`: the guard lives for the life of
+/// the process, while the command is served by the runtime. Passing the guard around would tie two lifetimes together
+/// that have nothing to do with each other; the handle is only the queue's sender, and cloning it is what makes "flush
+/// before you read" available where the read happens.
+#[derive(Clone)]
+pub(crate) struct FlushHandle {
+    sender: SyncSender<Message>,
+}
+
+impl FlushHandle {
+    /// Waits until every line queued before this call has reached the destination.
+    pub(crate) fn flush(&self) {
+        let (ack, wait) = std::sync::mpsc::channel();
+        // `send` rather than `try_send`: a full queue is exactly the case where the caller wants to wait for it to drain.
+        if self.sender.send(Message::Flush(ack)).is_ok() {
+            let _ = wait.recv();
+        }
+    }
+}
+
 /// The thread that drains the queue, and the handle that stops it.
 ///
 /// Dropping the worker is the stop: it sends `Stop` after every line already queued and waits for the thread. That is
@@ -85,6 +109,11 @@ pub(crate) struct Worker {
 }
 
 impl Worker {
+    /// A cloneable handle that can wait for the queue without owning the worker.
+    pub(crate) fn flusher(&self) -> FlushHandle {
+        FlushHandle { sender: self.sender.clone() }
+    }
+
     /// Starts a thread that writes queued lines to `sink`.
     ///
     /// # Errors

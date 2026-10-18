@@ -403,6 +403,11 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
     let log_stats = _log
         .as_ref()
         .map(synra_observe::logging::stats_of);
+    // And a handle that can wait for the writer: `synra logs` must answer with what was just written, not with what
+    // happened to be flushed already.
+    let log_flush = _log
+        .as_ref()
+        .and_then(synra_observe::logging::LogGuard::flush_handle);
 
     // ★ The database goes behind its lock **here**, before the plugin host is built.
     //
@@ -561,6 +566,7 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
         // have raised anything.
         verbosity: log_verbosity,
         log_stats,
+        log_flush,
     });
 
     // ★ Put back what the last run was working on, **before** the socket is bound.

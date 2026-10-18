@@ -109,6 +109,8 @@ fn runtime_over(dir: &Path, shared_db: std::sync::Arc<parking_lot::Mutex<synra_s
         ))),
         // The fixture keeps no writer, so the counts are absent: `synra logs` must still answer, with zeroes.
         log_stats: None,
+        // And no flush handle, for the same reason: there is no file to wait for.
+        log_flush: None,
     }
 }
 

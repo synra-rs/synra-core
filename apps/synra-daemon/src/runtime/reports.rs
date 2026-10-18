@@ -231,6 +231,11 @@ impl Runtime {
 
         // The log lives in the cache directory beside the data directory, which is where `Paths` puts it.
         let log_dir = self.data_dir.join("logs");
+        // ★ The writer is asynchronous: without this wait, a line logged a moment ago — often the one explaining the thing
+        // the user is asking about — would be missing from the answer, and the answer would look like a quiet kernel.
+        if let Some(flush) = &self.log_flush {
+            flush.flush();
+        }
 
         // ★ The reading, the level filter and the trace filter all live in `synra-observe::logging` now, because the
         // shell needs the same three decisions for a diagnostic bundle and could not reach them here. What is left in

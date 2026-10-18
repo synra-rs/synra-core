@@ -120,6 +120,23 @@ pub struct LogGuard {
     worker: Option<Worker>,
 }
 
+/// A cloneable handle that flushes the log from a thread that does not own the guard.
+///
+/// See [`LogGuard::flush_handle`] for why a host holds one rather than the guard itself.
+#[derive(Clone)]
+pub struct LogFlush {
+    writer: Arc<Mutex<RedactingWriter<QueueWriter>>>,
+    queue: super::nonblocking::FlushHandle,
+}
+
+impl LogFlush {
+    /// Waits until everything logged so far has reached the file.
+    pub fn flush(&self) {
+        let _ = self.writer.lock().flush();
+        self.queue.flush();
+    }
+}
+
 impl LogGuard {
     /// Waits until everything logged so far has reached the file.
     ///
@@ -137,6 +154,22 @@ impl LogGuard {
         }
     }
 
+    /// A cloneable handle that flushes the log from a thread that does not own this guard.
+    ///
+    /// # Why a host needs one
+    ///
+    /// Because the daemon's `synra logs` is answered by the runtime, and the runtime does not own the guard: the guard is
+    /// kept for the life of the process so the subscriber keeps writing. This handle is the smallest thing that crosses
+    /// that line — the queue's sender and the writer — and it is what lets the daemon answer with the lines it just wrote
+    /// rather than the lines that happened to be flushed already.
+    #[must_use]
+    pub fn flush_handle(&self) -> Option<LogFlush> {
+        self.worker.as_ref().map(|worker| LogFlush {
+            writer: Arc::clone(&self.writer),
+            queue: worker.flusher(),
+        })
+    }
+
     /// The runtime verbosity, for a caller that wants to raise it.
     ///
     /// ★ This is what makes `--verbose` mean something. Raising it here changes what the subscriber writes from the
@@ -148,8 +181,7 @@ impl LogGuard {
     }
 }
 
-impl std::fmt::Debug for LogGuard {
-    /// Renders as the writer's own `Debug`, which names the file.
+impl std::fmt::Debug for LogGuard {    /// Renders as the writer's own `Debug`, which names the file.
     ///
     /// ★ Not derived, because the guard holds an `Arc<Mutex<RedactingWriter<RotatingFile>>>` and a derive would render a
     /// lock rather than the thing a reader wants to know: which file is being written. A shell that keeps this beside its
