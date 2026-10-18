@@ -64,6 +64,14 @@ pub enum PluginUiOp {
     PlatformNotify,
     /// Send a blob as a transfer.
     TransferSend,
+    /// Start a chunked transfer: the page will follow with `transfer.chunk` and `transfer.finish`.
+    TransferBegin,
+    /// Append one chunk of a transfer the page started.
+    TransferChunk,
+    /// Finish a chunked transfer and hand it to the sender.
+    TransferFinish,
+    /// Abandon a chunked transfer, removing what the page had written.
+    TransferAbort,
     /// Read a transfer's state.
     TransferStatus,
     /// Subscribe to a transfer's progress.
@@ -102,6 +110,10 @@ impl PluginUiOp {
         Self::PlatformOpenUrl,
         Self::PlatformNotify,
         Self::TransferSend,
+        Self::TransferBegin,
+        Self::TransferChunk,
+        Self::TransferFinish,
+        Self::TransferAbort,
         Self::TransferStatus,
         Self::TransferOnProgress,
         Self::SelfInvoke,
@@ -135,6 +147,10 @@ impl PluginUiOp {
             Self::PlatformOpenUrl => "platform.openUrl",
             Self::PlatformNotify => "platform.notify",
             Self::TransferSend => "transfer.send",
+            Self::TransferBegin => "transfer.begin",
+            Self::TransferChunk => "transfer.chunk",
+            Self::TransferFinish => "transfer.finish",
+            Self::TransferAbort => "transfer.abort",
             Self::TransferStatus => "transfer.status",
             Self::TransferOnProgress => "transfer.onProgress",
             Self::SelfInvoke => "self.invoke",
