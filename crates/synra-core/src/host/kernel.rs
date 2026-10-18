@@ -110,6 +110,22 @@ impl Host {
         }
     }
 
+    /// Counts one link the listener stopped serving, by why it ended.
+    ///
+    /// # Why this is recorded by the listener and not by the session registry
+    ///
+    /// Because the reason lives in the read loop: a `Bye` is `Closed`, a peer that went quiet is `TimedOut`, a frame the
+    /// decoder refused is `protocol`, and the loop is the only place that knows which happened. The registry closes a
+    /// session with a reason of its own, but that reason names the **session** lifecycle, not the wire's last moment.
+    pub fn count_link_closed(&mut self, reason: &str) {
+        if let Some(metrics) = &self.metrics {
+            metrics.counter_inc(&synra_observe::metrics::SeriesKey::new(
+                "links_closed_total",
+                [("reason".to_owned(), reason.to_owned())],
+            ));
+        }
+    }
+
     /// Counts one frame this host received, by event.
     ///
     /// ★ A separate method rather than one with a direction: a device that talks more than it is told, and one that is

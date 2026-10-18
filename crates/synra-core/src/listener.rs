@@ -390,6 +390,10 @@ pub fn handle_within_with(
         Err(error) => {
             // A failed handshake has no peer to name, so the address is what identifies it in a log line. The peer's own
             // identifier is exactly what the handshake was establishing, and it is not known.
+            //
+            // ★ Counted with a reason of its own: a port scan, a version mismatch and a peer that changed its mind all end
+            // here, and none of them is a link that "closed" — there was never a link.
+            host.lock().count_link_closed("handshake");
             return Served { peer: None, events: Vec::new(), finished: Vec::new(), ended: Some(error.to_string()) };
         }
     };
@@ -568,6 +572,9 @@ pub fn handle_within_with(
                 // Nothing arrived and the wait is over. The connection ends quietly: a peer that has gone silent has not
                 // done anything wrong, and `Served::ended` is for faults.
                 Decision::Idle => {
+                    // The ordinary, quiet end. Counted with its own reason so a panel can tell "the peer finished and
+                    // hung up" from "the peer went silent" and from a fault.
+                    host.lock().count_link_closed("idle");
                     return Served { peer: Some(peer), events, finished: finished.clone(), ended: None };
                 }
                 Decision::Accepted { transfer_id, file_name } => {
@@ -661,12 +668,31 @@ pub fn handle_within_with(
             },
             // A `Bye` is the ordinary end, and so is a peer that hung up. Neither is a fault, and both end the loop.
             Err(SessionError::Link(LinkError::Closed)) => {
+                host.lock().count_link_closed("closed");
                 return Served { peer: Some(peer), events, finished: finished.clone(), ended: None };
             }
             Err(error) => {
+                host.lock().count_link_closed(close_reason(&error));
                 return Served { peer: Some(peer), events, finished: Vec::new(), ended: Some(error.to_string()) };
             }
         }
+    }
+}
+
+/// Why a connection ended, as the label of `links_closed_total`.
+///
+/// The vocabulary is the `LinkError`'s own: a timeout is not a transport failure, a peer's `Bye` is not a fault, and a frame
+/// the decoder refused is the peer's protocol rather than the network.
+const fn close_reason(error: &SessionError) -> &'static str {
+    match error {
+        SessionError::Link(LinkError::TimedOut) => "timeout",
+        SessionError::Link(LinkError::Closed) => "closed",
+        SessionError::Link(LinkError::Frame(_) | LinkError::Unexpected { .. } | LinkError::Envelope { .. }) => {
+            "protocol"
+        }
+        SessionError::Link(LinkError::Transport { .. }) => "transport",
+        SessionError::Transfer(_) => "transfer",
+        _ => "protocol",
     }
 }
 

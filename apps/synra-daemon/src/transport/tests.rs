@@ -78,6 +78,15 @@ use synra_core::listener::{bind, handle_within, is_open};
     /// hangs rather than failing. Two rounds were spent on that, and the arrangement is now the default rather than
     /// something each test has to remember.
     fn listening(id: &str, name: &str) -> (Arc<Mutex<Host>>, SocketAddr) {
+        listening_with(id, name, None)
+    }
+
+    /// The same host, with a recorder, for a test that asserts a metric rather than a return value.
+    fn listening_with(
+        id: &str,
+        name: &str,
+        metrics: Option<Arc<synra_observe::metrics::RingRecorder>>,
+    ) -> (Arc<Mutex<Host>>, SocketAddr) {
         let mut db = synra_store::SynraDb::open_in_memory().expect("opens");
         db.migrate().expect("migrates");
         let mut identity = Identity::load(&db, "test", 1_000).expect("an identity");
@@ -91,6 +100,9 @@ use synra_core::listener::{bind, handle_within, is_open};
         );
         // `Flags::no_timeout` so a test never waits six seconds for a peer that is not coming.
         let mut host = Host::with_flags(identity, local, Flags::no_timeout());
+        if let Some(metrics) = metrics {
+            host = host.with_metrics(metrics);
+        }
         let address = bind(&mut host, 0).expect("binds");
         host.listen_nonblocking().expect("non-blocking");
         (Arc::new(Mutex::new(host)), address)
@@ -240,7 +252,8 @@ use synra_core::listener::{bind, handle_within, is_open};
         // happens, and an earlier version of this one mixed the two: a client with no deadline against a server that set
         // one. `handle_within` puts a deadline on the stream it is given, so a client that never times out and a server
         // that does will disagree about when the conversation is over.
-        let (host, address) = listening(A, "Laptop");
+        let recorder = Arc::new(synra_observe::metrics::RingRecorder::new());
+        let (host, address) = listening_with(A, "Laptop", Some(Arc::clone(&recorder)));
         host.lock().set_flags(Flags::production());
         // ★ Non-blocking, as the real daemon runs it: a connection accepted from a non-blocking listener **inherits** that
         // mode on Windows, so every read on it fails with `WSAEWOULDBLOCK` and the message arrives as a transport failure.
@@ -301,6 +314,13 @@ use synra_core::listener::{bind, handle_within, is_open};
         assert_eq!(served.events, vec![synra_protocol::event::builtin::CLIPBOARD_RECEIVED]);
         // And the `Bye` is the ordinary end rather than a fault, so nothing is recorded as having gone wrong.
         assert_eq!(served.ended, None, "{served:?}");
+        // ★ And the close is counted with the wire's own reason. `closed` is the peer's `Bye`, not a fault and not the
+        // listener's timeout: three different things a panel would otherwise show as one "link ended".
+        assert_eq!(
+            recorder.snapshot().get("links_closed_total{reason=closed}"),
+            Some(&synra_observe::metrics::Value::Counter(1)),
+            "the listener counted the end by its reason"
+        );
     }
 
     #[test]
@@ -344,7 +364,8 @@ use synra_core::listener::{bind, handle_within, is_open};
         let inbox = TempDir::new("inbox");
         // ★ The case that made the first version hang. Nothing on the network can be trusted to say something, so the
         // reading half has to be bounded by a clock rather than by the peer's manners.
-        let (host, address) = listening(A, "Laptop");
+        let recorder = Arc::new(synra_observe::metrics::RingRecorder::new());
+        let (host, address) = listening_with(A, "Laptop", Some(Arc::clone(&recorder)));
         let probe = std::net::TcpStream::connect(dialable(address)).expect("connects");
 
         // ★ Two steps, not one chain. `host.lock().try_accept().expect(...)` holds the guard for the whole statement, and
@@ -373,7 +394,53 @@ use synra_core::listener::{bind, handle_within, is_open};
         assert_eq!(served.peer, None);
         // It returned because of the deadline, not because the peer spoke — and not after the protocol's six seconds.
         assert!(elapsed < Duration::from_secs(3), "the deadline did not bound the read: {elapsed:?}");
+        // ★ And the counter says *why*: the handshake never completed, which is a different fact from a link that opened
+        // and then timed out. `links_closed_total{reason}` exists so this distinction survives into a panel.
+        assert_eq!(
+            recorder.snapshot().get("links_closed_total{reason=handshake}"),
+            Some(&synra_observe::metrics::Value::Counter(1)),
+            "a peer that never handshakes ends as a handshake failure: {:?}",
+            recorder.snapshot()
+        );
         drop(probe);
+    }
+
+    #[test]
+    fn a_peer_that_handshakes_and_then_hangs_up_ends_as_closed() {
+        // ★ The other half of the silent-peer case: one that *did* handshake and then went quiet. It is not a handshake
+        // that never happened — the link was open — and the end is ordinary rather than a fault. (The read loop's own
+        // patience is longer than this test's wait, so the ending observed here is the peer's hang-up.)
+        let inbox = TempDir::new("inbox-quiet");
+        let recorder = Arc::new(synra_observe::metrics::RingRecorder::new());
+        let (host, address) = listening_with(A, "Laptop", Some(Arc::clone(&recorder)));
+
+        let served = std::thread::spawn(move || {
+            let taken = accept_within(&host, Duration::from_secs(5)).expect("a connection");
+            handle_within(
+                &Arc::clone(&host),
+                taken,
+                inbox.path(),
+                Duration::from_millis(300),
+                &test_desk(),
+                &test_router(),
+                &synra_core::listener::no_answer(),
+            )
+        });
+
+        let (mut client, _db) = client_host(B, "Phone");
+        let link = client.dial(dialable(address), None, 1_000).expect("dials");
+        // The handshake is done and the connection stays open with nothing on it; the server's read deadline is shorter.
+        std::thread::sleep(Duration::from_millis(600));
+        drop(link);
+
+        let served = served.join().expect("the acceptor finished");
+        assert_eq!(served.ended, None, "a quiet peer is not a fault: {served:?}");
+        assert_eq!(
+            recorder.snapshot().get("links_closed_total{reason=closed}"),
+            Some(&synra_observe::metrics::Value::Counter(1)),
+            "a handshaked peer that hangs up ends as closed: {:?}",
+            recorder.snapshot()
+        );
     }
 
     #[test]
