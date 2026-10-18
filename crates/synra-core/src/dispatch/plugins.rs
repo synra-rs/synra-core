@@ -484,6 +484,22 @@ impl PluginSet {
         self.loaded.get(id).map(|loaded| &loaded.authority.grants)
     }
 
+    /// The host every plugin instance reaches.
+    ///
+    /// # Why this is public
+    ///
+    /// Because the UI channel answers some calls **through the same host the Wasm half uses** — `network.fetch` is the
+    /// first. A second fetcher built in the shell would have its own in-flight limit and its own reading of the grants,
+    /// so one plugin page and one plugin instance could exceed together what neither may alone, and the two could
+    /// disagree about which hosts the user allowed.
+    ///
+    /// It is `&Arc` rather than the trait object so a caller can clone it and **drop this set's lock** before doing
+    /// network work: a fetch held under the plugin lock would make every other plugin command wait for the network.
+    #[must_use]
+    pub fn host(&self) -> &Arc<dyn synra_plugin_host::host_calls::Host> {
+        &self.host
+    }
+
     /// Compiles a plugin and makes it askable.
     ///
     /// # Errors
