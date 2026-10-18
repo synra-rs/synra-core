@@ -163,6 +163,9 @@ fn a_request_reaches_the_server_and_the_answer_comes_back() {
     let response = client().fetch(&get(&server.url("/greeting"))).expect("fetched");
 
     assert_eq!(response.status, 200);
+    assert_eq!(response.status_text, "OK", "the reason phrase is missing");
+    assert_eq!(response.url, server.url("/greeting"), "the response names another address");
+    assert!(!response.redirected, "a direct answer claims a redirect");
     assert_eq!(response.body, "hello");
     assert_eq!(server.requests(), 1, "the server answered exactly one request");
 }
@@ -202,11 +205,16 @@ fn a_redirect_to_a_granted_host_is_followed() {
     // feature.
     let target = Server::always(200, "arrived");
     let destination = target.url("/final");
-    let source = Server::start(move |_| response(302, "", &[("location", &destination)]));
+    let location = destination.clone();
+    let source = Server::start(move |_| response(302, "", &[("location", &location)]));
 
     let response = client().fetch(&get(&source.url("/start"))).expect("followed");
 
     assert_eq!(response.body, "arrived");
+    // ★ The address the response came from, not the one the plugin asked for: a plugin reading `response.url` on a
+    // redirect chain wants to know where it ended up.
+    assert_eq!(response.url, destination);
+    assert!(response.redirected, "a followed redirect is not reported");
     assert_eq!(source.requests(), 1);
     assert_eq!(target.requests(), 1);
 }
@@ -388,13 +396,19 @@ fn the_shapes_a_plugin_sends_and_receives_are_the_documented_ones() {
 
     let response = super::Response {
         status: 200,
+        status_text: "OK".to_owned(),
         headers: std::collections::BTreeMap::from([("content-type".to_owned(), "application/json".to_owned())]),
+        url: "https://api.example.com/v1".to_owned(),
+        redirected: false,
         body: "{}".to_owned(),
     };
     let json = serde_json::to_value(&response).expect("serialises");
 
     assert_eq!(json["status"], 200);
+    assert_eq!(json["statusText"], "OK");
     assert_eq!(json["headers"]["content-type"], "application/json");
+    assert_eq!(json["url"], "https://api.example.com/v1");
+    assert_eq!(json["redirected"], false);
     assert_eq!(json["body"], "{}");
 }
 

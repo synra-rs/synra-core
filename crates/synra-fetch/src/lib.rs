@@ -158,8 +158,20 @@ fn default_method() -> String {
 pub struct Response {
     /// The status code, as it arrived — including a 3xx that was refused, so a plugin can see what happened.
     pub status: u16,
+    /// The reason phrase, when the status has one.
+    ///
+    /// ★ Carried because the interface contract declares `statusText`, and an empty string is a different answer from
+    /// "not applicable": `200` has a phrase and a custom status may not.
+    pub status_text: String,
     /// The response headers, lowercased.
     pub headers: std::collections::BTreeMap<String, String>,
+    /// The address the response actually came from, after any redirects.
+    ///
+    /// ★ Why this is not the request's URL: a redirect chain that ends somewhere else is exactly what a plugin reading
+    /// `response.url` wants to know, and reporting the address it asked for would hide the hop.
+    pub url: String,
+    /// Whether at least one redirect was followed to get here.
+    pub redirected: bool,
     /// The body, as text.
     ///
     /// # Why this is not parsed
@@ -268,6 +280,7 @@ impl Client {
             let mut response = self.one_request(&agent, request, body, &url)?;
 
             let status = response.status().as_u16();
+            let status_text = response.status().canonical_reason().unwrap_or_default().to_owned();
             let headers: std::collections::BTreeMap<String, String> = response
                 .headers()
                 .iter()
@@ -307,7 +320,8 @@ impl Client {
                 .read_to_string()
                 .map_err(|error| body_refusal(&url, self.limits.max_response_bytes, &error))?;
 
-            return Ok(Response { status, headers, body });
+            let redirected = url != request.url;
+            return Ok(Response { status, status_text, headers, url, redirected, body });
         }
 
         // The loop returns on the last iteration's non-redirect, so this is reached only when every hop redirected —
