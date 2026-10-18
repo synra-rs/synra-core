@@ -137,15 +137,19 @@ pub fn serve(
     router: &Arc<crate::dispatch::orchestrate::Router>,
     on_finished: &FinishedCallback,
 ) {
-    // A listener that nobody asked to observe has the same behaviour it always had; only the two callbacks differ.
+    // A listener that nobody asked to observe has the same behaviour it always had; only the callbacks differ.
     let on_progress: Arc<ProgressCallback> = Arc::new(|_event: &InboundProgressEvent| {});
-    serve_with(host, cancel, data_dir, desk, router, on_finished, &on_progress);
+    let offer: Arc<crate::inbound::OfferCallback> = Arc::new(crate::inbound::auto_accept);
+    serve_with(host, cancel, data_dir, desk, router, on_finished, &on_progress, &offer);
 }
 
 /// Serves inbound connections, reporting each step of an inbound transfer.
 ///
 /// The same loop as [`serve`], with the reporter it was missing: `on_progress` sees the proposal accepted and every block
 /// that lands, which is what lets an interface show a transfer **arriving** rather than only one it started.
+// The nine are the listener's settings, its two observers, and the question a host is asked about each transfer. The
+// `serve` wrapper exists because most callers need none of the last three.
+#[allow(clippy::too_many_arguments)]
 pub fn serve_with(
     host: &Arc<Mutex<Host>>,
     cancel: &crate::supervisor::Cancellation,
@@ -154,12 +158,14 @@ pub fn serve_with(
     router: &Arc<crate::dispatch::orchestrate::Router>,
     on_finished: &FinishedCallback,
     on_progress: &Arc<ProgressCallback>,
+    offer: &Arc<crate::inbound::OfferCallback>,
 ) {
     // Owned, because each connection is handed to its own thread and a thread cannot borrow the caller's stack.
     let data_dir = data_dir.to_path_buf();
     // Cloned per connection below, because the desk is shared: a prompt raised on one connection is answered by a user
     // who is not on that connection at all.
     let shared_desk = Arc::clone(desk);
+    let shared_offer = Arc::clone(offer);
     // Cloned per connection like the desk, and for the same reason: a share arriving on one connection is routed with the
     // kernel's plugins and intents, not with a per-connection copy of them.
     let shared_router = Arc::clone(router);
@@ -188,6 +194,7 @@ pub fn serve_with(
                 // Each connection gets its own copy of the path, because a thread cannot borrow the loop's.
                 let inbox_root = data_dir.clone();
                 let desk = Arc::clone(&shared_desk);
+                let offer = Arc::clone(&shared_offer);
                 let router = Arc::clone(&shared_router);
                 // A thread per connection, because a link's lifetime is a peer's to decide. Nothing joins it: a link that
                 // ended is one whose thread returns, and one that is still open is doing useful work.
@@ -202,7 +209,16 @@ pub fn serve_with(
                     // the correction of a mistake from round 148: applied here, it ran after the link was gone — so
                     // the side that installed a bundle could not tell the sender so, and the result the sender is
                     // waiting for could never be sent. A reply belongs on the connection that asked.
-                    let served = handle_with(&host, stream, &inbox_root, &desk, &router, &on_finished, &on_progress);
+                    let served = handle_with(
+                        &host,
+                        stream,
+                        &inbox_root,
+                        &desk,
+                        &router,
+                        &on_finished,
+                        &on_progress,
+                        &offer,
+                    );
                     if let Some(ended) = &served.ended {
                         let who = served
                             .peer
@@ -238,10 +254,14 @@ pub fn handle(
     on_finished: &FinishedCallback,
 ) -> Served {
     let on_progress: Arc<ProgressCallback> = Arc::new(|_event: &InboundProgressEvent| {});
-    handle_with(host, stream, data_dir, desk, router, on_finished, &on_progress)
+    let offer: Arc<crate::inbound::OfferCallback> = Arc::new(crate::inbound::auto_accept);
+    handle_with(host, stream, data_dir, desk, router, on_finished, &on_progress, &offer)
 }
 
 /// Handles one connection, reporting each step of an inbound transfer.
+// The nine are the connection, where it writes, the shared pairing desk, the router, the two observers, and the question a
+// host is asked about the transfer. The wrappers below hide most of them.
+#[allow(clippy::too_many_arguments)]
 pub fn handle_with(
     host: &Arc<Mutex<Host>>,
     stream: std::net::TcpStream,
@@ -250,6 +270,7 @@ pub fn handle_with(
     router: &Arc<crate::dispatch::orchestrate::Router>,
     on_finished: &FinishedCallback,
     on_progress: &Arc<ProgressCallback>,
+    offer: &Arc<crate::inbound::OfferCallback>,
 ) -> Served {
     handle_within_with(
         host,
@@ -260,6 +281,7 @@ pub fn handle_with(
         router,
         on_finished,
         on_progress,
+        offer,
     )
 }
 
@@ -283,7 +305,8 @@ pub fn handle_within(
     on_finished: &FinishedCallback,
 ) -> Served {
     let on_progress: Arc<ProgressCallback> = Arc::new(|_event: &InboundProgressEvent| {});
-    handle_within_with(host, stream, data_dir, timeout, desk, router, on_finished, &on_progress)
+    let offer: Arc<crate::inbound::OfferCallback> = Arc::new(crate::inbound::auto_accept);
+    handle_within_with(host, stream, data_dir, timeout, desk, router, on_finished, &on_progress, &offer)
 }
 
 /// Handles one connection, reporting each step of an inbound transfer, with a chosen handshake deadline.
@@ -301,6 +324,7 @@ pub fn handle_within_with(
     router: &Arc<crate::dispatch::orchestrate::Router>,
     on_finished: &FinishedCallback,
     on_progress: &Arc<ProgressCallback>,
+    offer: &Arc<crate::inbound::OfferCallback>,
 ) -> Served {
     // ★ Read before the handshake consumes the stream, and kept as text. It is the one fact about the requester this side
     // *observed* rather than was told: a prompt shows the name the device chose, and the address is what lets a user
@@ -359,7 +383,7 @@ pub fn handle_within_with(
     // on it at all, and a per-connection state would make that answer invisible here — the dialer would wait out its own
     // thirty-second window for a decision the user had already made.
     loop {
-        match inbox.absorb(&mut link, synra_store::sqlite::now_ms(), PATIENCE, desk, &peer_address) {
+        match inbox.absorb_with(&mut link, synra_store::sqlite::now_ms(), PATIENCE, desk, &peer_address, offer.as_ref()) {
             Ok(decision) => match decision {
                 Decision::Delivered { event, share, request } => {
                     // ★ The design's `frames_received_total{event}` — the other half of what `Host::send` records.

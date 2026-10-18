@@ -238,6 +238,7 @@ commands! {
     "transfer_send_file" => Transfer, Host, One, true;
     "transfer_send_text" => Transfer, Host, One, true;
     "transfer_cancel" => Transfer, Host, Unit, true;
+    "transfer_respond" => Transfer, Host, Unit, true;
     "transfer_list" => Transfer, Host, Many, false;
 
     // ── plugins ──
@@ -480,6 +481,7 @@ mod tests {
             "transfer_send_file",
             "transfer_send_text",
             "transfer_cancel",
+            "transfer_respond",
             "transfer_list",
             // plugins
             "plugins_list",

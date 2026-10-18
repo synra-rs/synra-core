@@ -23,7 +23,8 @@
 use std::path::{Path, PathBuf};
 
 use crate::link::PeerLink;
-use synra_protocol::ids::TraceId;
+use synra_protocol::ids::{DeviceId, TraceId};
+use synra_protocol::session::{TransferAbortReason, TransferRequest};
 use crate::session::{self, Receiving, Received};
 
 /// The directory incoming files land in, under the data directory.
@@ -68,9 +69,48 @@ fn share_of(envelope: &synra_protocol::envelope::Envelope) -> Option<synra_proto
     })
 }
 
-/// What to do with a message that arrived on an inbound connection.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// What a host is asked before an incoming transfer's bytes are stored.
+///
+/// # Why the answer is asked for before anything is written
+///
+/// Because "accept the file" is a decision about the user's disk, and a decision made after the bytes are already in the
+/// inbox is not a decision — it is a notification. The peer's proposal names the file, its size and its kind, which is
+/// everything the prompt needs and nothing that requires the bytes.
+#[derive(Debug)]
+pub struct Offer<'a> {
+    /// The device that dialled, as the handshake established it.
+    pub peer: DeviceId,
+    /// Where it connected from, for the prompt and the log.
+    pub peer_address: &'a str,
+    /// What it said it is sending.
+    pub request: &'a TransferRequest,
+    /// The name the file would take, already sanitised.
+    pub file_name: &'a str,
+    /// Where it would land.
+    pub destination: &'a Path,
+}
+
+/// What the host answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
+pub enum OfferDecision {
+    /// Store the file.
+    Accept,
+    /// Refuse it, and tell the peer so.
+    Refuse,
+}
+
+/// What a host is asked before an incoming transfer is accepted.
+pub type OfferCallback = dyn Fn(&Offer<'_>) -> OfferDecision + Send + Sync;
+
+/// The answer for a host with nobody to ask: the behaviour every caller had before the callback existed.
+#[must_use]
+pub const fn auto_accept(_: &Offer<'_>) -> OfferDecision {
+    OfferDecision::Accept
+}
+
+/// What to do with a message that arrived on an inbound connection.
+#[derive(Debug, Clone, PartialEq, Eq)]#[non_exhaustive]
 pub enum Decision {
     /// A transfer was proposed and accepted; blocks may now arrive.
     Accepted {
@@ -301,6 +341,26 @@ impl Inbox {
         pairing: &crate::pairing::PairingDesk,
         peer_address: &str,
     ) -> Result<Decision, crate::SessionError> {
+        self.absorb_with(link, now_ms, patience, pairing, peer_address, &auto_accept)
+    }
+
+    /// [`absorb`](Self::absorb), with a host asked before a transfer is accepted.
+    ///
+    /// # Why a callback rather than a desk
+    ///
+    /// Because the decision is the host's, not the kernel's: the daemon has no window to ask and the shell has one, and a
+    /// desk type here would be the kernel deciding which of the two it is. The callback also carries the whole answer —
+    /// a host that wants to ask returns `Refuse` when the user says no — so there is no second place where "accepted"
+    /// and "stored" could disagree.
+    pub fn absorb_with(
+        &mut self,
+        link: &mut PeerLink,
+        now_ms: i64,
+        patience: std::time::Duration,
+        pairing: &crate::pairing::PairingDesk,
+        peer_address: &str,
+        ask: &OfferCallback,
+    ) -> Result<Decision, crate::SessionError> {
         // * The patience is re-armed on **every** call, and it is what bounds a *quiet* peer rather than a slow one. An
         // earlier version computed the deadline once from the connection's start, so a receiver that was still working
         // through a large transfer ran out of patience and closed the link with the sender's completion unread -- which is
@@ -345,7 +405,27 @@ impl Inbox {
                 });
             }
             let name = proposed_name(&envelope)?;
+            let request = request_of(&envelope)?;
             let destination = self.destination_for(&name);
+            let prompt = Offer {
+                peer: link.peer(),
+                peer_address,
+                request: &request,
+                file_name: &name,
+                destination: &destination,
+            };
+            if ask(&prompt) == OfferDecision::Refuse {
+                // ★ Told, not merely dropped. A sender that is not told waits out its whole transfer window, and the
+                // file it thought it was sending is a peer left hanging rather than a peer answered "no".
+                crate::abort(
+                    link,
+                    request.transfer_id,
+                    TransferAbortReason::UserCancelled,
+                    envelope.trace_id,
+                    now_ms,
+                )?;
+                return Ok(Decision::Failed { why: "the receiver refused the transfer".to_owned() });
+            }
             if let Some(parent) = destination.parent() {
                 std::fs::create_dir_all(parent).map_err(|error| crate::SessionError::Payload {
                     message: "inbox",
@@ -523,16 +603,21 @@ fn read_patiently(
 }
 
 /// The file name a proposal carries.
-fn proposed_name(envelope: &synra_protocol::envelope::Envelope) -> Result<String, crate::SessionError> {
+/// The transfer request an envelope carries, parsed once for the name and the prompt.
+fn request_of(envelope: &synra_protocol::envelope::Envelope) -> Result<TransferRequest, crate::SessionError> {
     let raw = envelope.payload.as_ref().ok_or_else(|| crate::SessionError::Payload {
         message: "request",
         why: "the envelope carries no payload".to_owned(),
     })?;
-    let request: synra_protocol::session::TransferRequest =
-        serde_json::from_str(raw.get()).map_err(|error| crate::SessionError::Payload {
-            message: "request",
-            why: error.to_string(),
-        })?;
+    serde_json::from_str(raw.get()).map_err(|error| crate::SessionError::Payload {
+        message: "request",
+        why: error.to_string(),
+    })
+}
+
+/// The name an incoming transfer takes in the inbox.
+fn proposed_name(envelope: &synra_protocol::envelope::Envelope) -> Result<String, crate::SessionError> {
+    let request = request_of(envelope)?;
     Ok(match request.meta {
         synra_protocol::session::TransferMeta::Attachment { file_name, .. } => file_name,
         // A plugin bundle is a `.synra` archive now, not a bare Wasm file: the receiver unpacks it, so the name in the
@@ -573,7 +658,7 @@ use crate::Inbound;
 #[must_use]
 pub fn pairing_state_for(
     db: &synra_store::SynraDb,
-    device_id: synra_protocol::ids::DeviceId,
+    device_id: DeviceId,
     presented: Option<&synra_protocol::handshake::LinkToken>,
 ) -> synra_protocol::handshake::PairingState {
     let stored = match db.link_token_for(&device_id.to_string()) {
@@ -682,7 +767,7 @@ mod tests {
     }
 
     /// A local device id for a request addressed to us.
-    fn local() -> synra_protocol::ids::DeviceId {
+    fn local() -> DeviceId {
         "01a139a9-8f3c-72ce-9c96-2b2c81f14551".parse().expect("a valid device id")
     }
 
