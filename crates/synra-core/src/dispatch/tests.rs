@@ -701,6 +701,68 @@ fn calling_a_plugin_that_is_not_loaded_says_so() {
 }
 
 #[test]
+fn a_call_is_counted_and_timed_per_plugin_and_interface() {
+    // ★ The plugin group's first two metrics, recorded at the one funnel every call passes. The interface label is
+    // `Work::interface` — the protocol's own spelling — so the panel, the card and the wire agree about what a call is.
+    use synra_observe::metrics::Value;
+
+    let backend = ScriptedBackend::new();
+    let metrics = std::sync::Arc::new(synra_observe::metrics::RingRecorder::new());
+    let mut set = PluginSet::new(Backend::new(std::sync::Arc::new(backend.clone())), host())
+        .with_metrics(std::sync::Arc::clone(&metrics));
+    load(
+        &mut set,
+        &backend,
+        "@synra/aaa-notes",
+        Scripted::Ok(r#"{"handled":true}"#.to_owned()),
+    );
+    let work = Work::CanHandle { item_json: share_json().to_owned() };
+    let budget = Matcher::new(&mut set).budget();
+
+    set.call(&id("@synra/aaa-notes"), &work, budget, 1_000).expect("a call");
+
+    let snapshot = metrics.snapshot();
+    assert_eq!(
+        snapshot.get("plugin_calls_total{interface=share,plugin=@synra/aaa-notes}"),
+        Some(&Value::Counter(1)),
+        "the call is counted against the plugin and the interface"
+    );
+    match snapshot.get("plugin_call_duration_us{interface=share,plugin=@synra/aaa-notes}") {
+        Some(Value::Histogram(histogram)) => assert_eq!(histogram.count, 1),
+        other => panic!("expected a duration histogram, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_trapped_call_is_counted_as_a_fault_with_its_outcome() {
+    // ★ A trap is the case the health ladder was missing for years; the metric makes it visible without reading that
+    // ladder, and the outcome label says which kind of misbehaviour it was rather than only that there was one.
+    use synra_observe::metrics::Value;
+
+    let backend = ScriptedBackend::new();
+    let metrics = std::sync::Arc::new(synra_observe::metrics::RingRecorder::new());
+    let mut set = PluginSet::new(Backend::new(std::sync::Arc::new(backend.clone())), host())
+        .with_metrics(std::sync::Arc::clone(&metrics));
+    load(
+        &mut set,
+        &backend,
+        "@synra/bad",
+        Scripted::Trap { detail: "boom".to_owned() },
+    );
+    let work = Work::CanHandle { item_json: share_json().to_owned() };
+    let budget = Matcher::new(&mut set).budget();
+
+    // A trap is an outcome, not a `PluginSetError`; the assertion is on the recorder, which is what the panel reads.
+    let _ = set.call(&id("@synra/bad"), &work, budget, 1_000);
+
+    assert_eq!(
+        metrics.snapshot().get("plugin_faulted_total{outcome=trap,plugin=@synra/bad}"),
+        Some(&Value::Counter(1)),
+        "the trap is counted against the plugin that produced it"
+    );
+}
+
+#[test]
 fn unloading_a_plugin_takes_it_out_of_the_next_pass() {
     let backend = ScriptedBackend::new();
     let mut set = PluginSet::new(Backend::new(std::sync::Arc::new(backend.clone())), host());

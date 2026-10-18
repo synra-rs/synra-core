@@ -628,7 +628,24 @@ impl PluginSet {
                 return Err(PluginSetError::AtInstanceLimit { id: id.clone() });
             }
         };
+        let started = std::time::Instant::now();
         let outcome = Self::run_on(&self.backend, &self.host, loaded, id, handle, work, budget);
+        // ★ The plugin group's counter and latency, recorded here because this is the one funnel every call goes through —
+        // the matcher's `can-handle`, an action invocation and a lifecycle tick all pass `call`.
+        //
+        // The interface comes from `Work::interface`, which is the protocol's own spelling (`share`, `actions`,
+        // `lifecycle`); a second match here would be the third vocabulary for the same three names.
+        if let Some(metrics) = &self.metrics {
+            let labels = [
+                ("interface".to_owned(), work.interface().to_owned()),
+                ("plugin".to_owned(), id.as_str().to_owned()),
+            ];
+            metrics.counter_inc(&synra_observe::metrics::SeriesKey::new("plugin_calls_total", labels.clone()));
+            metrics.histogram_observe(
+                &synra_observe::metrics::SeriesKey::new("plugin_call_duration_us", labels),
+                started.elapsed().as_secs_f64() * 1_000_000.0,
+            );
+        }
         // ★ A call the plugin misbehaved in counts against its health, which nothing did before.
         //
         // The ladder in `quota::Budget` was reached only by rate-limit refusals, so a plugin that trapped on every call was
@@ -639,6 +656,19 @@ impl PluginSet {
         // reachable — `run_on` takes the *call* budget, which is a different type with a different job.
         if outcome.as_ref().is_ok_and(CallOutcome::is_misbehaviour) {
             loaded.authority.budget.record_misbehaviour(now_ms);
+            // ★ And the counter the plugin's card can show without reading its health ladder: a plugin that trapped five
+            // times is a different story from one that has never run. The outcome is the protocol's own name (`trap`,
+            // `timeout`, …), so "why did it fault" is a label rather than a second counter per kind.
+            if let Some(metrics) = &self.metrics {
+                let outcome = outcome.as_ref().map_or("unknown", CallOutcome::as_str);
+                metrics.counter_inc(&synra_observe::metrics::SeriesKey::new(
+                    "plugin_faulted_total",
+                    [
+                        ("outcome".to_owned(), outcome.to_owned()),
+                        ("plugin".to_owned(), id.as_str().to_owned()),
+                    ],
+                ));
+            }
         }
         let _ = loaded.pool.release(handle, now_ms);
         // ★ Drained **after** the call, not inside it: the entries are produced while the guest runs, and the ring lives
