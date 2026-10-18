@@ -38,33 +38,36 @@ impl SynraDb {
         manifest: &str,
         installed_ms: i64,
     ) -> Result<(), DbError> {
-        let transaction = self
-            .connection
-            .unchecked_transaction()
-            .map_err(|error| DbError::Statement { why: error.to_string() })?;
-        transaction
-            .execute(
-                "UPDATE plugin_versions SET active = 0 WHERE plugin_id = ?1 AND active = 1",
-                params![plugin_id],
-            )
-            .map_err(|error| DbError::Statement { why: error.to_string() })?;
-        transaction
-            .execute(
-                "INSERT INTO plugin_versions (plugin_id, version, artifact, digest, manifest, installed_ms, active) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1) \
-                 ON CONFLICT(plugin_id, version) DO UPDATE SET \
-                     artifact = excluded.artifact, \
-                     digest = excluded.digest, \
-                     manifest = excluded.manifest, \
-                     installed_ms = excluded.installed_ms, \
-                     active = 1",
-                params![plugin_id, version, artifact, digest, manifest, installed_ms],
-            )
-            .map_err(|error| DbError::Statement { why: error.to_string() })?;
-        transaction
-            .commit()
-            .map_err(|error| DbError::Statement { why: error.to_string() })?;
-        Ok(())
+        timed_write!(self, "plugin", {
+            let transaction = self
+                .connection
+                .unchecked_transaction()
+                .map_err(|error| DbError::Statement { why: error.to_string() })?;
+            transaction
+                .execute(
+                    "UPDATE plugin_versions SET active = 0 WHERE plugin_id = ?1 AND active = 1",
+                    params![plugin_id],
+                )
+                .map_err(|error| DbError::Statement { why: error.to_string() })?;
+            transaction
+                .execute(
+                    "INSERT INTO plugin_versions \
+                         (plugin_id, version, artifact, digest, manifest, installed_ms, active) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1) \
+                     ON CONFLICT(plugin_id, version) DO UPDATE SET \
+                         artifact = excluded.artifact, \
+                         digest = excluded.digest, \
+                         manifest = excluded.manifest, \
+                         installed_ms = excluded.installed_ms, \
+                         active = 1",
+                    params![plugin_id, version, artifact, digest, manifest, installed_ms],
+                )
+                .map_err(|error| DbError::Statement { why: error.to_string() })?;
+            transaction
+                .commit()
+                .map_err(|error| DbError::Statement { why: error.to_string() })?;
+            Ok(())
+        })
     }
 
     /// The active version, the artifact it names and the digest of that artifact.

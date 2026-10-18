@@ -22,28 +22,30 @@ impl SynraDb {
     ///
     /// [`DbError::Statement`] when the write is refused.
     pub fn record_seen_device(&self, seen: &Seen) -> Result<(), DbError> {
-        self.connection
-            .execute(
-                "INSERT INTO devices_seen \
-                     (device_id, display_name, platform, first_seen_ms, last_seen_ms, source) \
-                 VALUES (?1, ?2, ?3, ?4, ?4, ?5) \
-                 ON CONFLICT (device_id) DO UPDATE SET \
-                     display_name = ?2, \
-                     platform = ?3, \
-                     -- ★ Never moved forward. A device that was seen six months ago and is seen again has been seen
-                     -- continuously in the sense that matters, and the first sighting is the fact a user wants.
-                     last_seen_ms = MAX(last_seen_ms, ?4), \
-                     source = ?5",
-                params![
-                    seen.device_id.as_str(),
-                    seen.display_name.as_str(),
-                    seen.platform.as_str(),
-                    seen.seen_at_ms,
-                    seen.source.as_str()
-                ],
-            )
-            .map_err(|error| DbError::Statement { why: error.to_string() })?;
-        Ok(())
+        timed_write!(self, "device", {
+            self.connection
+                .execute(
+                    "INSERT INTO devices_seen \
+                         (device_id, display_name, platform, first_seen_ms, last_seen_ms, source) \
+                     VALUES (?1, ?2, ?3, ?4, ?4, ?5) \
+                     ON CONFLICT (device_id) DO UPDATE SET \
+                         display_name = ?2, \
+                         platform = ?3, \
+                         -- ★ Never moved forward. A device that was seen six months ago and is seen again has been seen
+                         -- continuously in the sense that matters, and the first sighting is the fact a user wants.
+                         last_seen_ms = MAX(last_seen_ms, ?4), \
+                         source = ?5",
+                    params![
+                        seen.device_id.as_str(),
+                        seen.display_name.as_str(),
+                        seen.platform.as_str(),
+                        seen.seen_at_ms,
+                        seen.source.as_str()
+                    ],
+                )
+                .map_err(|error| DbError::Statement { why: error.to_string() })?;
+            Ok(())
+        })
     }
 
     /// Every paired device, ordered by name so two runs agree.
@@ -138,16 +140,19 @@ impl SynraDb {
     ///
     /// [`DbError::Statement`] when the delete is refused.
     pub fn forget_seen_devices_beyond(&self, keep: usize) -> Result<usize, DbError> {
-        // The subquery names what to keep and the delete removes everything else. Written as `NOT IN` rather than as a
-        // comparison against a timestamp because "the most recent N" is not a threshold: a device heard at the same moment
-        // as another may be inside the window or outside it depending on the count, and a timestamp cutoff cannot say so.
-        self.connection
-            .execute(
-                "DELETE FROM devices_seen WHERE device_id NOT IN ( \
-                     SELECT device_id FROM devices_seen ORDER BY last_seen_ms DESC, device_id LIMIT ?1 \
-                 )",
-                params![i64::try_from(keep).unwrap_or(i64::MAX)],
-            )
-            .map_err(|error| DbError::Statement { why: error.to_string() })
+        timed_write!(self, "device", {
+            // The subquery names what to keep and the delete removes everything else. Written as `NOT IN` rather than as
+            // a comparison against a timestamp because "the most recent N" is not a threshold: a device heard at the same
+            // moment as another may be inside the window or outside it depending on the count, and a timestamp cutoff
+            // cannot say so.
+            self.connection
+                .execute(
+                    "DELETE FROM devices_seen WHERE device_id NOT IN ( \
+                         SELECT device_id FROM devices_seen ORDER BY last_seen_ms DESC, device_id LIMIT ?1 \
+                     )",
+                    params![i64::try_from(keep).unwrap_or(i64::MAX)],
+                )
+                .map_err(|error| DbError::Statement { why: error.to_string() })
+        })
     }
 }

@@ -2476,6 +2476,25 @@ fn a_bundle_arrives_as_a_bundle() {
 
 
 #[test]
+fn a_store_write_is_counted_with_its_kind() {
+    // ★ The store reports a write to the host that installed an observer, and the daemon's install is the same function
+    // `serve` calls. A histogram that only existed in a test's own closure would not prove the daemon has one.
+    let dir = TempDir::new("db-write-metrics");
+    let runtime = runtime(dir.path());
+    {
+        let mut db = runtime.db();
+        crate::runtime::observe_db_writes(&mut db, &runtime.metrics);
+    }
+
+    runtime.db().set_config("test.key", &serde_json::json!(1), 1).expect("the write is made");
+
+    assert!(
+        runtime.metrics.snapshot().get("db_write_duration_us{kind=config}").is_some(),
+        "the store's write was not counted by the daemon's recorder"
+    );
+}
+
+#[test]
 fn a_scan_is_counted_by_how_it_ended() {
     // ★ 发现组的指标在此之前**一次都没记过** —— 而「扫了但没有候选」与「扫到了三个」是用户读 `devices` 时的
     // 两种处境，只有一种是问题。一个从不被记录的计数会让两者变成同一件事。

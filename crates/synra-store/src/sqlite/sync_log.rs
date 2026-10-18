@@ -52,26 +52,28 @@ impl SynraDb {
     ///
     /// [`DbError::Statement`] when the write fails.
     pub fn record_sync_log(&self, row: &SyncLogRow) -> Result<(), DbError> {
-        self.connection
-            .execute(
-                "INSERT INTO sync_log (sync_id, plugin_id, peer_device, started_at_ms, finished_at_ms, document) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
-                 ON CONFLICT(sync_id) DO UPDATE SET \
-                     plugin_id = excluded.plugin_id, \
-                     peer_device = excluded.peer_device, \
-                     started_at_ms = excluded.started_at_ms, \
-                     finished_at_ms = excluded.finished_at_ms, \
-                     document = excluded.document",
-                params![
-                    row.sync_id,
-                    row.plugin_id,
-                    row.peer_device,
-                    row.started_at_ms,
-                    row.finished_at_ms,
-                    row.document
-                ],
-            )
-            .map_err(|error| DbError::Statement { why: error.to_string() })?;
-        Ok(())
+        timed_write!(self, "sync", {
+            self.connection
+                .execute(
+                    "INSERT INTO sync_log (sync_id, plugin_id, peer_device, started_at_ms, finished_at_ms, document) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+                     ON CONFLICT(sync_id) DO UPDATE SET \
+                         plugin_id = excluded.plugin_id, \
+                         peer_device = excluded.peer_device, \
+                         started_at_ms = excluded.started_at_ms, \
+                         finished_at_ms = excluded.finished_at_ms, \
+                         document = excluded.document",
+                    params![
+                        row.sync_id,
+                        row.plugin_id,
+                        row.peer_device,
+                        row.started_at_ms,
+                        row.finished_at_ms,
+                        row.document
+                    ],
+                )
+                .map_err(|error| DbError::Statement { why: error.to_string() })?;
+            Ok(())
+        })
     }
 }

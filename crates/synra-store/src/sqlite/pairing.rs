@@ -54,33 +54,35 @@ impl SynraDb {
     ///
     /// [`DbError::Statement`] when the row cannot be written, which for a well-formed record means the table is absent.
     pub fn pair_device(&self, paired: &Paired) -> Result<(), DbError> {
-        self.connection
-            .execute(
-                "INSERT INTO paired_devices \
-                     (device_id, display_name, platform, features, link_token, last_address, \
-                      paired_at_ms, last_seen_ms, blocked) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, 0) \
-                 ON CONFLICT(device_id) DO UPDATE SET \
-                     display_name = excluded.display_name, \
-                     platform     = excluded.platform, \
-                     features     = excluded.features, \
-                     link_token   = excluded.link_token, \
-                     last_address = excluded.last_address, \
-                     paired_at_ms = excluded.paired_at_ms, \
-                     last_seen_ms = excluded.last_seen_ms, \
-                     blocked      = 0",
-                params![
-                    paired.device_id,
-                    paired.display_name,
-                    paired.platform,
-                    paired.features,
-                    paired.link_token,
-                    paired.address,
-                    paired.paired_at_ms,
-                ],
-            )
-            .map_err(|error| DbError::Statement { why: error.to_string() })?;
-        Ok(())
+        timed_write!(self, "pairing", {
+            self.connection
+                .execute(
+                    "INSERT INTO paired_devices \
+                         (device_id, display_name, platform, features, link_token, last_address, \
+                          paired_at_ms, last_seen_ms, blocked) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, 0) \
+                     ON CONFLICT(device_id) DO UPDATE SET \
+                         display_name = excluded.display_name, \
+                         platform     = excluded.platform, \
+                         features     = excluded.features, \
+                         link_token   = excluded.link_token, \
+                         last_address = excluded.last_address, \
+                         paired_at_ms = excluded.paired_at_ms, \
+                         last_seen_ms = excluded.last_seen_ms, \
+                         blocked      = 0",
+                    params![
+                        paired.device_id,
+                        paired.display_name,
+                        paired.platform,
+                        paired.features,
+                        paired.link_token,
+                        paired.address,
+                        paired.paired_at_ms,
+                    ],
+                )
+                .map_err(|error| DbError::Statement { why: error.to_string() })?;
+            Ok(())
+        })
     }
 
     /// The token an outside dialler must present for `device_id`, if this device is paired with it.
@@ -141,10 +143,12 @@ impl SynraDb {
     ///
     /// [`DbError::Statement`] when the delete cannot run.
     pub fn unpair_device(&self, device_id: &str) -> Result<bool, DbError> {
-        let removed = self
-            .connection
-            .execute("DELETE FROM paired_devices WHERE device_id = ?1", params![device_id])
-            .map_err(|error| DbError::Statement { why: error.to_string() })?;
-        Ok(removed > 0)
+        timed_write!(self, "pairing", {
+            let removed = self
+                .connection
+                .execute("DELETE FROM paired_devices WHERE device_id = ?1", params![device_id])
+                .map_err(|error| DbError::Statement { why: error.to_string() })?;
+            Ok(removed > 0)
+        })
     }
 }

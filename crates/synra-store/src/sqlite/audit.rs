@@ -37,23 +37,25 @@ impl SynraDb {
     ///
     /// [`DbError::Statement`] when the write is refused.
     pub fn record_audit(&self, entry: &AuditRecord) -> Result<(), DbError> {
-        self.connection
-            .execute(
-                "INSERT INTO plugin_audit (plugin_id, capability, outcome, at_ms, elapsed_ms, trace_id) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![
-                    entry.plugin_id.as_str(),
-                    entry.capability.as_str(),
-                    entry.outcome.as_str(),
-                    entry.at_ms,
-                    // Already an `i64`: the conversion from the entry's `u64` happens in the host, which is where the
-                    // entry is read — a store that converted it would be a second place the two clocks meet.
-                    entry.elapsed_ms,
-                    entry.trace_id.as_deref(),
-                ],
-            )
-            .map_err(|error| DbError::Statement { why: error.to_string() })?;
-        Ok(())
+        timed_write!(self, "audit", {
+            self.connection
+                .execute(
+                    "INSERT INTO plugin_audit (plugin_id, capability, outcome, at_ms, elapsed_ms, trace_id) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        entry.plugin_id.as_str(),
+                        entry.capability.as_str(),
+                        entry.outcome.as_str(),
+                        entry.at_ms,
+                        // Already an `i64`: the conversion from the entry's `u64` happens in the host, which is where the
+                        // entry is read — a store that converted it would be a second place the two clocks meet.
+                        entry.elapsed_ms,
+                        entry.trace_id.as_deref(),
+                    ],
+                )
+                .map_err(|error| DbError::Statement { why: error.to_string() })?;
+            Ok(())
+        })
     }
 
     /// Every recorded call, newest first so a reader sees the most recent without sorting.
@@ -102,9 +104,11 @@ impl SynraDb {
     ///
     /// [`DbError::Statement`] when the delete is refused.
     pub fn forget_audit_for(&self, plugin_id: &str) -> Result<usize, DbError> {
-        self.connection
-            .execute("DELETE FROM plugin_audit WHERE plugin_id = ?1", params![plugin_id])
-            .map_err(|error| DbError::Statement { why: error.to_string() })
+        timed_write!(self, "audit", {
+            self.connection
+                .execute("DELETE FROM plugin_audit WHERE plugin_id = ?1", params![plugin_id])
+                .map_err(|error| DbError::Statement { why: error.to_string() })
+        })
     }
 
     /// Runs one audit query and collects its rows.
@@ -163,9 +167,11 @@ impl SynraDb {
     ///
     /// [`DbError::Statement`] when the delete is refused.
     pub fn forget_audit_before(&self, before_ms: i64) -> Result<usize, DbError> {
-        self.connection
-            .execute("DELETE FROM plugin_audit WHERE at_ms < ?1", params![before_ms])
-            .map_err(|error| DbError::Statement { why: error.to_string() })
+        timed_write!(self, "audit", {
+            self.connection
+                .execute("DELETE FROM plugin_audit WHERE at_ms < ?1", params![before_ms])
+                .map_err(|error| DbError::Statement { why: error.to_string() })
+        })
     }
 }
 

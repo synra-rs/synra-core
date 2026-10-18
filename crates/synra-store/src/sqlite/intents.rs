@@ -37,33 +37,35 @@ impl SynraDb {
     ///
     /// [`DbError::Statement`] when the write is refused.
     pub fn save_intent(&self, intent: &IntentRecord) -> Result<(), DbError> {
-        self.connection
-            .execute(
-                "INSERT INTO intents \
-                     (intent_id, state, created_ms, updated_ms, origin_device, request_id, document) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
-                 ON CONFLICT (intent_id) DO UPDATE SET \
-                     state = ?2, \
-                     -- ★ `created_ms` is deliberately absent: it is when the intent was raised, and a later write is not
-                     -- a later raising. Overwriting it would make every intent look as though it had just started — and
-                     -- the retention rule is measured from when it *finished*, so the two must not be the same number by
-                     -- accident.
-                     updated_ms = ?4, \
-                     origin_device = ?5, \
-                     request_id = ?6, \
-                     document = ?7",
-                params![
-                    intent.intent_id.as_str(),
-                    intent.state.as_str(),
-                    intent.created_ms,
-                    intent.updated_ms,
-                    intent.origin_device.as_deref(),
-                    intent.request_id.as_deref(),
-                    intent.document.as_str(),
-                ],
-            )
-            .map_err(|error| DbError::Statement { why: error.to_string() })?;
-        Ok(())
+        timed_write!(self, "intent", {
+            self.connection
+                .execute(
+                    "INSERT INTO intents \
+                         (intent_id, state, created_ms, updated_ms, origin_device, request_id, document) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+                     ON CONFLICT (intent_id) DO UPDATE SET \
+                         state = ?2, \
+                         -- ★ `created_ms` is deliberately absent: it is when the intent was raised, and a later write is
+                         -- not a later raising. Overwriting it would make every intent look as though it had just started
+                         -- — and the retention rule is measured from when it *finished*, so the two must not be the same
+                         -- number by accident.
+                         updated_ms = ?4, \
+                         origin_device = ?5, \
+                         request_id = ?6, \
+                         document = ?7",
+                    params![
+                        intent.intent_id.as_str(),
+                        intent.state.as_str(),
+                        intent.created_ms,
+                        intent.updated_ms,
+                        intent.origin_device.as_deref(),
+                        intent.request_id.as_deref(),
+                        intent.document.as_str(),
+                    ],
+                )
+                .map_err(|error| DbError::Statement { why: error.to_string() })?;
+            Ok(())
+        })
     }
 
     /// Every stored intent, oldest first so two runs agree.
@@ -206,9 +208,11 @@ impl SynraDb {
             values.push(state);
         }
 
-        self.connection
-            .execute(&sql, values.as_slice())
-            .map_err(|error| DbError::Statement { why: error.to_string() })
+        timed_write!(self, "intent", {
+            self.connection
+                .execute(&sql, values.as_slice())
+                .map_err(|error| DbError::Statement { why: error.to_string() })
+        })
     }
 }
 

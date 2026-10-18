@@ -37,5 +37,27 @@ pub use plugins::{
 };
 pub use state::{Runtime, now_ms};
 
+/// Points the store's write timer at this kernel's recorder.
+///
+/// # Why this is a named function rather than three lines in `serve`
+///
+/// Because the metric's name and its labels are one decision, and a test that wants to see a store write counted should
+/// call the same function the daemon calls — not build a second histogram with the same name and hope the two agree.
+pub fn observe_db_writes(
+    db: &mut synra_store::SynraDb,
+    metrics: &std::sync::Arc<synra_observe::metrics::RingRecorder>,
+) {
+    let recorder = std::sync::Arc::clone(metrics);
+    db.observe_writes(std::sync::Arc::new(move |kind, elapsed| {
+        recorder.histogram_observe(
+            &synra_observe::metrics::SeriesKey::new(
+                "db_write_duration_us",
+                [("kind".to_owned(), kind.to_owned())],
+            ),
+            elapsed.as_secs_f64() * 1_000_000.0,
+        );
+    }));
+}
+
 #[cfg(test)]
 mod tests;

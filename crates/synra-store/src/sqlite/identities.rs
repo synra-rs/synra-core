@@ -53,22 +53,24 @@ impl SynraDb {
     ///
     /// [`DbError::Statement`] when the write is refused.
     pub fn write_identity(&self, identity: &IdentityRow) -> Result<(), DbError> {
-        self.connection
-            .execute(
-                "INSERT INTO identity (id, device_id, display_name, platform, created_at_ms) \
-                 VALUES (1, ?1, ?2, ?3, ?4) \
-                 ON CONFLICT(id) DO UPDATE SET \
-                     device_id = excluded.device_id, \
-                     display_name = excluded.display_name, \
-                     platform = excluded.platform",
-                params![
-                    identity.device_id,
-                    identity.display_name,
-                    identity.platform,
-                    identity.created_at_ms
-                ],
-            )
-            .map_err(|error| DbError::Statement { why: error.to_string() })?;
-        Ok(())
+        timed_write!(self, "identity", {
+            self.connection
+                .execute(
+                    "INSERT INTO identity (id, device_id, display_name, platform, created_at_ms) \
+                     VALUES (1, ?1, ?2, ?3, ?4) \
+                     ON CONFLICT(id) DO UPDATE SET \
+                         device_id = excluded.device_id, \
+                         display_name = excluded.display_name, \
+                         platform = excluded.platform",
+                    params![
+                        identity.device_id,
+                        identity.display_name,
+                        identity.platform,
+                        identity.created_at_ms
+                    ],
+                )
+                .map_err(|error| DbError::Statement { why: error.to_string() })?;
+            Ok(())
+        })
     }
 }

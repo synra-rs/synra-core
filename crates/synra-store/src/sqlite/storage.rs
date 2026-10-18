@@ -47,16 +47,18 @@ impl SynraDb {
     ///
     /// As [`SynraDb::paired_devices`].
     pub fn storage_set(&self, plugin_id: &str, key: &str, value: &str, now_ms: i64) -> Result<(), DbError> {
-        // An upsert rather than an insert-then-update: two statements would be two chances for the second to fail and
-        // leave the first applied, and a `set` that half happened is a value nobody chose.
-        self.connection
-            .execute(
-                "INSERT INTO plugin_storage (plugin_id, key, value, updated_ms) VALUES (?1, ?2, ?3, ?4)
-                 ON CONFLICT(plugin_id, key) DO UPDATE SET value = excluded.value, updated_ms = excluded.updated_ms",
-                params![plugin_id, key, value, now_ms],
-            )
-            .map_err(|error| DbError::Statement { why: error.to_string() })?;
-        Ok(())
+        timed_write!(self, "storage", {
+            // An upsert rather than an insert-then-update: two statements would be two chances for the second to fail and
+            // leave the first applied, and a `set` that half happened is a value nobody chose.
+            self.connection
+                .execute(
+                    "INSERT INTO plugin_storage (plugin_id, key, value, updated_ms) VALUES (?1, ?2, ?3, ?4)
+                     ON CONFLICT(plugin_id, key) DO UPDATE SET value = excluded.value, updated_ms = excluded.updated_ms",
+                    params![plugin_id, key, value, now_ms],
+                )
+                .map_err(|error| DbError::Statement { why: error.to_string() })?;
+            Ok(())
+        })
     }
 
     /// Removes a value, reporting whether there was one.
@@ -70,14 +72,16 @@ impl SynraDb {
     ///
     /// As [`SynraDb::paired_devices`].
     pub fn storage_delete(&self, plugin_id: &str, key: &str) -> Result<bool, DbError> {
-        let removed = self
-            .connection
-            .execute(
-                "DELETE FROM plugin_storage WHERE plugin_id = ?1 AND key = ?2",
-                params![plugin_id, key],
-            )
-            .map_err(|error| DbError::Statement { why: error.to_string() })?;
-        Ok(removed > 0)
+        timed_write!(self, "storage", {
+            let removed = self
+                .connection
+                .execute(
+                    "DELETE FROM plugin_storage WHERE plugin_id = ?1 AND key = ?2",
+                    params![plugin_id, key],
+                )
+                .map_err(|error| DbError::Statement { why: error.to_string() })?;
+            Ok(removed > 0)
+        })
     }
 
     /// The keys a plugin has, ordered, optionally restricted to a prefix.
@@ -155,9 +159,11 @@ impl SynraDb {
     ///
     /// As [`SynraDb::paired_devices`].
     pub fn storage_clear(&self, plugin_id: &str) -> Result<usize, DbError> {
-        self.connection
-            .execute("DELETE FROM plugin_storage WHERE plugin_id = ?1", params![plugin_id])
-            .map_err(|error| DbError::Statement { why: error.to_string() })
+        timed_write!(self, "storage", {
+            self.connection
+                .execute("DELETE FROM plugin_storage WHERE plugin_id = ?1", params![plugin_id])
+                .map_err(|error| DbError::Statement { why: error.to_string() })
+        })
     }
 }
 

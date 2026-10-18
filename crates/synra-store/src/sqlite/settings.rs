@@ -46,20 +46,23 @@ impl SynraDb {
     ///
     /// [`DbError::Statement`] when the write is refused, and [`DbError::NotJson`] when the value is not JSON text.
     pub fn set_config(&self, key: &str, value: &serde_json::Value, now_ms: i64) -> Result<(), DbError> {
-        // ★ Serialised here rather than by the caller.
-        //
-        // The column is JSON *text* because the table predates the settings screens and a column type cannot change under
-        // a published migration. Whoever writes it must not get to choose how — a caller writing `value.to_string()` on a
-        // string produces `Study PC`, which parses as nothing and is why this returns `DbError::NotJson` on the way out.
-        let text = serde_json::to_string(value).map_err(|error| DbError::NotJson { why: error.to_string() })?;
-        self.connection
-            .execute(
-                "INSERT INTO config (key, value, updated_ms) VALUES (?1, ?2, ?3) \
-                 ON CONFLICT (key) DO UPDATE SET value = ?2, updated_ms = ?3",
-                params![key, text, now_ms],
-            )
-            .map_err(|error| DbError::Statement { why: error.to_string() })?;
-        Ok(())
+        timed_write!(self, "config", {
+            // ★ Serialised here rather than by the caller.
+            //
+            // The column is JSON *text* because the table predates the settings screens and a column type cannot change
+            // under a published migration. Whoever writes it must not get to choose how — a caller writing
+            // `value.to_string()` on a string produces `Study PC`, which parses as nothing and is why this returns
+            // `DbError::NotJson` on the way out.
+            let text = serde_json::to_string(value).map_err(|error| DbError::NotJson { why: error.to_string() })?;
+            self.connection
+                .execute(
+                    "INSERT INTO config (key, value, updated_ms) VALUES (?1, ?2, ?3) \
+                     ON CONFLICT (key) DO UPDATE SET value = ?2, updated_ms = ?3",
+                    params![key, text, now_ms],
+                )
+                .map_err(|error| DbError::Statement { why: error.to_string() })?;
+            Ok(())
+        })
     }
 
     /// Removes a setting, returning it to its default.
@@ -68,15 +71,17 @@ impl SynraDb {
     ///
     /// [`DbError::Statement`] when the write is refused.
     pub fn unset_config(&self, key: &str) -> Result<bool, DbError> {
-        // ★ The count is returned, and callers must look at it.
-        //
-        // An `UPDATE` or `DELETE` that matches no row reports success. A command that removed a key the user had already
-        // removed would then answer "done", which is indistinguishable from having actually done it.
-        let removed = self
-            .connection
-            .execute("DELETE FROM config WHERE key = ?1", params![key])
-            .map_err(|error| DbError::Statement { why: error.to_string() })?;
-        Ok(removed > 0)
+        timed_write!(self, "config", {
+            // ★ The count is returned, and callers must look at it.
+            //
+            // An `UPDATE` or `DELETE` that matches no row reports success. A command that removed a key the user had
+            // already removed would then answer "done", which is indistinguishable from having actually done it.
+            let removed = self
+                .connection
+                .execute("DELETE FROM config WHERE key = ?1", params![key])
+                .map_err(|error| DbError::Statement { why: error.to_string() })?;
+            Ok(removed > 0)
+        })
     }
 
     /// Writes a whole batch of changes, or reports why it could not.

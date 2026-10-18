@@ -85,15 +85,17 @@ impl SynraDb {
         pubkey: &str,
         now_ms: i64,
     ) -> Result<(), DbError> {
-        self.connection
-            .execute(
-                "INSERT INTO publishers (publisher_id, fingerprint, pubkey, trust, first_seen_ms, decided_ms) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, NULL) \
-                 ON CONFLICT (publisher_id) DO NOTHING",
-                params![publisher_id, fingerprint, pubkey, TRUST_SEEN, now_ms],
-            )
-            .map_err(|error| DbError::Statement { why: error.to_string() })?;
-        Ok(())
+        timed_write!(self, "publisher", {
+            self.connection
+                .execute(
+                    "INSERT INTO publishers (publisher_id, fingerprint, pubkey, trust, first_seen_ms, decided_ms) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, NULL) \
+                     ON CONFLICT (publisher_id) DO NOTHING",
+                    params![publisher_id, fingerprint, pubkey, TRUST_SEEN, now_ms],
+                )
+                .map_err(|error| DbError::Statement { why: error.to_string() })?;
+            Ok(())
+        })
     }
 
     /// Sets the decision for a publisher the device has met.
@@ -110,13 +112,15 @@ impl SynraDb {
         trust: &str,
         now_ms: i64,
     ) -> Result<bool, DbError> {
-        let changed = self
-            .connection
-            .execute(
-                "UPDATE publishers SET trust = ?2, decided_ms = ?3 WHERE publisher_id = ?1",
-                params![publisher_id, trust, now_ms],
-            )
-            .map_err(|error| DbError::Statement { why: error.to_string() })?;
-        Ok(changed > 0)
+        timed_write!(self, "publisher", {
+            let changed = self
+                .connection
+                .execute(
+                    "UPDATE publishers SET trust = ?2, decided_ms = ?3 WHERE publisher_id = ?1",
+                    params![publisher_id, trust, now_ms],
+                )
+                .map_err(|error| DbError::Statement { why: error.to_string() })?;
+            Ok(changed > 0)
+        })
     }
 }

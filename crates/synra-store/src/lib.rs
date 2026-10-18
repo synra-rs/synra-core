@@ -34,6 +34,26 @@
     )
 )]
 
+/// Times one store write and reports it to the host's observer, when one is installed.
+///
+/// # Why a macro rather than a wrapper method
+///
+/// Because the write methods take both `&self` and `&mut self`, and a `&self` helper cannot call a closure that needs
+/// `&mut self.connection`. Expanding in the method keeps each one's own borrows — and the shape is the same everywhere, so
+/// there is one place to read what "a timed write" means.
+macro_rules! timed_write {
+    ($db:expr, $kind:literal, $body:block) => {{
+        let started = std::time::Instant::now();
+        // The closure is bound before it is called: calling it in the expression where it is written is the one shape the
+        // `redundant_closure_call` lint refuses, and the bind is what keeps the `?` inside `$body` returning the write's
+        // error rather than the caller's — which is the whole reason a closure is used.
+        let write = &mut || $body;
+        let result = write();
+        $db.note_write($kind, started.elapsed());
+        result
+    }};
+}
+
 pub mod db;
 pub mod records;
 pub mod sqlite;
@@ -48,7 +68,7 @@ pub use records::{
 };
 // `Paired` is here because `SynraDb::pair_device` takes one: a public method whose argument type is not exported is
 // a method no caller outside this crate can call at all.
-pub use sqlite::{ConfigChange, DbError, Paired, SynraDb, migration_versions};
+pub use sqlite::{ConfigChange, DbError, Paired, SynraDb, WriteObserver, migration_versions};
 pub use sqlite::{PublisherRow, TRUST_REVOKED, TRUST_SEEN, TRUST_TRUSTED};
 mod plugin_files;
 

@@ -113,6 +113,16 @@ pub enum DbError {
     },
 }
 
+/// Something that wants to know how long each store write took.
+///
+/// # Why a host installs one rather than the store owning a recorder
+///
+/// Because the store is deliberately below the diagnostics layer: it depends on neither `synra-observe` nor a metrics
+/// type, and the design's layering keeps it that way. The host already has a recorder and knows the metric's name; the
+/// store only knows when a write begins and ends. The label is the operation's own name (`audit`, `intent`, `config`, …),
+/// which is the one fact the caller of a histogram can group by.
+pub type WriteObserver = std::sync::Arc<dyn Fn(&'static str, std::time::Duration) + Send + Sync>;
+
 /// The kernel's database.
 ///
 /// # Why one connection rather than a pool
@@ -122,6 +132,8 @@ pub enum DbError {
 /// the only thing between them. A single connection makes the ordering a property of the code rather than of a lock.
 pub struct SynraDb {
     connection: Connection,
+    /// Where each write's duration goes, when a host asked to be told.
+    write_observer: Option<WriteObserver>,
 }
 
 impl std::fmt::Debug for SynraDb {
@@ -150,7 +162,7 @@ impl SynraDb {
         )
         .map_err(|error| DbError::Open { path: path.to_path_buf(), why: error.to_string() })?;
 
-        let db = Self { connection };
+        let db = Self { connection, write_observer: None };
         db.apply_pragmas()?;
         db.refuse_a_future_schema()?;
         Ok(db)
@@ -166,9 +178,27 @@ impl SynraDb {
             path: std::path::PathBuf::from(":memory:"),
             why: error.to_string(),
         })?;
-        let db = Self { connection };
+        let db = Self { connection, write_observer: None };
         db.apply_pragmas()?;
         Ok(db)
+    }
+
+    /// Asks to be told how long each write takes.
+    ///
+    /// # Why the observer is installed by the host
+    ///
+    /// Because the metric's name and its recorder belong to the host, and a store that knew them would be the diagnostics
+    /// layer reaching into the persistence layer. A host with no recorder (a test, the plugin CLI) simply never calls
+    /// this, and every write is then the same code with one `Option` check.
+    pub fn observe_writes(&mut self, observer: WriteObserver) {
+        self.write_observer = Some(observer);
+    }
+
+    /// Reports one finished write, when a host asked to be told.
+    pub(crate) fn note_write(&self, kind: &'static str, elapsed: std::time::Duration) {
+        if let Some(observer) = &self.write_observer {
+            observer(kind, elapsed);
+        }
     }
 
     /// Whether the database is usable.

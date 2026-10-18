@@ -382,6 +382,9 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
     // no plugins are loaded for a reason that has nothing to do with what the user installed.
     // ★ The gate's counters, owned here because this is what can report them.
     let metrics = Arc::new(synra_observe::metrics::RingRecorder::new());
+    // ★ And the store reports every write's duration to the same recorder. Installed here, once, rather than at each call
+    // site — the store's write methods are the one funnel every write goes through.
+    crate::runtime::observe_db_writes(&mut shared_db.lock(), &metrics);
     let plugins = match crate::runtime::build_set(&shared_db, &metrics) {
         Ok(set) => Arc::new(Mutex::new(set)),
         Err(error) => {

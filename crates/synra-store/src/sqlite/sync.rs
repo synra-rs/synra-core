@@ -54,18 +54,20 @@ impl SynraDb {
         digest: &str,
         synced_at_ms: i64,
     ) -> Result<(), DbError> {
-        self.connection
-            .execute(
-                "INSERT INTO sync_records (plugin_id, peer_device, version, digest, synced_at_ms) \
-                 VALUES (?1, ?2, ?3, ?4, ?5) \
-                 ON CONFLICT(plugin_id, peer_device) DO UPDATE SET \
-                     version = excluded.version, \
-                     digest = excluded.digest, \
-                     synced_at_ms = excluded.synced_at_ms",
-                params![plugin_id, peer_device, version, digest, synced_at_ms],
-            )
-            .map_err(|error| DbError::Statement { why: error.to_string() })?;
-        Ok(())
+        timed_write!(self, "sync", {
+            self.connection
+                .execute(
+                    "INSERT INTO sync_records (plugin_id, peer_device, version, digest, synced_at_ms) \
+                     VALUES (?1, ?2, ?3, ?4, ?5) \
+                     ON CONFLICT(plugin_id, peer_device) DO UPDATE SET \
+                         version = excluded.version, \
+                         digest = excluded.digest, \
+                         synced_at_ms = excluded.synced_at_ms",
+                    params![plugin_id, peer_device, version, digest, synced_at_ms],
+                )
+                .map_err(|error| DbError::Statement { why: error.to_string() })?;
+            Ok(())
+        })
     }
 
     /// Replaces everything known about one peer with what it just said it holds.
@@ -92,25 +94,27 @@ impl SynraDb {
         held: &[(String, String, String)],
         synced_at_ms: i64,
     ) -> Result<(), DbError> {
-        let transaction = self
-            .connection
-            .unchecked_transaction()
-            .map_err(|error| DbError::Statement { why: error.to_string() })?;
-        transaction
-            .execute("DELETE FROM sync_records WHERE peer_device = ?1", params![peer_device])
-            .map_err(|error| DbError::Statement { why: error.to_string() })?;
-        for (plugin_id, version, digest) in held {
-            transaction
-                .execute(
-                    "INSERT INTO sync_records (plugin_id, peer_device, version, digest, synced_at_ms) \
-                     VALUES (?1, ?2, ?3, ?4, ?5)",
-                    params![plugin_id, peer_device, version, digest, synced_at_ms],
-                )
+        timed_write!(self, "sync", {
+            let transaction = self
+                .connection
+                .unchecked_transaction()
                 .map_err(|error| DbError::Statement { why: error.to_string() })?;
-        }
-        transaction
-            .commit()
-            .map_err(|error| DbError::Statement { why: error.to_string() })?;
-        Ok(())
+            transaction
+                .execute("DELETE FROM sync_records WHERE peer_device = ?1", params![peer_device])
+                .map_err(|error| DbError::Statement { why: error.to_string() })?;
+            for (plugin_id, version, digest) in held {
+                transaction
+                    .execute(
+                        "INSERT INTO sync_records (plugin_id, peer_device, version, digest, synced_at_ms) \
+                         VALUES (?1, ?2, ?3, ?4, ?5)",
+                        params![plugin_id, peer_device, version, digest, synced_at_ms],
+                    )
+                    .map_err(|error| DbError::Statement { why: error.to_string() })?;
+            }
+            transaction
+                .commit()
+                .map_err(|error| DbError::Statement { why: error.to_string() })?;
+            Ok(())
+        })
     }
 }

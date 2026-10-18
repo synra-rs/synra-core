@@ -50,6 +50,39 @@ fn a_trace_survives_the_round_trip() {
 }
 
 #[test]
+fn a_write_reports_its_duration_and_its_kind() {
+    // ★ The hook the hosts install: every write method reports once, labelled with the operation's own name. A metric
+    // that counted some writes and not others would be read as "the database is fast" while the slow write — the one the
+    // user is waiting on — was not in the sample at all.
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    let mut db = db();
+    let seen: Arc<Mutex<Vec<(&'static str, Duration)>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&seen);
+    db.observe_writes(Arc::new(move |kind, elapsed| sink.lock().expect("a lock").push((kind, elapsed))));
+
+    db.record_audit(&call("@acme/notes", "device:list", "allowed", 1_000)).expect("recorded");
+    db.set_config("test.key", &serde_json::json!(1), 10).expect("written");
+    db.record_seen_device(&crate::records::Seen {
+        device_id: "00000000-0000-4000-8000-0000000000aa".to_owned(),
+        display_name: "Phone".to_owned(),
+        platform: "android".to_owned(),
+        seen_at_ms: 10,
+        source: "udp".to_owned(),
+    })
+    .expect("seen");
+
+    let seen = std::mem::take(&mut *seen.lock().expect("a lock"));
+    let kinds: Vec<&str> = seen.iter().map(|(kind, _)| *kind).collect();
+    assert_eq!(kinds, vec!["audit", "config", "device"]);
+    assert!(
+        seen.iter().all(|(_, elapsed)| *elapsed < Duration::from_secs(1)),
+        "a write against an in-memory database took a second: {seen:?}"
+    );
+}
+
+#[test]
 fn every_call_is_its_own_row() {
     // ★ Why this appends rather than upserts. Two `device:list` calls a millisecond apart are two facts, and "recent
     // activity" is a list of them — an upsert would collapse the history into a count of one.

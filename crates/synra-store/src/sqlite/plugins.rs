@@ -59,21 +59,23 @@ impl SynraDb {
         installed_at_ms: i64,
         updated_at_ms: i64,
     ) -> Result<(), DbError> {
-        self.connection
-            .execute(
-                "INSERT INTO plugins (plugin_id, enabled, trusted, health, installed_at_ms, updated_at_ms) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![
-                    plugin_id,
-                    i64::from(enabled),
-                    i64::from(trusted),
-                    health,
-                    installed_at_ms,
-                    updated_at_ms
-                ],
-            )
-            .map_err(|error| DbError::Statement { why: error.to_string() })?;
-        Ok(())
+        timed_write!(self, "plugin", {
+            self.connection
+                .execute(
+                    "INSERT INTO plugins (plugin_id, enabled, trusted, health, installed_at_ms, updated_at_ms) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        plugin_id,
+                        i64::from(enabled),
+                        i64::from(trusted),
+                        health,
+                        installed_at_ms,
+                        updated_at_ms
+                    ],
+                )
+                .map_err(|error| DbError::Statement { why: error.to_string() })?;
+            Ok(())
+        })
     }
 
     /// Turns a plugin on or off, and says whether it was there.
@@ -94,13 +96,15 @@ impl SynraDb {
         enabled: bool,
         now_ms: i64,
     ) -> Result<bool, DbError> {
-        self.connection
-            .execute(
-                "UPDATE plugins SET enabled = ?2, updated_at_ms = ?3 WHERE plugin_id = ?1",
-                params![plugin_id, i64::from(enabled), now_ms],
-            )
-            .map_err(|error| DbError::Statement { why: error.to_string() })?;
-        self.plugin_is_installed(plugin_id)
+        timed_write!(self, "plugin", {
+            self.connection
+                .execute(
+                    "UPDATE plugins SET enabled = ?2, updated_at_ms = ?3 WHERE plugin_id = ?1",
+                    params![plugin_id, i64::from(enabled), now_ms],
+                )
+                .map_err(|error| DbError::Statement { why: error.to_string() })?;
+            self.plugin_is_installed(plugin_id)
+        })
     }
 
     /// Records whether the user trusts a plugin, and says whether it was there.
@@ -116,13 +120,15 @@ impl SynraDb {
     ///
     /// [`DbError::Statement`] when the write is refused.
     pub fn set_plugin_trusted(&self, plugin_id: &str, trusted: bool, now_ms: i64) -> Result<bool, DbError> {
-        self.connection
-            .execute(
-                "UPDATE plugins SET trusted = ?2, updated_at_ms = ?3 WHERE plugin_id = ?1",
-                params![plugin_id, i64::from(trusted), now_ms],
-            )
-            .map_err(|error| DbError::Statement { why: error.to_string() })?;
-        self.plugin_is_installed(plugin_id)
+        timed_write!(self, "plugin", {
+            self.connection
+                .execute(
+                    "UPDATE plugins SET trusted = ?2, updated_at_ms = ?3 WHERE plugin_id = ?1",
+                    params![plugin_id, i64::from(trusted), now_ms],
+                )
+                .map_err(|error| DbError::Statement { why: error.to_string() })?;
+            self.plugin_is_installed(plugin_id)
+        })
     }
 
     /// Whether a plugin is installed.
@@ -201,26 +207,28 @@ impl SynraDb {
         decided_ms: i64,
         manifest_digest: &str,
     ) -> Result<usize, DbError> {
-        let mut statement = self
-            .connection
-            .prepare(
-                "INSERT INTO plugin_grants (plugin_id, capability, granted, decided_ms, manifest_digest) \
-                 VALUES (?1, ?2, ?3, ?4, ?5) \
-                 ON CONFLICT(plugin_id, capability) DO UPDATE SET \
-                    granted = excluded.granted, \
-                    decided_ms = excluded.decided_ms, \
-                    manifest_digest = excluded.manifest_digest",
-            )
-            .map_err(|error| DbError::Statement { why: error.to_string() })?;
-
-        let mut written = 0usize;
-        for (capability, granted) in decisions {
-            statement
-                .execute(params![plugin_id, capability, i64::from(*granted), decided_ms, manifest_digest])
+        timed_write!(self, "plugin", {
+            let mut statement = self
+                .connection
+                .prepare(
+                    "INSERT INTO plugin_grants (plugin_id, capability, granted, decided_ms, manifest_digest) \
+                     VALUES (?1, ?2, ?3, ?4, ?5) \
+                     ON CONFLICT(plugin_id, capability) DO UPDATE SET \
+                        granted = excluded.granted, \
+                        decided_ms = excluded.decided_ms, \
+                        manifest_digest = excluded.manifest_digest",
+                )
                 .map_err(|error| DbError::Statement { why: error.to_string() })?;
-            written += 1;
-        }
-        Ok(written)
+
+            let mut written = 0usize;
+            for (capability, granted) in decisions {
+                statement
+                    .execute(params![plugin_id, capability, i64::from(*granted), decided_ms, manifest_digest])
+                    .map_err(|error| DbError::Statement { why: error.to_string() })?;
+                written += 1;
+            }
+            Ok(written)
+        })
     }
 
     /// Removes a plugin's record: its row and every consent decision recorded against it.
@@ -241,23 +249,25 @@ impl SynraDb {
     ///
     /// [`DbError::Statement`] when either delete is refused. The transaction is dropped unfinished, so nothing changed.
     pub fn remove_plugin(&mut self, plugin_id: &str) -> Result<bool, DbError> {
-        let transaction = self
-            .connection
-            .transaction()
-            .map_err(|error| DbError::Statement { why: error.to_string() })?;
-        let removed = transaction
-            .execute("DELETE FROM plugins WHERE plugin_id = ?1", params![plugin_id])
-            .map_err(|error| DbError::Statement { why: error.to_string() })?;
-        // ★ The decisions go with it. A grant recorded against a plugin that no longer exists is not history worth
-        // keeping — `plugin_grants` is the current state, not a log — and leaving the rows would mean a reinstall
-        // inherited the old consent, which is the one thing consent must never do.
-        transaction
-            .execute("DELETE FROM plugin_grants WHERE plugin_id = ?1", params![plugin_id])
-            .map_err(|error| DbError::Statement { why: error.to_string() })?;
-        transaction
-            .commit()
-            .map_err(|error| DbError::Statement { why: error.to_string() })?;
-        Ok(removed > 0)
+        timed_write!(self, "plugin", {
+            let transaction = self
+                .connection
+                .transaction()
+                .map_err(|error| DbError::Statement { why: error.to_string() })?;
+            let removed = transaction
+                .execute("DELETE FROM plugins WHERE plugin_id = ?1", params![plugin_id])
+                .map_err(|error| DbError::Statement { why: error.to_string() })?;
+            // ★ The decisions go with it. A grant recorded against a plugin that no longer exists is not history worth
+            // keeping — `plugin_grants` is the current state, not a log — and leaving the rows would mean a reinstall
+            // inherited the old consent, which is the one thing consent must never do.
+            transaction
+                .execute("DELETE FROM plugin_grants WHERE plugin_id = ?1", params![plugin_id])
+                .map_err(|error| DbError::Statement { why: error.to_string() })?;
+            transaction
+                .commit()
+                .map_err(|error| DbError::Statement { why: error.to_string() })?;
+            Ok(removed > 0)
+        })
     }
 
     /// Records an action a plugin declares, replacing an earlier declaration under the same name.
@@ -279,17 +289,19 @@ impl SynraDb {
         args_schema: Option<&str>,
         description: Option<&str>,
     ) -> Result<(), DbError> {
-        self.connection
-            .execute(
-                "INSERT INTO plugin_actions (plugin_id, name, args_schema, description) \
-                 VALUES (?1, ?2, ?3, ?4) \
-                 ON CONFLICT(plugin_id, name) DO UPDATE SET \
-                    args_schema = excluded.args_schema, \
-                    description = excluded.description",
-                params![plugin_id, name, args_schema, description],
-            )
-            .map_err(|error| DbError::Statement { why: error.to_string() })?;
-        Ok(())
+        timed_write!(self, "plugin", {
+            self.connection
+                .execute(
+                    "INSERT INTO plugin_actions (plugin_id, name, args_schema, description) \
+                     VALUES (?1, ?2, ?3, ?4) \
+                     ON CONFLICT(plugin_id, name) DO UPDATE SET \
+                        args_schema = excluded.args_schema, \
+                        description = excluded.description",
+                    params![plugin_id, name, args_schema, description],
+                )
+                .map_err(|error| DbError::Statement { why: error.to_string() })?;
+            Ok(())
+        })
     }
 
     /// The actions a plugin has declared, ordered by name.
