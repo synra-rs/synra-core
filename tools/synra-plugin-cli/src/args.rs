@@ -45,6 +45,8 @@ pub enum Command {
     Pack(PackArgs),
     /// Check the files a static bucket would serve, without uploading them.
     Publish(PublishArgs),
+    /// Upload a static package with a command the author provides.
+    Upload(UploadArgs),
 }
 
 /// Options for `build`.
@@ -123,6 +125,26 @@ pub struct PublishArgs {
     /// Also fetch the index and tarballs from `--base` and compare them with the local files.
     #[arg(long)]
     pub verify: bool,
+}
+
+/// Options for `upload`.
+#[derive(Debug, Args)]
+pub struct UploadArgs {
+    /// The static index to publish: the `.json` `pack --index` wrote.
+    #[arg(long, value_name = "FILE")]
+    pub index: PathBuf,
+
+    /// The public base URL the files are addressed under.
+    #[arg(long, value_name = "URL")]
+    pub base: String,
+
+    /// The upload command, with `{file}` and `{url}` placeholders. Split on spaces; no shell.
+    #[arg(long, value_name = "TEMPLATE")]
+    pub command: String,
+
+    /// Print the commands without running them.
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 /// Options for `new`.

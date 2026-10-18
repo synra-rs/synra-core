@@ -60,6 +60,7 @@ pub const fn is_dry_run(cli: &Cli) -> bool {
         crate::args::Command::New(args) => args.dry_run,
         crate::args::Command::Build(args) => args.dry_run,
         crate::args::Command::Pack(args) => args.dry_run,
+        crate::args::Command::Upload(args) => args.dry_run,
         // Neither has a dry run: `verify` changes nothing, and a signature an author asked for is one they want. `publish`
         // only reads, so there is nothing a dry run could skip.
         crate::args::Command::Verify(_) | crate::args::Command::Sign(_) | crate::args::Command::Publish(_) => false,

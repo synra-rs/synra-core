@@ -305,7 +305,7 @@ fn entry_text(entry: &synra_registry::Version) -> Result<String, String> {
 }
 
 /// Where a tarball reference lives on disk.
-fn local_tarball(directory: &Path, base: Option<&str>, tarball: &str) -> Result<PathBuf, String> {
+pub(crate) fn local_tarball(directory: &Path, base: Option<&str>, tarball: &str) -> Result<PathBuf, String> {
     if tarball.starts_with("https://") || tarball.starts_with("http://") {
         let base = base.ok_or_else(|| {
             format!("{tarball}: it is absolute; pass --base with the public URL to find the local file")
