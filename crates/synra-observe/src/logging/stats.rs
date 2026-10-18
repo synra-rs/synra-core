@@ -9,6 +9,7 @@ pub struct LogStats {
     pub(super) bytes: AtomicU64,
     pub(super) redactions: AtomicU64,
     pub(super) dropped: AtomicU64,
+    pub(super) write_errors: AtomicU64,
 }
 
 impl LogStats {
@@ -50,5 +51,22 @@ impl LogStats {
     /// Counts one discarded line.
     pub(super) fn record_drop(&self) {
         self.dropped.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// How many lines reached the queue but could not be written to the file.
+    ///
+    /// # Why this is not an error a user sees immediately
+    ///
+    /// Because the writer is a background thread: there is no caller to return an error to, and a logger that logged its
+    /// own failure would be a loop. The count is the report — the next `synra logs` says the file is behind, which is the
+    /// actionable fact (a full disk, a removed directory).
+    #[must_use]
+    pub fn write_errors(&self) -> u64 {
+        self.write_errors.load(Ordering::Relaxed)
+    }
+
+    /// Counts one failed write to the destination.
+    pub(super) fn record_write_error(&self) {
+        self.write_errors.fetch_add(1, Ordering::Relaxed);
     }
 }

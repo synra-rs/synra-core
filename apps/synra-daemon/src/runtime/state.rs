@@ -128,6 +128,13 @@ pub struct Runtime {
     /// `None` when logging is not running, which is a state worth distinguishing: a daemon whose log file could not be
     /// opened still answers the command, and it must not claim to have raised anything.
     pub verbosity: Option<std::sync::Arc<synra_observe::logging::Verbosity>>,
+
+    /// What the logger has counted: lines queued, dropped, and failed to write.
+    ///
+    /// `None` when logging is not running, for the same reason as `verbosity`: a daemon that could not open its log must
+    /// not claim it is keeping up with one. The counts come from the writer's own [`LogStats`](synra_observe::logging::LogStats),
+    /// so `synra logs` reports the same numbers the writer recorded rather than an estimate.
+    pub log_stats: Option<std::sync::Arc<synra_observe::logging::LogStats>>,
 }
 
 impl Runtime {

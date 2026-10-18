@@ -107,6 +107,8 @@ fn runtime_over(dir: &Path, shared_db: std::sync::Arc<parking_lot::Mutex<synra_s
         verbosity: Some(std::sync::Arc::new(synra_observe::logging::Verbosity::new(
             synra_observe::logging::LogLevel::Info,
         ))),
+        // The fixture keeps no writer, so the counts are absent: `synra logs` must still answer, with zeroes.
+        log_stats: None,
     }
 }
 
@@ -786,6 +788,17 @@ fn asking_for_verbose_logs_raises_what_the_daemon_writes() {
         "the logger itself has to change, not just the answer"
     );
     assert!(verbosity.remaining().is_some(), "and it has to lapse, or a flag left on fills the disk");
+}
+
+#[test]
+fn a_log_answer_carries_the_writers_counters() {
+    // ★ The fields are always present, even when the fixture keeps no writer: a client reading the answer must be able to
+    // tell "zero dropped" from "this build does not report drops", and an absent field cannot say the first.
+    let dir = TempDir::new("logs-counters");
+    let runtime = runtime(dir.path());
+    let answer = runtime.logs_value(1, false, None).expect("an answer");
+    assert_eq!(answer["dropped"], 0);
+    assert_eq!(answer["writeErrors"], 0);
 }
 
 #[test]

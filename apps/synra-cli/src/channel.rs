@@ -210,7 +210,17 @@ fn prose(value: &serde_json::Value) -> Vec<String> {
         return vec![sentence];
     }
     if let Some(lines) = value.get("lines").and_then(serde_json::Value::as_array) {
-        return lines.iter().map(render_line).collect();
+        let mut rendered: Vec<String> = lines.iter().map(render_line).collect();
+        // ★ A log that is behind must not look like a quiet kernel. Both numbers are zero in the ordinary case, so the
+        // sentence appears only when the writer had to choose between blocking the product and losing a line.
+        let dropped = value.get("dropped").and_then(serde_json::Value::as_u64).unwrap_or(0);
+        let errors = value.get("writeErrors").and_then(serde_json::Value::as_u64).unwrap_or(0);
+        if dropped > 0 || errors > 0 {
+            rendered.push(format!(
+                "the logger dropped {dropped} line(s) and could not write {errors} on its way to the file"
+            ));
+        }
+        return rendered;
     }
     if let Some(plugins) = value.get("plugins").and_then(serde_json::Value::as_array) {
         if plugins.is_empty() {
@@ -693,6 +703,37 @@ mod tests {
                          /tmp/synra/plugins/@acme/hello"
                     ]
                 );
+            }
+            other => panic!("expected lines, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_log_answer_says_when_lines_were_dropped_or_not_written() {
+        // ★ The difference between "the kernel is quiet" and "the kernel could not write": both produce a short file, and
+        // only this sentence tells them apart.
+        let response = Response::ok(serde_json::json!({
+            "lines": [],
+            "dropped": 3,
+            "writeErrors": 1
+        }));
+        match outcome_of(&response, Shape::Prose) {
+            crate::session::CommandOutcome::Lines(lines) => {
+                assert_eq!(lines.len(), 1, "{lines:?}");
+                assert!(lines[0].contains("dropped 3"), "{lines:?}");
+                assert!(lines[0].contains("could not write 1"), "{lines:?}");
+            }
+            other => panic!("expected lines, got {other:?}"),
+        }
+
+        let quiet = Response::ok(serde_json::json!({
+            "lines": [],
+            "dropped": 0,
+            "writeErrors": 0
+        }));
+        match outcome_of(&quiet, Shape::Prose) {
+            crate::session::CommandOutcome::Lines(lines) => {
+                assert!(lines.is_empty(), "a healthy log adds nothing: {lines:?}");
             }
             other => panic!("expected lines, got {other:?}"),
         }

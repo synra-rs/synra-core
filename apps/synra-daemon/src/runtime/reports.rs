@@ -248,6 +248,10 @@ impl Runtime {
             // to guess whether the flag is wired at all.
             "raised": raised,
             "level": effective,
+            // What the writer dropped or could not write. A log that stopped growing because the disk is full looks
+            // exactly like a quiet kernel otherwise — these two numbers are the difference.
+            "dropped": self.log_stats.as_ref().map_or(0, |stats| stats.dropped()),
+            "writeErrors": self.log_stats.as_ref().map_or(0, |stats| stats.write_errors()),
         }))
     }
 }

@@ -88,9 +88,10 @@ impl Worker {
     ) -> io::Result<(QueueWriter, Self)> {
         let (sender, receiver) = sync_channel(capacity.max(1));
         let control = sender.clone();
+        let worker_stats = Arc::clone(&stats);
         let handle = std::thread::Builder::new()
             .name("synra-log".to_owned())
-            .spawn(move || run(receiver, sink))?;
+            .spawn(move || run(receiver, sink, &worker_stats))?;
         Ok((
             QueueWriter { sender, stats },
             Self { sender: control, handle: Some(handle) },
@@ -109,19 +110,23 @@ impl Drop for Worker {
 }
 
 /// Drains the queue until it is stopped, then flushes.
-fn run(receiver: Receiver<Message>, mut sink: impl Write) {
+fn run(receiver: Receiver<Message>, mut sink: impl Write, stats: &LogStats) {
     for message in receiver {
         match message {
             Message::Line(bytes) => {
-                // A write that fails has nowhere to be reported: this *is* the reporting path. The line is lost, which is
-                // the same outcome as a drop, and the next status read will show the queue was under pressure.
-                let _ = sink.write_all(&bytes);
+                // A failed write has no caller to go to: this *is* the reporting path. The line is lost, and the counter
+                // is what keeps that from being invisible — the next `synra logs` reports it.
+                if sink.write_all(&bytes).is_err() {
+                    stats.record_write_error();
+                }
             }
             Message::Stop => break,
         }
     }
     // Every line before the Stop has been written by now; the flush is what makes it visible to a reader.
-    let _ = sink.flush();
+    if sink.flush().is_err() {
+        stats.record_write_error();
+    }
 }
 
 #[cfg(test)]
@@ -144,6 +149,31 @@ mod tests {
         fn flush(&mut self) -> io::Result<()> {
             Ok(())
         }
+    }
+
+    /// A sink that refuses every write, as a full disk does.
+    struct Refusing;
+
+    impl Write for Refusing {
+        fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+            Err(io::Error::other("no space left on device"))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Err(io::Error::other("no space left on device"))
+        }
+    }
+
+    #[test]
+    fn a_refused_write_is_counted_rather_than_swallowed() {
+        // ★ The background thread has no caller to return an error to; the count is the only report. A full disk therefore
+        // shows up in the next `synra logs` instead of a file that silently stops growing.
+        let stats = Arc::new(LogStats::default());
+        let (mut queue, worker) = Worker::spawn(Refusing, 4, Arc::clone(&stats)).expect("a worker");
+        queue.write_all(b"lost\n").expect("queued");
+        drop(worker);
+
+        assert_eq!(stats.write_errors(), 2, "the failed write and the failed flush");
     }
 
     #[test]

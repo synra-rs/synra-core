@@ -398,6 +398,11 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
     };
     // Taken before the guard moves into `_log`, because the runtime needs it and the guard is what keeps the file open.
     let log_verbosity = _log.as_ref().map(|guard| guard.verbosity());
+    // And the counters, from the same guard: `synra logs` reports what the writer dropped or failed to write, which is
+    // the difference between "no lines" and "lines were lost".
+    let log_stats = _log
+        .as_ref()
+        .map(synra_observe::logging::stats_of);
 
     // ★ The database goes behind its lock **here**, before the plugin host is built.
     //
@@ -555,6 +560,7 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
         // not running — a daemon whose log file could not be opened still answers the command, and it must not claim to
         // have raised anything.
         verbosity: log_verbosity,
+        log_stats,
     });
 
     // ★ Put back what the last run was working on, **before** the socket is bound.
