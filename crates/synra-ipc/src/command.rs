@@ -280,6 +280,9 @@ commands! {
 
     // ── diagnostics ──
     "diag_export" => Diag, Host, One, true;
+    // ★ The probes the CLI runs before a first start, answered to the window too: a user whose app cannot bind or find
+    // its data directory should be able to see the reason without a terminal. Reads the machine, changes nothing.
+    "diag_probes" => Diag, Host, One, false;
     "diag_metrics" => Diag, Host, One, false;
     "diag_logs_tail" => Diag, Host, Many, false;
 }
@@ -517,6 +520,7 @@ mod tests {
             "config_set",
             // diagnostics
             "diag_export",
+            "diag_probes",
             "diag_metrics",
             "diag_logs_tail",
         ];

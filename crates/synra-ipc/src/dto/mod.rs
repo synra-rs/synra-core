@@ -41,7 +41,9 @@ mod intent;
 mod plugin;
 mod transfer;
 
-pub use config::{ConfigPatch, ConfigSnapshot, DiagExportOptions, DiagExportResult};
+pub use config::{
+    ConfigPatch, ConfigSnapshot, DiagExportOptions, DiagExportResult, ProbeReportDto, ProbeResultDto,
+};
 pub use devices::{
     DeviceCard, DevicesSnapshot, IdentitySnapshot, PairingPrompt, ScanOptions, ScanState,
 };

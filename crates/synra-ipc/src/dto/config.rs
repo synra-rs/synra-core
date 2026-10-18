@@ -97,3 +97,29 @@ pub struct DiagExportResult {
     /// Which sections were left out, and why.
     pub excluded: Vec<String>,
 }
+
+/// One startup probe's result, as the interface shows it.
+///
+/// `status` is a string (`ok`/`warn`/`fail`) rather than the observation crate's enum: this is the boundary, and a DTO
+/// that reused the enum would put `synra-observe` in the contract's type mirror for one field.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProbeResultDto {
+    /// A stable machine-readable name, such as `tcp_port_available`.
+    pub name: String,
+    /// `ok`, `warn` or `fail`.
+    pub status: String,
+    /// What was found, in a sentence.
+    pub detail: String,
+    /// What to do about it, when there is something to do.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suggestion: Option<String>,
+}
+
+/// Every probe the shell ran, in the order it ran them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProbeReportDto {
+    /// The results.
+    pub results: Vec<ProbeResultDto>,
+}
