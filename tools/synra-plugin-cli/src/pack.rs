@@ -60,19 +60,23 @@ pub fn pack_plugin(args: &crate::args::PackArgs) -> Result<Outcome, String> {
     // ★ A signature that exists is not a signature that covers this package. The check is the installer's own, with an
     // empty trust store: the question here is cryptographic ("did this key sign these bytes?"), not "does the user trust
     // the key?" — which is a decision the installing device makes later.
+    let mut signed_by = None;
     if signature_path.is_file() {
         let document = std::fs::read_to_string(&signature_path)
             .map_err(|error| format!("{}/signature.json: {error}", dir.display()))?;
         let trust = synra_plugin_api::publisher::PublisherTrustStore::new();
-        if let Err(error) = crate::sign::verify(&document, dir, &trust) {
-            return Ok(Outcome::Reported {
-                lines: vec![
-                    format!("{} cannot be packed:", dir.display()),
-                    format!("  signature: {error}"),
-                ],
-                code: 1,
-                failure: true,
-            });
+        match crate::sign::verify(&document, dir, &trust) {
+            Ok(verified) => signed_by = Some((verified.publisher_id, verified.fingerprint.to_string())),
+            Err(error) => {
+                return Ok(Outcome::Reported {
+                    lines: vec![
+                        format!("{} cannot be packed:", dir.display()),
+                        format!("  signature: {error}"),
+                    ],
+                    code: 1,
+                    failure: true,
+                });
+            }
         }
     }
     let signature = signature_path.is_file().then_some(signature_path);
@@ -89,6 +93,18 @@ pub fn pack_plugin(args: &crate::args::PackArgs) -> Result<Outcome, String> {
         Some(Err(reason)) => {
             return Ok(Outcome::Reported {
                 lines: vec![format!("--registry is not usable: {reason}")],
+                code: 1,
+                failure: true,
+            });
+        }
+        None => None,
+    };
+
+    let index_to = match args.index.as_deref().map(index_base) {
+        Some(Ok(base)) => Some(base),
+        Some(Err(reason)) => {
+            return Ok(Outcome::Reported {
+                lines: vec![format!("--index is not usable: {reason}")],
                 code: 1,
                 failure: true,
             });
@@ -114,11 +130,49 @@ pub fn pack_plugin(args: &crate::args::PackArgs) -> Result<Outcome, String> {
         ));
     }
 
+    // ★ The index is the other half of static publishing: one document per package, beside the tarball, naming the
+    // version and the key that signed it (16 §4.4). Writing it here keeps the two in step — a hand-edited index is a
+    // second description of the same pack, and the two drift.
+    let index = match index_to {
+        Some(base) => {
+            let file = target
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .ok_or_else(|| format!("{} has no file name", target.display()))?;
+            let manifest_value: serde_json::Value = serde_json::from_str(&manifest_text)
+                .map_err(|error| format!("manifest.json: {error}"))?;
+            let mut publishers = serde_json::Map::new();
+            if let Some((publisher, fingerprint)) = &signed_by {
+                publishers.insert(publisher.clone(), serde_json::json!(fingerprint));
+            }
+            let document = serde_json::json!({
+                "name": manifest.id.to_string(),
+                "latest": &manifest.version,
+                "publishers": publishers,
+                "versions": [{
+                    "version": &manifest.version,
+                    "tarball": format!("{base}/{file}"),
+                    "manifest": manifest_value,
+                }],
+            });
+            let path = target
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join(format!("{}.json", manifest.id));
+            let text = serde_json::to_string_pretty(&document)
+                .map_err(|error| format!("the index could not be written: {error}"))?;
+            lines.push(format!("  index    {}", path.display()));
+            Some((path, text))
+        }
+        None => None,
+    };
+
     Ok(Outcome::Archive {
         target,
         manifest: dir.join("manifest.json"),
         artifacts,
         signature,
+        index,
         lines,
     })
 }
@@ -215,6 +269,39 @@ fn registry_base(url: &str) -> Result<String, String> {
     Ok(format!("{}://{authority}", if secure { "https" } else { "http" }))
 }
 
+/// The base a static index's tarball URLs are built from.
+///
+/// Unlike a registry, a static host's path is where the bucket's files live, so it is kept. The rules that remain are the
+/// ones the installing side enforces: a scheme, a host, and `http` only for a local bucket.
+fn index_base(url: &str) -> Result<String, String> {
+    let url = url.trim().trim_end_matches('/');
+    let (secure, rest) = if let Some(rest) = url.strip_prefix("https://") {
+        (true, rest)
+    }
+    else if let Some(rest) = url.strip_prefix("http://") {
+        (false, rest)
+    }
+    else {
+        return Err("it must start with https:// or http://".to_owned());
+    };
+    let authority = rest.split('/').next().unwrap_or_default();
+    if authority.is_empty() {
+        return Err("it names no host".to_owned());
+    }
+    let host = match authority.rsplit_once(':') {
+        Some((host, port)) if port.chars().all(|character| character.is_ascii_digit()) => host,
+        _ => authority,
+    };
+    let host = host.trim_matches(['[', ']']);
+    let loopback = matches!(host, "127.0.0.1" | "localhost" | "::1");
+    if !secure && !loopback {
+        return Err(
+            "plain http is only for a local bucket; a published package must travel over https".to_owned()
+        );
+    }
+    Ok(format!("{}://{rest}", if secure { "https" } else { "http" }))
+}
+
 /// The file names the manifest says a package contains.
 ///
 /// Mirrors the installer's own list: the headless artifact and the UI bundle, each a plain file name. A name that is a
@@ -269,6 +356,7 @@ mod tests {
         let outcome = pack_plugin(&crate::args::PackArgs {
             dir: root.clone(),
             out: Some(root.join("out.tgz")),
+            index: None,
             registry: None,
             dry_run: false,
         })
@@ -307,7 +395,8 @@ mod tests {
             let outcome = pack_plugin(&crate::args::PackArgs {
                 dir: root.clone(),
                 out: Some(target.clone()),
-                registry: None,
+                index: None,
+            registry: None,
             dry_run: false,
             })
             .expect("it packs");
@@ -329,6 +418,7 @@ mod tests {
         let crate::run::Outcome::Reported { lines, failure, .. } = pack_plugin(&crate::args::PackArgs {
             dir: root.clone(),
             out: None,
+            index: None,
             registry: None,
             dry_run: false,
         })
@@ -350,6 +440,7 @@ mod tests {
         let outcome = pack_plugin(&crate::args::PackArgs {
             dir: root.clone(),
             out: None,
+            index: None,
             registry: None,
             dry_run: false,
         })
@@ -372,6 +463,7 @@ mod tests {
         let outcome = pack_plugin(&crate::args::PackArgs {
             dir: root.clone(),
             out: None,
+            index: None,
             registry: None,
             dry_run: false,
         })
@@ -396,6 +488,7 @@ mod tests {
         let outcome = pack_plugin(&crate::args::PackArgs {
             dir: root.clone(),
             out: Some(root.join("out.tgz")),
+            index: None,
             registry: None,
             dry_run: false,
         })
@@ -420,6 +513,7 @@ mod tests {
         let crate::run::Outcome::Reported { lines, failure, .. } = pack_plugin(&crate::args::PackArgs {
             dir: root.clone(),
             out: None,
+            index: None,
             registry: None,
             dry_run: false,
         })
@@ -445,6 +539,7 @@ mod tests {
         let crate::run::Outcome::Reported { failure, .. } = pack_plugin(&crate::args::PackArgs {
             dir: root.clone(),
             out: None,
+            index: None,
             registry: None,
             dry_run: false,
         })
@@ -475,6 +570,7 @@ mod tests {
         let outcome = pack_plugin(&crate::args::PackArgs {
             dir: root.clone(),
             out: Some(root.join("out.tgz")),
+            index: None,
             registry: Some("https://r.example".to_owned()),
             dry_run: false,
         })
@@ -508,13 +604,78 @@ mod tests {
             let outcome = pack_plugin(&crate::args::PackArgs {
                 dir: root.clone(),
                 out: None,
-                registry: Some(url.to_owned()),
+                index: None,
+            registry: Some(url.to_owned()),
                 dry_run: true,
             })
             .expect("a decision");
             let accepted = matches!(&outcome, crate::run::Outcome::Archive { .. });
             assert_eq!(accepted, acceptable, "for {url}: {outcome:?}");
         }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_static_index_is_written_beside_the_archive() {
+        // ★ The author's half of static publishing: one document per package, at the path a `static:` registry reads, with
+        // the tarball URL and the key that signed it. A hand-edited index is a second description of the same pack.
+        let root = scratch("index");
+        std::fs::write(root.join("manifest.json"), manifest("1.2.3", &["log:*"])).expect("a manifest");
+        std::fs::write(root.join("plugin.wasm"), b"\0asm\x01\0\0\0").expect("an artifact");
+        sign(&root);
+
+        let outcome = pack_plugin(&crate::args::PackArgs {
+            dir: root.clone(),
+            out: Some(root.join("out.tgz")),
+            index: Some("https://static.example.com/plugins".to_owned()),
+            registry: None,
+            dry_run: false,
+        })
+        .expect("it packs");
+        let executed = crate::execute::execute(&outcome, false);
+        assert_eq!(executed.code, 0);
+
+        let index_path = root.join("@acme").join("hello.json");
+        assert!(index_path.is_file(), "the index is written at the id's path");
+        let index = synra_registry::parse_static_index(
+            &std::fs::read_to_string(&index_path).expect("the index"),
+        )
+        .expect("the index parses");
+        let latest = index.document.latest().expect("a latest");
+        assert_eq!(latest.version, "1.2.3");
+        assert_eq!(
+            latest.dist.tarball,
+            "https://static.example.com/plugins/out.tgz"
+        );
+        assert!(
+            index.publishers.contains_key("acme"),
+            "the index names the key that signed it"
+        );
+        assert_eq!(latest.synra.as_ref().expect("the manifest").title, "Hello");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_unsigned_package_writes_an_index_with_no_publisher() {
+        let root = scratch("index-unsigned");
+        std::fs::write(root.join("manifest.json"), manifest("1.2.3", &["log:*"])).expect("a manifest");
+        std::fs::write(root.join("plugin.wasm"), b"\0asm\x01\0\0\0").expect("an artifact");
+
+        let outcome = pack_plugin(&crate::args::PackArgs {
+            dir: root.clone(),
+            out: Some(root.join("out.tgz")),
+            index: Some("https://static.example.com/plugins".to_owned()),
+            registry: None,
+            dry_run: false,
+        })
+        .expect("it packs");
+        let _ = crate::execute::execute(&outcome, false);
+
+        let index = synra_registry::parse_static_index(
+            &std::fs::read_to_string(root.join("@acme").join("hello.json")).expect("the index"),
+        )
+        .expect("the index parses");
+        assert!(index.publishers.is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
 

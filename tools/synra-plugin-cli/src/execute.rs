@@ -89,12 +89,26 @@ pub fn execute(outcome: &Outcome, dry_run: bool) -> Executed {
             run_steps(plan)
         }
 
-        Outcome::Archive { target, manifest, artifacts, signature, .. } => {
+        Outcome::Archive { target, manifest, artifacts, signature, index, .. } => {
             if dry_run {
                 return Executed::ok(vec![format!("would write {}", target.display())]);
             }
             match crate::pack::write_archive(target, manifest, artifacts, signature.as_deref()) {
-                Ok(()) => Executed::ok(vec![format!("wrote {}", target.display())]),
+                Ok(()) => {
+                    let mut lines = vec![format!("wrote {}", target.display())];
+                    if let Some((path, body)) = index {
+                        if let Some(parent) = path.parent()
+                            && let Err(error) = std::fs::create_dir_all(parent)
+                        {
+                            return Executed::failed(vec![format!("{}: {error}", parent.display())]);
+                        }
+                        if let Err(error) = std::fs::write(path, body) {
+                            return Executed::failed(vec![format!("{}: {error}", path.display())]);
+                        }
+                        lines.push(format!("wrote {}", path.display()));
+                    }
+                    Executed::ok(lines)
+                }
                 Err(error) => Executed::failed(vec![error]),
             }
         }

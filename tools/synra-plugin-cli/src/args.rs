@@ -95,6 +95,12 @@ pub struct PackArgs {
     #[arg(long, value_name = "URL")]
     pub registry: Option<String>,
 
+    /// Also write a static index for a bucket, with tarball URLs under this base.
+    ///
+    /// The index goes beside the tarball as `<plugin id>.json`, which is the path a `static:` registry reads.
+    #[arg(long, value_name = "URL")]
+    pub index: Option<String>,
+
     /// Print the target without writing it.
     #[arg(long)]
     pub dry_run: bool,

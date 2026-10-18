@@ -56,6 +56,8 @@ pub enum Outcome {
         artifacts: Vec<String>,
         /// The signature, when the package carries one.
         signature: Option<PathBuf>,
+        /// A static index to write beside the archive, and its text.
+        index: Option<(PathBuf, String)>,
         /// The lines to print.
         lines: Vec<String>,
     },
