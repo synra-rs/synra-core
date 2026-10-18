@@ -240,6 +240,55 @@ fn sleep_until_shutdown(
     !supervisor.is_shutting_down()
 }
 
+/// Accepts and serves one control connection; `false` means the listener itself failed.
+///
+/// # Why this is a function
+///
+/// Because the loop is three decisions — admit, spawn, or report an accept failure — and `serve` has a complexity budget.
+/// Named, the loop reads as "keep accepting until asked to stop", which is what it means.
+fn accept_control(
+    listener: &Listener,
+    gate: &Arc<crate::control_gate::ControlGate>,
+    runtime: &Arc<Runtime>,
+) -> bool {
+    // ★ One thread per connection. The loop used to call `serve_one`, so one client at a time — which made a command that
+    // waits (a remote action's answer, a pairing prompt) an outage for every other command: `status` queued behind an
+    // `intent decide` for as long as the wait lasted. The socket is local and each client is a process the user started,
+    // so a thread per connection is the trust boundary the one-at-a-time loop had, without the queue.
+    match listener.accept() {
+        Ok(stream) => {
+            let Some(permit) = gate.try_enter() else {
+                // ★ Closing rather than answering: a refusal needs a request to answer, and a client over the limit is not
+                // one whose request is worth reading. The caller sees a transport error naming the closed connection,
+                // which is the truth.
+                tracing::warn!(
+                    open = gate.active(),
+                    "refusing a control connection: the gate is full"
+                );
+                drop(stream);
+                return true;
+            };
+            let runtime = Arc::clone(runtime);
+            std::thread::spawn(move || {
+                // The permit is held for the connection's lifetime, so the count cannot leak on an early return.
+                let _permit = permit;
+                if let Err(error) = synra_control::serve_stream(stream, &*runtime) {
+                    tracing::error!(%error, "a control connection failed");
+                }
+            });
+            true
+        }
+        Err(error) => {
+            // One client's failure is not the daemon's. A transport error is reported and the loop continues, because a
+            // daemon that exited on a malformed connection would be one any local process could stop.
+            tracing::error!(%error, "the control listener could not accept a connection");
+            // ★ It sleeps: acceptance is separate from serving now, so a permanently failing listener would spin.
+            std::thread::sleep(Duration::from_millis(10));
+            false
+        }
+    }
+}
+
 /// Runs the daemon until the supervisor says to stop, and reports how it ended.
 ///
 /// Everything the daemon owns is built here in one order the comments below explain: the claim, the database,
@@ -756,47 +805,15 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
 
     // ★ "Trusted" is not "bounded": a local client with a bug can open connections in a loop, and each one costs a thread
     // until the process runs out. The gate admits a fixed number and closes the rest; see `control_gate`.
-    let gate = Arc::new(crate::control_gate::ControlGate::new(
-        crate::control_gate::MAX_CONTROL_CONNECTIONS,
-    ));
+    let gate = Arc::new(
+        crate::control_gate::ControlGate::new(crate::control_gate::MAX_CONTROL_CONNECTIONS)
+            .with_metrics(Arc::clone(&metrics)),
+    );
 
     let mut code = ExitCode::SUCCESS;
     while !supervisor.is_shutting_down() {
-        // ★ One thread per connection. The loop used to call `serve_one`, so one client at a time — which made a command
-        // that waits (a remote action's answer, a pairing prompt) an outage for every other command: `status` queued behind
-        // an `intent decide` for as long as the wait lasted. The socket is local and each client is a process the user
-        // started, so a thread per connection is the same trust boundary the one-at-a-time loop had, without the queue.
-        match listener.accept() {
-            Ok(stream) => {
-                let Some(permit) = gate.try_enter() else {
-                    // ★ Closing rather than answering: a refusal needs a request to answer, and a client over the limit is
-                    // not one whose request is worth reading. The caller sees a transport error naming the closed
-                    // connection, which is the truth.
-                    eprintln!(
-                        "synra-daemon: refusing a control connection: {} are already open",
-                        gate.active()
-                    );
-                    drop(stream);
-                    continue;
-                };
-                let runtime = Arc::clone(&runtime);
-                std::thread::spawn(move || {
-                    // The permit is held for the connection's lifetime, so the count cannot leak on an early return.
-                    let _permit = permit;
-                    if let Err(error) = synra_control::serve_stream(stream, &*runtime) {
-                        eprintln!("synra-daemon: {error}");
-                    }
-                });
-            }
-            Err(error) => {
-                // One client's failure is not the daemon's. A transport error is reported and the loop continues, because a
-                // daemon that exited on a malformed connection would be one any local process could stop.
-                eprintln!("synra-daemon: {error}");
-                code = ExitCode::FAILURE;
-                // ★ And it sleeps: with `serve_one` an accept error was not a tight loop, because the call that failed was
-                // the one that would have blocked. Acceptance is separate now, so a permanently failing listener would spin.
-                std::thread::sleep(Duration::from_millis(10));
-            }
+        if !accept_control(&listener, &gate, &runtime) {
+            code = ExitCode::FAILURE;
         }
     }
 

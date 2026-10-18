@@ -26,13 +26,36 @@ pub(crate) const MAX_CONTROL_CONNECTIONS: usize = 64;
 pub(crate) struct ControlGate {
     active: AtomicUsize,
     max: usize,
+    /// Where the current count is reported, when a recorder is available.
+    ///
+    /// ★ A gauge rather than an incrementing counter: the question `status` answers is "how many are open **now**", and a
+    /// counter would only say how many ever opened. It is updated on both edges — admission and the permit's drop — so a
+    /// reader cannot see a count that lags the threads.
+    metrics: Option<Arc<synra_observe::metrics::RingRecorder>>,
 }
 
 impl ControlGate {
     /// A gate that admits at most `max` connections at once.
     #[must_use]
     pub(crate) const fn new(max: usize) -> Self {
-        Self { active: AtomicUsize::new(0), max }
+        Self { active: AtomicUsize::new(0), max, metrics: None }
+    }
+
+    /// Reports the current count to a recorder.
+    #[must_use]
+    pub(crate) fn with_metrics(mut self, metrics: Arc<synra_observe::metrics::RingRecorder>) -> Self {
+        self.metrics = Some(metrics);
+        self
+    }
+
+    /// Writes the current count to the recorder, when there is one.
+    fn publish(&self) {
+        if let Some(metrics) = &self.metrics {
+            metrics.gauge_set(
+                &synra_observe::metrics::SeriesKey::new("control_connections", Vec::new()),
+                i64::try_from(self.active.load(Ordering::Relaxed)).unwrap_or(i64::MAX),
+            );
+        }
     }
 
     /// Admits one connection, or refuses when the gate is full.
@@ -53,6 +76,7 @@ impl ControlGate {
                 Ordering::Relaxed,
             ) {
                 Ok(_) => {
+                    self.publish();
                     return Some(Permit { gate: Arc::clone(self) });
                 }
                 Err(actual) => current = actual,
@@ -75,6 +99,7 @@ pub(crate) struct Permit {
 impl Drop for Permit {
     fn drop(&mut self) {
         self.gate.active.fetch_sub(1, Ordering::AcqRel);
+        self.gate.publish();
     }
 }
 
@@ -97,6 +122,35 @@ mod tests {
         drop(second);
         drop(third);
         assert_eq!(gate.active(), 0, "every permit returned its slot");
+    }
+
+    #[test]
+    fn the_gate_reports_its_count_as_a_gauge() {
+        // ★ The gauge is what `status` shows, and a gauge that was only incremented on admission would grow for ever.
+        let metrics = Arc::new(synra_observe::metrics::RingRecorder::new());
+        let gate = Arc::new(ControlGate::new(2).with_metrics(Arc::clone(&metrics)));
+
+        let first = gate.try_enter().expect("one");
+        assert_eq!(
+            metrics.snapshot().get("control_connections"),
+            Some(&synra_observe::metrics::Value::Gauge(1))
+        );
+        let second = gate.try_enter().expect("two");
+        assert_eq!(
+            metrics.snapshot().get("control_connections"),
+            Some(&synra_observe::metrics::Value::Gauge(2))
+        );
+        drop(first);
+        assert_eq!(
+            metrics.snapshot().get("control_connections"),
+            Some(&synra_observe::metrics::Value::Gauge(1)),
+            "the gauge must follow the connections down as well as up"
+        );
+        drop(second);
+        assert_eq!(
+            metrics.snapshot().get("control_connections"),
+            Some(&synra_observe::metrics::Value::Gauge(0))
+        );
     }
 
     #[test]
