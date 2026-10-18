@@ -261,17 +261,8 @@ fn config_document(db: &SynraDb) -> Result<serde_json::Value, BackupError> {
 pub fn import_backup(archive: &Path, database: &Path) -> Result<ImportedBackup, BackupError> {
     let file = std::fs::File::open(archive).map_err(|error| BackupError::Io { detail: error.to_string() })?;
     let mut zip = ZipArchive::new(file)?;
-    let manifest: BackupManifest =
-        serde_json::from_slice(&read_entry(&mut zip, "manifest.json")?).map_err(|error| BackupError::Json { detail: error.to_string() })?;
-    if manifest.format != FORMAT {
-        return Err(BackupError::Format(manifest.format));
-    }
-    if manifest.version != VERSION {
-        return Err(BackupError::UnsupportedVersion { found: manifest.version, expected: VERSION });
-    }
-    let plugins: Vec<PluginEntry> =
-        serde_json::from_slice(&read_entry(&mut zip, "plugins-manifest.json")?)
-            .map_err(|error| BackupError::Json { detail: error.to_string() })?;
+    let _manifest = read_manifest(&mut zip)?;
+    let plugins = read_plugins(&mut zip)?;
 
     // Extract beside the live database: `restore_from` renames the current one in the same directory, and a temporary file
     // on another volume would have to be copied rather than renamed.
@@ -283,6 +274,44 @@ pub fn import_backup(archive: &Path, database: &Path) -> Result<ImportedBackup, 
     let _ = std::fs::remove_file(&extracted);
     let report = result?;
     Ok(ImportedBackup { plugins, previous: report.previous })
+}
+
+/// The plugins a container lists, without restoring anything.
+///
+/// # Why a caller needs this
+///
+/// Because the restore flow's last step is "reinstall these", and reinstalling is a **separate act against a running
+/// kernel** — the import itself requires the kernel to be stopped. A command that reinstalls reads the list here and
+/// sends one install per source; reading it must not touch the database it is about to leave alone.
+///
+/// # Errors
+///
+/// [`BackupError`] when the file is not a container, is a version this build does not read, or its plugin list is
+/// malformed.
+pub fn plugins_in_backup(archive: &Path) -> Result<Vec<PluginEntry>, BackupError> {
+    let file = std::fs::File::open(archive).map_err(|error| BackupError::Io { detail: error.to_string() })?;
+    let mut zip = ZipArchive::new(file)?;
+    let _manifest = read_manifest(&mut zip)?;
+    read_plugins(&mut zip)
+}
+
+/// The manifest, checked for format and version.
+fn read_manifest(zip: &mut ZipArchive<std::fs::File>) -> Result<BackupManifest, BackupError> {
+    let manifest: BackupManifest = serde_json::from_slice(&read_entry(zip, "manifest.json")?)
+        .map_err(|error| BackupError::Json { detail: error.to_string() })?;
+    if manifest.format != FORMAT {
+        return Err(BackupError::Format(manifest.format));
+    }
+    if manifest.version != VERSION {
+        return Err(BackupError::UnsupportedVersion { found: manifest.version, expected: VERSION });
+    }
+    Ok(manifest)
+}
+
+/// The plugin list a container carries.
+fn read_plugins(zip: &mut ZipArchive<std::fs::File>) -> Result<Vec<PluginEntry>, BackupError> {
+    serde_json::from_slice(&read_entry(zip, "plugins-manifest.json")?)
+        .map_err(|error| BackupError::Json { detail: error.to_string() })
 }
 
 /// Copies `kernel.db` out of the archive, then checks it is a sound database before anything replaces the live one.
@@ -386,6 +415,11 @@ mod tests {
 
         let summary = export_backup(&db, &plugins_dir, &archive, 1_700_000_000_000).expect("exports");
         assert_eq!(summary.plugins, 1);
+        // ★ The reinstall command reads this list without restoring: the import needs the kernel stopped, and reinstalling
+        // needs it running, so the two are separate acts over one file.
+        let listed = plugins_in_backup(&archive).expect("lists the plugins");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].source.as_deref(), Some("/tmp/packages/hello"));
 
         {
             let file = std::fs::File::open(&archive).expect("the container");

@@ -388,6 +388,101 @@ pub fn ask(question: &Question, client: &mut Client) -> crate::session::CommandO
     }
 }
 
+/// Reinstalls the plugins a `.synrabackup` container lists.
+///
+/// # Why this is a sequence rather than one request
+///
+/// Because an install is one request per package, and the container is a list of packages. The kernel is asked once per
+/// source, in the order the container records them, and the first refusal stops the sequence and names the plugin: a
+/// partial reinstall is reported as exactly that, not rolled back into a lie about having installed nothing.
+///
+/// # Errors
+///
+/// Never in the Rust sense. A container that cannot be read, a kernel that is not running, and an install the kernel
+/// refuses are all [`CommandOutcome::Failed`] with the reason a user can act on.
+#[must_use]
+pub fn reinstall(
+    args: &crate::args::PluginArgs,
+    format: Option<crate::args::OutputFormat>,
+) -> crate::session::CommandOutcome {
+    use crate::args::PluginAction;
+
+    let PluginAction::Reinstall { from } = &args.action else {
+        return crate::session::CommandOutcome::Failed(
+            "this command is not a reinstall".to_owned(),
+        );
+    };
+    let entries = match synra_store::plugins_in_backup(from) {
+        Ok(entries) => entries,
+        Err(error) => return crate::session::CommandOutcome::Failed(error.to_string()),
+    };
+    if entries.is_empty() {
+        return crate::session::CommandOutcome::Lines(vec![
+            "the container lists no plugins to reinstall".to_owned(),
+        ]);
+    }
+    let root = crate::session::data_root();
+    let mut client = match Client::connect(&root) {
+        Ok(client) => client,
+        Err(error) => return transport_failure(&error),
+    };
+    if let Err(error) = client.handshake() {
+        return transport_failure(&error);
+    }
+    reinstall_with(entries, format, |request| client.ask(request))
+}
+
+/// The loop over the container's plugin list, with the channel as a parameter.
+///
+/// # Why a parameter
+///
+/// Because the interesting part is the decision — install this, skip that, stop and name the refusal — and a test should
+/// be able to drive it without a listening kernel. `reinstall` is the thin part that connects and says hello.
+fn reinstall_with(
+    entries: Vec<synra_store::PluginEntry>,
+    format: Option<crate::args::OutputFormat>,
+    mut ask: impl FnMut(&Request) -> Result<Response, synra_control::SocketError>,
+) -> crate::session::CommandOutcome {
+    use crate::session::CommandOutcome;
+
+    let mut installed: Vec<String> = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
+    for entry in entries {
+        let Some(source) = entry.source else {
+            // ★ Named rather than silent: a plugin with no recorded origin cannot be reinstalled, and the user has to
+            // know which one to fetch by hand.
+            skipped.push(entry.plugin_id);
+            continue;
+        };
+        let response = match ask(&Request::PluginInstall { path: source }) {
+            Ok(response) => response,
+            Err(error) => return transport_failure(&error),
+        };
+        if let Response::Failed { message, .. } = &response {
+            return CommandOutcome::Failed(format!("{} could not be reinstalled: {message}", entry.plugin_id));
+        }
+        installed.push(entry.plugin_id);
+    }
+
+    match format {
+        Some(crate::args::OutputFormat::Json) => CommandOutcome::json(
+            serde_json::json!({ "reinstalled": installed, "skipped": skipped }).to_string(),
+        ),
+        _ => {
+            let mut lines: Vec<String> = installed.iter().map(|id| format!("reinstalled {id}")).collect();
+            lines.extend(
+                skipped
+                    .iter()
+                    .map(|id| format!("skipped {id}: the container recorded no source")),
+            );
+            if lines.is_empty() {
+                lines.push("nothing needed reinstalling".to_owned());
+            }
+            CommandOutcome::Lines(lines)
+        }
+    }
+}
+
 /// What the user sees when the kernel could not be reached.
 ///
 /// # Why the error's own sentence is used
@@ -736,6 +831,62 @@ mod tests {
                 assert!(lines.is_empty(), "a healthy log adds nothing: {lines:?}");
             }
             other => panic!("expected lines, got {other:?}"),
+        }
+    }
+
+    fn plugin_entry(id: &str, source: Option<&str>) -> synra_store::PluginEntry {
+        synra_store::PluginEntry {
+            plugin_id: id.to_owned(),
+            version: Some("1.0.0".to_owned()),
+            enabled: true,
+            source: source.map(ToOwned::to_owned),
+        }
+    }
+
+    #[test]
+    fn a_reinstall_installs_every_recorded_source_and_skips_the_rest() {
+        // ★ The last step of the restore flow: the container says what to install and where it came from, and this walks
+        // the list one install at a time. A plugin with no origin is named rather than silently omitted.
+        let entries = vec![
+            plugin_entry("@acme/a", Some("/tmp/packages/a.synra")),
+            plugin_entry("@acme/b", None),
+        ];
+        let asked = std::cell::RefCell::new(Vec::new());
+        let outcome = reinstall_with(entries, Some(OutputFormat::Text), |request| {
+            let Request::PluginInstall { path } = request else {
+                panic!("expected an install, got {request:?}");
+            };
+            asked.borrow_mut().push(path.clone());
+            Ok(Response::ok(serde_json::json!({"pluginId": "@acme/a"})))
+        });
+
+        assert_eq!(asked.into_inner(), vec!["/tmp/packages/a.synra".to_owned()]);
+        match outcome {
+            crate::session::CommandOutcome::Lines(lines) => {
+                assert!(lines.iter().any(|line| line.contains("reinstalled @acme/a")), "{lines:?}");
+                assert!(
+                    lines.iter().any(|line| line.contains("skipped @acme/b")),
+                    "the plugin with no origin must be named: {lines:?}"
+                );
+            }
+            other => panic!("expected lines, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_refused_reinstall_stops_and_names_the_plugin() {
+        // ★ The kernel's refusal is about one package; reporting it as "@acme/a could not be reinstalled: …" is what lets
+        // the user fix the package rather than the whole sequence.
+        let entries = vec![plugin_entry("@acme/a", Some("/tmp/packages/a.synra"))];
+        let outcome = reinstall_with(entries, Some(OutputFormat::Text), |_| {
+            Ok(Response::failed("consent", "the plugin needs consent", false))
+        });
+        match outcome {
+            crate::session::CommandOutcome::Failed(message) => {
+                assert!(message.contains("@acme/a"), "{message}");
+                assert!(message.contains("needs consent"), "{message}");
+            }
+            other => panic!("expected a failure, got {other:?}"),
         }
     }
 

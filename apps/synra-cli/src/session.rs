@@ -162,6 +162,13 @@ pub fn dispatch(cli: &Cli) -> CommandOutcome {
                     // "this command reads the database directly, which is not implemented yet". Three verbs a user can
                     // see and none of them worked. The store side already existed; what was missing was this branch.
                     Command::Db(args) => crate::db::outcome(cli.output, args),
+                    // ★ Reinstalling is several requests over one container file. A `Question` carries one, so this one
+                    // plugin action is dispatched here rather than through `question_for`.
+                    Command::Plugin(args)
+                        if matches!(&args.action, crate::args::PluginAction::Reinstall { .. }) =>
+                    {
+                        crate::channel::reinstall(args, cli.output)
+                    }
                     // ★ "No kernel is reachable" is true for a command that needs one and cannot find it, and false for
                     // one that never asks. Every plugin action maps to a request now, so this arm is the answer for a
                     // plugin action a future build adds before its request exists — and it says exactly that rather than
@@ -295,6 +302,10 @@ fn plugin_request(command: &Command) -> Option<Request> {
         // registry half is still absent — a `@scope/name` reaches the kernel and is refused as a path that is not a
         // directory, which `dispatch` reports in the kernel's words.
         PluginAction::Install { source, .. } => Some(Request::PluginInstall { path: source.clone() }),
+        // ★ Reinstalling is a sequence of installs, not one request: the container's list is read here and each source is
+        // sent to the kernel in turn. It is handled in `dispatch` before this mapping is asked, because `Question` holds
+        // one request and this act has as many as the container lists.
+        PluginAction::Reinstall { .. } => None,
         // ★ The decision the loader waits for. Without it a plugin is installed, listed, enable-able and permanently
         // unloadable: `load_one` refuses a plugin with no decisions on record, and the only writer was a test helper.
         PluginAction::Consent { plugin_id, allow } => Some(Request::PluginConsent {

@@ -293,6 +293,18 @@ pub enum PluginAction {
         #[arg(long, value_name = "VERSION")]
         version: Option<String>,
     },
+    /// Reinstall the plugins a `.synrabackup` container lists, from the sources it recorded.
+    ///
+    /// # Why this is a command rather than part of `db import`
+    ///
+    /// Because the import needs the kernel stopped (it replaces the database) and installing needs it running (it verifies
+    /// and writes through the pipeline the kernel owns). Making one command do both would mean the import had to start a
+    /// kernel it does not own; splitting them is the honest shape of the two acts.
+    Reinstall {
+        /// The container whose plugin list to follow.
+        #[arg(value_name = "PATH")]
+        from: std::path::PathBuf,
+    },
     /// Enable a plugin.
     Enable {
         /// The plugin.
@@ -676,6 +688,20 @@ mod tests {
             panic!("expected install");
         };
         assert_eq!(version.as_deref(), Some("1.0.0"));
+    }
+
+    #[test]
+    fn plugin_reinstall_names_the_container() {
+        // The container is the source of the list and of the origins inside it; naming it is the whole input.
+        let Command::Plugin(args) =
+            parsed(&["synra", "plugin", "reinstall", "device.synrabackup"]).command
+        else {
+            panic!("expected plugin");
+        };
+        let PluginAction::Reinstall { from } = args.action else {
+            panic!("expected reinstall");
+        };
+        assert_eq!(from, std::path::PathBuf::from("device.synrabackup"));
     }
 
     #[test]
