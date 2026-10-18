@@ -57,6 +57,24 @@ pub fn pack_plugin(args: &crate::args::PackArgs) -> Result<Outcome, String> {
     }
 
     let signature_path = dir.join("signature.json");
+    // ★ A signature that exists is not a signature that covers this package. The check is the installer's own, with an
+    // empty trust store: the question here is cryptographic ("did this key sign these bytes?"), not "does the user trust
+    // the key?" — which is a decision the installing device makes later.
+    if signature_path.is_file() {
+        let document = std::fs::read_to_string(&signature_path)
+            .map_err(|error| format!("{}/signature.json: {error}", dir.display()))?;
+        let trust = synra_plugin_api::publisher::PublisherTrustStore::new();
+        if let Err(error) = crate::sign::verify(&document, dir, &trust) {
+            return Ok(Outcome::Reported {
+                lines: vec![
+                    format!("{} cannot be packed:", dir.display()),
+                    format!("  signature: {error}"),
+                ],
+                code: 1,
+                failure: true,
+            });
+        }
+    }
     let signature = signature_path.is_file().then_some(signature_path);
 
     let target = args.out.clone().unwrap_or_else(|| {
@@ -190,7 +208,7 @@ mod tests {
         let root = scratch("ok");
         std::fs::write(root.join("manifest.json"), manifest("1.2.3", &["log:*"])).expect("a manifest");
         std::fs::write(root.join("plugin.wasm"), b"\0asm\x01\0\0\0").expect("an artifact");
-        std::fs::write(root.join("signature.json"), "{}").expect("a signature");
+        sign(&root);
 
         let outcome = pack_plugin(&crate::args::PackArgs {
             dir: root.clone(),
@@ -305,6 +323,81 @@ mod tests {
         assert!(failure);
         assert!(lines.iter().any(|line| line.contains("wasm")), "{lines:?}");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_signature_that_covers_the_package_is_kept() {
+        let root = scratch("signed");
+        std::fs::write(root.join("manifest.json"), manifest("1.2.3", &["log:*"])).expect("a manifest");
+        std::fs::write(root.join("plugin.wasm"), b"\0asm\x01\0\0\0").expect("an artifact");
+        sign(&root);
+
+        let outcome = pack_plugin(&crate::args::PackArgs {
+            dir: root.clone(),
+            out: Some(root.join("out.tgz")),
+            dry_run: false,
+        })
+        .expect("a signed package packs");
+        let crate::run::Outcome::Archive { signature, .. } = &outcome else {
+            panic!("expected an archive outcome");
+        };
+        assert!(signature.is_some(), "the signature travels with the archive");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_tampered_artifact_after_signing_is_refused() {
+        // ★ The whole point of checking at the publish boundary: the author signed one build, then rebuilt — the archive
+        // must not carry a signature that says "trust this" about bytes it does not cover.
+        let root = scratch("tampered");
+        std::fs::write(root.join("manifest.json"), manifest("1.2.3", &["log:*"])).expect("a manifest");
+        std::fs::write(root.join("plugin.wasm"), b"\0asm\x01\0\0\0").expect("an artifact");
+        sign(&root);
+        std::fs::write(root.join("plugin.wasm"), b"\0asm\x01\0\0\x01").expect("a changed artifact");
+
+        let crate::run::Outcome::Reported { lines, failure, .. } = pack_plugin(&crate::args::PackArgs {
+            dir: root.clone(),
+            out: None,
+            dry_run: false,
+        })
+        .expect("a report") else {
+            panic!("expected a report");
+        };
+
+        assert!(failure);
+        assert!(lines.iter().any(|line| line.contains("signature")), "{lines:?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_changed_manifest_after_signing_is_refused() {
+        let root = scratch("re-manifest");
+        std::fs::write(root.join("manifest.json"), manifest("1.2.3", &["log:*"])).expect("a manifest");
+        std::fs::write(root.join("plugin.wasm"), b"\0asm\x01\0\0\0").expect("an artifact");
+        sign(&root);
+        // Same files, one more permission: the manifest digest the signature covers no longer names this manifest.
+        std::fs::write(root.join("manifest.json"), manifest("1.2.3", &["log:*", "device:send:*"]))
+            .expect("a changed manifest");
+
+        let crate::run::Outcome::Reported { failure, .. } = pack_plugin(&crate::args::PackArgs {
+            dir: root.clone(),
+            out: None,
+            dry_run: false,
+        })
+        .expect("a report") else {
+            panic!("expected a report");
+        };
+
+        assert!(failure);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Signs the package the way the `sign` command does, so the tests exercise the same document format.
+    fn sign(root: &std::path::Path) {
+        let key = crate::sign::SigningKeyFile::generate().expect("a key");
+        let content = crate::sign::SignedContent::read(root).expect("what a signature covers");
+        let document = key.sign(&content, "2026-01-01T00:00:00Z");
+        std::fs::write(root.join("signature.json"), document).expect("a signature");
     }
 
     #[test]
