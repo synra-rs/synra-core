@@ -32,13 +32,23 @@ pub(crate) struct ControlGate {
     /// counter would only say how many ever opened. It is updated on both edges — admission and the permit's drop — so a
     /// reader cannot see a count that lags the threads.
     metrics: Option<Arc<synra_observe::metrics::RingRecorder>>,
+    /// Guards the wait for "all connections have finished".
+    idle: parking_lot::Mutex<()>,
+    /// Signalled whenever a connection ends, so shutdown can wait without polling.
+    idle_changed: parking_lot::Condvar,
 }
 
 impl ControlGate {
     /// A gate that admits at most `max` connections at once.
     #[must_use]
     pub(crate) const fn new(max: usize) -> Self {
-        Self { active: AtomicUsize::new(0), max, metrics: None }
+        Self {
+            active: AtomicUsize::new(0),
+            max,
+            metrics: None,
+            idle: parking_lot::Mutex::new(()),
+            idle_changed: parking_lot::Condvar::new(),
+        }
     }
 
     /// Reports the current count to a recorder.
@@ -89,6 +99,33 @@ impl ControlGate {
     pub(crate) fn active(&self) -> usize {
         self.active.load(Ordering::Relaxed)
     }
+
+    /// Waits until every admitted connection has finished, or the timeout expires.
+    ///
+    /// # Why shutdown waits at all
+    ///
+    /// Because the process is about to drop the database and the runtime those connections use, and a command that is
+    /// halfway through a query would be reading freed state. Waiting is bounded rather than unconditional: a client that
+    /// holds a connection open for ever must not make the daemon unkillable, so after the grace period the process goes on
+    /// and says what was still open.
+    pub(crate) fn wait_for_idle(&self, timeout: std::time::Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        // The lock is held across the counter check and the wait, so a connection that finishes between them cannot be
+        // missed: its drop must take the same lock before it notifies.
+        let mut guard = self.idle.lock();
+        while self.active.load(Ordering::Relaxed) > 0 {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                return false;
+            }
+            if self.idle_changed.wait_for(&mut guard, left).timed_out()
+                && self.active.load(Ordering::Relaxed) > 0
+            {
+                return false;
+            }
+        }
+        true
+    }
 }
 
 /// One admitted connection; dropping it frees the slot.
@@ -98,7 +135,13 @@ pub(crate) struct Permit {
 
 impl Drop for Permit {
     fn drop(&mut self) {
-        self.gate.active.fetch_sub(1, Ordering::AcqRel);
+        // ★ The decrement and the notification happen under the same lock `wait_for_idle` holds, so a waiter cannot check
+        // the count, decide it is non-zero, and then sleep through the notification that made it zero.
+        {
+            let _guard = self.gate.idle.lock();
+            self.gate.active.fetch_sub(1, Ordering::AcqRel);
+            self.gate.idle_changed.notify_all();
+        }
         self.gate.publish();
     }
 }
@@ -151,6 +194,17 @@ mod tests {
             metrics.snapshot().get("control_connections"),
             Some(&synra_observe::metrics::Value::Gauge(0))
         );
+    }
+
+    #[test]
+    fn a_gate_reports_when_its_last_connection_leaves() {
+        // ★ Shutdown waits on this. The short timeout is the property, not a sleep: a gate with a connection still open
+        // must answer "no" rather than block.
+        let gate = Arc::new(ControlGate::new(2));
+        let held = gate.try_enter().expect("one");
+        assert!(!gate.wait_for_idle(std::time::Duration::from_millis(1)));
+        drop(held);
+        assert!(gate.wait_for_idle(std::time::Duration::from_millis(1)));
     }
 
     #[test]

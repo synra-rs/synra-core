@@ -240,6 +240,16 @@ fn sleep_until_shutdown(
     !supervisor.is_shutting_down()
 }
 
+/// Waits for the control connections to finish, and names the ones that did not.
+fn drain_control(gate: &Arc<crate::control_gate::ControlGate>) {
+    if !gate.wait_for_idle(Duration::from_secs(5)) {
+        tracing::warn!(
+            open = gate.active(),
+            "control connections are still open at shutdown and are being abandoned"
+        );
+    }
+}
+
 /// Accepts and serves one control connection; `false` means the listener itself failed.
 ///
 /// # Why this is a function
@@ -272,8 +282,16 @@ fn accept_control(
             std::thread::spawn(move || {
                 // The permit is held for the connection's lifetime, so the count cannot leak on an early return.
                 let _permit = permit;
-                if let Err(error) = synra_control::serve_stream(stream, &*runtime) {
-                    tracing::error!(%error, "a control connection failed");
+                // ★ A panic inside one connection must not be invisible: without this the thread unwinds, the socket
+                // closes, and `synra logs` says nothing about why. The payload is not printed — it may contain request
+                // data — but the fact is recorded, and the daemon keeps serving.
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    synra_control::serve_stream(stream, &*runtime)
+                }));
+                match outcome {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => tracing::error!(%error, "a control connection failed"),
+                    Err(_) => tracing::error!("a control connection panicked"),
                 }
             });
             true
@@ -816,6 +834,11 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
             code = ExitCode::FAILURE;
         }
     }
+
+    // ★ Give the connections that are already being served a bounded chance to finish before their database and runtime
+    // are dropped underneath them. The wait is bounded because a client that never closes must not make shutdown hang;
+    // whatever is still open is named rather than silently cut off.
+    drain_control(&gate);
 
     // ★ Asked through the supervisor rather than by setting a flag, so the two services stop the way they were started:
     // the token they were given is cancelled, and the stop order is the reverse of registration.
