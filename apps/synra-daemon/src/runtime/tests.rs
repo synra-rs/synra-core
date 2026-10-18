@@ -210,6 +210,7 @@ fn the_sweep_takes_only_what_it_is_for() {
         outcome: "allowed".to_owned(),
         at_ms: 1,
         elapsed_ms: Some(1),
+        trace_id: None,
     })
     .expect("an audit record");
     db.save_intent(&IntentRecord {

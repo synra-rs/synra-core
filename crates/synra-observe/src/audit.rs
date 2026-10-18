@@ -31,6 +31,7 @@ use serde::{Deserialize, Serialize};
 
 use synra_capability::{Capability, Domain};
 use synra_protocol::PluginId;
+use synra_protocol::ids::TraceId;
 
 /// How many records are kept in memory.
 ///
@@ -139,6 +140,16 @@ pub struct AuditEntry {
     pub outcome: AuditOutcome,
     /// How long the call took, when it ran.
     pub elapsed_ms: Option<u64>,
+    /// The trace of the action that caused the call, when there was one.
+    ///
+    /// # Why this is filled in by the drain rather than by the gate
+    ///
+    /// Because the gate runs inside the guest's call and knows which capability was checked, not which user action the
+    /// call belongs to. `PluginSet::call_traced` knows both — it is the funnel every audited call goes through — and it
+    /// stamps the entries when it drains them. A call with no action behind it (`can-handle` during matching, a lifecycle
+    /// tick) has no trace, and `None` says so rather than inventing one.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub trace: Option<TraceId>,
 }
 
 impl AuditEntry {
@@ -151,7 +162,7 @@ impl AuditEntry {
         outcome: AuditOutcome,
         elapsed_ms: Option<u64>,
     ) -> Self {
-        Self { at_ms, plugin, capability, outcome, elapsed_ms }
+        Self { at_ms, plugin, capability, outcome, elapsed_ms, trace: None }
     }
 
     /// The domain the capability belongs to, for grouping in the interface.

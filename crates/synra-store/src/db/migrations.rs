@@ -354,6 +354,17 @@ pub const MIGRATIONS: &[Migration] = &[
             "CREATE INDEX publishers_by_fingerprint ON publishers (fingerprint)",
         ],
     },
+    Migration {
+        version: 13,
+        name: "audit-trace",
+        statements: &[
+            // ★ The audit trail's `trace_id` was in the DTO from the first version and in no row: the session that makes a
+            // call did not know the action's trace, so the interface's "which action was this?" had no answer after a
+            // restart. The column is nullable rather than backfilled: rows written by an older build have no trace to
+            // recover, and a NOT NULL column would refuse to add itself to a table that already has them.
+            "ALTER TABLE plugin_audit ADD COLUMN trace_id TEXT",
+        ],
+    },
 ];
 
 /// The schema version this build expects.

@@ -143,6 +143,9 @@ pub fn build_set(
             outcome: entry.outcome.as_str().to_owned(),
             at_ms: entry.at_ms,
             elapsed_ms: entry.elapsed_ms.map(|elapsed| i64::try_from(elapsed).unwrap_or(i64::MAX)),
+            // ★ The action's trace, when the call had one. `can-handle` and lifecycle calls do not, and `None` says that
+            // rather than making every audit row look like part of a user action.
+            trace_id: entry.trace.map(|trace| trace.to_string()),
         };
         if let Err(error) = audit_db.lock().record_audit(&record) {
             tracing::error!(

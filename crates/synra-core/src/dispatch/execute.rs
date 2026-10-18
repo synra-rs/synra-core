@@ -55,6 +55,7 @@ pub fn execute(
     plugin_id: &PluginId,
     candidate: &IntentCandidate,
     now_ms: u64,
+    trace: synra_protocol::ids::TraceId,
 ) -> Result<CallOutcome, PluginSetError> {
     let work = Work::Execute {
         action: candidate.planned.action.clone(),
@@ -69,5 +70,7 @@ pub fn execute(
     let budget = set
         .quota(plugin_id)
         .map_or_else(execute_budget, |quota| CallBudget::from_quota(&quota));
-    set.call(plugin_id, &work, budget, now_ms)
+    // ★ The action's trace travels with the call: it is what lets the audit entry and the plugin's own log line be matched
+    // to the user action that caused them. `can-handle` and lifecycle calls do not have one and go through `call`.
+    set.call_traced(plugin_id, &work, budget, now_ms, Some(trace))
 }

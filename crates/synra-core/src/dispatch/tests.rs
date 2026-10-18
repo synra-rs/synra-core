@@ -400,6 +400,41 @@ fn every_audited_call_reaches_the_sink_as_well_as_the_ring() {
 }
 
 #[test]
+fn an_actions_trace_reaches_the_audit_entry_it_produced() {
+    // ★ The audit's `trace_id` was in the DTO and in no record: the session inside the guest knows the capability and the
+    // outcome, not which user action the call belongs to. `call_traced` is the funnel that knows both, and this is where
+    // the stamping happens — on the entries that call produced, not on the buffer as a whole.
+    let backend = ScriptedBackend::new();
+    let delivered = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let collected = std::sync::Arc::clone(&delivered);
+    let mut set =
+        PluginSet::new(Backend::new(std::sync::Arc::new(backend.clone())), host()).with_audit_sink(
+            std::sync::Arc::new(move |entry: &synra_observe::audit::AuditEntry| {
+                collected.lock().push(entry.clone());
+            }),
+        );
+    load(&mut set, &backend, "@synra/aaa-notes", Scripted::Ok(r#"{"handled":true}"#.to_owned()));
+    let plugin = id("@synra/aaa-notes");
+    let entry = synra_observe::audit::AuditEntry::new(
+        1_000,
+        plugin.clone(),
+        synra_capability::Capability::parse("device:list").expect("a capability"),
+        synra_observe::audit::AuditOutcome::Allowed,
+        Some(4),
+    );
+    let trace = synra_protocol::ids::TraceId::new();
+
+    assert!(set.drain_record_with_trace_for_test(&plugin, entry.clone(), Some(trace)));
+    assert_eq!(set.audit()[0].trace, Some(trace), "the ring carries the action's trace");
+    assert_eq!(delivered.lock()[0].trace, Some(trace), "and so does the durable half");
+
+    // ★ And a call with no action behind it stays without. A drain that invented a trace would make every matching pass look
+    // like part of one user action.
+    assert!(set.drain_record_with_trace_for_test(&plugin, entry, None));
+    assert_eq!(set.audit()[1].trace, None, "no action means no trace");
+}
+
+#[test]
 fn clearing_one_plugins_history_leaves_the_other() {
     // ★ Clearing is a per-card action: the ring holds every plugin's calls, and a "clear" that took the whole ring would
     // erase what the user was about to read on the next card. The counts are part of the history too, so the assertion is
@@ -526,6 +561,7 @@ fn an_execution_runs_under_the_plugins_own_quota() {
             &id("@synra/aaa-quota"),
             &candidate_for("@synra/aaa-quota"),
             0,
+            synra_protocol::ids::TraceId::new(),
         )
         .expect("the call is made");
 

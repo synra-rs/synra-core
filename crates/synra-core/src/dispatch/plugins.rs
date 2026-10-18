@@ -418,6 +418,7 @@ impl PluginSet {
         loaded: &mut Loaded,
         ring: &mut synra_observe::audit::AuditRing,
         sink: Option<&AuditSink>,
+        trace: Option<synra_protocol::ids::TraceId>,
     ) {
         let entries = {
             let mut buffered = loaded.authority.audit.lock();
@@ -426,7 +427,13 @@ impl PluginSet {
             }
             std::mem::take(&mut *buffered)
         };
-        for entry in entries {
+        for mut entry in entries {
+            // ★ The trace is stamped here, on the entries this call produced. The gate inside the guest knows the
+            // capability and the outcome; it has no way to know which user action the call belongs to, and a session is
+            // installed once per pooled instance rather than once per call. The funnel that does know is this one.
+            if entry.trace.is_none() {
+                entry.trace = trace;
+            }
             // ★ The sink is called **before** the record is moved into the ring, because the ring takes it by value. Both
             // get the same record: the ring is what the interface reads now, and the sink is what survives a restart. A
             // trail written to only one of them is a trail that disagrees with itself after a restart.
@@ -455,6 +462,22 @@ impl PluginSet {
         plugin: &PluginId,
         entry: synra_observe::audit::AuditEntry,
     ) -> bool {
+        self.drain_record_with_trace_for_test(plugin, entry, None)
+    }
+
+    /// The same seam, with the trace a real call would pass.
+    ///
+    /// # Why the trace is a parameter of its own
+    ///
+    /// Because `drain_record_for_test` is called by tests that are not about traces, and a second entry point is cheaper
+    /// than making every one of them pass `None` to say so. This is the one a test about stamping uses.
+    #[cfg(test)]
+    pub(crate) fn drain_record_with_trace_for_test(
+        &mut self,
+        plugin: &PluginId,
+        entry: synra_observe::audit::AuditEntry,
+        trace: Option<synra_protocol::ids::TraceId>,
+    ) -> bool {
         // Destructured rather than reached through `self` three times: the drain needs the buffer, the ring and the sink at
         // once, and borrowing them from `self` separately is what the compiler refuses.
         let Self { loaded, audit, audit_sink, .. } = self;
@@ -462,7 +485,7 @@ impl PluginSet {
             return false;
         };
         loaded.authority.audit.lock().push(entry);
-        Self::drain_audit(loaded, audit, audit_sink.as_ref());
+        Self::drain_audit(loaded, audit, audit_sink.as_ref(), trace);
         true
     }
 
@@ -626,6 +649,29 @@ impl PluginSet {
         budget: CallBudget,
         now_ms: u64,
     ) -> Result<CallOutcome, PluginSetError> {
+        self.call_traced(id, work, budget, now_ms, None)
+    }
+
+    /// The same call, stamped with the trace of the user action it belongs to.
+    ///
+    /// # Why the trace is an argument rather than ambient
+    ///
+    /// Because most calls have no action behind them: `can-handle` runs for every plugin the router asks, before the user
+    /// has chosen anything, and a lifecycle tick belongs to the plugin's life rather than to a share. Inventing a trace for
+    /// those would make the audit say every matching pass was part of one user action. The calls that do have one — the
+    /// confirmed action — are exactly the ones that pass a trace here, and the audit entries they produce carry it.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::call`].
+    pub fn call_traced(
+        &mut self,
+        id: &PluginId,
+        work: &synra_plugin_host::Work,
+        budget: CallBudget,
+        now_ms: u64,
+        trace: Option<synra_protocol::ids::TraceId>,
+    ) -> Result<CallOutcome, PluginSetError> {
         let Some(loaded) = self.loaded.get_mut(id) else {
             return Err(PluginSetError::NotLoaded { id: id.clone() });
         };
@@ -717,7 +763,7 @@ impl PluginSet {
         let _ = loaded.pool.release(handle, now_ms);
         // ★ Drained **after** the call, not inside it: the entries are produced while the guest runs, and the ring lives
         // behind the set that the caller is borrowing. Collecting here is also what keeps the buffer one call deep.
-        Self::drain_audit(loaded, &mut self.audit, self.audit_sink.as_ref());
+        Self::drain_audit(loaded, &mut self.audit, self.audit_sink.as_ref(), trace);
         outcome
     }
 

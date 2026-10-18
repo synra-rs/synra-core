@@ -17,6 +17,7 @@ fn call(plugin: &str, capability: &str, outcome: &str, at_ms: i64) -> AuditRecor
         outcome: outcome.to_owned(),
         at_ms,
         elapsed_ms: Some(3),
+        trace_id: None,
     }
 }
 
@@ -29,6 +30,23 @@ fn a_gated_call_survives_a_round_trip() {
     db.record_audit(&written).expect("recorded");
 
     assert_eq!(db.audit_trail().expect("listed"), vec![written]);
+}
+
+#[test]
+fn a_trace_survives_the_round_trip() {
+    // ★ The DTO has carried `trace_id` from the first version and the row had no column to put it in, so "which action was
+    // this?" had no answer after a restart. The column is nullable because rows written by an older build have no trace to
+    // recover; a row that has one must come back with it.
+    let db = db();
+    let trace = "01a150c8-c332-768d-9dd1-981502aa1854";
+    db.record_audit(&call("@acme/notes", "device:list", "allowed", 1_000)).expect("recorded");
+    let mut traced = call("@acme/notes", "device:list", "allowed", 1_001);
+    traced.trace_id = Some(trace.to_owned());
+    db.record_audit(&traced).expect("recorded");
+
+    let trail = db.audit_trail().expect("listed");
+    assert_eq!(trail[0].trace_id.as_deref(), Some(trace), "the trace came back");
+    assert_eq!(trail[1].trace_id, None, "and a row without one stays without");
 }
 
 #[test]

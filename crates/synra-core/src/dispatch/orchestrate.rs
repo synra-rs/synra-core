@@ -651,7 +651,7 @@ pub fn decide(
     let started_ms = now_ms.max(0) as u64;
     let outcome = {
         let mut set = plugins.lock();
-        crate::dispatch::execute(&mut set, &candidate.plugin_id, &candidate, started_ms)
+        crate::dispatch::execute(&mut set, &candidate.plugin_id, &candidate, started_ms, trace)
     };
 
     let (ok, result, error) = match outcome {
@@ -792,7 +792,7 @@ pub fn accept_remote(
     let started_ms = now_ms.max(0) as u64;
     let outcome = {
         let mut set = plugins.lock();
-        crate::dispatch::execute(&mut set, &candidate.plugin_id, &candidate, started_ms)
+        crate::dispatch::execute(&mut set, &candidate.plugin_id, &candidate, started_ms, trace)
     };
 
     let (ok, result, error) = match outcome {
@@ -1024,4 +1024,3 @@ const fn state_name(state: &crate::intent::IntentState) -> &'static str {
     // (`kind` for storage, `name` for the wire) are documented where the states are.
     state.name()
 }
-

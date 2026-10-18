@@ -39,8 +39,8 @@ impl SynraDb {
     pub fn record_audit(&self, entry: &AuditRecord) -> Result<(), DbError> {
         self.connection
             .execute(
-                "INSERT INTO plugin_audit (plugin_id, capability, outcome, at_ms, elapsed_ms) \
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                "INSERT INTO plugin_audit (plugin_id, capability, outcome, at_ms, elapsed_ms, trace_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
                     entry.plugin_id.as_str(),
                     entry.capability.as_str(),
@@ -49,6 +49,7 @@ impl SynraDb {
                     // Already an `i64`: the conversion from the entry's `u64` happens in the host, which is where the
                     // entry is read — a store that converted it would be a second place the two clocks meet.
                     entry.elapsed_ms,
+                    entry.trace_id.as_deref(),
                 ],
             )
             .map_err(|error| DbError::Statement { why: error.to_string() })?;
@@ -123,6 +124,7 @@ impl SynraDb {
                     row.get::<_, Option<String>>(2)?.as_deref(),
                     row.get::<_, Option<i64>>(3)?,
                     row.get::<_, Option<i64>>(4)?,
+                    row.get::<_, Option<String>>(5)?.as_deref(),
                 ))
             })
             .map_err(|error| DbError::Statement { why: error.to_string() })?
