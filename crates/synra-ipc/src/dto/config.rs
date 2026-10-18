@@ -81,3 +81,19 @@ pub struct DiagExportOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub log_lines: Option<u32>,
 }
+
+/// What a diagnostic export wrote.
+///
+/// ★ This used to live in the shell's own `commands::diag`, which made it a shape only the Rust side knew: the page
+/// that offers the button had to copy it by hand, and a hand-written copy does not fail to compile when the kernel adds
+/// a field. `included` and `excluded` are what the confirmation screen shows back, so they are part of the contract.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagExportResult {
+    /// The file that was written.
+    pub path: String,
+    /// Which sections it holds.
+    pub included: Vec<String>,
+    /// Which sections were left out, and why.
+    pub excluded: Vec<String>,
+}
