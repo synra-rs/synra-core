@@ -12,6 +12,9 @@ authors.workspace = true
 synra-protocol = { path = "../../crates/synra-protocol" }
 synra-plugin-api = { path = "../../crates/synra-plugin-api" }
 synra-plugin-host = { path = "../../crates/synra-plugin-host" }
+# `publish` checks a tarball with the unpacker the installing side runs, so "the archive is well formed" means what it
+# means at install time.
+synra-registry = { path = "../../crates/synra-registry" }
 
 clap = { workspace = true }
 serde.workspace = true
@@ -33,8 +36,6 @@ tar = "0.4"
 
 [dev-dependencies]
 rstest.workspace = true
-# The test unpacker is the one the registry install runs, so "the archive is well formed" means "the installer reads it".
-synra-registry = { path = "../../crates/synra-registry" }
 
 [lints]
 workspace = true

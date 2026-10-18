@@ -83,7 +83,17 @@ pub fn pack_plugin(args: &crate::args::PackArgs) -> Result<Outcome, String> {
 
     let target = args.out.clone().unwrap_or_else(|| {
         let file = format!("{}-{}.tgz", manifest.id.to_string().replace(['/', '\\'], "-"), manifest.version);
-        dir.join("dist").join(file)
+        let dist = dir.join("dist");
+        // With a relative index the tarball sits in the index's own directory: `dist/@acme/hello.json` names
+        // `@acme-hello-1.2.3.tgz` relatively, and a relative name that resolves to the same directory is the point.
+        match &args.index {
+            Some(base) if base.is_empty() => {
+                let id = manifest.id.to_string();
+                let folder = id.rsplit_once('/').map_or_else(|| dist.clone(), |(scope, _)| dist.join(scope));
+                folder.join(file)
+            }
+            _ => dist.join(file),
+        }
     });
 
     // ★ A registry is checked for shape, not contacted. Publishing is an account and a policy; what this tool can know is
@@ -146,10 +156,17 @@ pub fn pack_plugin(args: &crate::args::PackArgs) -> Result<Outcome, String> {
                 .ok_or_else(|| format!("{} has no file name", target.display()))?;
             let manifest_value: serde_json::Value = serde_json::from_str(&manifest_text)
                 .map_err(|error| format!("manifest.json: {error}"))?;
-            let path = target
-                .parent()
-                .unwrap_or_else(|| Path::new("."))
-                .join(format!("{}.json", manifest.id));
+            let path = if args.out.is_none() {
+                // The default layout puts every tarball under `dist/<id>/` and the index at `dist/<id>.json`; a relative
+                // name then resolves inside that directory, which is what a bucket serves.
+                dir.join("dist").join(format!("{}.json", manifest.id))
+            }
+            else {
+                target
+                    .parent()
+                    .unwrap_or_else(|| Path::new("."))
+                    .join(format!("{}.json", manifest.id))
+            };
             // ★ Publishing a second version must not erase the first: the index is the package's whole history, and an
             // author who re-packs 1.3.0 would otherwise drop every install still asking for 1.2.0.
             let existing = match std::fs::read_to_string(&path) {

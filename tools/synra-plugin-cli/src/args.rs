@@ -43,6 +43,8 @@ pub enum Command {
     Sign(SignArgs),
     /// Pack a plugin into an npm-compatible `.tgz` for a registry.
     Pack(PackArgs),
+    /// Check the files a static bucket would serve, without uploading them.
+    Publish(PublishArgs),
 }
 
 /// Options for `build`.
@@ -105,6 +107,18 @@ pub struct PackArgs {
     /// Print the target without writing it.
     #[arg(long)]
     pub dry_run: bool,
+}
+
+/// Options for `publish`.
+#[derive(Debug, Args)]
+pub struct PublishArgs {
+    /// The static index to check: the `.json` `pack --index` wrote.
+    #[arg(long, value_name = "FILE")]
+    pub index: PathBuf,
+
+    /// The public base URL, when the index names tarballs absolutely. The local path is the URL minus this prefix.
+    #[arg(long, value_name = "URL")]
+    pub base: Option<String>,
 }
 
 /// Options for `new`.
@@ -201,22 +215,18 @@ mod tests {
             vec!["synra-plugin", "build"],
             vec!["synra-plugin", "verify"],
             vec!["synra-plugin", "sign", "--generate-key"],
+            vec!["synra-plugin", "publish", "--index", "dist/@acme/hello.json"],
         ] {
             assert!(parse(&args).is_ok(), "{args:?} should parse");
         }
     }
 
     #[test]
-    fn an_unimplemented_command_is_refused_rather_than_silently_absent() {
-        // `publish` and `dev` need a registry client and a running host, and a stub that printed "would publish" would
-        // be worse than an absent one: it exits zero. `clap`'s "unrecognized subcommand" is the honest answer.
-        for command in ["publish", "dev"] {
-            let error = parse(&["synra-plugin", command]).expect_err("not implemented");
-            assert!(
-                error.to_string().contains("unrecognized"),
-                "{command}: {error}"
-            );
-        }
+    fn a_command_this_build_does_not_have_is_refused() {
+        // `dev` needs a running host, and a stub that printed "would run" would be worse than an absent one: it exits
+        // zero. `clap`'s "unrecognized subcommand" is the honest answer.
+        let error = parse(&["synra-plugin", "dev"]).expect_err("not implemented");
+        assert!(error.to_string().contains("unrecognized"), "{error}");
     }
 
     // ── new ───────────────────────────────────────────────────────────────────────────────────────
