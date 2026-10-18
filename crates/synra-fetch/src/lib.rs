@@ -374,7 +374,9 @@ impl Client {
 
             // A redirect is a second request to a URL nobody authorised, so it goes back through the guard — and through
             // the resolver with it, which is why the loop starts again rather than reusing this agent.
-            if (300..400).contains(&status) {
+            // ★ `304 Not Modified` is not a redirect: it is the answer to a conditional request, and it has no `Location`
+            // to follow. Treating it as one turned a cache hit into a protocol violation.
+            if (300..400).contains(&status) && status != 304 {
                 let Some(location) = headers.get("location") else {
                     return Err(Refusal::new(
                         ErrorCode::ProtocolViolation,

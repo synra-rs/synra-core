@@ -237,6 +237,18 @@ fn a_status_is_an_answer_rather_than_a_failure() {
 }
 
 #[test]
+fn a_304_is_an_answer_and_not_a_redirect() {
+    // ★ A conditional request's cache hit has no `Location` and is not a redirect. Treating it as one made every cached
+    // registry document a protocol violation instead of a saved round trip.
+    let server = Server::always(304, "");
+
+    let response = client().fetch(&get(&server.url("/cached"))).expect("a conditional answer");
+
+    assert_eq!(response.status, 304);
+    assert_eq!(response.body, "");
+}
+
+#[test]
 fn the_guard_runs_before_the_request_is_made() {
     // ★ The property that makes the guard worth having: a refused URL costs no connection at all. A check made after the
     // bytes were sent would be a report rather than a policy.
