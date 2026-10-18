@@ -274,6 +274,22 @@ impl PeerLink {
         }
     }
 
+    /// Counts one envelope frame by its event, in the direction named by `metric`.
+    ///
+    /// ★ Here rather than in `Host::send`, which was the first home of `frames_sent_total`. The host only sees the frames a
+    /// caller routes through it; a dialled link that sends an offer or a pairing request writes straight to the socket, and
+    /// those frames were invisible. The link is the one object every frame passes, so this is where "what did this device
+    /// say" can be answered for all of them — and `Host::send` no longer counts, because two counters for one frame would
+    /// double every routed message.
+    fn count_frame(&self, metric: &str, event: &str) {
+        if let Some(metrics) = &self.metrics {
+            metrics.counter_inc(&synra_observe::metrics::SeriesKey::new(
+                metric,
+                [("event".to_owned(), event.to_owned())],
+            ));
+        }
+    }
+
     /// This device.
     #[must_use]
     pub const fn local(&self) -> DeviceId {
@@ -382,6 +398,7 @@ impl PeerLink {
         let encoded = FrameEncoder::encode_to_vec(&frame)?;
         self.write_frame(&encoded)?;
         self.sent = self.sent.saturating_add(1);
+        self.count_frame("frames_sent_total", envelope.event.as_str());
         // Payload only: a frame header is the transport's accounting, and it is not what the reader of `bytes_sent_total`
         // is asking about. Counted after the write, because a refused write moved nothing.
         self.count_bytes(
@@ -436,6 +453,7 @@ impl PeerLink {
                 FrameKind::Envelope => {
                     let envelope = self.parse_envelope(&frame)?;
                     self.received = self.received.saturating_add(1);
+                    self.count_frame("frames_received_total", envelope.event.as_str());
                     self.count_bytes(
                         "bytes_received_total",
                         envelope.payload.as_ref().map_or(0, |payload| payload.get().len()),
@@ -922,6 +940,17 @@ mod tests {
 
         assert_eq!(sender_metrics.snapshot().get("bytes_sent_total"), Some(&Value::Counter(4)));
         assert_eq!(receiver_metrics.snapshot().get("bytes_received_total"), Some(&Value::Counter(4)));
+        // ★ And the frame counters, by event: the half that used to be counted in `Host::send`/`listener`, and therefore
+        // only for frames that passed through one. Both directions are asserted here because the link is now the one
+        // place they are taken.
+        assert_eq!(
+            sender_metrics.snapshot().get("frames_sent_total{event=device.ping}"),
+            Some(&Value::Counter(1))
+        );
+        assert_eq!(
+            receiver_metrics.snapshot().get("frames_received_total{event=device.ping}"),
+            Some(&Value::Counter(1))
+        );
     }
 
     #[test]

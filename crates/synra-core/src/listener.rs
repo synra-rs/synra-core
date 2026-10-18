@@ -429,10 +429,10 @@ pub fn handle_within_with(
         match inbox.absorb_with(&mut link, synra_store::sqlite::now_ms(), PATIENCE, desk, &peer_address, offer.as_ref()) {
             Ok(decision) => match decision {
                 Decision::Delivered { event, share, request } => {
-                    // ★ The design's `frames_received_total{event}` — the other half of what `Host::send` records.
-                    // Counted here because this is where a delivered frame becomes a fact: the `Decision` is what says
-                    // an event arrived, and it is the only thing that knows which one.
-                    host.lock().count_frame_received(&event);
+                    // ★ `frames_received_total{event}` is recorded by the link's `receive_inbound`, not here. This branch
+                    // sees only the frames a listener *delivered*; an answer on a dialled link — a pairing response, a
+                    // plugin list — never reaches a listener, and those were invisible. The link is the one place every
+                    // received frame passes, so the count lives there and this branch would double it.
                     // ★ Recorded as well as reported. A message this kernel received has arrived, and a log that looked
                     // the same whether it arrived or was lost in the network would be one a user cannot investigate with.
                     events.push(event.clone());

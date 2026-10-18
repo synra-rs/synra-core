@@ -386,11 +386,10 @@ impl Host {
         self.may_send(link)?;
         link.send(envelope)?;
         self.count_sent();
-        // ★ The design's `frames_sent_total{event}`: what this kernel said, and how much of it.
-        //
-        // ★ Recorded **after** the send rather than before, and that is not a detail: a frame the link refused never
-        // left, so a count that included it would say this device talks more than it does.
-        self.count_frame_sent(envelope.event.as_str());
+        // ★ `frames_sent_total{event}` is recorded by the link, not here. A host only sees the frames a caller routes
+        // through it, while a dialled link writes offers and pairing requests straight to the socket — the link is the one
+        // object every frame passes, so it is where the event counter lives. Counting here as well would double every
+        // routed message.
         Ok(())
     }
 

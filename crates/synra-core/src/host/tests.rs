@@ -709,11 +709,9 @@ fn the_refusal_echoes_only_enough_of_the_name_to_recognise_it() {
 fn a_received_frame_is_counted_by_its_event() {
     // ★ 这条测的是 `Host::count_frame_received` **本身**，而不是「它被调用过」。
     //
-    // 调用它的是 `listener` 里处理 `Decision::Delivered` 的那一支，而那个 `Decision` 只有
-    // `listener::handle_within` 会产生。本文件里的端到端测试走的是 `Host::accept` + `link.receive`，
-    // 完全绕过它 —— 第一版断言就写在这里，它失败了，而失败说明的正是这件事。
-    // 要验证那条路需要一份 `handle_within` 的装配（daemon 的 `transport/tests.rs` 里有）；
-    // 这一轮先把方法与它的计数固定下来。
+    // 2026-10-19 起，帧计数搬到了 `PeerLink`：它见到**每一帧**，包括拨号链路上绕过 Host 写出的那些。所以这条
+    // 测试现在钉的是 Host 自己的方法（壳的接线测试用它证明记录器接上了），而不是生产路径 —— 生产路径的断言在
+    // `link.rs` 的 `a_link_with_a_recorder_counts_the_frames_it_moves` 里，同时覆盖收与发两个方向。
     let (host, _db) = host(A, "Laptop");
     let recorder = Arc::new(synra_observe::metrics::RingRecorder::new());
     let mut host = host.with_metrics(Arc::clone(&recorder));

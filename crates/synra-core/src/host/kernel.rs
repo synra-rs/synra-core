@@ -83,8 +83,10 @@ impl Host {
 
     /// Counts one frame this host sent, by event.
     ///
-    /// The pair of [`Host::count_frame_received`], and a method for the same reason: the field is `pub(super)`, so a
-    /// call site that reached for it would be one module's private arrangement rather than the host's rule.
+    /// ★ Since 2026-10-19 the frame counters live on `PeerLink`, which records every frame — including the offer and
+    /// pairing frames a dialled link writes outside this host. `Host::send` therefore does **not** call this, and a caller
+    /// that did would double the frame; it remains for a host whose link has no recorder, and the shell's wiring test uses
+    /// it to prove the recorder reached the host.
     pub fn count_frame_sent(&mut self, event: &str) {
         if let Some(metrics) = &self.metrics {
             metrics.counter_inc(&synra_observe::metrics::SeriesKey::new(
@@ -110,11 +112,11 @@ impl Host {
 
     /// Counts one frame this host received, by event.
     ///
-    /// ★ The other half of what `Host::send` records, and a separate method rather than one with a direction: a device
-    /// that talks more than it is told, and one that is told more than it talks, are two different situations.
-    ///
-    /// A method rather than each call site reaching for the field: `metrics` is `pub(super)`, and "how is a received
-    /// frame counted" should have one answer rather than one per module that happens to see it.
+    /// ★ A separate method rather than one with a direction: a device that talks more than it is told, and one that is
+    /// told more than it talks, are two different situations. Since the frame counters moved onto `PeerLink` — which sees
+    /// every frame, including the ones a dialled link writes outside this host — **nothing in production calls this**. It
+    /// is kept because a host whose link has no recorder still needs a way to say "this frame arrived", and the shell's
+    /// wiring test uses it; a caller that counts both this and the link would double the frame.
     pub fn count_frame_received(&mut self, event: &str) {
         if let Some(metrics) = &self.metrics {
             metrics.counter_inc(&synra_observe::metrics::SeriesKey::new(
