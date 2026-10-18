@@ -415,6 +415,27 @@ pub enum DbAction {
         #[arg(value_name = "PATH")]
         path: std::path::PathBuf,
     },
+    /// Write a `.synrabackup` container: the database, its configuration, and the plugin list.
+    ///
+    /// # Why a container in addition to `backup`
+    ///
+    /// Because the single-file backup answers "restore this device", and a person handing a backup to a support
+    /// conversation may also want to read what was installed and what was switched off. The container carries those as
+    /// plain JSON beside the database, and its import is the same restore path — one recovery mechanism, two wrappers.
+    Export {
+        /// Where to write it. Must not already exist.
+        #[arg(value_name = "PATH")]
+        path: std::path::PathBuf,
+    },
+    /// Replace the database with the one inside a `.synrabackup` container.
+    ///
+    /// The plugins it lists are not reinstalled: their artifacts are deliberately not in the container, so the command
+    /// reports them and leaves the decision to the user.
+    Import {
+        /// The container to import.
+        #[arg(value_name = "PATH")]
+        path: std::path::PathBuf,
+    },
 }
 
 #[cfg(test)]

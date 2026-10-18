@@ -51,6 +51,9 @@ pub fn outcome_at(
     if let DbAction::Restore { path } = &args.action {
         return restore(root, &paths, format, path);
     }
+    if let DbAction::Import { path } = &args.action {
+        return import(root, &paths, format, path);
+    }
     let opened = SynraDb::open(&paths.db_path()).and_then(|mut db| {
         db.migrate()?;
         Ok(db)
@@ -70,9 +73,12 @@ pub fn outcome_at(
     match &args.action {
         DbAction::Integrity => integrity(format, &db),
         DbAction::Backup { path } => backup(format, &db, path),
+        DbAction::Export { path } => export(format, &db, path),
         DbAction::Dump { table } => dump(format, &db, table.as_deref()),
         // Handled before the database was opened; see `outcome_at`.
-        DbAction::Restore { .. } => unreachable!("a restore returns before the database is opened"),
+        DbAction::Restore { .. } | DbAction::Import { .. } => {
+            unreachable!("restore and import return before the database is opened")
+        }
     }
 }
 
@@ -172,6 +178,97 @@ fn backup(
         }
         _ => CommandOutcome::Lines(vec![format!("wrote {}", path.display())]),
     }
+}
+
+/// Writes a `.synrabackup` container.
+fn export(
+    format: Option<crate::args::OutputFormat>,
+    db: &SynraDb,
+    path: &std::path::Path,
+) -> CommandOutcome {
+    let summary = match synra_store::export_backup(db, path, now_ms()) {
+        Ok(summary) => summary,
+        Err(error) => return CommandOutcome::Failed(error.to_string()),
+    };
+    match format {
+        Some(crate::args::OutputFormat::Json) => CommandOutcome::json(
+            serde_json::json!({
+                "written": path.display().to_string(),
+                "plugins": summary.plugins,
+                "bytes": summary.bytes,
+            })
+            .to_string(),
+        ),
+        _ => CommandOutcome::Lines(vec![format!(
+            "wrote {} ({} plugin(s), {} bytes)",
+            path.display(),
+            summary.plugins,
+            summary.bytes
+        )]),
+    }
+}
+
+/// Replaces the database with the one inside a container.
+fn import(
+    root: &std::path::Path,
+    paths: &Paths,
+    format: Option<crate::args::OutputFormat>,
+    archive: &std::path::Path,
+) -> CommandOutcome {
+    // The same refusal as `restore`, for the same reason: a container replaces the database, and an open database is not
+    // something to replace under the process holding it.
+    if synra_control::Client::connect(root).is_ok() {
+        return CommandOutcome::Failed(
+            "a kernel is running; stop it before importing, because replacing the database under an open connection is \
+             not a recovery"
+                .to_owned(),
+        );
+    }
+    if !archive.is_file() {
+        return CommandOutcome::Failed(format!("{} is not a file", archive.display()));
+    }
+    let report = match synra_store::import_backup(archive, &paths.db_path()) {
+        Ok(report) => report,
+        Err(error) => return CommandOutcome::Failed(error.to_string()),
+    };
+    let previous = report.previous.as_ref().map(|path| path.display().to_string());
+    match format {
+        Some(crate::args::OutputFormat::Json) => CommandOutcome::json(
+            serde_json::json!({
+                "importedFrom": archive.display().to_string(),
+                "previous": previous,
+                "plugins": report.plugins,
+            })
+            .to_string(),
+        ),
+        _ => {
+            let mut lines = vec![match &previous {
+                Some(previous) => format!(
+                    "imported {}; the database that was there is now {previous}",
+                    archive.display()
+                ),
+                None => format!("imported {}; there was no database to replace", archive.display()),
+            }];
+            if !report.plugins.is_empty() {
+                lines.push("reinstall these plugins:".to_owned());
+                for plugin in &report.plugins {
+                    lines.push(format!(
+                        "  {} {}",
+                        plugin.plugin_id,
+                        plugin.version.as_deref().unwrap_or("(unknown version)")
+                    ));
+                }
+            }
+            CommandOutcome::Lines(lines)
+        }
+    }
+}
+
+/// The wall clock in Unix milliseconds, for a container's manifest.
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX))
 }
 
 /// Reads the tables a debugger wants.
@@ -492,5 +589,80 @@ mod tests {
             Some(serde_json::json!("current").to_string()),
             "a refused restore changed the database"
         );
+    }
+
+    #[test]
+    fn a_container_export_and_import_round_trip() {
+        // ★ The wrapper around the restore path: the same database replacement, with the plugin list a user has to
+        // reinstall carried beside it. The plugin appears in the answer because the artifacts are deliberately absent.
+        let root = Root::new("container");
+        let archive = root.0.join("device.synrabackup");
+        {
+            let paths = Paths::under(&root.0);
+            let mut db = SynraDb::open(&paths.db_path()).expect("opens");
+            db.migrate().expect("migrates");
+            db.set_config("test.key", &serde_json::json!("from the container"), 1)
+                .expect("written");
+            db.insert_plugin("@acme/hello", true, true, "healthy", 1, 1).expect("inserted");
+        }
+
+        let outcome = outcome_at(
+            &root.0,
+            Some(OutputFormat::Text),
+            &args(DbAction::Export { path: archive.clone() }),
+        );
+        match outcome {
+            CommandOutcome::Lines(lines) => {
+                assert!(lines[0].contains("plugin(s)"), "{lines:?}");
+            }
+            other => panic!("the export reported a failure: {other:?}"),
+        }
+
+        {
+            let paths = Paths::under(&root.0);
+            let db = SynraDb::open(&paths.db_path()).expect("opens");
+            db.set_config("test.key", &serde_json::json!("changed after"), 2)
+                .expect("written");
+        }
+
+        let outcome = outcome_at(
+            &root.0,
+            Some(OutputFormat::Text),
+            &args(DbAction::Import { path: archive }),
+        );
+        match outcome {
+            CommandOutcome::Lines(lines) => {
+                assert!(lines[0].contains("imported"), "{lines:?}");
+                assert!(
+                    lines.iter().any(|line| line.contains("@acme/hello")),
+                    "the reinstall list is missing: {lines:?}"
+                );
+            }
+            other => panic!("the import reported a failure: {other:?}"),
+        }
+
+        let paths = Paths::under(&root.0);
+        let db = SynraDb::open(&paths.db_path()).expect("the imported database opens");
+        let config = db.config().expect("reads");
+        assert_eq!(
+            config.iter().find(|row| row.key == "test.key").map(|row| row.value.clone()),
+            Some(serde_json::json!("from the container").to_string()),
+            "the container's value was not imported"
+        );
+        assert_eq!(db.plugins().expect("reads").len(), 1, "the plugin record came back");
+    }
+
+    #[test]
+    fn an_import_of_something_that_is_not_a_container_is_refused() {
+        let root = Root::new("import-foreign");
+        let foreign = root.0.join("notes.txt");
+        std::fs::write(&foreign, b"my holiday photos").expect("a file");
+
+        let outcome = outcome_at(
+            &root.0,
+            Some(OutputFormat::Text),
+            &args(DbAction::Import { path: foreign }),
+        );
+        assert!(matches!(outcome, CommandOutcome::Failed(_)), "{outcome:?}");
     }
 }

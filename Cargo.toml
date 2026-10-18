@@ -78,6 +78,12 @@ sysinfo = { version = "0.38", default-features = false, features = ["disk"] }
 # Raising `rust-version` instead would have been the other way to green the guard, and a worse one: it would weaken the
 # promise to match one diagnostic dependency rather than keeping the dependency inside the promise.
 
+# ── 外部：备份容器 ──
+# The design's `.synrabackup` is a zip of a manifest, the database and a plugin list. `zip` is the writer/reader; `deflate`
+# is the method every zip tool understands. AES, bzip2, zstd and the `time` helpers are not enabled: a backup format the
+# product cannot read without a crypto or compression stack is a format that depends on a dependency for nothing.
+zip = { version = "2.6", default-features = false, features = ["deflate"] }
+
 # ── 外部：可观测性 ──
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "registry"] }

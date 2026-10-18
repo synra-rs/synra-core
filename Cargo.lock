@@ -2075,6 +2075,7 @@ dependencies = [
  "serde_json",
  "synra-protocol",
  "thiserror",
+ "zip",
 ]
 
 [[package]]

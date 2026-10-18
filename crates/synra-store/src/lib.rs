@@ -60,6 +60,11 @@ pub mod sqlite;
 pub mod paths;
 pub mod sandbox;
 pub mod secrets;
+mod backup;
+pub use backup::{
+    BackupError, BackupManifest, BackupSummary, ENTRIES as BACKUP_ENTRIES, FORMAT as BACKUP_FORMAT,
+    ImportedBackup, PluginEntry, VERSION as BACKUP_VERSION, export_backup, import_backup,
+};
 
 pub use db::{Health, Migration, MigrationOutcome, SchemaError, SchemaState, latest_version};
 pub use records::{
