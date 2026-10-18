@@ -59,7 +59,7 @@ pub mod server;
 
 use serde::{Deserialize, Serialize};
 
-pub use endpoint::{Client, Listener, SocketError, socket_path};
+pub use endpoint::{Client, Listener, SocketError, serve_stream, socket_path};
 pub use server::{Kernel, Refusal, Server, SessionState};
 
 /// The most bytes one message may be, header included.

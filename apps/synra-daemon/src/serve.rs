@@ -495,7 +495,7 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
     // The discovery thread writes what it hears; the control socket reads it. Neither can reach the other, so the handle
     // is shared rather than passed — and it is shared behind a lock because `rusqlite::Connection` is `Send` and not `Sync`.
 
-    let runtime = Runtime {
+    let runtime = Arc::new(Runtime {
         version: env!("CARGO_PKG_VERSION").to_owned(),
         data_dir: std::path::PathBuf::from(&plan.data_dir),
         plugins_dir: std::path::PathBuf::from(&plan.plugins_dir),
@@ -517,7 +517,7 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
         // not running — a daemon whose log file could not be opened still answers the command, and it must not claim to
         // have raised anything.
         verbosity: log_verbosity,
-    };
+    });
 
     // ★ Put back what the last run was working on, **before** the socket is bound.
     //
@@ -562,8 +562,8 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
     }
 
     // ★ The transport listener runs on its own thread for the same reason discovery does: taking a connection is cheap but
-    // a handshake is not, and the control socket serves one client at a time. Each accepted connection is handed to its
-    // own thread, so a peer that is slow to say `Hello` delays nothing.
+    // a handshake is not. Each accepted transport connection is handed to its own thread, so a peer that is slow to say
+    // `Hello` delays nothing — and since control connections are threaded too, neither listener can queue the other.
     if runtime.host.lock().listen_nonblocking().is_ok() {
         let peers = Arc::clone(&runtime.host);
         let data_dir = runtime.data_dir.clone();
@@ -723,11 +723,28 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
 
     let mut code = ExitCode::SUCCESS;
     while !supervisor.is_shutting_down() {
-        if let Err(error) = listener.serve_one(&runtime) {
-            // One client's failure is not the daemon's. A transport error is reported and the loop continues, because a
-            // daemon that exited on a malformed connection would be one any local process could stop.
-            eprintln!("synra-daemon: {error}");
-            code = ExitCode::FAILURE;
+        // ★ One thread per connection. The loop used to call `serve_one`, so one client at a time — which made a command
+        // that waits (a remote action's answer, a pairing prompt) an outage for every other command: `status` queued behind
+        // an `intent decide` for as long as the wait lasted. The socket is local and each client is a process the user
+        // started, so a thread per connection is the same trust boundary the one-at-a-time loop had, without the queue.
+        match listener.accept() {
+            Ok(stream) => {
+                let runtime = Arc::clone(&runtime);
+                std::thread::spawn(move || {
+                    if let Err(error) = synra_control::serve_stream(stream, &*runtime) {
+                        eprintln!("synra-daemon: {error}");
+                    }
+                });
+            }
+            Err(error) => {
+                // One client's failure is not the daemon's. A transport error is reported and the loop continues, because a
+                // daemon that exited on a malformed connection would be one any local process could stop.
+                eprintln!("synra-daemon: {error}");
+                code = ExitCode::FAILURE;
+                // ★ And it sleeps: with `serve_one` an accept error was not a tight loop, because the call that failed was
+                // the one that would have blocked. Acceptance is separate now, so a permanently failing listener would spin.
+                std::thread::sleep(Duration::from_millis(10));
+            }
         }
     }
 

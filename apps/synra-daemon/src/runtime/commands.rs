@@ -18,10 +18,11 @@ const TRANSFER_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30
 
 /// How long a dispatched action's outcome is waited for before the intent stays dispatching.
 ///
-/// Three seconds, not the plugin's full budget: the control socket serves one client at a time, so this wait is time a
-/// `status` or a `devices` call spends queued. A local-network plugin call fits comfortably; a receiver slower than this
-/// answers into a closed link, and this side says "dispatching" rather than inventing an outcome. The limitation is
-/// written down in 07 §"远程 target" as well.
+/// Three seconds, not the plugin's full budget: the wait holds this connection and this intent open, and a sender that
+/// waited indefinitely would turn a silent peer into a stuck command. It no longer costs other clients anything — the
+/// daemon serves each control connection on its own thread — but a longer wait still delays the user who asked for the
+/// action. A local-network plugin call fits comfortably; a receiver slower than this answers into a closed link, and this
+/// side says "dispatching" rather than inventing an outcome. The limitation is written down in 07 §"远程 target" as well.
 const REMOTE_RESULT_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
 
 impl Kernel for Runtime {

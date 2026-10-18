@@ -256,6 +256,23 @@ impl Listener {
         &self.path
     }
 
+    /// Accepts one client, without serving it.
+    ///
+    /// # Why this is public
+    ///
+    /// Because serving a client and accepting one are two decisions, and a host that serves them concurrently has to make
+    /// the first one outside the thread it spawns. `serve_one` remains the one-call shape for a host that serves one at a
+    /// time, and is now written in terms of this.
+    ///
+    /// # Errors
+    ///
+    /// [`SocketError::Transport`] when the accept fails.
+    pub fn accept(&self) -> Result<Stream, SocketError> {
+        self.listener
+            .accept()
+            .map_err(|error| SocketError::Transport { why: error.to_string() })
+    }
+
     /// Accepts one client and serves it until it disconnects.
     ///
     /// # Errors
@@ -263,10 +280,7 @@ impl Listener {
     /// [`SocketError`] when the stream fails. A client that disconnects mid-answer is **not** an error: it is the
     /// ordinary shape of a command the user interrupted.
     pub fn serve_one(&self, kernel: &impl crate::Kernel) -> Result<(), SocketError> {
-        let stream = self.listener.accept().map_err(|error| SocketError::Transport {
-            why: error.to_string(),
-        })?;
-        serve_stream(stream, kernel)
+        serve_stream(self.accept()?, kernel)
     }
 }
 
@@ -747,6 +761,36 @@ mod tests {
 
         let second = Listener::bind(dir.path());
         assert!(second.is_ok(), "a stale socket stopped the bind: {:?}", second.err());
+    }
+
+    #[test]
+    fn accepting_a_connection_and_serving_it_are_separate_steps() {
+        // ★ The daemon accepts on its loop thread and serves each client on its own, because a command that waits must not
+        // queue every other command behind it. A `Listener` that could only do both would make that queue the design. The
+        // assertion is that a request is answered across the hand-off — not merely that `accept` returns a socket.
+        let dir = TempDir::new("accept-first");
+        let listener = Listener::bind(dir.path()).expect("binds");
+
+        let client = std::thread::spawn({
+            let data_dir = dir.path().to_path_buf();
+            move || {
+                let mut client = Client::connect(&data_dir).expect("connects");
+                client.handshake().expect("handshakes");
+                client.ask(&Request::Status).expect("asks")
+            }
+        });
+
+        let stream = listener.accept().expect("a connection");
+        let server = std::thread::spawn(move || {
+            let kernel = Fake::new();
+            serve_stream(stream, &kernel).expect("serves");
+        });
+
+        match client.join().expect("the client finished") {
+            Response::Ok { value } => assert_eq!(value["kind"], "status"),
+            other => panic!("expected an answer, got {other:?}"),
+        }
+        server.join().expect("the server finished");
     }
 
     #[test]
