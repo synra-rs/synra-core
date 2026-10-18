@@ -1,0 +1,25 @@
+[package]
+name = "synra-registry"
+description = "Reading a registry's package metadata, and opening the tarball it points at"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+# The manifest a packument carries inline is the contract's own type, so a panel can show what it parsed without a second
+# parser — and so "is this package installable" is answered by the same type the installer reads.
+synra-plugin-api = { path = "../synra-plugin-api" }
+
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+# The published artefact is a `.tgz`, which is gzip around a tar. Both are named here rather than a wrapper crate: the
+# extraction rules below are the point, and a helper that hides the entry list would hide the entries this refuses.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+tar = "0.4"
+
+[lints]
+workspace = true

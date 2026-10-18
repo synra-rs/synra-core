@@ -5,6 +5,7 @@ members = [
   "crates/synra-control",
   "crates/synra-core",
     "crates/synra-fetch",
+  "crates/synra-registry",
   "crates/synra-capability",
   "crates/synra-observe",
   "crates/synra-plugin-api",

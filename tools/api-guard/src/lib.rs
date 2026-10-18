@@ -150,6 +150,9 @@ pub const CRATES: &[(&str, Tier)] = &[
     // `Internal` because nothing outside this workspace compiles against it yet — a plugin author talks to
     // `synra-plugin-api`, not to this — and promoting a tier later breaks no one while demoting one does.
     ("synra-fetch", Tier::Internal),
+    // The registry's parsing and extraction rules are the app's, not an author's: a consumer of the kernel does not read
+    // a packument itself, and the rules may change with the protocol.
+    ("synra-registry", Tier::Internal),
     // ★ The two that the previous check could not see.
     //
     // `every_crate_in_the_workspace_has_a_tier` asserted `CRATES.len() >= 13` and these are the fourteenth and
