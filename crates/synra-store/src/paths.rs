@@ -281,6 +281,15 @@ pub enum PathError {
         detail: String,
     },
 
+    /// A directory tree could not be removed.
+    #[error("the directory {path:?} cannot be removed: {detail}")]
+    RemovalFailed {
+        /// The directory.
+        path: String,
+        /// What the operating system said.
+        detail: String,
+    },
+
     /// A component of a path is not usable.
     #[error("the path {path:?} has an unusable component {component:?}")]
     BadComponent {

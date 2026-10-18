@@ -412,18 +412,18 @@ pub fn handle_within_with(
         // ★ Checked between messages, because the link belongs to this loop. A cancel that took effect only after the
         // next block would still write a block the user said they did not want; one that sent the abort from the command
         // thread would race this one for the same socket.
-        if let Some(progress) = inbox.progress() {
-            if should_cancel(&progress.transfer_id.to_string()) {
-                match inbox.cancel(&mut link, synra_store::sqlite::now_ms()) {
-                    Ok(Some(cancelled)) => {
-                        events.push(format!("cancelled {cancelled}"));
-                        if let Some(progress) = last_progress.clone() {
-                            on_progress(&InboundProgressEvent { peer, progress, aborted: true });
-                        }
+        if let Some(progress) = inbox.progress()
+            && should_cancel(&progress.transfer_id.to_string())
+        {
+            match inbox.cancel(&mut link, synra_store::sqlite::now_ms()) {
+                Ok(Some(cancelled)) => {
+                    events.push(format!("cancelled {cancelled}"));
+                    if let Some(progress) = last_progress.clone() {
+                        on_progress(&InboundProgressEvent { peer, progress, aborted: true });
                     }
-                    Ok(None) => {}
-                    Err(error) => eprintln!("synra-daemon: the cancel could not be sent: {error}"),
                 }
+                Ok(None) => {}
+                Err(error) => eprintln!("synra-daemon: the cancel could not be sent: {error}"),
             }
         }
         match inbox.absorb_with(&mut link, synra_store::sqlite::now_ms(), PATIENCE, desk, &peer_address, offer.as_ref()) {

@@ -148,6 +148,42 @@ pub fn from_directory(
     now_ms: i64,
     host: HostFacts,
 ) -> Result<Installed, InstallRefusal> {
+    from_directory_inner(db, backend, plugins_dir, source, now_ms, host, false)
+}
+
+/// Installs a newer version over the plugin already at that identifier.
+///
+/// # What is different from an install
+///
+/// Every check is the same — the package is verified completely before the old directory is touched — and only the final
+/// two steps differ: the existing directory is moved aside, the new one takes its place, and the old one is removed once
+/// the version row has landed. A failure at either step restores the old directory, so an update that cannot finish is an
+/// update that did not happen rather than a plugin that is now half of each version.
+///
+/// # Errors
+///
+/// [`InstallRefusal`] as [`from_directory`], plus `update` when nothing is installed at that identifier.
+pub fn update_from_directory(
+    db: &mut synra_store::SynraDb,
+    backend: &Backend,
+    plugins_dir: &Path,
+    source: &Path,
+    now_ms: i64,
+    host: HostFacts,
+) -> Result<Installed, InstallRefusal> {
+    from_directory_inner(db, backend, plugins_dir, source, now_ms, host, true)
+}
+
+#[allow(clippy::too_many_arguments, reason = "the pipeline's inputs, plus whether it replaces an installed copy")]
+fn from_directory_inner(
+    db: &mut synra_store::SynraDb,
+    backend: &Backend,
+    plugins_dir: &Path,
+    source: &Path,
+    now_ms: i64,
+    host: HostFacts,
+    replace: bool,
+) -> Result<Installed, InstallRefusal> {
     let source = source
         .canonicalize()
         .map_err(|error| InstallRefusal::new("source", format!("{}: {error}", source.display())))?;
@@ -166,7 +202,11 @@ pub fn from_directory(
     let plugin_id = manifest.id.to_string();
     let version = manifest.version.to_string();
 
-    if db.plugin_is_installed(&plugin_id).unwrap_or(false) {
+    let installed = db.plugin_is_installed(&plugin_id).unwrap_or(false);
+    if replace && !installed {
+        return Err(InstallRefusal::new("update", format!("{plugin_id} is not installed, so there is nothing to update")));
+    }
+    if !replace && installed {
         return Err(InstallRefusal::new(
             "install",
             format!("{plugin_id} is already installed; remove it before installing another copy"),
@@ -301,7 +341,9 @@ pub fn from_directory(
     // A staging directory beside the destination and one rename: a plugin directory that exists is one `load_one`
     // will look at, so half an install must never be visible under the name it will be loaded from.
     let destination = plugins_dir.join(&plugin_id);
-    if destination.exists() {
+    // An update replaces exactly this directory; an install has nothing to replace and refuses rather than overwriting a
+    // copy the user did not ask to lose.
+    if destination.exists() && !replace {
         return Err(InstallRefusal::new(
             "write",
             format!("{} already exists on disk", destination.display()),
@@ -364,8 +406,27 @@ pub fn from_directory(
         }
     }
 
+    let backup = if replace {
+        let path = staging_root.join(format!("previous-{}", plugin_id.replace(['/', '\\'], "_")));
+        // A backup left by a crash is stale by definition: the version row either landed with the new directory or the
+        // update never reached this point. Removing it before the move keeps one backup, not a growing set.
+        let _ = synra_store::remove_tree(&staging_root, &path);
+        if let Err(error) = std::fs::rename(&destination, &path) {
+            discard(&staging, &files);
+            return Err(InstallRefusal::new("write", format!("{}: {error}", destination.display())));
+        }
+        Some(path)
+    }
+    else {
+        None
+    };
+
     if let Err(error) = std::fs::rename(&staging, &destination) {
         discard(&staging, &files);
+        if let Some(backup) = &backup {
+            let _ = synra_store::remove_tree(plugins_dir, &destination);
+            let _ = std::fs::rename(backup, &destination);
+        }
         return Err(InstallRefusal::new("write", format!("{}: {error}", destination.display())));
     }
 
@@ -374,9 +435,46 @@ pub fn from_directory(
     // The two writes — the directory and the row — cannot both be atomic together, so the directory is undone when the
     // row fails. The other order would leave a row naming files that were never written, which `load_installed` would
     // report as a broken plugin rather than as a failed install.
-    if let Err(error) = db.insert_plugin(&plugin_id, false, false, "installed", now_ms, now_ms) {
-        discard(&destination, &files);
-        return Err(InstallRefusal::new("record", error.to_string()));
+    //
+    // An update does not insert: the row (and the user's enabled decision) already exists, and installing a new version is
+    // not the moment to forget that the plugin was on — **unless it asks for more**. A new capability is a decision the
+    // user made about the old package and not about this one, so the plugin comes back switched off and untrusted, and
+    // the consent screen asks again.
+    let row_written = if replace {
+        let previous_enabled = db
+            .plugins()
+            .ok()
+            .and_then(|rows| rows.into_iter().find(|row| row.plugin_id == plugin_id))
+            .is_some_and(|row| row.enabled);
+        let previous_capabilities = backup.as_ref().map(|path| capabilities_in(path)).unwrap_or_default();
+        let grew = manifest
+            .capabilities
+            .iter()
+            .any(|declaration| !previous_capabilities.contains(&declaration.cap));
+        let keep_enabled = previous_enabled && !grew;
+        let written = db
+            .set_plugin_enabled(&plugin_id, keep_enabled, now_ms)
+            .map(|_| ())
+            .map_err(|error| error.to_string());
+        if written.is_ok() && grew {
+            // The approval was about the old permission list; the new one has to be asked for again.
+            let _ = db.set_plugin_trusted(&plugin_id, false, now_ms);
+        }
+        written
+    }
+    else {
+        db.insert_plugin(&plugin_id, false, false, "installed", now_ms, now_ms)
+            .map_err(|error| error.to_string())
+    };
+    if let Err(error) = row_written {
+        if let Some(backup) = &backup {
+            let _ = synra_store::remove_tree(plugins_dir, &destination);
+            let _ = std::fs::rename(backup, &destination);
+        }
+        else {
+            discard(&destination, &files);
+        }
+        return Err(InstallRefusal::new("record", error));
     }
 
     // ── Which version is now the one in effect ─────────────────────────────────────────────────────────────────────
@@ -403,8 +501,14 @@ pub fn from_directory(
         &manifest_json,
         now_ms,
     ) {
-        let _ = db.remove_plugin(&plugin_id);
-        discard(&destination, &files);
+        if let Some(backup) = &backup {
+            let _ = synra_store::remove_tree(plugins_dir, &destination);
+            let _ = std::fs::rename(backup, &destination);
+        }
+        else {
+            let _ = db.remove_plugin(&plugin_id);
+            discard(&destination, &files);
+        }
         return Err(InstallRefusal::new("record", error.to_string()));
     }
 
@@ -419,6 +523,12 @@ pub fn from_directory(
             &publisher.pubkey,
             now_ms,
         );
+    }
+
+    // ★ The old directory is removed only now: it was the rollback for both the move and the version row, and deleting it
+    // earlier would have made a failed record unrecoverable.
+    if let Some(backup) = backup {
+        let _ = synra_store::remove_tree(&staging_root, &backup);
     }
 
     Ok(Installed { plugin_id, version, path: destination, warnings, signed_by })
@@ -443,9 +553,21 @@ fn trust_store(db: &synra_store::SynraDb) -> PublisherTrustStore {
     store
 }
 
+/// The capabilities the manifest in one directory declares.
+///
+/// Used only for the update's before/after comparison; a directory whose manifest cannot be read answers an empty list,
+/// which makes the comparison conservative in the direction that matters — every capability then counts as new, so the
+/// plugin is switched off rather than silently kept on with permissions nobody reviewed.
+fn capabilities_in(directory: &Path) -> Vec<String> {
+    std::fs::read_to_string(directory.join("manifest.json"))
+        .ok()
+        .and_then(|text| Manifest::from_json(&text).ok())
+        .map(|manifest| manifest.capabilities.into_iter().map(|declaration| declaration.cap).collect())
+        .unwrap_or_default()
+}
+
 /// The publisher of a signature this build verified, if it is one.
-fn signed_publisher(signature: &str) -> Option<SignedPublisher> {
-    let document = SignatureFile::parse(signature).ok()?;
+fn signed_publisher(signature: &str) -> Option<SignedPublisher> {    let document = SignatureFile::parse(signature).ok()?;
     let VerifyOutcome::Good { fingerprint } = document.verify().ok()? else {
         return None;
     };

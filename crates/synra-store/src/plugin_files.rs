@@ -24,6 +24,32 @@ use std::path::Path;
 
 use crate::paths::{PathError, Paths, is_within};
 
+/// Deletes a directory tree the caller owns, when it is inside `root`.
+///
+/// # Why a helper rather than a call in the installer
+///
+/// Because 11 §D2 names this file as one of the two places a tree may be removed, and an update's backup is a plugin
+/// directory like any other: moving the operation here keeps the rule checkable instead of adding a second exception in
+/// the kernel. The containment check is the same one [`PluginFiles::remove`] makes, for the same reason — a path mistake
+/// must not become somebody else's lost files.
+///
+/// # Errors
+///
+/// [`std::io::ErrorKind::PermissionDenied`] when `path` is not inside `root`, and the filesystem's error when the tree
+/// cannot be removed.
+pub fn remove_tree(root: &Path, path: &Path) -> Result<(), PathError> {
+    if !is_within(root, path) {
+        return Err(PathError::Escapes {
+            path: path.display().to_string(),
+            root: root.display().to_string(),
+        });
+    }
+    std::fs::remove_dir_all(path).map_err(|error| PathError::RemovalFailed {
+        path: path.display().to_string(),
+        detail: error.to_string(),
+    })
+}
+
 /// Deletes a plugin's artifact directory, and its data directory when asked.
 #[derive(Debug, Clone)]
 pub struct PluginFiles {
