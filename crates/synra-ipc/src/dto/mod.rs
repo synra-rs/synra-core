@@ -47,9 +47,9 @@ pub use devices::{
 };
 pub use intent::{IntentCandidate, IntentDecisionDto, IntentPrompt, IntentSnapshot, IntentSourceDto};
 pub use plugin::{
-    AuditEntryDto, CatalogItem, CatalogQuery, InstallPreviewDto, InstallReport, InstallSourceDto, PluginHealthDto,
-    PluginSnapshot, PublisherDto, RemoveOptionsDto, RemoveReport, SyncFailure, SyncPlanDto, SyncReport,
-    SyncTarget, UpdateInfo,
+    AuditEntryDto, CatalogItem, CatalogQuery, CatalogSort, InstallPreviewDto, InstallReport, InstallSourceDto,
+    PluginHealthDto, PluginSnapshot, PublisherDto, RemoveOptionsDto, RemoveReport, SyncFailure, SyncPlanDto,
+    SyncReport, SyncTarget, UpdateInfo,
 };
 pub use transfer::{SendFileRequest, SendTextRequest, TransferSnapshot, TransferSummary};
 
