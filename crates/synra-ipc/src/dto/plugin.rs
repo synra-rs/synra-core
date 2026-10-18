@@ -193,6 +193,15 @@ pub struct InstallReport {
     /// Whether it is enabled. **Always `false` from an install**: installing is not approving, and the field is here so
     /// that a caller cannot read its absence as "it is probably on".
     pub enabled: bool,
+    /// Who signed the package, when it carried a genuine signature.
+    ///
+    /// The pair is the question the interface asks next: "this key signed it — do you trust the key?". Absent means the
+    /// package was unsigned, which is the ordinary case for a local build.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub publisher_id: Option<String>,
+    /// The signing key's fingerprint, when there was a signature.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
 }
 
 /// What to do with the plugin's data when removing it.

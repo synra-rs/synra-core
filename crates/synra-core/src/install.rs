@@ -70,6 +70,24 @@ pub struct Installed {
     /// A warning is a fact to tell the user — "this plugin's notification action will not work on this host" — and a
     /// report that dropped it would present a plugin that half-works as one that works.
     pub warnings: Vec<String>,
+    /// Who signed the package, when it carried a genuine signature.
+    ///
+    /// ★ Carried out of the install because it is the **question** an interface has to ask next: the fingerprint is what a
+    /// person compares, and a caller that had to re-read the signature file from the plugin directory would be reading a
+    /// copy the install had already checked. It is also the only place the install knows the publisher was *new* — the
+    /// prompt is worth showing for `seen`, and noise for a key the user already decided.
+    pub signed_by: Option<SignedPublisher>,
+}
+
+/// The publisher of a package, as the install saw it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignedPublisher {
+    /// The publisher's own identifier.
+    pub publisher_id: String,
+    /// The key's fingerprint, as a person reads it.
+    pub fingerprint: String,
+    /// The key, base64. Not shown to the interface; stored because a fingerprint cannot be turned back into a key.
+    pub pubkey: String,
 }
 
 /// Why an install did not happen.
@@ -393,11 +411,17 @@ pub fn from_directory(
     // ★ Recorded after the install succeeded, not before: a package that failed a check did not make its publisher a
     // part of this device's history, and a row written for it would make the next prompt say "seen before" about a
     // signature this device refused.
-    if let Some(text) = &signature {
-        note_publisher(db, text, now_ms);
+    let signed_by = signature.as_deref().and_then(signed_publisher);
+    if let Some(publisher) = &signed_by {
+        let _ = db.record_publisher(
+            &publisher.publisher_id,
+            &publisher.fingerprint,
+            &publisher.pubkey,
+            now_ms,
+        );
     }
 
-    Ok(Installed { plugin_id, version, path: destination, warnings })
+    Ok(Installed { plugin_id, version, path: destination, warnings, signed_by })
 }
 
 /// The publisher decisions this device has made, in the shape the verifier takes.
@@ -419,22 +443,17 @@ fn trust_store(db: &synra_store::SynraDb) -> PublisherTrustStore {
     store
 }
 
-/// Notes the publisher of a signature this device just installed.
-///
-/// `DO NOTHING` in the store means a decision is never overwritten by a later sighting; see [`SynraDb::record_publisher`].
-fn note_publisher(db: &synra_store::SynraDb, signature: &str, now_ms: i64) {
-    let Ok(document) = SignatureFile::parse(signature) else {
-        return;
+/// The publisher of a signature this build verified, if it is one.
+fn signed_publisher(signature: &str) -> Option<SignedPublisher> {
+    let document = SignatureFile::parse(signature).ok()?;
+    let VerifyOutcome::Good { fingerprint } = document.verify().ok()? else {
+        return None;
     };
-    let Ok(VerifyOutcome::Good { fingerprint }) = document.verify() else {
-        return;
-    };
-    let _ = db.record_publisher(
-        &document.publisher.id,
-        fingerprint.as_str(),
-        &document.pubkey,
-        now_ms,
-    );
+    Some(SignedPublisher {
+        publisher_id: document.publisher.id.clone(),
+        fingerprint: fingerprint.as_str().to_owned(),
+        pubkey: document.pubkey.clone(),
+    })
 }
 
 /// Installs a plugin from a `.synra` archive.

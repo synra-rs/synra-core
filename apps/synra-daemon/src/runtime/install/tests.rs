@@ -195,6 +195,11 @@ fn a_signed_package_with_a_genuine_signature_installs() {
     assert_eq!(publishers.len(), 1);
     assert_eq!(publishers[0].publisher_id, "@acme");
     assert_eq!(publishers[0].trust, synra_store::TRUST_SEEN);
+    // ★ The fingerprint travels with the result, because the interface's next question is "do you trust this key?" and a
+    // caller that had to re-read the signature would be reading a copy the install already checked.
+    let signed = installed.signed_by.expect("a signed package names its signer");
+    assert_eq!(signed.publisher_id, "@acme");
+    assert!(!signed.fingerprint.is_empty(), "the fingerprint is what a person compares");
 }
 
 #[test]
