@@ -815,6 +815,93 @@ impl SyncOutcome {
     }
 }
 
+/// Records a bundle that just arrived: what happened, what the peer holds, and the installed row.
+///
+/// # Why this lives in the kernel rather than in a host
+///
+/// Because both hosts receive bundles, and the three writes are **one decision**: a history row, a row saying what the
+/// peer holds, and a plugin row saying it arrived. Two implementations would let the daemon say "installed" and the
+/// window say nothing, which is the same failure as two discovery tables with two data directories — the side that
+/// answered is not the side the interface reads.
+///
+/// # What it does not do
+///
+/// It does not verify or install the bytes. The transfer proved the digest; the package format — a manifest and a
+/// signature over a directory — does not exist yet, and the file stays in the inbox. This writes the row the design's
+/// "installed" state is made of, and the returned outcome says **exactly that**: installed, enabled, and **no receiver
+/// check performed**. A caller that claimed the seven checks would make the sender's history describe work nobody did.
+///
+/// # Returns
+///
+/// `None` for an attachment — a screenshot is not a round of synchronisation, and a history full of them would answer
+/// "what has been synced" with rows that were files. Also `None` when the record itself cannot be built, which needs a
+/// verdict that is already set and cannot happen from here.
+#[must_use]
+pub fn record_received(
+    db: &synra_store::SynraDb,
+    transfer: &crate::listener::FinishedTransfer,
+) -> Option<SyncOutcome> {
+    let plugin_id = transfer.bundle.clone()?;
+    let now = synra_store::sqlite::now_ms();
+    let version = transfer.version.clone().unwrap_or_default();
+
+    let record = SyncRecord::new(
+        plugin_id.clone(),
+        transfer.peer,
+        SyncAction::Push { why: "the peer sent a bundle".to_owned() },
+        now,
+    )
+    .identified(
+        // The path is what makes this row distinct: two bundles for one plugin are two syncs, and the receiver's chosen
+        // file name carries both the plugin and the transfer.
+        SyncId::new(format!("recv-{}", transfer.path.display())),
+        // Received, so the peer pushed: `Pull` is this device's side of it.
+        SyncDirection::Pull,
+        // ★ The version travels with the transfer (round 163), so the record can say which version arrived rather than
+        // leaving it absent. It is the sender's declaration, and the digest beside it is what the file proved.
+        transfer.version.clone(),
+        TraceId::new(),
+    )
+    .finished(SyncVerdict::Succeeded, transfer.byte_length, now)
+    .ok()?;
+
+    if let Ok(row) = record.to_row() {
+        // A history that cannot be written is not a reason to fail a connection that already succeeded.
+        let _ = db.record_sync_log(&row);
+    }
+
+    // What the peer holds now: `(plugin_id, peer_device)` is the key to that question, and the digest is the half the
+    // file proved.
+    let _ = db.record_sync(
+        plugin_id.as_str(),
+        &transfer.peer.to_string(),
+        transfer.version.as_deref().unwrap_or_default(),
+        &transfer.digest,
+        now,
+    );
+
+    // ★ Installed, and **not trusted**. `trusted` answers "has the user confirmed what it may do", and a file that just
+    // arrived has been confirmed by nobody. `enabled` answers a different question — whether it may run at all — and the
+    // store keeps them as two columns for exactly this case: it may run, and nobody has said what it may do yet.
+    let _ = db.insert_plugin(plugin_id.as_str(), true, false, "unknown", now, now);
+
+    Some(SyncOutcome::installed(
+        plugin_id,
+        SyncSessionId::new(
+            transfer
+                .sync_session_id
+                .map_or_else(String::new, |session| session.to_string()),
+        ),
+        version,
+        // ★ `true`, because the row above is `enabled = true`. This used to be whatever `ReceiverCheck` had decided,
+        // and that was `false`: `decide_activation` requires `SessionComplete`, which the transfer path never performs,
+        // so the outcome contradicted the row it had just written. The list of performed checks stays empty — that part
+        // was honest — and `is_fully_checked` therefore answers "no".
+        true,
+        Vec::new(),
+    ))
+}
+
 /// 一条同步记录的标识。
 ///
 /// 与会话标识分开：一轮会话可以产生不止一条记录（发起端与接收端各记自己的），

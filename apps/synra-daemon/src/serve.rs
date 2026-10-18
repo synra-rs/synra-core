@@ -211,140 +211,6 @@ fn sleep_until_shutdown(
     !supervisor.is_shutting_down()
 }
 
-/// Binds the control socket and serves until interrupted.
-///
-/// # Why this is one loop and not a task per client
-///
-/// A command-line client sends one batch and closes, so the work per connection is bounded by what the kernel does for
-/// that batch — and the kernel has nothing to overlap, because the layer that would do the work is not written. A thread
-/// per connection would be concurrency with nothing to run concurrently.
-///
-/// # Why a missing plan is not a failure here
-///
-/// `may_run` was already true, so a plan exists. Reading it as `None` would be a contradiction rather than a condition a
-/// user can act on, and the honest answer is to say which invariant broke.
-/// Writes one row of synchronisation history for a transfer that just finished.
-///
-/// ★ **Why this is a function.**
-///
-/// The callback it is called from lives inside the listener's connection loop, which never returns — so nothing that
-/// happens only inside it can be tested. Moving the work here makes it reachable with an in-memory database and a
-/// hand-built [`synra_core::listener::FinishedTransfer`], which is the difference between "the wiring compiles" and
-/// "a received bundle becomes a row".
-///
-/// Three things that had no caller meet here: `SyncRecord` (which grew the fields for a record in round 133),
-/// migration v10's `sync_log` table (round 135), and the conversion between them (round 136).
-///
-/// # Why an attachment is skipped rather than recorded
-///
-/// Because a screenshot is not a synchronisation. A history that filled up with them would answer "what has been
-/// synced" with the wrong rows, and a user reading it would have no way to tell which line was a plugin.
-fn record_received(
-    db: &Mutex<synra_store::SynraDb>,
-    data_dir: &std::path::Path,
-    transfer: &synra_core::listener::FinishedTransfer,
-) -> Option<synra_core::plugin_sync::SyncOutcome> {
-    let Some(plugin_id) = transfer.bundle.clone() else {
-        // 一个附件不是一轮同步，所以没有结果可回。
-        return None;
-    };
-    let now = synra_store::sqlite::now_ms();
-    let Ok(record) = synra_core::plugin_sync::SyncRecord::new(
-        // Cloned because the second table below needs the identifier too, and the two questions it answers — what
-        // happened, and what the peer holds — are both about the same plugin.
-        plugin_id.clone(),
-        transfer.peer,
-        synra_core::plugin_sync::SyncAction::Push {
-            why: "the peer sent a bundle".to_owned(),
-        },
-        now,
-    )
-    .identified(
-        // The path is what makes this row distinct: two bundles for one plugin are two syncs, and the file name the
-        // receiver chose carries both the plugin and the transfer.
-        synra_core::plugin_sync::SyncId::new(format!("recv-{}", transfer.path.display())),
-        // Received, so the peer pushed: `Pull` is this device's side of it.
-        synra_core::plugin_sync::SyncDirection::Pull,
-        // The version is in the transfer's metadata, which the listener does not keep — so it is honestly absent
-        // rather than guessed from the file name.
-        None,
-        synra_protocol::ids::TraceId::new(),
-    )
-    .finished(
-        synra_core::plugin_sync::SyncVerdict::Succeeded,
-        transfer.byte_length,
-        now,
-    )
-    else {
-        // 连一条记录都造不出来时，也没有结果可回（只可能是 `verdict` 之类，实际上不会发生）。
-            return None;
-    };
-    if let Ok(row) = record.to_row() {
-        // A history that cannot be written is not a reason to fail a connection that already succeeded.
-        let _ = db.lock().record_sync_log(&row);
-    }
-
-    // ★ And the other question, which the history cannot answer: **what does the other device hold now**.
-    //
-    // `sync_records` is keyed by `(plugin_id, peer_device)` and was written for exactly this — a lookup that says
-    // whether two ends agree, rather than a list of what happened. It had no writer until now.
-    //
-    // The version is empty rather than guessed: it travels in the transfer's metadata, and a `Decision` carries what
-    // the *file* proved, which is the digest. An empty version is a row that says "this peer holds these bytes" —
-    // which is true, and better than a version invented from a file name.
-    let _ = db.lock().record_sync(
-        plugin_id.as_str(),
-        &transfer.peer.to_string(),
-        transfer.version.as_deref().unwrap_or_default(),
-        &transfer.digest,
-        now,
-    );
-
-    // ★ And the plugin is installed — which is a **decision**, not the only possible behaviour.
-    //
-    // A file that arrived could be left in the inbox for a user to approve first. What decides it here is that this
-    // kernel has nowhere to *record* "arrived but not installed": `plugins` is the only table that says a plugin
-    // exists, and a package sitting in a directory with no row is invisible to every reader — a state the design has
-    // no name for, and one this codebase keeps replacing with a sentence that says which half happened.
-    //
-    // ★ `trusted: false` is the part that matters. `PluginRow::trusted` answers "has the user confirmed what it may
-    // do", and a file that just arrived has been confirmed by nobody. `enabled: true` answers a different question —
-    // whether it may run at all — and the store keeps them as two columns for exactly this case: "this may run, and
-    // nobody has said what it may do yet".
-    //
-    // This is the first caller `insert_plugin` and `plugin_is_installed` have had.
-    let _ = db.lock().insert_plugin(plugin_id.as_str(), true, false, "unknown", now, now);
-
-    // ★ 而这三项是这一侧**真的能做**的检查 —— 于是 `performed` 不再是空的。
-    //
-    // ★ 而另外四项（`PackageDigest`、`Signature`、`Manifest`、`ArchiveLimits`）与 `SessionComplete`
-    // **做不了**，理由是一个真实的设计冲突而不是省略：`ReceiverCheck::verify_digest` 与
-    // `check_session_complete` 都要一个 `SyncSession`，而传输路径用的是 `TransferReceiver` ——
-    // 两套块记账，形状不同（第 137 轮对 `SyncInbox` 的那个判断，对这里是同一个事实）。
-    // 把其中任何一项记成「做过」，都会让 ⑨ 写下一件没发生的事。
-    let mut check = synra_core::plugin_sync::ReceiverCheck::new();
-    let _ = check.check_room(data_dir, transfer.byte_length);
-    let _ = check.decide_activation(true);
-    let _ = check.keep_local_grants(true);
-
-    // ★ 回给对端的是**实际做过的事**（上面三项），而不是一份「都检查过了」的清单。
-    //
-    // `performed` 是空的，而那不是省略：它列的是 ⑧ 的七项**检查**义务（`PackageDigest`、`Signature`、
-    // `Manifest`、`ArchiveLimits`、`SessionComplete`、`LocalActivation`、`LocalGrants`），
-    // 而这个内核**一项都还没有跑** —— 它做的是安装。一个声称检查过的 outcome 会让 ⑨ 写下一件没发生的事。
-    //
-    // `activated` 是 `true`，因为安装时那个插件是被启用的（第 151 轮），而「启用」是这一侧的政策。
-    Some(check.finish(
-        plugin_id,
-        synra_core::plugin_sync::SyncSessionId::new(
-            transfer
-                .sync_session_id
-                .map_or_else(String::new, |session| session.to_string()),
-        ),
-        transfer.version.clone().unwrap_or_default(),
-    ))
-}
-
 /// Runs the daemon until the supervisor says to stop, and reports how it ended.
 ///
 /// Everything the daemon owns is built here in one order the comments below explain: the claim, the database,
@@ -708,33 +574,16 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
         // The token is the loop's stop condition, so cancelling the task *is* stopping the listener — there is no second
         // flag for the two to disagree about.
         if let Err(error) = synra_core::supervisor::run_task(&supervisor, &id, move |token| {
-            // ★ The callback is wired, and this is as far as the value can travel today.
-    //
-    // `Decision::Finished` knows the path, the size, the plugin and the sender; `SyncRecord` grew the fields for a
-    // record in round 133, migration v10 gave it a table in round 135, and round 136 wrote the conversion between
-    // them. What none of them had was a caller with a database — and this is where that runs out for now, for a
-    // reason worth writing down rather than working around:
-    //
-    //   * `shared_db` is the only `Arc<Mutex<SynraDb>>` in this scope, and **it has already been taken**: line 637
-    //     clones it into `remembered`, which outlives this. An `Arc::clone` here compiles, and the borrow checker's
-    //     complaint that follows is about that later use, not this one.
-    //   * `db` in this function is a `SynraDb` **value**, not an `Arc` — it is moved into `shared_db` at line 381.
-    //
-    // So writing the row needs either a second `Arc` alongside `shared_db` or a clone taken before it is consumed;
-    // that is a one-line change to a signature, and it is the next round's first step. Until then this says what
-    // arrived rather than pretending to have recorded it.
-    // ★ 用 `data_dir`（上面那个 `let data_dir = runtime.data_dir.clone();`）而不是 `plan.data_dir`。
-    //
-    // 这个闭包是 `move` 而且必须是 `'static`，而 `plan` 借自 `decision` —— `decision` 只在这个函数体内有效。
-    // 第一次写的是 `plan.data_dir.clone()`，编译说 "borrowed data escapes"：**表达式里提到 `plan`
-    // 就会让闭包捕获那个借用**，即使 `clone()` 的结果是 owned 的。
-    let plugins_root = std::path::PathBuf::from(&data_dir);
-    let on_finished: synra_core::listener::FinishedCallback = {
-        let history_db = Arc::clone(&history_db);
-        Arc::new(move |transfer: &synra_core::listener::FinishedTransfer| {
-            record_received(&history_db, &plugins_root, transfer)
-        })
-    };
+            // ★ What a finished transfer means is the same in both hosts, so the work lives in the kernel: a history
+            // row, a row saying what the peer holds, and the installed plugin row. The daemon owned that function and
+            // the window had none, which is why a bundle arriving at the window was recorded as the peer's state and
+            // never as this device's.
+            let on_finished: synra_core::listener::FinishedCallback = {
+                let history_db = Arc::clone(&history_db);
+                Arc::new(move |transfer: &synra_core::listener::FinishedTransfer| {
+                    synra_core::plugin_sync::record_received(&history_db.lock(), transfer)
+                })
+            };
     synra_core::listener::serve(&peers, token, &data_dir, &desk, &router, &on_finished);
             Ok(())
         }) {
@@ -881,115 +730,6 @@ fn heartbeat_loop(supervisor: &Arc<synra_core::supervisor::Supervisor>, lock_pat
 #[cfg(test)]
 mod tests {
 
-    fn a_database() -> Mutex<synra_store::SynraDb> {
-        let mut db = synra_store::SynraDb::open_in_memory().expect("opens");
-        db.migrate().expect("migrates");
-        Mutex::new(db)
-    }
-
-    fn a_bundle() -> synra_core::listener::FinishedTransfer {
-        synra_core::listener::FinishedTransfer {
-            path: std::path::PathBuf::from("inbox/plugin-acme-chat.wasm"),
-            byte_length: 4_096,
-            bundle: Some(
-                synra_protocol::ids::PluginId::try_from("@acme/chat".to_owned()).expect("a plugin id"),
-            ),
-            peer: synra_protocol::ids::DeviceId::new(),
-            digest: "sha256-test".to_owned(),
-            version: Some("1.2.0".to_owned()),
-            sync_session_id: None,
-        }
-    }
-
-    #[test]
-    fn a_received_bundle_becomes_a_row_of_history() {
-        // ★ 这一条是这一轮的核心：三件彼此孤立了十几轮的东西，在这里第一次真的合作 ——
-        // `SyncRecord`（第 133 轮长出这些字段）、迁移 v10 的 `sync_log` 表（第 135 轮）、
-        // 以及两者之间的转换（第 136 轮）。在此之前它们各自有读者、有测试、没有调用者。
-        let db = a_database();
-        let transfer = a_bundle();
-        super::record_received(&db, std::path::Path::new("."), &transfer);
-
-        let rows = db.lock().sync_log(None, 10).expect("reads");
-        assert_eq!(rows.len(), 1, "the bundle was not recorded: {rows:?}");
-        assert_eq!(rows[0].plugin_id, "@acme/chat");
-        assert_eq!(rows[0].peer_device, transfer.peer.to_string());
-        assert!(rows[0].finished_at_ms.is_some(), "a finished transfer with no end time");
-        // 而按插件过滤的那条查询也回得来 —— 这是第 136 轮那个转换的第一次生产性使用。
-        assert_eq!(db.lock().sync_log(Some("@acme/chat"), 10).expect("reads").len(), 1);
-    }
-
-    #[test]
-    fn an_attachment_is_not_a_synchronisation() {
-        // 一张截图不是一次同步。一份填满它们的「历史」会用错误的行回答「同步过什么」，
-        // 而读它的用户没有办法分辨哪一行是插件。
-        let db = a_database();
-        let mut attachment = a_bundle();
-        attachment.bundle = None;
-        super::record_received(&db, std::path::Path::new("."), &attachment);
-
-        assert!(
-            db.lock().sync_log(None, 10).expect("reads").is_empty(),
-            "an attachment was recorded as a synchronisation"
-        );
-    }
-
-    #[test]
-    fn a_received_bundle_says_what_the_peer_now_holds() {
-        // ★ 「发生了什么」与「对端现在有什么」是两个问题，而 `sync_records` 是为后者写的：
-        // 它由 `(plugin_id, peer_device)` 主键回答「两端是否一致」，而不是罗列发生过的事。
-        // 第 134 轮建了这张表、第 136 轮做了转换、第 149 轮接上了历史 —— 到这一轮它才第一次有写者。
-        let db = a_database();
-        let transfer = a_bundle();
-        super::record_received(&db, std::path::Path::new("."), &transfer);
-
-        let rows = db.lock().sync_records().expect("reads");
-        assert_eq!(rows.len(), 1, "what the peer holds was not recorded: {rows:?}");
-        assert_eq!(rows[0].plugin_id, "@acme/chat");
-        assert_eq!(rows[0].peer_device, transfer.peer.to_string());
-        // ★ 而摘要真的写进去了 —— 它是唯一能回答「两端是否持有同样的字节」的东西。
-        assert_eq!(rows[0].digest, "sha256-test");
-        // 版本诚实地是空的：它随传输的元数据走，而一次 `Decision` 带的是**文件证明过**的东西，那个是摘要。
-        assert_eq!(rows[0].version, "1.2.0");
-    }
-
-    #[test]
-    fn a_received_bundle_is_installed_but_not_trusted() {
-        // ★ 这一条把两个在 `synra-store` 里写好了、测过了、而**没有任何生产代码调用过**的函数接上了：
-        // `insert_plugin` 与 `plugin_is_installed`。
-        let db = a_database();
-        // ★ 一个**真的**目录：`check_room` 会去问它有多少空余，而一个不存在的路径会被它拒绝 ——
-        // 而第 130 轮的设计是**一个被拒绝的步骤不留痕迹**，所以那会让 `performed` 空着。
-        // 第一次这行写的是 `"."`，测试失败，而失败原因正是这个。
-        // `TempDir` 是 `runtime::tests` 的辅助，这个模块里没有 —— 建一个自己的目录就够了。
-        let dir = std::env::temp_dir().join("synra-record-received");
-        std::fs::create_dir_all(&dir).expect("a directory to install into");
-        // ★ 而这里**故意没有**断言 `performed` 非空 —— 因为这一轮发现它**仍然是**空的，
-        // 而我没有查出为什么。
-        //
-        // 上面那三项检查（磁盘空间、是否启用、权限归本机）都调了，而 `ReceiverCheck` 会对一个
-        // **被拒绝**的步骤不留痕迹（第 130 轮的设计）。所以 `performed` 空着有两种可能：
-        // 三项之中有的失败了（`check_room` 会去问目录有多少空余，而那个探针在第 130 轮有过
-        // 一个 Windows 上的坑），或者 `finish` 没有把它们带过来。
-        //
-        // **一个为了通过而写的断言比没有断言更糟**，所以这里只留下调用，把问题写在原地。
-        let _ = super::record_received(&db, &dir, &a_bundle()).expect("a bundle has an outcome");
-
-        assert!(
-            db.lock().plugin_is_installed("@acme/chat").expect("reads"),
-            "the received bundle was not installed"
-        );
-        let installed = db.lock().plugins().expect("reads");
-        assert_eq!(installed.len(), 1, "{installed:?}");
-        // ★ 而它**不可信**：一个刚到达的文件没有被任何人确认过它能做什么。
-        assert!(
-            !installed[0].trusted,
-            "a file that just arrived is trusted by nobody"
-        );
-        // 但它可以被运行 —— 这是两个不同的问题，两列。
-        assert!(installed[0].enabled);
-        assert_eq!(installed[0].health, "unknown", "health is observed, not assumed");
-    }
     use std::sync::Arc;
     use std::time::Duration;
 
