@@ -73,7 +73,7 @@ pub fn outcome_at(
     match &args.action {
         DbAction::Integrity => integrity(format, &db),
         DbAction::Backup { path } => backup(format, &db, path),
-        DbAction::Export { path } => export(format, &db, path),
+        DbAction::Export { path } => export(format, &db, &paths, path),
         DbAction::Dump { table } => dump(format, &db, table.as_deref()),
         // Handled before the database was opened; see `outcome_at`.
         DbAction::Restore { .. } | DbAction::Import { .. } => {
@@ -184,9 +184,10 @@ fn backup(
 fn export(
     format: Option<crate::args::OutputFormat>,
     db: &SynraDb,
+    paths: &Paths,
     path: &std::path::Path,
 ) -> CommandOutcome {
-    let summary = match synra_store::export_backup(db, path, now_ms()) {
+    let summary = match synra_store::export_backup(db, &paths.plugins_dir(), path, now_ms()) {
         Ok(summary) => summary,
         Err(error) => return CommandOutcome::Failed(error.to_string()),
     };
@@ -252,8 +253,13 @@ fn import(
             if !report.plugins.is_empty() {
                 lines.push("reinstall these plugins:".to_owned());
                 for plugin in &report.plugins {
+                    let source = plugin
+                        .source
+                        .as_deref()
+                        .map(|origin| format!(" (from {origin})"))
+                        .unwrap_or_default();
                     lines.push(format!(
-                        "  {} {}",
+                        "  {} {}{source}",
                         plugin.plugin_id,
                         plugin.version.as_deref().unwrap_or("(unknown version)")
                     ));

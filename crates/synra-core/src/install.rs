@@ -265,6 +265,20 @@ fn from_directory_inner(
         Err(error) => return Err(InstallRefusal::new("read", format!("signature.json: {error}"))),
     };
 
+    // ── Where this copy came from, recorded beside it ────────────────────────────────────────────────────────────────
+    //
+    // ★ `source.json`, because the design's restore flow ends with "reinstall these" and a list of identifiers is not
+    // enough: the packages this host installs are directories, and the path is the one fact the user cannot reconstruct
+    // from what a backup carries. It is written as part of `files` so every rollback path removes it with the rest — a
+    // leftover source note beside a directory the install discarded would be a lie about a plugin that is not there.
+    let source_note = serde_json::json!({
+        "path": source.display().to_string(),
+        "installedAtMs": now_ms,
+    });
+    let source_note = serde_json::to_vec_pretty(&source_note)
+        .map_err(|error| InstallRefusal::new("write", format!("source.json: {error}")))?;
+    files.push(("source.json".to_owned(), source_note));
+
     // ── The imports, which need a compiled artifact ─────────────────────────────────────────────────────────────────
     //
     // Compiling here is not a second load: it is the only way to learn what a component imports, which is the fact two
@@ -633,6 +647,18 @@ pub fn from_package(
     };
     let outcome = from_directory(db, backend, plugins_dir, &unpacked, now_ms, host);
     discard_unpacked(&unpacked, &written);
+    // ★ The unpacked directory is about to disappear, so the note the inner install wrote names a path that will not
+    // exist. Rewrite it with the archive the user actually has: a reinstall list that pointed at a deleted temporary
+    // directory would be exactly as useless as no list at all.
+    if let Ok(installed) = &outcome {
+        let note = serde_json::json!({
+            "path": archive.display().to_string(),
+            "installedAtMs": now_ms,
+        });
+        if let Ok(bytes) = serde_json::to_vec_pretty(&note) {
+            let _ = std::fs::write(installed.path.join("source.json"), bytes);
+        }
+    }
     outcome
 }
 
@@ -842,9 +868,48 @@ mod tests {
         assert_eq!(installed.version, "1.0.0");
         assert!(installed.path.join("manifest.json").is_file(), "the manifest was not written");
         assert!(installed.path.join("plugin.wasm").is_file(), "the artifact was not written");
+        // ★ The origin travels with the copy: a backup can list the plugin, and only this note can say where to get it
+        // back from on this host.
+        let source_note: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(installed.path.join("source.json")).expect("the source note"),
+        )
+        .expect("source.json is JSON");
+        let noted = PathBuf::from(
+            source_note["path"].as_str().expect("a path in the source note"),
+        );
+        assert_eq!(
+            std::fs::canonicalize(noted).expect("a canonical noted source"),
+            std::fs::canonicalize(&archive).expect("a canonical archive"),
+            "the source note names the unpacked temporary directory rather than the package"
+        );
         assert!(
             !root.join(".install-staging").read_dir().expect("the staging directory").any(|_| true),
             "the unpacked archive was left behind"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_directory_install_records_where_it_came_from() {
+        // ★ The directory is the package the user still has; unlike the archive path, nothing removes it after the
+        // install, so the note is a reinstall instruction rather than a name of something that is already gone.
+        let root = scratch("directory-origin");
+        let source = root.join("source");
+        write_source(&source);
+        let plugins = root.join("plugins");
+        std::fs::create_dir_all(&plugins).expect("the plugins directory");
+
+        let installed = from_directory(&mut database(), &backend(), &plugins, &source, 1_000, HostFacts::headless())
+            .expect("installs");
+        let note: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(installed.path.join("source.json")).expect("the source note"),
+        )
+        .expect("source.json is JSON");
+        let noted = PathBuf::from(note["path"].as_str().expect("a path"));
+        assert_eq!(
+            std::fs::canonicalize(noted).expect("a canonical noted source"),
+            std::fs::canonicalize(&source).expect("a canonical source"),
+            "the note does not name the directory it was installed from"
         );
         let _ = std::fs::remove_dir_all(&root);
     }

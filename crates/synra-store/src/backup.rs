@@ -66,6 +66,16 @@ pub struct PluginEntry {
     pub version: Option<String>,
     /// Whether it was switched on.
     pub enabled: bool,
+    /// Where the package came from on the device that made the container, when the install recorded it.
+    ///
+    /// # Why this is in the plugin list
+    ///
+    /// Because the design's restore flow ends with "reinstall these", and a list of identifiers is not an instruction.
+    /// The installer writes a `source.json` beside the artifact; this carries what it says, so the import can tell a user
+    /// which file or directory to install again. `None` is honest: an older install, or a container written before the
+    /// note existed, does not know.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 /// What an export wrote.
@@ -140,6 +150,7 @@ pub enum BackupError {
 /// names the step that failed.
 pub fn export_backup(
     db: &SynraDb,
+    plugins_dir: &Path,
     destination: &Path,
     created_ms: i64,
 ) -> Result<BackupSummary, BackupError> {
@@ -150,7 +161,7 @@ pub fn export_backup(
     // The database copy is written beside the container and removed afterwards: a temporary file in the same directory is
     // what makes the rename/copy cheap, and the container is the only artifact a user should find afterwards.
     let kernel = temp_sibling(destination, "kernel");
-    let result = write_container(db, destination, &kernel, created_ms);
+    let result = write_container(db, plugins_dir, destination, &kernel, created_ms);
     let _ = std::fs::remove_file(&kernel);
     if result.is_err() {
         // A half-written container is worse than none: the next attempt would find a destination that exists.
@@ -162,6 +173,7 @@ pub fn export_backup(
 /// The bytes of the container: manifest, configuration, plugin list, database.
 fn write_container(
     db: &SynraDb,
+    plugins_dir: &Path,
     destination: &Path,
     kernel: &Path,
     created_ms: i64,
@@ -178,6 +190,7 @@ fn write_container(
                 .ok()
                 .flatten()
                 .map(|(version, _)| version),
+            source: source_of(plugins_dir, &row.plugin_id),
             enabled: row.enabled,
             plugin_id: row.plugin_id,
         })
@@ -211,6 +224,16 @@ fn write_container(
         plugins: plugins.len(),
         bytes: std::fs::metadata(destination).map_err(|error| BackupError::Io { detail: error.to_string() })?.len(),
     })
+}
+
+/// What an install recorded about where its package came from, when the note is there.
+///
+/// A note that cannot be read is `None` rather than an error: the plugin is installed either way, and a backup that refused
+/// to be written because one metadata file was damaged would be turning a diagnostic into a blocker.
+fn source_of(plugins_dir: &Path, plugin_id: &str) -> Option<String> {
+    let text = std::fs::read_to_string(plugins_dir.join(plugin_id).join("source.json")).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    value.get("path").and_then(serde_json::Value::as_str).map(ToOwned::to_owned)
 }
 
 /// The configuration as a JSON object, one key per dotted path.
@@ -352,8 +375,16 @@ mod tests {
         db.set_config("test.key", &serde_json::json!("from the backup"), 1)
             .expect("written");
         db.insert_plugin("@acme/hello", true, true, "healthy", 1, 1).expect("inserted");
+        // The note an install writes beside the artifact; the container is supposed to carry it.
+        let plugins_dir = scratch.0.join("plugins");
+        std::fs::create_dir_all(plugins_dir.join("@acme/hello")).expect("a plugin directory");
+        std::fs::write(
+            plugins_dir.join("@acme/hello").join("source.json"),
+            br#"{"path":"/tmp/packages/hello","installedAtMs":1}"#,
+        )
+        .expect("the source note");
 
-        let summary = export_backup(&db, &archive, 1_700_000_000_000).expect("exports");
+        let summary = export_backup(&db, &plugins_dir, &archive, 1_700_000_000_000).expect("exports");
         assert_eq!(summary.plugins, 1);
 
         {
@@ -380,6 +411,11 @@ mod tests {
         assert_eq!(imported.plugins.len(), 1);
         assert_eq!(imported.plugins[0].plugin_id, "@acme/hello");
         assert_eq!(imported.plugins[0].version, None, "no version was recorded");
+        assert_eq!(
+            imported.plugins[0].source.as_deref(),
+            Some("/tmp/packages/hello"),
+            "the container did not carry where the package came from"
+        );
         let previous = imported.previous.expect("the replaced database was kept");
         assert!(previous.exists());
 
@@ -403,7 +439,8 @@ mod tests {
         let db = migrated(&database);
         std::fs::write(&archive, b"something the user put here").expect("a file");
 
-        let error = export_backup(&db, &archive, 1).expect_err("a destination that exists is refused");
+        let error = export_backup(&db, &scratch.0.join("plugins"), &archive, 1)
+            .expect_err("a destination that exists is refused");
         assert!(matches!(error, BackupError::DestinationExists(_)), "{error}");
         assert_eq!(
             std::fs::read(&archive).expect("still there"),
