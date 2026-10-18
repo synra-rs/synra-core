@@ -36,6 +36,8 @@
 
 pub mod extract;
 pub mod packument;
+pub mod static_index;
 
 pub use extract::{ExtractError, Limits, extract_tgz};
 pub use packument::{Dist, Packument, Version};
+pub use static_index::parse as parse_static_index;
