@@ -33,6 +33,11 @@ pub struct PluginSnapshot {
     pub state: String,
     /// Whether it has both halves.
     pub hybrid: bool,
+    /// Whether it has a page of its own.
+    ///
+    /// ★ Apart from [`Self::hybrid`], which means **both** halves. A UI-only plugin has a page and no headless half, and
+    /// a card that offered "open" only for a hybrid plugin would leave that one with no way in at all.
+    pub has_ui: bool,
     /// How much of its quota it is using, for the settings screen.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub health: Option<PluginHealthDto>,

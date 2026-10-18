@@ -308,6 +308,7 @@ fn a_plugin_snapshot_reports_its_state_rather_than_leaving_it_to_be_derived() {
         enabled: true,
         state: "faulted".to_owned(),
         hybrid: true,
+        has_ui: true,
         health: None,
         requested: vec!["log:*".to_owned()],
         granted: vec!["log:*".to_owned()],
@@ -316,6 +317,7 @@ fn a_plugin_snapshot_reports_its_state_rather_than_leaving_it_to_be_derived() {
     };
     assert!(plugin.enabled);
     assert_eq!(plugin.state, "faulted");
+    assert!(plugin.has_ui, "the card cannot offer a page it was told the plugin lacks");
 
     let json = serde_json::to_string(&plugin).expect("serialises");
     let back: PluginSnapshot = serde_json::from_str(&json).expect("deserialises");
