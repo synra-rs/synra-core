@@ -374,6 +374,13 @@ fn a_call_reaches_the_guest_and_its_answer_comes_back() {
         other => panic!("expected the guest's own string, got {other:?}"),
     }
     assert_eq!(instance.host_calls(), 0, "the guest called nothing; the string is its own");
+    // ★ The reading the plugin group's `plugin_fuel_consumed` histogram is built from: the store is set to the budget
+    // before the call and the remainder is read after, so a guest that ran spent something. `unlimited` gives `u64::MAX`,
+    // which is why the assertion is "more than zero" rather than a number only this fixture could name.
+    assert!(
+        instance.last_fuel_consumed().is_some_and(|fuel| fuel > 0),
+        "a call that reached the guest reports the fuel it spent"
+    );
 }
 
 #[test]
@@ -421,6 +428,13 @@ fn a_guest_that_loops_for_ever_is_stopped_by_its_instruction_budget() {
         CallOutcome::FuelExhausted { fuel } => assert_eq!(fuel, 100_000),
         other => panic!("expected the fuel budget to end it, got {other:?}"),
     }
+    // ★ Exactly the budget: a guest stopped by fuel has a zero remainder, so the pair-around-the-call arithmetic is
+    // `granted - 0`. Asserted before the second call, which would replace the reading with its own.
+    assert_eq!(
+        instance.last_fuel_consumed(),
+        Some(100_000),
+        "an exhausted budget reports what it was given"
+    );
     // And the instance survived: one bad call is not a dead plugin, which is what makes the next call possible.
     assert!(instance.call(&Work::Deactivate, CallBudget::unlimited()).is_ok());
 }

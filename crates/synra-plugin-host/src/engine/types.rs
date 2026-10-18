@@ -541,6 +541,15 @@ pub trait PluginInstance: Send {
         None
     }
 
+    /// Fuel the most recent call consumed, when the engine counts it.
+    ///
+    /// `None` for a backend with no instruction counter (the scripted one), and for a call that never started. It is a
+    /// reading of what the guest **spent**, not of the budget it was given: the two differ by the remainder, and the
+    /// remainder is the engine's business.
+    fn last_fuel_consumed(&self) -> Option<u64> {
+        None
+    }
+
     /// Hands this instance the session a host call is authorised against.
     ///
     /// # ★ Why this is a setter rather than a parameter of `instantiate`

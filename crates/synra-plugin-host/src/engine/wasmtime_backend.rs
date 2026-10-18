@@ -273,6 +273,8 @@ pub(crate) struct EngineInstance {
     /// How much the plugin's memories have been told they may reach, so `memory_bytes` answers with the number the
     /// ceiling was enforced against rather than with a guess.
     ceiling: u64,
+    /// Fuel the most recent call consumed, read back from the store after it ended.
+    last_fuel: Option<u64>,
 }
 
 impl std::fmt::Debug for EngineInstance {
@@ -318,6 +320,10 @@ impl PluginInstance for EngineInstance {
 
     fn deadline_epoch(&self) -> Option<u64> {
         self.deadline_epoch
+    }
+
+    fn last_fuel_consumed(&self) -> Option<u64> {
+        self.last_fuel
     }
 
     fn call(&mut self, work: &Work, budget: CallBudget) -> Result<CallOutcome, BackendError> {
@@ -379,7 +385,11 @@ impl PluginInstance for EngineInstance {
         // ★ The purity rule, set per call. See `StoreData::side_effects`.
         self.store.data_mut().side_effects = work.allows_side_effects();
 
-        match self.dispatch(work) {
+        // ★ The fuel is read as a pair around the call: the store is *set* to the budget above (or `u64::MAX` for "no
+        // limit"), and what the guest spent is what is missing afterwards. Read into a local before the match so a call
+        // that never starts still leaves `last_fuel` describing the previous one rather than a fabricated zero.
+        let granted = self.store.get_fuel().ok();
+        let outcome = match self.dispatch(work) {
             Ok(outcome) => Ok(outcome),
             Err(failure) => Ok(failure.into_outcome(
                 budget,
@@ -393,7 +403,11 @@ impl PluginInstance for EngineInstance {
                 // go and change.
                 u64::try_from(self.store.data().ceiling).unwrap_or(u64::MAX),
             )),
+        };
+        if let (Some(granted), Ok(remaining)) = (granted, self.store.get_fuel()) {
+            self.last_fuel = Some(granted.saturating_sub(remaining));
         }
+        outcome
     }
 }
 
@@ -845,6 +859,7 @@ impl WasmBackend for WasmtimeBackend {
             // call names one. The wall the limiter actually enforces is the store's own `ceiling`, which starts at
             // `INSTANTIATION_CEILING` — a different number answering a different question, and the one `classify` needs.
             ceiling: 0,
+            last_fuel: None,
         }))
     }
 }

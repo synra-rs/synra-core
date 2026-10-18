@@ -738,6 +738,13 @@ fn a_call_is_counted_and_timed_per_plugin_and_interface() {
         Some(&Value::Gauge(4096)),
         "the instance's memory is reported for the plugin that ran"
     );
+    // ★ And no fuel reading: the scripted backend has no instruction counter, and `None` has to stay "nothing recorded"
+    // rather than a zero — a histogram of zeroes would say this plugin spent no instructions when it spent an unknown
+    // number. The `Some` side of the same branch is asserted in `wasmtime_tests`, where a real store reports it.
+    assert!(
+        snapshot.get("plugin_fuel_consumed{plugin=@synra/aaa-notes}").is_none(),
+        "a backend without fuel must not report a zero"
+    );
 }
 
 #[test]

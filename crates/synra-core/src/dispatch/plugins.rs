@@ -683,6 +683,18 @@ impl PluginSet {
                 ),
                 i64::try_from(instance.memory_bytes()).unwrap_or(i64::MAX),
             );
+            // ★ And the fuel the call spent, when the engine counts it: a histogram because the question is "how close to
+            // the budget does this plugin run", which is a distribution rather than a current value.
+            if let Some(fuel) = instance.last_fuel_consumed() {
+                #[allow(clippy::cast_precision_loss)]
+                metrics.histogram_observe(
+                    &synra_observe::metrics::SeriesKey::new(
+                        "plugin_fuel_consumed",
+                        [("plugin".to_owned(), id.as_str().to_owned())],
+                    ),
+                    fuel as f64,
+                );
+            }
         }
         let _ = loaded.pool.release(handle, now_ms);
         // ★ Drained **after** the call, not inside it: the entries are produced while the guest runs, and the ring lives
