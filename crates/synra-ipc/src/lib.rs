@@ -49,6 +49,7 @@ pub mod ts_export;
 pub mod dto;
 pub mod error;
 pub mod event;
+pub mod plugin_ui;
 
 pub use command::{
     CommandDescriptor, CommandRegistry, Domain, Interface, RegistryError, ReturnShape,
@@ -58,3 +59,4 @@ pub use error::{IpcError, MessageKey};
 pub use event::{
     EventVerdict, KernelEvent, KernelEventEnvelope, MAX_COUNTED_GAP, SequenceReport, SequenceTracker,
 };
+pub use plugin_ui::PluginUiOp;
