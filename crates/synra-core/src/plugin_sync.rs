@@ -22,6 +22,7 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
 use synra_protocol::ids::{DeviceId, PluginId, TransferId};
+use synra_protocol::session::{PluginList, PluginSummary};
 
 /// Which round of sync a message belongs to.
 ///
@@ -78,7 +79,7 @@ impl RemoteState {
     /// wire and must not depend on the kernel; this is the kernel's opinion of it. A `From` would read as "these are the same
     /// thing in two spellings", and the first field that means something slightly different on each side would make that a lie.
     #[must_use]
-    pub fn from_summary(summary: &synra_protocol::session::PluginSummary) -> Self {
+    pub fn from_summary(summary: &PluginSummary) -> Self {
         Self {
             plugin_id: summary.plugin_id.clone(),
             version: summary.version.clone(),
@@ -110,6 +111,83 @@ impl RemoteState {
     pub const fn has_it(&self) -> bool {
         self.version.is_some() || self.digest.is_some()
     }
+}
+
+/// What this device would answer a peer that asked what plugins it has.
+///
+/// # Why this reads two tables
+///
+/// Because the answer is a join the store does not offer: `plugins` says a plugin is installed and whether it may run,
+/// and `plugin_versions` says which version is the one in effect. A row in the first with no active row in the second has
+/// no artifact to describe, so it is **left out** — the list is what this device could send, not a directory of names.
+///
+/// # The `active` field is the enabled flag, and that is a documented approximation
+///
+/// [`PluginSummary::active`] is spelled "whether it is running there" on the wire. This store knows whether a plugin is
+/// **allowed** to run, not whether a host has it running at this moment, and inventing the latter would be a claim this
+/// device cannot support. The field is advisory: [`decide`] ignores it, and a peer comparing artifacts reads the version
+/// and the digest.
+///
+/// # Errors
+///
+/// [`synra_store::DbError`] when either table cannot be read. A database this device cannot read is not an empty list: a
+/// peer that was told "nothing" would plan to send every plugin, and the next attempt would find out otherwise.
+pub fn local_list(db: &synra_store::SynraDb) -> Result<PluginList, synra_store::DbError> {
+    let mut plugins = Vec::new();
+    for row in db.plugins()? {
+        let Some((version, digest)) = db.active_plugin_version(&row.plugin_id)? else {
+            continue;
+        };
+        // ★ An identifier this build cannot parse is skipped rather than made fatal. The same choice `from_rows` makes for
+        // a row from another build: one unreadable row must not take the rest of the answer — and the rest of the answer is
+        // what a peer needs to decide about every other plugin.
+        let Ok(plugin_id) = PluginId::parse(&row.plugin_id) else {
+            continue;
+        };
+        // The empty digest is the store's word for "none", so it does not travel as a claim that the device holds the
+        // empty artifact. The receiving side writes the same shape when it knows the bytes but not the version.
+        plugins.push(PluginSummary {
+            plugin_id,
+            version: Some(version),
+            digest: (!digest.is_empty()).then_some(digest),
+            active: row.enabled,
+        });
+    }
+    Ok(PluginList { plugins })
+}
+
+/// Why this device could not answer "what plugins do you have".
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum ListAnswerError {
+    /// The store could not be read.
+    #[error(transparent)]
+    Store(#[from] synra_store::DbError),
+
+    /// The answer could not be built as an envelope — a list too large for one frame is the case that matters, and it is
+    /// refused rather than truncated, because a truncated list reads as "this device has fewer plugins".
+    #[error(transparent)]
+    Message(#[from] crate::messaging::MessageError),
+}
+
+/// Answers a peer's question with this device's list.
+///
+/// # Why this is a function rather than four lines in the connection loop
+///
+/// Because the connection loop never returns — it is `serve`'s per-connection thread — so a test cannot reach into it.
+/// A request in, an envelope out is the whole obligation, and as a function it is testable without a socket.
+///
+/// # Errors
+///
+/// [`ListAnswerError`] when the store cannot be read or the envelope cannot be built.
+pub fn answer_plugin_list(
+    db: &synra_store::SynraDb,
+    request: &synra_protocol::envelope::Envelope,
+    from: DeviceId,
+    now_ms: i64,
+) -> Result<synra_protocol::envelope::Envelope, ListAnswerError> {
+    let list = local_list(db)?;
+    Ok(crate::messaging::plugin_list_response(request, from, &list, now_ms)?)
 }
 
 /// What to do about what the other device has.

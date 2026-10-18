@@ -128,6 +128,11 @@ pub enum Decision {
     /// is told. A peer that sent text has sent a message this kernel received — there is simply no event bus wired up to
     /// deliver it — and a daemon that reported neither would be one whose log looks identical whether the message arrived
     /// or was lost in the network.
+    ///
+    /// ★ **2026-10-18: one of those messages is now answered rather than only reported.** A peer may ask what plugins this
+    /// device has, and that answer is a reply — it needs the request's id, trace and sender — so the envelope travels with
+    /// the decision. It is `None` for the one case where there is no single envelope to name: an unrecognised message that
+    /// arrived in the middle of a transfer, which the transfer's own reader consumed.
     Delivered {
         /// The event the message carried.
         event: String,
@@ -143,6 +148,12 @@ pub enum Decision {
         /// `None` for a message that is not a share, and for one whose body could not be read. The two are the same to
         /// the caller: there is nothing to route.
         share: Option<synra_protocol::inbound::ShareItem>,
+        /// The envelope that arrived, when it is still available to answer.
+        ///
+        /// ★ Why this is carried at all: `plugin_list_response` is a **reply**, and a reply needs the request's id, its
+        /// trace and the address it came from. All three are in the envelope, and rebuilding them from the event's name
+        /// would be inventing three facts to save a clone.
+        request: Option<Box<synra_protocol::envelope::Envelope>>,
     },
     /// A pairing request this kernel has an opinion about, and the answer to send back.
     ///
@@ -324,6 +335,7 @@ impl Inbox {
                 return Ok(Decision::Delivered {
                     event: envelope.event.as_str().to_owned(),
                     share: share_of(&envelope),
+                    request: Some(envelope.clone()),
                 });
             }
             let name = proposed_name(&envelope)?;
@@ -393,6 +405,8 @@ impl Inbox {
                 event: "unknown".to_owned(),
                 // Nothing was recognised, so there is nothing to route.
                 share: None,
+                // Nor an envelope to answer: the transfer's reader consumed it while looking for a block.
+                request: None,
             }),
             // `Received` is `#[non_exhaustive]`, so a variant this build does not know is treated as a message it has
             // nothing to do with rather than as a reason to fail the connection.

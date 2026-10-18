@@ -280,7 +280,7 @@ pub fn handle_within(
     loop {
         match inbox.absorb(&mut link, synra_store::sqlite::now_ms(), PATIENCE, desk, &peer_address) {
             Ok(decision) => match decision {
-                Decision::Delivered { event, share } => {
+                Decision::Delivered { event, share, request } => {
                     // ★ The design's `frames_received_total{event}` — the other half of what `Host::send` records.
                     // Counted here because this is where a delivered frame becomes a fact: the `Decision` is what says
                     // an event arrived, and it is the only thing that knows which one.
@@ -306,6 +306,48 @@ pub fn handle_within(
                                 // closing the connection would take down a transfer for a reason the peer cannot see.
                                 Err(refusal) => eprintln!(
                                     "synra-daemon: {peer}'s share could not be routed: {refusal}"
+                                ),
+                            }
+                        }
+                        // ★ **A question this kernel can answer by itself.** "What plugins do you have" is a read of
+                        // this device's own store — `plugins` joined to the active row of `plugin_versions` — and the
+                        // answer is what the asker's plan compares. It is answered here rather than by a host callback
+                        // because the kernel owns the tables: two hosts answering it separately would be two answers to
+                        // one question, and the sync decision would inherit the difference.
+                        None if event == synra_protocol::event::events::PLUGIN_LIST_REQUEST => {
+                            let answer = match (&pairing, request) {
+                                (Ok(db), Some(request)) => crate::plugin_sync::answer_plugin_list(
+                                    db,
+                                    &request,
+                                    link.local(),
+                                    synra_store::sqlite::now_ms(),
+                                ),
+                                (Ok(_), None) => {
+                                    eprintln!(
+                                        "synra-daemon: {peer} asked what plugins this device has, without an envelope to answer"
+                                    );
+                                    continue;
+                                }
+                                (Err(error), _) => {
+                                    eprintln!(
+                                        "synra-daemon: {peer} asked what plugins this device has, and the database could not be read: {error}"
+                                    );
+                                    continue;
+                                }
+                            };
+                            match answer {
+                                Ok(reply) => {
+                                    if let Err(error) = link.send(&reply) {
+                                        eprintln!(
+                                            "synra-daemon: the plugin list could not be sent to {peer}: {error}"
+                                        );
+                                    }
+                                }
+                                // A failure to answer does not end the link, the same choice the pairing answer makes:
+                                // the dialer's own deadline already covers giving up, and closing the connection would
+                                // take a transfer down for a reason the peer cannot see.
+                                Err(error) => eprintln!(
+                                    "synra-daemon: the plugin list for {peer} could not be built: {error}"
                                 ),
                             }
                         }
