@@ -498,6 +498,40 @@ fn reinstall_with(
         if let Response::Failed { message, .. } = &response {
             return CommandOutcome::Failed(format!("{} could not be reinstalled: {message}", entry.plugin_id));
         }
+        // ★ The row the install wrote has no decisions, so the loader would refuse the plugin. Restoring the approvals the
+        // container carries is what makes "reinstalled" mean "usable again" rather than "present on disk".
+        if !entry.grants.is_empty() {
+            let response = match ask(&Request::PluginConsent {
+                plugin_id: entry.plugin_id.clone(),
+                granted: entry.grants.clone(),
+            }) {
+                Ok(response) => response,
+                Err(error) => return transport_failure(&error),
+            };
+            if let Response::Failed { message, .. } = &response {
+                return CommandOutcome::Failed(format!(
+                    "{} was installed but its consent could not be restored: {message}",
+                    entry.plugin_id
+                ));
+            }
+            // ★ Enabled only after consent, and only when the container said so. A container from before the grants field
+            // carries an empty list: the switch stays off rather than opening a plugin nobody approved.
+            if entry.enabled {
+                let response = match ask(&Request::PluginSetEnabled {
+                    plugin_id: entry.plugin_id.clone(),
+                    enabled: true,
+                }) {
+                    Ok(response) => response,
+                    Err(error) => return transport_failure(&error),
+                };
+                if let Response::Failed { message, .. } = &response {
+                    return CommandOutcome::Failed(format!(
+                        "{} was installed but could not be enabled: {message}",
+                        entry.plugin_id
+                    ));
+                }
+            }
+        }
         installed.push(entry.plugin_id);
     }
 
@@ -899,6 +933,7 @@ mod tests {
             version: Some("1.0.0".to_owned()),
             enabled: true,
             source: source.map(ToOwned::to_owned),
+            grants: Vec::new(),
         }
     }
 
@@ -976,6 +1011,72 @@ mod tests {
             vec!["list".to_owned(), "install /tmp/packages/a.synra".to_owned()],
             "a plugin that is not installed must not be removed"
         );
+        assert!(matches!(outcome, crate::session::CommandOutcome::Lines(_)), "{outcome:?}");
+    }
+
+    #[test]
+    fn a_reinstall_restores_the_consent_and_the_switch() {
+        // ★ Without the consent list the plugin is installed and unloadable: `load_one` refuses a plugin with no decisions
+        // on record. Restoring it — after the install, before the switch — is what makes the restore complete.
+        let mut entry = plugin_entry("@acme/a", Some("/tmp/packages/a.synra"));
+        entry.grants = vec!["log:*".to_owned()];
+        let asked = std::cell::RefCell::new(Vec::new());
+        let outcome = reinstall_with(vec![entry], Some(OutputFormat::Text), |request| {
+            match request {
+                Request::Plugins => Ok(Response::ok(serde_json::json!({"plugins": []}))),
+                Request::PluginInstall { path } => {
+                    asked.borrow_mut().push(format!("install {path}"));
+                    Ok(Response::ok(serde_json::json!({})))
+                }
+                Request::PluginConsent { plugin_id, granted } => {
+                    asked
+                        .borrow_mut()
+                        .push(format!("consent {plugin_id} [{}]", granted.join(",")));
+                    Ok(Response::ok(serde_json::json!({})))
+                }
+                Request::PluginSetEnabled { plugin_id, enabled } => {
+                    asked
+                        .borrow_mut()
+                        .push(format!("enable {plugin_id} {enabled}"));
+                    Ok(Response::ok(serde_json::json!({})))
+                }
+                other => panic!("unexpected request {other:?}"),
+            }
+        });
+
+        assert_eq!(
+            asked.into_inner(),
+            vec![
+                "install /tmp/packages/a.synra".to_owned(),
+                "consent @acme/a [log:*]".to_owned(),
+                "enable @acme/a true".to_owned()
+            ]
+        );
+        assert!(matches!(outcome, crate::session::CommandOutcome::Lines(_)), "{outcome:?}");
+    }
+
+    #[test]
+    fn a_reinstall_without_a_consent_list_leaves_the_switch_off() {
+        // ★ An old container has no grants. Enabling the plugin would be opening a plugin nobody approved; the honest
+        // outcome is installed, consent required, switch off.
+        let mut entry = plugin_entry("@acme/a", Some("/tmp/packages/a.synra"));
+        entry.grants = Vec::new();
+        entry.enabled = true;
+        let asked = std::cell::RefCell::new(Vec::new());
+        let outcome = reinstall_with(vec![entry], Some(OutputFormat::Text), |request| {
+            match request {
+                Request::Plugins => Ok(Response::ok(serde_json::json!({"plugins": []}))),
+                Request::PluginInstall { path } => {
+                    asked.borrow_mut().push(format!("install {path}"));
+                    Ok(Response::ok(serde_json::json!({})))
+                }
+                Request::PluginConsent { .. } | Request::PluginSetEnabled { .. } => {
+                    panic!("a plugin with no recorded consent must not be approved or enabled");
+                }
+                other => panic!("unexpected request {other:?}"),
+            }
+        });
+        assert_eq!(asked.into_inner(), vec!["install /tmp/packages/a.synra".to_owned()]);
         assert!(matches!(outcome, crate::session::CommandOutcome::Lines(_)), "{outcome:?}");
     }
 

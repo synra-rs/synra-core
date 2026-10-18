@@ -76,6 +76,15 @@ pub struct PluginEntry {
     /// note existed, does not know.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    /// The capabilities the user had allowed, in the order they were decided.
+    ///
+    /// # Why consent travels with a backup
+    ///
+    /// Because reinstalling clears the row, and the grants cascade with it: without this list every restored plugin would
+    /// ask the same questions again. The list is what the user **approved**, not what the manifest declares — a denied
+    /// capability is absent rather than present with `false`, because the question a restore asks is "what may it do".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub grants: Vec<String>,
 }
 
 /// What an export wrote.
@@ -191,6 +200,19 @@ fn write_container(
                 .flatten()
                 .map(|(version, _)| version),
             source: source_of(plugins_dir, &row.plugin_id),
+            // The grants are read per plugin, and an unreadable set is exported as empty rather than failing the backup:
+            // the container still carries everything needed to reinstall, and an empty list says "the store did not
+            // know", which is true.
+            grants: db
+                .plugin_grants(&row.plugin_id)
+                .map(|grants| {
+                    grants
+                        .into_iter()
+                        .filter(|grant| grant.granted)
+                        .map(|grant| grant.capability)
+                        .collect()
+                })
+                .unwrap_or_default(),
             enabled: row.enabled,
             plugin_id: row.plugin_id,
         })
@@ -404,6 +426,13 @@ mod tests {
         db.set_config("test.key", &serde_json::json!("from the backup"), 1)
             .expect("written");
         db.insert_plugin("@acme/hello", true, true, "healthy", 1, 1).expect("inserted");
+        db.record_grants(
+            "@acme/hello",
+            &[("log:*".to_owned(), true), ("net:read-title".to_owned(), false)],
+            1,
+            "manifest-digest",
+        )
+        .expect("grants recorded");
         // The note an install writes beside the artifact; the container is supposed to carry it.
         let plugins_dir = scratch.0.join("plugins");
         std::fs::create_dir_all(plugins_dir.join("@acme/hello")).expect("a plugin directory");
@@ -420,6 +449,8 @@ mod tests {
         let listed = plugins_in_backup(&archive).expect("lists the plugins");
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].source.as_deref(), Some("/tmp/packages/hello"));
+        // ★ Only what was allowed travels: a denied capability is absence, not a `false` the restore would have to read.
+        assert_eq!(listed[0].grants, vec!["log:*".to_owned()]);
 
         {
             let file = std::fs::File::open(&archive).expect("the container");
