@@ -509,8 +509,11 @@ fn reinstall_with(
                 Err(error) => return transport_failure(&error),
             };
             if let Response::Failed { message, .. } = &response {
+                // ★ A half-restored plugin is worse than none: it is installed, unapproved, and listed as if the restore
+                // finished. The cleanup is part of the failure, and its own failure is said rather than hidden.
+                let removed = roll_back(&mut ask, &entry.plugin_id);
                 return CommandOutcome::Failed(format!(
-                    "{} was installed but its consent could not be restored: {message}",
+                    "{} was installed but its consent could not be restored: {message}{removed}",
                     entry.plugin_id
                 ));
             }
@@ -525,8 +528,9 @@ fn reinstall_with(
                     Err(error) => return transport_failure(&error),
                 };
                 if let Response::Failed { message, .. } = &response {
+                    let removed = roll_back(&mut ask, &entry.plugin_id);
                     return CommandOutcome::Failed(format!(
-                        "{} was installed but could not be enabled: {message}",
+                        "{} was installed but could not be enabled: {message}{removed}",
                         entry.plugin_id
                     ));
                 }
@@ -551,6 +555,27 @@ fn reinstall_with(
             }
             CommandOutcome::Lines(lines)
         }
+    }
+}
+
+/// Removes a partially restored plugin, and says what happened in a clause the failure can carry.
+///
+/// # Why a clause rather than an error
+///
+/// Because the original failure is what the user must act on; the cleanup is the state left behind it. A cleanup that also
+/// failed has to be named — a silent one would leave an installed, unapproved plugin that nothing in the output accounts
+/// for.
+fn roll_back(
+    ask: &mut impl FnMut(&Request) -> Result<Response, synra_control::SocketError>,
+    plugin_id: &str,
+) -> String {
+    match ask(&Request::PluginRemove { plugin_id: plugin_id.to_owned(), remove_data: false }) {
+        Ok(Response::Ok { .. }) => "; the partial install was removed".to_owned(),
+        Ok(Response::Failed { message, .. }) => {
+            format!("; the partial install could not be removed: {message}")
+        }
+        Ok(other) => format!("; the partial install was left in place after an unexpected answer: {other:?}"),
+        Err(error) => format!("; the partial install could not be removed: {error}"),
     }
 }
 
@@ -1078,6 +1103,47 @@ mod tests {
         });
         assert_eq!(asked.into_inner(), vec!["install /tmp/packages/a.synra".to_owned()]);
         assert!(matches!(outcome, crate::session::CommandOutcome::Lines(_)), "{outcome:?}");
+    }
+
+    #[test]
+    fn a_failed_consent_removes_the_partial_install() {
+        // ★ Installed but unapproved is the worst of the two halves: the plugin is on disk and listed, and the loader will
+        // refuse it. The failure takes it back out, and the sentence says that it did.
+        let mut entry = plugin_entry("@acme/a", Some("/tmp/packages/a.synra"));
+        entry.grants = vec!["log:*".to_owned()];
+        let asked = std::cell::RefCell::new(Vec::new());
+        let outcome = reinstall_with(vec![entry], Some(OutputFormat::Text), |request| match request {
+            Request::Plugins => Ok(Response::ok(serde_json::json!({"plugins": []}))),
+            Request::PluginInstall { path } => {
+                asked.borrow_mut().push(format!("install {path}"));
+                Ok(Response::ok(serde_json::json!({})))
+            }
+            Request::PluginConsent { .. } => {
+                asked.borrow_mut().push("consent".to_owned());
+                Ok(Response::failed("consent", "the consent could not be recorded", false))
+            }
+            Request::PluginRemove { plugin_id, .. } => {
+                asked.borrow_mut().push(format!("remove {plugin_id}"));
+                Ok(Response::ok(serde_json::json!({})))
+            }
+            other => panic!("unexpected request {other:?}"),
+        });
+
+        assert_eq!(
+            asked.into_inner(),
+            vec![
+                "install /tmp/packages/a.synra".to_owned(),
+                "consent".to_owned(),
+                "remove @acme/a".to_owned()
+            ]
+        );
+        match outcome {
+            crate::session::CommandOutcome::Failed(message) => {
+                assert!(message.contains("consent could not be restored"), "{message}");
+                assert!(message.contains("partial install was removed"), "{message}");
+            }
+            other => panic!("expected a failure, got {other:?}"),
+        }
     }
 
     #[test]
