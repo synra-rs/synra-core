@@ -136,6 +136,31 @@ impl std::fmt::Debug for Receiving {
     }
 }
 
+/// What one inbound transfer has done so far.
+///
+/// # Why this is a value rather than a callback into the receiver
+///
+/// Because the place that reports progress is not the place that holds the receiver: the listener reads decisions, and a
+/// decision is a value. A reporter that reached back into `Receiving` would have to keep it alive past the arm that
+/// consumed it, which is exactly the shape that makes a progress bar freeze when a transfer ends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InboundProgress {
+    /// Which transfer.
+    pub transfer_id: TransferId,
+    /// What the file will be called, as the sender proposed it.
+    pub file_name: String,
+    /// Which plugin it is a bundle for, when it is one.
+    pub bundle: Option<synra_protocol::ids::PluginId>,
+    /// How many bytes have arrived.
+    pub received_bytes: u64,
+    /// How many there are.
+    pub total_bytes: u64,
+    /// How many blocks are held.
+    pub blocks_done: u32,
+    /// How many there are.
+    pub blocks_total: u32,
+}
+
 impl Receiving {
     /// Accepts a proposal and prepares to fill a file.
     ///
@@ -163,6 +188,24 @@ impl Receiving {
             request_id,
             sync_session_id,
         })
+    }
+
+    /// The numbers a progress reporter needs, taken while the receiver is still here.
+    #[must_use]
+    pub fn progress(&self) -> InboundProgress {
+        InboundProgress {
+            transfer_id: self.receiver.transfer_id(),
+            file_name: self
+                .receiver
+                .path()
+                .file_name()
+                .map_or_else(|| "file".to_owned(), |name| name.to_string_lossy().into_owned()),
+            bundle: self.bundle.clone(),
+            received_bytes: self.receiver.bytes_received(),
+            total_bytes: self.receiver.byte_length(),
+            blocks_done: self.receiver.received_count(),
+            blocks_total: self.receiver.bitmap().total_blocks(),
+        }
     }
 
     /// Which transfer this is.

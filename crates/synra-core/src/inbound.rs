@@ -274,6 +274,12 @@ impl Inbox {
         self.receiving.is_some()
     }
 
+    /// The transfer in progress, as the numbers a progress reporter needs.
+    #[must_use]
+    pub fn progress(&self) -> Option<session::receive::InboundProgress> {
+        self.receiving.as_ref().map(Receiving::progress)
+    }
+
     /// The directory files land in.
     #[must_use]
     pub fn directory(&self) -> &Path {

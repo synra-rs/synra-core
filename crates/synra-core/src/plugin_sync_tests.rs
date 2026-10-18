@@ -1041,6 +1041,7 @@ fn received_db() -> synra_store::SynraDb {
 /// A finished transfer carrying a bundle for `@acme/chat`.
 fn received_bundle(version: Option<&str>) -> crate::listener::FinishedTransfer {
     crate::listener::FinishedTransfer {
+        transfer_id: Some(synra_protocol::ids::TransferId::new()),
         path: std::path::PathBuf::from("inbox/plugin-acme-chat.wasm"),
         byte_length: 4_096,
         bundle: Some(plugin("@acme/chat")),

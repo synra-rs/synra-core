@@ -55,6 +55,12 @@ const POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// them; all three have had no production caller, and this is why: the place a transfer finishes had nothing to write
 /// **to**. This is the value that travels from that place to a caller that has a database.
 pub struct FinishedTransfer {
+    /// Which transfer it was.
+    ///
+    /// `None` only for a completion that arrived with no proposal this listener saw, which is a protocol violation rather
+    /// than a transfer — and a row named by a made-up identifier would be worse than no row. The shell uses this to close
+    /// the progress row it opened when the proposal was accepted.
+    pub transfer_id: Option<synra_protocol::ids::TransferId>,
     /// Where the file landed.
     pub path: std::path::PathBuf,
     /// How large it was.
@@ -74,6 +80,24 @@ pub struct FinishedTransfer {
     /// together to know who sent what.
     pub peer: synra_protocol::ids::DeviceId,
 }
+
+/// One step of an inbound transfer, for a reporter that keeps a row in an interface.
+///
+/// The peer is here rather than inside `progress` because it is a fact about the connection, not about the bytes — the
+/// receiver writes to a path and knows nothing about who is on the other end.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InboundProgressEvent {
+    /// Who is sending.
+    pub peer: synra_protocol::ids::DeviceId,
+    /// How far the transfer has got.
+    pub progress: crate::session::InboundProgress,
+}
+
+/// What the listener does with each step of an inbound transfer.
+///
+/// `Send + Sync` for the same reason [`FinishedCallback`] is: the connections that call it live on their own threads, and
+/// one callback is shared by all of them.
+pub type ProgressCallback = dyn Fn(&InboundProgressEvent) + Send + Sync;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// What one connection did, handed back to whoever served it.
@@ -112,6 +136,24 @@ pub fn serve(
     desk: &Arc<crate::pairing::PairingDesk>,
     router: &Arc<crate::dispatch::orchestrate::Router>,
     on_finished: &FinishedCallback,
+) {
+    // A listener that nobody asked to observe has the same behaviour it always had; only the two callbacks differ.
+    let on_progress: Arc<ProgressCallback> = Arc::new(|_event: &InboundProgressEvent| {});
+    serve_with(host, cancel, data_dir, desk, router, on_finished, &on_progress);
+}
+
+/// Serves inbound connections, reporting each step of an inbound transfer.
+///
+/// The same loop as [`serve`], with the reporter it was missing: `on_progress` sees the proposal accepted and every block
+/// that lands, which is what lets an interface show a transfer **arriving** rather than only one it started.
+pub fn serve_with(
+    host: &Arc<Mutex<Host>>,
+    cancel: &crate::supervisor::Cancellation,
+    data_dir: &Path,
+    desk: &Arc<crate::pairing::PairingDesk>,
+    router: &Arc<crate::dispatch::orchestrate::Router>,
+    on_finished: &FinishedCallback,
+    on_progress: &Arc<ProgressCallback>,
 ) {
     // Owned, because each connection is handed to its own thread and a thread cannot borrow the caller's stack.
     let data_dir = data_dir.to_path_buf();
@@ -154,12 +196,13 @@ pub fn serve(
                 // reach somebody who can write it down — until now the connection thread looked at `Served` and threw
                 // it away, and a received bundle became a line on stderr and nothing else.
                 let on_finished = Arc::clone(on_finished);
+                let on_progress = Arc::clone(on_progress);
                 std::thread::spawn(move || {
                     // ★ The callback goes **into** the handler rather than being applied to its result, and that is
                     // the correction of a mistake from round 148: applied here, it ran after the link was gone — so
                     // the side that installed a bundle could not tell the sender so, and the result the sender is
                     // waiting for could never be sent. A reply belongs on the connection that asked.
-                    let served = handle(&host, stream, &inbox_root, &desk, &router, &on_finished);
+                    let served = handle_with(&host, stream, &inbox_root, &desk, &router, &on_finished, &on_progress);
                     if let Some(ended) = &served.ended {
                         let who = served
                             .peer
@@ -194,7 +237,21 @@ pub fn handle(
     router: &Arc<crate::dispatch::orchestrate::Router>,
     on_finished: &FinishedCallback,
 ) -> Served {
-    handle_within(
+    let on_progress: Arc<ProgressCallback> = Arc::new(|_event: &InboundProgressEvent| {});
+    handle_with(host, stream, data_dir, desk, router, on_finished, &on_progress)
+}
+
+/// Handles one connection, reporting each step of an inbound transfer.
+pub fn handle_with(
+    host: &Arc<Mutex<Host>>,
+    stream: std::net::TcpStream,
+    data_dir: &Path,
+    desk: &Arc<crate::pairing::PairingDesk>,
+    router: &Arc<crate::dispatch::orchestrate::Router>,
+    on_finished: &FinishedCallback,
+    on_progress: &Arc<ProgressCallback>,
+) -> Served {
+    handle_within_with(
         host,
         stream,
         data_dir,
@@ -202,6 +259,7 @@ pub fn handle(
         desk,
         router,
         on_finished,
+        on_progress,
     )
 }
 
@@ -223,6 +281,26 @@ pub fn handle_within(
     desk: &Arc<crate::pairing::PairingDesk>,
     router: &Arc<crate::dispatch::orchestrate::Router>,
     on_finished: &FinishedCallback,
+) -> Served {
+    let on_progress: Arc<ProgressCallback> = Arc::new(|_event: &InboundProgressEvent| {});
+    handle_within_with(host, stream, data_dir, timeout, desk, router, on_finished, &on_progress)
+}
+
+/// Handles one connection, reporting each step of an inbound transfer, with a chosen handshake deadline.
+// The eight are the connection, where it writes, its deadline, the shared pairing desk, the router, and the two
+// observers. A struct would rename them without making the call site shorter, and the two `handle` wrappers that hide
+// most of them exist precisely because most callers need neither observer.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn handle_within_with(
+    host: &Arc<Mutex<Host>>,
+    stream: std::net::TcpStream,
+    data_dir: &Path,
+    timeout: Duration,
+    desk: &Arc<crate::pairing::PairingDesk>,
+    router: &Arc<crate::dispatch::orchestrate::Router>,
+    on_finished: &FinishedCallback,
+    on_progress: &Arc<ProgressCallback>,
 ) -> Served {
     // ★ Read before the handshake consumes the stream, and kept as text. It is the one fact about the requester this side
     // *observed* rather than was told: a prompt shows the name the device chose, and the address is what lets a user
@@ -274,6 +352,9 @@ pub fn handle_within(
     // file it named. Without this the loop below would see a block as an unexpected frame and close the link — which is
     // what it did before, and why `send --file` could not work.
     let mut inbox = Inbox::new(data_dir);
+    // The last step reported, so a completion can name the transfer it ends: `Decision::Finished` carries a path and a
+    // size, not an identifier, and a consumer that wants to close the row it opened needs the identifier.
+    let mut last_progress: Option<crate::session::InboundProgress> = None;
     // ★ The shared desk, not a per-connection state. A prompt raised on this connection is answered by a user who is not
     // on it at all, and a per-connection state would make that answer invisible here — the dialer would wait out its own
     // thirty-second window for a decision the user had already made.
@@ -425,12 +506,22 @@ pub fn handle_within(
                 Decision::Accepted { transfer_id, file_name } => {
                     events.push(format!("accepted {transfer_id}"));
                     println!("receiving {file_name} from {peer}");
+                    // ★ The proposal is the first moment a row can exist: the sender has declared a size, and the file is
+                    // being created. A reporter that waited for the first block would show nothing for a slow link.
+                    last_progress = inbox.progress();
+                    if let Some(progress) = &last_progress {
+                        on_progress(&InboundProgressEvent { peer, progress: progress.clone() });
+                    }
                 }
                 Decision::Stored { index, duplicate } => {
                     // Per-block logging would be enormous for a real file, so only the interesting case is said: a block
                     // that arrived twice is a resumption working, and one that is logged is one a developer can see.
                     if duplicate {
                         eprintln!("synra-daemon: {peer} re-sent block {index}, which was already held");
+                    }
+                    last_progress = inbox.progress();
+                    if let Some(progress) = &last_progress {
+                        on_progress(&InboundProgressEvent { peer, progress: progress.clone() });
                     }
                 }
                 Decision::Finished {
@@ -447,6 +538,7 @@ pub fn handle_within(
                     // ★ The three facts travel together, and `bundle` is the one that says which of them this is.
                     // ★ 先造出来交给回调，再收进列表：回调的答案属于**这个**传输，而它已经被移走了就没有了。
                     let transfer = FinishedTransfer {
+                        transfer_id: last_progress.as_ref().map(|progress| progress.transfer_id),
                         path: path.clone(),
                         byte_length,
                         bundle: bundle.clone(),

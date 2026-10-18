@@ -51,7 +51,7 @@ pub mod send;
 pub mod types;
 pub mod wire;
 
-pub use receive::{Receiving, Received};
+pub use receive::{InboundProgress, Receiving, Received};
 pub use send::{
     abort, await_confirmation, complete, propose, report_progress, send_blocks, send_bundle, send_file,
     WINDOW_BLOCKS,
