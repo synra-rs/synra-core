@@ -579,6 +579,25 @@ fn a_fresh_installation_has_no_plugins_and_that_is_not_an_error() {
     assert_eq!(value["loaded"], false);
 }
 
+#[test]
+fn listing_plugins_sets_the_installed_and_active_gauges() {
+    // ★ The daemon side of the two plugin gauges. The window sets them in its own `plugins_list`; a daemon that never set
+    // them reported nothing about a machine where the same plugins are installed, and the panel could only be read as
+    // "this kernel has no plugins". Two rows with different `enabled` flags, so a single gauge fed both would be caught.
+    use synra_observe::metrics::Value;
+
+    let dir = TempDir::new("plugins-gauges");
+    let runtime = runtime(dir.path());
+    install(&runtime, "@acme/enabled", 1, 1);
+    install(&runtime, "@acme/off", 0, 0);
+
+    let _ = runtime.plugins().expect("plugins");
+
+    let snapshot = runtime.metrics.snapshot();
+    assert_eq!(snapshot.get("plugins_installed"), Some(&Value::Gauge(2)));
+    assert_eq!(snapshot.get("plugins_active"), Some(&Value::Gauge(1)), "only the enabled one");
+}
+
 /// Inserts a plugin row, which is what the database is the source of truth for.
 fn install(runtime: &Runtime, id: &str, enabled: i64, trusted: i64) {
     runtime

@@ -90,6 +90,18 @@ impl Runtime {
             Refusal::new(ErrorCode::Internal, format!("could not read the plugins table: {error}"))
         })?;
 
+        // ★ The two plugin gauges, set where the truth is read. The daemon has no install command, so this listing is the
+        // only place its recorder can learn how many plugins exist — and a daemon whose `plugins_installed` stayed absent
+        // would make the metrics panel describe a kernel with no plugins at all.
+        self.metrics.gauge_set(
+            &synra_observe::metrics::SeriesKey::new("plugins_installed", []),
+            i64::try_from(rows.len()).unwrap_or(i64::MAX),
+        );
+        self.metrics.gauge_set(
+            &synra_observe::metrics::SeriesKey::new("plugins_active", []),
+            i64::try_from(rows.iter().filter(|row| row.enabled).count()).unwrap_or(i64::MAX),
+        );
+
         let mut installed: Vec<serde_json::Value> = Vec::new();
         for row in rows {
             // The manifest is read for the title, and its absence is reported rather than skipped: a row whose artifact
