@@ -777,6 +777,42 @@ fn a_trapped_call_is_counted_as_a_fault_with_its_outcome() {
 }
 
 #[test]
+fn the_pool_counters_tell_a_warm_call_from_a_cold_one() {
+    // ★ "Hit" is the pool handing out a slot that already has an instance; "miss" is one that had to build it. The pair
+    // is taken from the set's own `live` map before the call, so it describes what the pool served rather than what the
+    // engine spent. A counter that only counted misses would make a warm pool look like a cold one for ever.
+    use synra_observe::metrics::Value;
+
+    let backend = ScriptedBackend::new();
+    let metrics = std::sync::Arc::new(synra_observe::metrics::RingRecorder::new());
+    let mut set = PluginSet::new(Backend::new(std::sync::Arc::new(backend.clone())), host())
+        .with_metrics(std::sync::Arc::clone(&metrics));
+    load(
+        &mut set,
+        &backend,
+        "@synra/aaa-notes",
+        Scripted::Ok(r#"{"handled":true}"#.to_owned()),
+    );
+    let work = Work::CanHandle { item_json: share_json().to_owned() };
+    let budget = Matcher::new(&mut set).budget();
+
+    set.call(&id("@synra/aaa-notes"), &work, budget, 1_000).expect("a cold call");
+    set.call(&id("@synra/aaa-notes"), &work, budget, 2_000).expect("a warm call");
+
+    let snapshot = metrics.snapshot();
+    assert_eq!(
+        snapshot.get("plugin_pool_miss_total"),
+        Some(&Value::Counter(1)),
+        "the first call had to instantiate"
+    );
+    assert_eq!(
+        snapshot.get("plugin_pool_hit_total"),
+        Some(&Value::Counter(1)),
+        "the second found the instance the first left"
+    );
+}
+
+#[test]
 fn unloading_a_plugin_takes_it_out_of_the_next_pass() {
     let backend = ScriptedBackend::new();
     let mut set = PluginSet::new(Backend::new(std::sync::Arc::new(backend.clone())), host());

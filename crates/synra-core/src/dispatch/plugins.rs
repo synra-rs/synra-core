@@ -629,6 +629,9 @@ impl PluginSet {
             }
         };
         let started = std::time::Instant::now();
+        // ★ Whether this handle already had an instance when the call started. That is exactly what a "pool hit" means
+        // — the pool handed out a warm slot — and it is knowable here because `live` is the set's own map, not the pool's.
+        let had_instance = loaded.live.contains_key(&handle);
         let outcome = Self::run_on(&self.backend, &self.host, loaded, id, handle, work, budget);
         // ★ The plugin group's counter and latency, recorded here because this is the one funnel every call goes through —
         // the matcher's `can-handle`, an action invocation and a lifecycle tick all pass `call`.
@@ -695,6 +698,12 @@ impl PluginSet {
                     fuel as f64,
                 );
             }
+        }
+        // ★ One of the two, per call, from the flag taken before the call. A call that could not start (the pool refused
+        // it) never reaches here, so the pair always sums to the calls the pool actually served.
+        if let Some(metrics) = &self.metrics {
+            let counter = if had_instance { "plugin_pool_hit_total" } else { "plugin_pool_miss_total" };
+            metrics.counter_inc(&synra_observe::metrics::SeriesKey::new(counter, []));
         }
         let _ = loaded.pool.release(handle, now_ms);
         // ★ Drained **after** the call, not inside it: the entries are produced while the guest runs, and the ring lives
