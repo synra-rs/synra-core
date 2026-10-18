@@ -31,6 +31,18 @@ use crate::run::Outcome;
 /// archive is not the place to discover that `manifest.json` names an artifact that is not there.
 pub fn pack_plugin(args: &crate::args::PackArgs) -> Result<Outcome, String> {
     let dir = &args.dir;
+
+    // ★ The same checks `verify` makes, at the one moment an author is about to publish: a tarball is how a broken package
+    // reaches users, and an archive that exists is easier to trust than a report that was skipped.
+    let report = crate::verify::verify(&crate::verify::Target::read(dir));
+    if !report.is_ok() {
+        let mut lines = vec![format!("{} cannot be packed:", dir.display())];
+        for finding in report.findings.iter().filter(|finding| finding.verdict.is_failure()) {
+            lines.push(format!("  {}: {}", finding.name, finding.detail));
+        }
+        return Ok(Outcome::Reported { lines, code: 1, failure: true });
+    }
+
     let manifest_text = std::fs::read_to_string(dir.join("manifest.json"))
         .map_err(|error| format!("{}/manifest.json: {error}", dir.display()))?;
     let manifest = Manifest::from_json(&manifest_text)
@@ -238,14 +250,17 @@ mod tests {
         let root = scratch("missing");
         std::fs::write(root.join("manifest.json"), manifest("1.2.3", &["log:*"])).expect("a manifest");
 
-        let refused = pack_plugin(&crate::args::PackArgs {
+        let crate::run::Outcome::Reported { lines, failure, .. } = pack_plugin(&crate::args::PackArgs {
             dir: root.clone(),
             out: None,
             dry_run: false,
         })
-        .expect_err("the artifact is missing");
+        .expect("a report") else {
+            panic!("expected a report");
+        };
 
-        assert!(refused.contains("plugin.wasm"), "{refused}");
+        assert!(failure);
+        assert!(lines.iter().any(|line| line.contains("plugin.wasm")), "{lines:?}");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -265,6 +280,30 @@ mod tests {
             panic!("expected an archive outcome");
         };
         assert_eq!(target.file_name().and_then(|name| name.to_str()), Some("@acme-hello-2.0.0.tgz"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_package_that_fails_verification_is_not_packed() {
+        // ★ Pack runs the checks `verify` runs. An empty artifact is refused by both, and the failure is a report rather
+        // than a second implementation of the rule.
+        let root = scratch("broken");
+        std::fs::write(root.join("manifest.json"), manifest("1.2.3", &["log:*"])).expect("a manifest");
+        std::fs::write(root.join("plugin.wasm"), b"").expect("an empty artifact");
+
+        let outcome = pack_plugin(&crate::args::PackArgs {
+            dir: root.clone(),
+            out: None,
+            dry_run: false,
+        })
+        .expect("the decision is a report, not an error");
+
+        let crate::run::Outcome::Reported { lines, code, failure } = outcome else {
+            panic!("expected a report");
+        };
+        assert_eq!(code, 1);
+        assert!(failure);
+        assert!(lines.iter().any(|line| line.contains("wasm")), "{lines:?}");
         let _ = std::fs::remove_dir_all(&root);
     }
 
