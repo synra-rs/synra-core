@@ -90,6 +90,28 @@ impl AuditOutcome {
         }
     }
 
+    /// The outcome a stored name refers to, when this build knows the name.
+    ///
+    /// # Why this lives beside `as_str`
+    ///
+    /// `plugin_audit.outcome` stores exactly [`AuditOutcome::as_str`], so a reader of the table has to turn that name back
+    /// into an outcome to answer "was it allowed". A parser in the reader would be a second table of spellings, and the
+    /// drift would show up as a row drawn with the wrong colour rather than as a compile error.
+    ///
+    /// An unknown name is `None` and not a guess: the caller reports the name it read, because a row whose outcome came
+    /// from a newer build must not be presented as "allowed".
+    #[must_use]
+    pub fn from_stable_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "allowed" => Self::Allowed,
+            "denied" => Self::Denied,
+            "quota-exceeded" => Self::QuotaExceeded,
+            "rate-limited" => Self::RateLimited,
+            "failed" => Self::Failed,
+            _ => return None,
+        })
+    }
+
     /// The icon the settings screen shows.
     #[must_use]
     pub const fn marker(self) -> &'static str {
@@ -485,6 +507,24 @@ mod tests {
             let back: AuditOutcome = serde_json::from_str(&json).expect("deserialises");
             assert_eq!(back, outcome);
         }
+    }
+
+    #[test]
+    fn every_name_the_table_stores_parses_back_to_its_outcome() {
+        // ★ The table's `outcome` column is written with `as_str`, so this is the reader's half of that one spelling
+        // table. Asserting through the same loop is what keeps a new variant from being stored but not parsed.
+        for outcome in [
+            AuditOutcome::Allowed,
+            AuditOutcome::Denied,
+            AuditOutcome::QuotaExceeded,
+            AuditOutcome::RateLimited,
+            AuditOutcome::Failed,
+        ] {
+            assert_eq!(AuditOutcome::from_stable_name(outcome.as_str()), Some(outcome));
+        }
+
+        // An unknown name is not "allowed": a row written by a newer build is reported by name rather than guessed at.
+        assert_eq!(AuditOutcome::from_stable_name("something-new"), None);
     }
 
     #[test]

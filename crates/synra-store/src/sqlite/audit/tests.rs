@@ -138,3 +138,46 @@ fn a_call_before_the_epoch_is_still_a_call() {
     assert_eq!(db.audit_count().expect("counted"), 1);
     assert_eq!(db.forget_audit_before(0).expect("collected"), 1, "it is older than the epoch");
 }
+
+#[test]
+fn one_plugins_trail_is_read_newest_first_and_within_the_limit() {
+    // ★ The read the audit panel makes. Three claims at once, because a query that gets one of them wrong is still a
+    // query that returns plausible rows: only this plugin's calls, the newest ones first, at most `limit` of them.
+    let db = db();
+    for at in [1_000, 2_000, 3_000] {
+        db.record_audit(&call("@acme/notes", "device:list", "allowed", at)).expect("recorded");
+    }
+    db.record_audit(&call("@acme/chat", "log:info", "allowed", 4_000)).expect("recorded");
+
+    let ats: Vec<i64> = db
+        .audit_trail_for("@acme/notes", 2)
+        .expect("listed")
+        .into_iter()
+        .map(|row| row.at_ms)
+        .collect();
+
+    assert_eq!(ats, vec![3_000, 2_000], "newest first, another plugin excluded, the limit honoured");
+}
+
+#[test]
+fn a_limit_of_zero_answers_nothing_rather_than_everything() {
+    // `LIMIT 0` is the SQL that says "nothing". A reader that treated zero as "no limit" would turn a malformed request
+    // into the whole history.
+    let db = db();
+    db.record_audit(&call("@acme/notes", "device:list", "allowed", 1_000)).expect("recorded");
+
+    assert!(db.audit_trail_for("@acme/notes", 0).expect("listed").is_empty());
+}
+
+#[test]
+fn forgetting_one_plugins_rows_leaves_the_other() {
+    // The same rule as the ring: a button on one plugin's card must not clear another plugin's history.
+    let db = db();
+    db.record_audit(&call("@acme/notes", "device:list", "allowed", 1_000)).expect("recorded");
+    db.record_audit(&call("@acme/chat", "log:info", "allowed", 2_000)).expect("recorded");
+
+    assert_eq!(db.forget_audit_for("@acme/notes").expect("collected"), 1);
+
+    assert!(db.audit_trail_for("@acme/notes", 10).expect("listed").is_empty());
+    assert_eq!(db.audit_trail_for("@acme/chat", 10).expect("listed").len(), 1);
+}
