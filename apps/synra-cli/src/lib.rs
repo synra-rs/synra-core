@@ -55,4 +55,4 @@ pub use args::{
 };
 pub use channel::{Question, Shape, ask, outcome_of, question_for, transport_failure};
 pub use doctor::{DoctorReport, HostSummary, ProbeLine};
-pub use session::{CommandOutcome, DATA_DIR_VAR, data_root, data_root_from, dispatch};
+pub use session::{CommandOutcome, DATA_DIR_VAR, data_root, data_root_from, dispatch, follow, follow_in};

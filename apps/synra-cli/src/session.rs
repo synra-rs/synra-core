@@ -146,27 +146,9 @@ impl CommandOutcome {
 /// Everything else is a question, and [`crate::channel`] is what turns one into a request and the answer into output.
 #[must_use]
 pub fn dispatch(cli: &Cli) -> CommandOutcome {
-    // ★ A flag that cannot work says so, rather than returning something that looks like an answer.
-    //
-    // `--follow` is parsed and was then never read: the command sent an ordinary `logs` request, printed the tail, and
-    // exited. A user who asked to follow spent the rest of their time believing they were watching a live log while
-    // looking at a snapshot — and the failure is invisible, because a snapshot of a quiet log and a live log with
-    // nothing happening are the same output.
-    //
-    // Streaming needs a protocol that keeps a connection open and pushes lines. `Request` is one request per connection,
-    // so this is not a wiring gap but a missing feature, and saying which is the honest answer. The alternative —
-    // looping here and re-asking every second — would be a `--follow` that silently polls, which is a different promise
-    // from the one the flag makes.
-    if let Command::Logs(args) = &cli.command
-        && args.follow
-    {
-        return CommandOutcome::Failed(
-            "`--follow` is not implemented yet: the control protocol answers one request per connection, so there is \
-             no stream to follow. Run `synra logs` again to see newer lines."
-                .to_owned(),
-        );
-    }
-
+    // `--follow` never reaches here: it prints as lines arrive rather than returning one outcome, and `main` sends it to
+    // [`follow`] before dispatch. That is a deliberate exception to the "return lines, let the caller print" rule — a
+    // stream has no end to return.
     let question =
         match crate::channel::question_for(&cli.command, cli.output, || plugin_request(&cli.command))
         {
@@ -205,8 +187,80 @@ pub fn dispatch(cli: &Cli) -> CommandOutcome {
     }
 }
 
-/// The request a plugin subcommand makes, when it is one this build can serve.
+/// Follows the kernel's log: prints the tail it answers with, then every line appended to the same file.
 ///
+/// # Why this reads the file instead of opening a stream
+///
+/// Because the control protocol answers one request per connection, and the log file is on **this machine** — the socket
+/// the client just used is a path inside the same data directory. A streaming request would add a second lifetime and a
+/// second framing to the protocol to move bytes that are already local. What the user asked for is "keep showing me lines
+/// as they appear", and reading the file the writer writes delivers exactly that.
+///
+/// # What this is not
+///
+/// Not a snapshot dressed up as a live log: the old `--follow` printed the tail and exited. This one prints the tail the
+/// kernel answered with, then keeps reading. The one visible seam is that lines written between the kernel's answer and
+/// the follower's first read are not printed — a window of milliseconds, and the alternative (a protocol for streaming)
+/// was a larger promise than the command needed.
+#[must_use]
+pub fn follow(cli: &Cli, out: &mut dyn std::io::Write) -> u8 {
+    follow_in(&data_root(), cli, out, synra_observe::logging::FOLLOW_POLL)
+}
+
+/// [`follow`], over a named data directory and poll interval — the shape a test can drive.
+#[must_use]
+pub fn follow_in(
+    data_dir: &std::path::Path,
+    cli: &Cli,
+    out: &mut dyn std::io::Write,
+    poll: std::time::Duration,
+) -> u8 {
+    let Command::Logs(args) = &cli.command else {
+        return 2;
+    };
+    let request = Request::Logs {
+        lines: usize::try_from(args.lines).unwrap_or(usize::MAX),
+        verbose: args.verbose,
+        trace: args.trace.clone(),
+    };
+    let mut client = match Client::connect(data_dir) {
+        Ok(client) => client,
+        Err(error) => {
+            let outcome = crate::channel::transport_failure(&error);
+            let _ = writeln!(out, "{}", outcome.text());
+            return u8::from(outcome.is_failure());
+        }
+    };
+    // The tail comes from the kernel, because asking it is also what raises the daemon's level for `--verbose`.
+    let question = crate::channel::Question { request, shape: crate::channel::Shape::Prose };
+    match crate::channel::ask(&question, &mut client) {
+        CommandOutcome::Lines(lines) => {
+            for line in lines {
+                if writeln!(out, "{line}").is_err() {
+                    return 1;
+                }
+            }
+        }
+        other => {
+            let _ = writeln!(out, "{}", other.text());
+            return u8::from(other.is_failure());
+        }
+    }
+    // ★ Then the same file the daemon writes, followed by offset. `0` lines of history because the tail above already
+    // printed it; the filters are the same ones the tail used, so `--verbose` and `--trace` keep their meaning.
+    let paths = Paths::under(data_dir);
+    let _ = synra_observe::logging::follow(
+        paths.log_dir(),
+        0,
+        args.verbose,
+        args.trace.as_deref(),
+        poll,
+        |line| writeln!(out, "{line}").and_then(|()| out.flush()).is_ok(),
+    );
+    0
+}
+
+/// The request a plugin subcommand makes, when it is one this build can serve.///
 /// # What is asked and what is not
 ///
 /// Every action has a request now, including `remove`: the kernel is the only process that may write to the plugin
@@ -462,26 +516,30 @@ mod tests {
     }
 
     #[test]
-    fn following_the_log_is_refused_rather_than_answered_with_a_snapshot() {
-        // ★ The flag parses and used to be ignored. The command sent an ordinary `logs` request, printed the tail and
-        // exited — so a user who asked to follow believed they were watching a live log while looking at a snapshot, and
-        // nothing in the output said otherwise. A snapshot of a quiet log and a live log with nothing happening are the
-        // same screen, which is what made it invisible.
-        //
-        // Refusing is the honest answer until streaming exists. The assertion is on the message as well as the variant,
-        // because `Failed` without a reason sends the user looking for a kernel that is not running.
-        let outcome = dispatch(&cli(&["synra", "logs", "--follow"]));
+    fn following_without_a_kernel_says_so_rather_than_waiting_for_lines() {
+        // ★ `--follow` used to be refused as unimplemented. It is implemented now, and the failure that remains is the
+        // ordinary one: no kernel answers. That must be said **before** the follower starts waiting on a file, or a user
+        // with no daemon sees a silent command that looks like it is following a log.
+        let directory =
+            std::env::temp_dir().join(format!("synra-cli-follow-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).expect("a data directory");
 
-        match outcome {
-            CommandOutcome::Failed(why) => {
-                assert!(why.contains("--follow"), "the message should name the flag: {why}");
-                assert!(
-                    why.contains("not implemented"),
-                    "the message should say it is unbuilt rather than broken: {why}"
-                );
-            }
-            other => panic!("following should be refused, got {other:?}"),
-        }
+        let mut out = Vec::new();
+        let code = follow_in(
+            &directory,
+            &cli(&["synra", "logs", "--follow"]),
+            &mut out,
+            std::time::Duration::from_millis(5),
+        );
+
+        assert_eq!(code, 1, "an unreachable kernel is a failure");
+        let text = String::from_utf8_lossy(&out);
+        assert!(
+            text.contains("no kernel is listening"),
+            "the socket error should be named: {text}"
+        );
+        let _ = std::fs::remove_dir_all(&directory);
     }
 
     #[test]
