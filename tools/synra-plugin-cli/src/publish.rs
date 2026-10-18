@@ -51,6 +51,13 @@ fn validate(args: &crate::args::PublishArgs) -> Result<Vec<String>, Vec<String>>
         }
     }
 
+    if args.verify {
+        match verify_remote(args, &index) {
+            Ok(remote) => lines.extend(remote),
+            Err(remote) => failures.extend(remote),
+        }
+    }
+
     if failures.is_empty() {
         Ok(lines)
     }
@@ -60,6 +67,154 @@ fn validate(args: &crate::args::PublishArgs) -> Result<Vec<String>, Vec<String>>
         lines.extend(failures);
         Err(lines)
     }
+}
+
+/// Reads the bucket back and compares it with the local files.
+///
+/// The remote document is parsed with the same parser the installing side uses, and the tarballs are compared by digest
+/// rather than by size: a bucket that serves a different file of the same size is exactly the failure a size check misses.
+fn verify_remote(
+    args: &crate::args::PublishArgs,
+    index: &synra_registry::StaticIndex,
+) -> Result<Vec<String>, Vec<String>> {
+    let Some(base) = args.base.as_deref() else {
+        return Err(vec!["  --verify needs --base: there is no address to read back from".to_owned()]);
+    };
+    let base = base.trim_end_matches('/');
+    let index_url = format!("{base}/{}.json", index.document.name);
+    let body = fetch(&index_url).map_err(|reason| vec![format!("  {reason}")])?;
+    let remote = synra_registry::parse_static_index(&String::from_utf8_lossy(&body))
+        .map_err(|error| vec![format!("  {index_url}: {error}")])?;
+
+    let mut lines = vec![format!("  remote index  {}", index_url)];
+    let mut failures = Vec::new();
+    if remote.document.versions.len() != index.document.versions.len() {
+        failures.push(format!(
+            "  remote index lists {} version(s), the local index lists {}",
+            remote.document.versions.len(),
+            index.document.versions.len()
+        ));
+    }
+
+    let directory = args.index.parent().unwrap_or_else(|| Path::new("."));
+    for (version, local_entry) in &index.document.versions {
+        let Some(remote_entry) = remote.document.at(version) else {
+            failures.push(format!("  {version}  the remote index does not list it"));
+            continue;
+        };
+        let remote_url = match resolve_remote(&index_url, &remote_entry.dist.tarball) {
+            Ok(url) => url,
+            Err(reason) => {
+                failures.push(format!("  {version}  {reason}"));
+                continue;
+            }
+        };
+        let remote_bytes = match fetch(&remote_url) {
+            Ok(bytes) => bytes,
+            Err(reason) => {
+                failures.push(format!("  {version}  {reason}"));
+                continue;
+            }
+        };
+        let local = match local_tarball(directory, args.base.as_deref(), &local_entry.dist.tarball) {
+            Ok(path) => path,
+            Err(reason) => {
+                failures.push(format!("  {version}  {reason}"));
+                continue;
+            }
+        };
+        let local_bytes = match std::fs::read(&local) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                failures.push(format!("  {version}  {}: {error}", local.display()));
+                continue;
+            }
+        };
+        if digest(&remote_bytes) == digest(&local_bytes) {
+            lines.push(format!("  remote {version}  digest matches"));
+        }
+        else {
+            failures.push(format!(
+                "  {version}  the bucket serves different bytes than {}",
+                local.display()
+            ));
+        }
+    }
+
+    if failures.is_empty() { Ok(lines) } else { Err(failures) }
+}
+
+/// A URL's bytes, through the host's own network guard.
+fn fetch(url: &str) -> Result<Vec<u8>, String> {
+    let (secure, rest) = if let Some(rest) = url.strip_prefix("https://") {
+        (true, rest)
+    }
+    else if let Some(rest) = url.strip_prefix("http://") {
+        (false, rest)
+    }
+    else {
+        return Err(format!("{url}: it must start with https:// or http://"));
+    };
+    let authority = rest.split('/').next().unwrap_or_default();
+    let host = match authority.rsplit_once(':') {
+        Some((host, port)) if port.chars().all(|character| character.is_ascii_digit()) => host,
+        _ => authority,
+    };
+    let host = host.trim_matches(['[', ']']).to_owned();
+
+    let mut guard = synra_core::network::NetworkGuard::for_hosts(std::slice::from_ref(&host));
+    if !secure {
+        guard = guard.allowing_insecure(true).with_policy(synra_core::network::IpPolicy {
+            allow_loopback: true,
+            ..synra_core::network::IpPolicy::default()
+        });
+    }
+    let client = synra_fetch::Client::new(
+        guard,
+        synra_fetch::Limits { max_response_bytes: 64 * 1024 * 1024 + 1, ..synra_fetch::Limits::default() },
+    );
+    let request = synra_fetch::Request {
+        url: url.to_owned(),
+        method: "GET".to_owned(),
+        headers: std::collections::BTreeMap::new(),
+        body: None,
+    };
+    let response = client.fetch_bytes(&request).map_err(|error| format!("{url}: {error}"))?;
+    if !(200..300).contains(&response.status) {
+        return Err(format!("{url}: answered {}", response.status));
+    }
+    Ok(response.body)
+}
+
+/// A tarball reference from the remote index, resolved against that index's URL.
+fn resolve_remote(index_url: &str, tarball: &str) -> Result<String, String> {
+    if tarball.starts_with("https://") || tarball.starts_with("http://") {
+        return Ok(tarball.to_owned());
+    }
+    if tarball.is_empty() || tarball.split('/').any(|segment| segment == "..") {
+        return Err(format!("{tarball}: the index names a path outside its own directory"));
+    }
+    if let Some(absolute) = tarball.strip_prefix('/') {
+        let origin = index_url
+            .split_once("://")
+            .map(|(scheme, rest)| {
+                let authority = rest.split('/').next().unwrap_or_default();
+                format!("{scheme}://{authority}")
+            })
+            .ok_or_else(|| "the index URL is not absolute".to_owned())?;
+        return Ok(format!("{origin}/{absolute}"));
+    }
+    let directory = index_url
+        .rsplit_once('/')
+        .map(|(directory, _)| directory)
+        .ok_or_else(|| "the index URL is not absolute".to_owned())?;
+    Ok(format!("{directory}/{tarball}"))
+}
+
+/// A content digest, so two files are compared by what they are rather than by how large they are.
+fn digest(bytes: &[u8]) -> String {
+    use sha2::Digest as _;
+    sha2::Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// Checks one version's tarball, returning the line to print or the failure.
@@ -252,7 +407,7 @@ mod tests {
         let root = scratch("ok");
         let index = packed(&root, "1.0.0");
 
-        let outcome = publish_plugin(&crate::args::PublishArgs { index, base: None });
+        let outcome = publish_plugin(&crate::args::PublishArgs { index, base: None, verify: false });
 
         let crate::run::Outcome::Reported { lines, code, .. } = outcome else {
             panic!("expected a report");
@@ -269,7 +424,7 @@ mod tests {
         std::fs::remove_file(root.join("dist").join("@acme").join("@acme-hello-1.0.0.tgz"))
             .expect("the tarball is gone");
 
-        let outcome = publish_plugin(&crate::args::PublishArgs { index, base: None });
+        let outcome = publish_plugin(&crate::args::PublishArgs { index, base: None, verify: false });
         let crate::run::Outcome::Reported { lines, failure, .. } = outcome else {
             panic!("expected a report");
         };
@@ -297,7 +452,7 @@ mod tests {
         )
         .expect("the changed archive");
 
-        let outcome = publish_plugin(&crate::args::PublishArgs { index, base: None });
+        let outcome = publish_plugin(&crate::args::PublishArgs { index, base: None, verify: false });
         let crate::run::Outcome::Reported { lines, failure, .. } = outcome else {
             panic!("expected a report");
         };
@@ -310,11 +465,118 @@ mod tests {
     }
 
     #[test]
+    fn verify_reads_the_bucket_back() {
+        // ★ The question is not "did the upload succeed" but "does the bucket serve what was packed": the remote index is
+        // parsed by the installing side's parser and the tarballs are compared by digest.
+        use std::io::{BufRead, BufReader, Write as _};
+
+        let root = scratch("verify");
+        let index_path = packed(&root, "1.0.0");
+        let index_bytes = std::fs::read(&index_path).expect("the index");
+        let tarball_bytes = std::fs::read(root.join("dist").join("@acme").join("@acme-hello-1.0.0.tgz"))
+            .expect("the tarball");
+        let base = serve(index_bytes, tarball_bytes);
+
+        let outcome = publish_plugin(&crate::args::PublishArgs {
+            index: index_path,
+            base: Some(base),
+            verify: true,
+        });
+        let crate::run::Outcome::Reported { lines, code, .. } = outcome else {
+            panic!("expected a report");
+        };
+        assert_eq!(code, 0, "{lines:?}");
+        assert!(lines.iter().any(|line| line.contains("digest matches")), "{lines:?}");
+        let _ = std::fs::remove_dir_all(&root);
+
+        fn serve(index: Vec<u8>, tarball: Vec<u8>) -> String {
+            let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("a port");
+            let base = format!("http://{}", listener.local_addr().expect("an address"));
+            std::thread::spawn(move || {
+                for _ in 0..2 {
+                    let Ok((mut stream, _)) = listener.accept() else { return };
+                    let mut reader = BufReader::new(stream.try_clone().expect("a clone"));
+                    let mut line = String::new();
+                    let _ = reader.read_line(&mut line);
+                    loop {
+                        let mut header = String::new();
+                        if reader.read_line(&mut header).unwrap_or(0) == 0 || header == "\r\n" {
+                            break;
+                        }
+                    }
+                    let body = if line.contains(".json") { index.clone() } else { tarball.clone() };
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = stream.write_all(head.as_bytes());
+                    let _ = stream.write_all(&body);
+                }
+            });
+            base
+        }
+    }
+
+    #[test]
+    fn verify_refuses_a_bucket_that_serves_different_bytes() {
+        use std::io::{BufRead, BufReader, Write as _};
+
+        let root = scratch("verify-tampered");
+        let index_path = packed(&root, "1.0.0");
+        let index_bytes = std::fs::read(&index_path).expect("the index");
+        let mut tarball_bytes = std::fs::read(root.join("dist").join("@acme").join("@acme-hello-1.0.0.tgz"))
+            .expect("the tarball");
+        if let Some(byte) = tarball_bytes.last_mut() {
+            *byte ^= 0xFF;
+        }
+
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("a port");
+        let base = format!("http://{}", listener.local_addr().expect("an address"));
+        std::thread::spawn(move || {
+            for _ in 0..2 {
+                let Ok((mut stream, _)) = listener.accept() else { return };
+                let mut reader = BufReader::new(stream.try_clone().expect("a clone"));
+                let mut line = String::new();
+                let _ = reader.read_line(&mut line);
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).unwrap_or(0) == 0 || header == "\r\n" {
+                        break;
+                    }
+                }
+                let body = if line.contains(".json") { index_bytes.clone() } else { tarball_bytes.clone() };
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(head.as_bytes());
+                let _ = stream.write_all(&body);
+            }
+        });
+
+        let outcome = publish_plugin(&crate::args::PublishArgs {
+            index: index_path,
+            base: Some(base),
+            verify: true,
+        });
+        let crate::run::Outcome::Reported { lines, failure, .. } = outcome else {
+            panic!("expected a report");
+        };
+        assert!(failure);
+        assert!(
+            lines.iter().any(|line| line.contains("different bytes")),
+            "{lines:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn an_absolute_tarball_needs_the_base_to_be_found_locally() {
         let root = scratch("base");
         assert!(validate(&crate::args::PublishArgs {
             index: root.join("missing.json"),
             base: None,
+            verify: false,
         })
         .is_err());
         assert_eq!(

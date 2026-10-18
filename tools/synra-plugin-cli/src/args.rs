@@ -119,6 +119,10 @@ pub struct PublishArgs {
     /// The public base URL, when the index names tarballs absolutely. The local path is the URL minus this prefix.
     #[arg(long, value_name = "URL")]
     pub base: Option<String>,
+
+    /// Also fetch the index and tarballs from `--base` and compare them with the local files.
+    #[arg(long)]
+    pub verify: bool,
 }
 
 /// Options for `new`.

@@ -1973,6 +1973,8 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "synra-core",
+ "synra-fetch",
  "synra-plugin-api",
  "synra-plugin-host",
  "synra-protocol",

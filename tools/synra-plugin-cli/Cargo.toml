@@ -15,6 +15,10 @@ synra-plugin-host = { path = "../../crates/synra-plugin-host" }
 # `publish` checks a tarball with the unpacker the installing side runs, so "the archive is well formed" means what it
 # means at install time.
 synra-registry = { path = "../../crates/synra-registry" }
+# `publish --verify` reads the bucket back through the same network guard the host uses, so a URL the host would refuse is
+# refused here too.
+synra-fetch = { path = "../../crates/synra-fetch" }
+synra-core = { path = "../../crates/synra-core" }
 
 clap = { workspace = true }
 serde.workspace = true
