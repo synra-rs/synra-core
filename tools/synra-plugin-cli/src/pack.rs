@@ -141,26 +141,26 @@ pub fn pack_plugin(args: &crate::args::PackArgs) -> Result<Outcome, String> {
                 .ok_or_else(|| format!("{} has no file name", target.display()))?;
             let manifest_value: serde_json::Value = serde_json::from_str(&manifest_text)
                 .map_err(|error| format!("manifest.json: {error}"))?;
-            let mut publishers = serde_json::Map::new();
-            if let Some((publisher, fingerprint)) = &signed_by {
-                publishers.insert(publisher.clone(), serde_json::json!(fingerprint));
-            }
-            let document = serde_json::json!({
-                "name": manifest.id.to_string(),
-                "latest": &manifest.version,
-                "publishers": publishers,
-                "versions": [{
-                    "version": &manifest.version,
-                    "tarball": format!("{base}/{file}"),
-                    "manifest": manifest_value,
-                }],
-            });
             let path = target
                 .parent()
                 .unwrap_or_else(|| Path::new("."))
                 .join(format!("{}.json", manifest.id));
-            let text = serde_json::to_string_pretty(&document)
-                .map_err(|error| format!("the index could not be written: {error}"))?;
+            // ★ Publishing a second version must not erase the first: the index is the package's whole history, and an
+            // author who re-packs 1.3.0 would otherwise drop every install still asking for 1.2.0.
+            let existing = match std::fs::read_to_string(&path) {
+                Ok(text) => Some(text),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(format!("{}: {error}", path.display())),
+            };
+            let publisher = signed_by.as_ref().map(|(id, fingerprint)| (id.as_str(), fingerprint.as_str()));
+            let text = merge_index(
+                existing.as_deref(),
+                &manifest.id.to_string(),
+                &manifest.version,
+                &format!("{base}/{file}"),
+                &manifest_value,
+                publisher,
+            )?;
             lines.push(format!("  index    {}", path.display()));
             Some((path, text))
         }
@@ -300,6 +300,67 @@ fn index_base(url: &str) -> Result<String, String> {
         );
     }
     Ok(format!("{}://{rest}", if secure { "https" } else { "http" }))
+}
+
+/// Adds one version to a static index, keeping the versions it already lists.
+///
+/// # Errors
+///
+/// A sentence when the existing document is not JSON or is not the index shape. Overwriting a file this tool cannot read
+/// would lose every version it did not write.
+fn merge_index(
+    existing: Option<&str>,
+    name: &str,
+    version: &str,
+    tarball: &str,
+    manifest: &serde_json::Value,
+    publisher: Option<(&str, &str)>,
+) -> Result<String, String> {
+    let mut document = match existing {
+        Some(text) => serde_json::from_str::<serde_json::Value>(text)
+            .map_err(|error| format!("the index is not JSON: {error}"))?,
+        None => serde_json::json!({ "name": name, "versions": [], "publishers": {} }),
+    };
+    let Some(object) = document.as_object_mut() else {
+        return Err("the index is not a JSON object".to_owned());
+    };
+    object.insert("name".to_owned(), serde_json::json!(name));
+    object.insert("latest".to_owned(), serde_json::json!(version));
+
+    let mut publishers = object
+        .remove("publishers")
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    if let Some((id, fingerprint)) = publisher {
+        publishers.insert(id.to_owned(), serde_json::json!(fingerprint));
+    }
+    object.insert("publishers".to_owned(), serde_json::Value::Object(publishers));
+
+    let mut versions = object
+        .remove("versions")
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default();
+    let entry = serde_json::json!({
+        "version": version,
+        "tarball": tarball,
+        "manifest": manifest,
+    });
+    match versions
+        .iter()
+        .position(|listed| listed.get("version").and_then(serde_json::Value::as_str) == Some(version))
+    {
+        // Re-packing a version replaces its entry rather than listing it twice: the parser refuses duplicates, and a
+        // second tarball for one version is not a history.
+        Some(index) => {
+            if let Some(slot) = versions.get_mut(index) {
+                *slot = entry;
+            }
+        }
+        None => versions.push(entry),
+    }
+    object.insert("versions".to_owned(), serde_json::Value::Array(versions));
+
+    serde_json::to_string_pretty(&document).map_err(|error| format!("the index could not be written: {error}"))
 }
 
 /// The file names the manifest says a package contains.
@@ -677,6 +738,87 @@ mod tests {
         .expect("the index parses");
         assert!(index.publishers.is_empty());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_second_version_is_added_to_the_index() {
+        // ★ The index is the package's history. Re-packing 1.3.0 must not drop 1.2.0: an install that asks for the older
+        // version still has to find it.
+        let root = scratch("index-history");
+        let pack = |version: &str, out: &str| {
+            std::fs::write(root.join("manifest.json"), manifest(version, &["log:*"])).expect("a manifest");
+            std::fs::write(root.join("plugin.wasm"), b"\0asm\x01\0\0\0").expect("an artifact");
+            sign(&root);
+            let outcome = pack_plugin(&crate::args::PackArgs {
+                dir: root.clone(),
+                out: Some(root.join(out)),
+                index: Some("https://static.example.com/plugins".to_owned()),
+                registry: None,
+                dry_run: false,
+            })
+            .expect("it packs");
+            let executed = crate::execute::execute(&outcome, false);
+            assert_eq!(executed.code, 0);
+        };
+        pack("1.2.3", "one.tgz");
+        pack("1.3.0", "two.tgz");
+
+        let index = synra_registry::parse_static_index(
+            &std::fs::read_to_string(root.join("@acme").join("hello.json")).expect("the index"),
+        )
+        .expect("the index parses");
+        assert_eq!(index.document.versions.len(), 2);
+        assert_eq!(index.document.latest().expect("a latest").version, "1.3.0");
+        assert_eq!(
+            index.document.at("1.2.3").expect("the old version").dist.tarball,
+            "https://static.example.com/plugins/one.tgz"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn merging_replaces_a_version_rather_than_listing_it_twice() {
+        let manifest_value: serde_json::Value =
+            serde_json::from_str(&manifest("1.0.0", &["log:*"])).expect("a manifest document");
+        let first = super::merge_index(
+            None,
+            "@acme/hello",
+            "1.0.0",
+            "https://static.example.com/one.tgz",
+            &manifest_value,
+            None,
+        )
+        .expect("an index");
+        let second = super::merge_index(
+            Some(&first),
+            "@acme/hello",
+            "1.0.0",
+            "https://static.example.com/two.tgz",
+            &manifest_value,
+            None,
+        )
+        .expect("an index");
+
+        let index = synra_registry::parse_static_index(&second).expect("it parses");
+        assert_eq!(index.document.versions.len(), 1);
+        assert_eq!(
+            index.document.at("1.0.0").expect("the version").dist.tarball,
+            "https://static.example.com/two.tgz"
+        );
+    }
+
+    #[test]
+    fn an_index_this_tool_cannot_read_is_not_overwritten() {
+        let refused = super::merge_index(
+            Some("not json"),
+            "@acme/hello",
+            "1.0.0",
+            "https://static.example.com/one.tgz",
+            &serde_json::json!({}),
+            None,
+        )
+        .expect_err("it is not an index");
+        assert!(refused.contains("not JSON"), "{refused}");
     }
 
     #[test]
