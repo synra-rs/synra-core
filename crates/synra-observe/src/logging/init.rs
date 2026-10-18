@@ -115,12 +115,28 @@ pub struct LogGuard {
     /// daemon shares this with the thread that answers `synra logs --verbose`.
     verbosity: Arc<super::verbosity::Verbosity>,
     /// The thread that writes what was queued. Declared last so it drops last: the guard's own drop flushes the writer,
-    /// and the worker then drains what the flush queued. The name starts with `_` because it is held **for its `Drop`**,
-    /// not read: the field is the guard's promise that nothing queued is lost on the way out.
-    _worker: Option<Worker>,
+    /// and the worker then drains what the flush queued. It is read by [`LogGuard::flush`], which is what a reader calls
+    /// when it needs the file to be complete **now** rather than eventually.
+    worker: Option<Worker>,
 }
 
 impl LogGuard {
+    /// Waits until everything logged so far has reached the file.
+    ///
+    /// # Why an explicit flush exists
+    ///
+    /// Because the writer is asynchronous: a line is on disk a moment after it is logged, and a reader that assumes
+    /// otherwise is reading a file that is correct but not yet complete. An integration test and a diagnostic bundle both
+    /// need "everything logged before this point"; sleeping would make them slower and still wrong.
+    pub fn flush(&self) {
+        // The redacting writer may hold a partial line; flushing it queues whatever is left, and the worker's flush then
+        // waits for the file itself.
+        let _ = self.writer.lock().flush();
+        if let Some(worker) = &self.worker {
+            worker.flush();
+        }
+    }
+
     /// The runtime verbosity, for a caller that wants to raise it.
     ///
     /// ★ This is what makes `--verbose` mean something. Raising it here changes what the subscriber writes from the
@@ -245,7 +261,7 @@ pub fn init(config: &LogConfig) -> Result<LogGuard, LogError> {
     use tracing_subscriber::util::SubscriberInitExt;
     subscriber.try_init().map_err(|_| LogError::AlreadyInstalled)?;
 
-    Ok(LogGuard { writer, verbosity, _worker: Some(worker) })
+    Ok(LogGuard { writer, verbosity, worker: Some(worker) })
 }
 
 /// The bytes a running logger has written, for a status report.

@@ -67,6 +67,10 @@ fn a_log_line_reaches_the_file_with_its_secrets_removed() {
     // owns the subscriber's configuration — so the phases below share one guard and one file, which is what makes the
     // before/after comparison meaningful.
     let path = dir.path().join(LOG_FILE_NAME);
+    // ★ The writer is asynchronous: without asking it to catch up, this read would be a race between the test and a
+    // background thread, and the test would pass on a quiet machine and fail on a busy one. `flush` is the answer the
+    // writer gives when asked "is everything I logged on disk yet?".
+    guard.flush();
     let text = std::fs::read_to_string(&path).expect("the log file exists after a line was written");
 
     assert!(text.contains("a device was paired"), "the message never reached the file: {text}");

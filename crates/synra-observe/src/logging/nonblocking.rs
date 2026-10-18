@@ -38,6 +38,15 @@ pub const DEFAULT_QUEUE_CAPACITY: usize = 4096;
 enum Message {
     /// Already-redacted bytes for the file.
     Line(Vec<u8>),
+    /// Flush the destination and tell the caller it happened.
+    ///
+    /// # Why a message and not just `flush` on the writer
+    ///
+    /// Because the writer's `flush` can only flush the **queue**, not the file the worker owns. A reader that wants to see
+    /// what has been logged — an integration test, a diagnostic bundle assembled on demand — needs the bytes on disk, and
+    /// without an answer it would be reading a file that is correct but not yet complete. That is the race this variant
+    /// exists to remove rather than paper over with a sleep.
+    Flush(std::sync::mpsc::Sender<()>),
     /// The writer is going away; flush and stop.
     Stop,
 }
@@ -99,6 +108,17 @@ impl Worker {
     }
 }
 
+impl Worker {
+    /// Waits until every line queued before this call has reached the destination.
+    pub(crate) fn flush(&self) {
+        let (ack, wait) = std::sync::mpsc::channel();
+        // `send` rather than `try_send`: a full queue is exactly the case where the caller wants to wait for it to drain.
+        if self.sender.send(Message::Flush(ack)).is_ok() {
+            let _ = wait.recv();
+        }
+    }
+}
+
 impl Drop for Worker {
     fn drop(&mut self) {
         // `send` rather than `try_send`: a full queue means lines are waiting, and the Stop must come after them.
@@ -119,6 +139,14 @@ fn run(receiver: Receiver<Message>, mut sink: impl Write, stats: &LogStats) {
                 if sink.write_all(&bytes).is_err() {
                     stats.record_write_error();
                 }
+            }
+            Message::Flush(ack) => {
+                if sink.flush().is_err() {
+                    stats.record_write_error();
+                }
+                // Whether the flush worked or not, the caller waiting on this must be released: a hanging reader is a
+                // worse failure than a stale file.
+                let _ = ack.send(());
             }
             Message::Stop => break,
         }
@@ -174,6 +202,25 @@ mod tests {
         drop(worker);
 
         assert_eq!(stats.write_errors(), 2, "the failed write and the failed flush");
+    }
+
+    #[test]
+    fn a_flush_waits_until_the_queued_lines_are_on_the_sink() {
+        // ★ The property an on-demand reader needs: after `flush`, everything logged before it is on disk, **without**
+        // shutting the writer down. Dropping the worker would satisfy the first half and end the log, which is not what a
+        // diagnostic bundle or a test wants.
+        let sink = Memory::default();
+        let stats = Arc::new(LogStats::default());
+        let (mut queue, worker) = Worker::spawn(sink.clone(), 8, Arc::clone(&stats)).expect("a worker");
+
+        queue.write_all(b"queued\n").expect("queued");
+        worker.flush();
+        assert_eq!(sink.0.lock().expect("a lock").as_slice(), b"queued\n");
+
+        queue.write_all(b"more\n").expect("queued");
+        worker.flush();
+        assert_eq!(sink.0.lock().expect("a lock").as_slice(), b"queued\nmore\n");
+        drop(worker);
     }
 
     #[test]
