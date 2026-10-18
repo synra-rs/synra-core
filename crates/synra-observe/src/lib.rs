@@ -45,6 +45,7 @@ pub mod logging;
 pub mod metrics;
 pub mod redact;
 pub mod trace;
+pub mod trace_scope;
 
 pub use audit::{AuditEntry, AuditOutcome, AuditRing, PluginActivity, Retention};
 pub use crash::{CrashReport, CrashStore, StartupVerdict};

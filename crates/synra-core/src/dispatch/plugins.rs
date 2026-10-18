@@ -672,6 +672,10 @@ impl PluginSet {
         now_ms: u64,
         trace: Option<synra_protocol::ids::TraceId>,
     ) -> Result<CallOutcome, PluginSetError> {
+        // ★ The action is made current for the whole call, including the guest's host functions. That is what lets a
+        // plugin's own `log` line carry the trace without a trace argument in the plugin contract — the thread running the
+        // call is the one that knows it.
+        let _scope = synra_observe::trace_scope::enter(trace);
         let Some(loaded) = self.loaded.get_mut(id) else {
             return Err(PluginSetError::NotLoaded { id: id.clone() });
         };

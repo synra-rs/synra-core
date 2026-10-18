@@ -279,12 +279,26 @@ impl Host for KernelHost {
         // Through `tracing`, which is where the daemon's own record goes — so a plugin's line lands in the same file as
         // everything else and a user has one place to look. The plugin is a field rather than part of the message,
         // because a reader filtering the log wants to filter by it.
-        match level {
-            "trace" => tracing::trace!(plugin = plugin.as_str(), context, "{message}"),
-            "debug" => tracing::debug!(plugin = plugin.as_str(), context, "{message}"),
-            "warn" => tracing::warn!(plugin = plugin.as_str(), context, "{message}"),
-            "error" => tracing::error!(plugin = plugin.as_str(), context, "{message}"),
-            _ => tracing::info!(plugin = plugin.as_str(), context, "{message}"),
+        //
+        // ★ The action's trace is a field too, when the call is part of one. It is read from the thread's scope rather than
+        // passed in: the plugin contract has no place for a trace, and `PluginSet::call_traced` makes it current for the
+        // duration of the call. `synra logs --trace <id>` therefore shows the plugin's own lines as well as the kernel's.
+        let trace = synra_observe::trace_scope::current();
+        match trace {
+            Some(trace) => match level {
+                "trace" => tracing::trace!(plugin = plugin.as_str(), context, trace_id = %trace, "{message}"),
+                "debug" => tracing::debug!(plugin = plugin.as_str(), context, trace_id = %trace, "{message}"),
+                "warn" => tracing::warn!(plugin = plugin.as_str(), context, trace_id = %trace, "{message}"),
+                "error" => tracing::error!(plugin = plugin.as_str(), context, trace_id = %trace, "{message}"),
+                _ => tracing::info!(plugin = plugin.as_str(), context, trace_id = %trace, "{message}"),
+            },
+            None => match level {
+                "trace" => tracing::trace!(plugin = plugin.as_str(), context, "{message}"),
+                "debug" => tracing::debug!(plugin = plugin.as_str(), context, "{message}"),
+                "warn" => tracing::warn!(plugin = plugin.as_str(), context, "{message}"),
+                "error" => tracing::error!(plugin = plugin.as_str(), context, "{message}"),
+                _ => tracing::info!(plugin = plugin.as_str(), context, "{message}"),
+            },
         }
         Ok(())
     }
