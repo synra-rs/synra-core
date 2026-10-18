@@ -626,29 +626,12 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
     // link and this host owns the plugins and the board; the callback is the seam between them — and without it an
     // `INTENT_INVOKE` arrived, was counted and was dropped: the sender waited for an outcome that no side produced.
     let on_kernel_events: Arc<synra_core::listener::KernelEventCallback> = {
-        use synra_core::dispatch::orchestrate::{accept_cancel, accept_remote};
-        use synra_core::listener::KernelEventOutcome;
-        use synra_protocol::event::events;
-
         let plugins = Arc::clone(&receive_plugins);
         let board = Arc::clone(&receive_board);
         let local = local_device;
         Arc::new(move |envelope: &synra_protocol::envelope::Envelope| {
             let now = synra_store::sqlite::now_ms();
-            match envelope.event.as_str() {
-                events::INTENT_INVOKE => match accept_remote(&plugins, &board, local, envelope, now) {
-                    Ok(Some(reply)) => KernelEventOutcome::Reply(Box::new(reply)),
-                    // The same request twice, with the first copy still running: there is nothing truthful to say yet,
-                    // and the first copy answers on its own.
-                    Ok(None) => KernelEventOutcome::Handled,
-                    Err(error) => KernelEventOutcome::Refused(error.to_string()),
-                },
-                events::INTENT_CANCEL => match accept_cancel(&board, envelope) {
-                    Ok(_) => KernelEventOutcome::Handled,
-                    Err(error) => KernelEventOutcome::Refused(error.to_string()),
-                },
-                _ => KernelEventOutcome::Ignored,
-            }
+            crate::runtime::intent::handle_event(&plugins, &board, local, envelope, now)
         })
     };
     synra_core::listener::serve(

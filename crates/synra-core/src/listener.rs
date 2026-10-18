@@ -533,12 +533,13 @@ pub fn handle_within_with(
                                 ),
                             }
                         }
-                        // ★ A kernel event that runs an action, or withdraws one. It is answered **here**, on the
-                        // connection that asked, because the answer is a reply: a host that ran the action and sent the
-                        // result on a second connection would be answering a question nobody is listening for.
+                        // ★ A kernel event that runs an action, withdraws one, or reports an outcome. It is answered
+                        // **here**, on the connection that asked, because the answer is a reply: a host that ran the action
+                        // and sent the result on a second connection would be answering a question nobody is listening for.
                         None
                             if event == synra_protocol::event::events::INTENT_INVOKE
-                                || event == synra_protocol::event::events::INTENT_CANCEL =>
+                                || event == synra_protocol::event::events::INTENT_CANCEL
+                                || event == synra_protocol::event::events::INTENT_RESULT =>
                         {
                             let Some(envelope) = request else {
                                 eprintln!(
@@ -546,7 +547,13 @@ pub fn handle_within_with(
                                 );
                                 continue;
                             };
-                            answer_kernel_event(&mut link, &envelope, on_kernel_events, &mut events);
+                            answer_kernel_event(
+                                host,
+                                &mut link,
+                                &envelope,
+                                on_kernel_events,
+                                &mut events,
+                            );
                         }
                         // ★ **A question this kernel can answer by itself.** "What plugins do you have" is a read of
                         // this device's own store — `plugins` joined to the active row of `plugin_versions` — and the
@@ -774,6 +781,7 @@ pub fn handle_within_with(
 /// budget — and the budget is right: a reader of the loop should see "an intent event is answered here", not four branches
 /// about what kind of answer it was.
 fn answer_kernel_event(
+    host: &Arc<Mutex<Host>>,
     link: &mut PeerLink,
     envelope: &Envelope,
     on_kernel_events: &Arc<KernelEventCallback>,
@@ -785,7 +793,19 @@ fn answer_kernel_event(
         KernelEventOutcome::Reply(reply) => {
             events.push(format!("answered {event}"));
             if let Err(error) = link.send(&reply) {
-                eprintln!("synra-daemon: the answer to {event} could not be sent: {error}");
+                // ★ The asker stopped waiting and closed the connection. The answer is not lost: the device it is addressed
+                // to has a listener, and a result that arrives after the wait is still the outcome of an action that really
+                // ran. Dialling back is what turns "dispatching for ever" into "the next snapshot is right".
+                eprintln!(
+                    "synra-daemon: the answer to {event} could not be sent on the asking link ({error}); delivering it to {} instead",
+                    reply.target
+                );
+                if let Err(error) = deliver_late(host, &reply) {
+                    eprintln!(
+                        "synra-daemon: the answer to {event} for {} could not be delivered late either: {error}",
+                        reply.target
+                    );
+                }
             }
         }
         KernelEventOutcome::Refused(why) => {
@@ -794,6 +814,37 @@ fn answer_kernel_event(
         // Not an error: an event this kernel does not run is one it must not guess at.
         KernelEventOutcome::Ignored => events.push(format!("unhandled {event}")),
     }
+}
+
+/// Delivers an answer to the device it is addressed to, on a new connection.
+///
+/// # Why a second connection is the right answer
+///
+/// Because the first one is gone: the sender waited its bounded time, gave up and closed. The alternative — leaving the
+/// intent `dispatching` although the action succeeded — is the state this exists to remove. The event is the same
+/// `INTENT_RESULT`; the origin's listener applies it with `orchestrate::apply_result`, which ignores a result for work it
+/// is no longer waiting on, so a late duplicate is harmless.
+fn deliver_late(host: &Arc<Mutex<Host>>, envelope: &Envelope) -> Result<(), String> {
+    let now = synra_store::sqlite::now_ms();
+    let address = {
+        let host = host.lock();
+        host.address_of(envelope.target)
+            .ok_or_else(|| format!("{} has never been seen on this network", envelope.target))?
+    };
+    let parts = {
+        let host = host.lock();
+        host.dialling_parts()
+    };
+    let handshake = crate::reading_millis(now);
+    let dialled = crate::dial_peer(&parts.0, parts.1, address, None, handshake)
+        .map_err(|error| error.to_string())?;
+    let mut link = host
+        .lock()
+        .adopt(dialled, handshake)
+        .map_err(|error| error.to_string())?;
+    link.send(envelope).map_err(|error| error.to_string())?;
+    let _ = link.bye("late result");
+    Ok(())
 }
 
 /// Why a connection ended, as the label of `links_closed_total`.

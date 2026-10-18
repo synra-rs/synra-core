@@ -27,6 +27,65 @@ use synra_protocol::inbound::ShareItem;
 /// Everything an inbound share is routed with.
 pub use synra_core::dispatch::orchestrate::Router;
 
+/// Answers one kernel event that arrived on a link.
+///
+/// # Why this is a function rather than a closure in `serve`
+///
+/// Because these three arms are the daemon's behaviour for a peer's message, and a test should call the code `serve` runs
+/// rather than a re-description of it. The closure in `serve` supplies the board, the plugins and this device; everything
+/// that decides *what happens* is here.
+///
+/// # The three events
+///
+/// * `INTENT_INVOKE` runs the action here and answers with `INTENT_RESULT`.
+/// * `INTENT_CANCEL` stops work this device has not finished.
+/// * `INTENT_RESULT` is the **late** answer to an action this device dispatched: the sender gave up waiting, the receiver
+///   finished anyway, and dialled back. `apply_result` matches it by `reply_to` and sender, and ignores one for work that
+///   is no longer in flight.
+pub(crate) fn handle_event(
+    plugins: &Arc<Mutex<PluginSet>>,
+    board: &Arc<Mutex<Board>>,
+    local_device: synra_protocol::ids::DeviceId,
+    envelope: &synra_protocol::envelope::Envelope,
+    now_ms: i64,
+) -> synra_core::listener::KernelEventOutcome {
+    use synra_core::listener::KernelEventOutcome;
+    use synra_protocol::event::events;
+
+    match envelope.event.as_str() {
+        events::INTENT_INVOKE => {
+            match orchestrate::accept_remote(plugins, board, local_device, envelope, now_ms) {
+                Ok(Some(reply)) => KernelEventOutcome::Reply(Box::new(reply)),
+                // The same request twice with the first copy still running: the first copy answers.
+                Ok(None) => KernelEventOutcome::Handled,
+                Err(error) => KernelEventOutcome::Refused(error.to_string()),
+            }
+        }
+        events::INTENT_CANCEL => match orchestrate::accept_cancel(board, envelope) {
+            Ok(_) => KernelEventOutcome::Handled,
+            Err(error) => KernelEventOutcome::Refused(error.to_string()),
+        },
+        events::INTENT_RESULT => match orchestrate::apply_result(board, envelope) {
+            Ok(applied) => {
+                // ★ The late step joins the trace too: a user following an action with `synra logs --trace` should see the
+                // answer arrive on the second connection, not just the first one's timeout.
+                if let Some(id) = applied {
+                    tracing::info!(
+                        trace_id = %envelope.trace_id,
+                        intent = %id,
+                        "late outcome applied"
+                    );
+                }
+                // An answer for work this device is not waiting on is not an error: a late duplicate, or a result whose
+                // intent was cancelled while the answer was in flight. `apply_result` returns `Ok(None)` and says so.
+                KernelEventOutcome::Handled
+            }
+            Err(error) => KernelEventOutcome::Refused(error.to_string()),
+        },
+        _ => KernelEventOutcome::Ignored,
+    }
+}
+
 /// A library failure as this host reports it.
 ///
 /// One line, and that is the point of the library carrying the contract's own codes: a host that had to map a bespoke
@@ -583,6 +642,53 @@ mod tests {
                 .expect("a repeated answer is ignored"),
             None
         );
+    }
+
+    #[test]
+    fn a_late_answer_from_another_device_is_applied_by_the_listener_callback() {
+        // ★ The path a result takes when the sender gave up waiting: the receiver dials back, and the origin's listener
+        // hands the envelope to this function. The assertion is on the board, not on a return value — an outcome that is
+        // accepted and dropped would leave the intent dispatching for ever, which is the state this path exists to end.
+        let plugins = set_that_accepts_without_a_place("@acme/opener");
+        let board = Arc::new(Mutex::new(synra_core::intent::Board::new()));
+        let routed = dispatch(&plugins, &board, &item(), 1_000).expect("routed");
+        let intent = routed["intent"].as_str().expect("an id").to_owned();
+        let phone = "00000000-0000-4000-8000-0000000000ff";
+        let target: DeviceId = phone.parse().expect("a device id");
+
+        let decided = decide(&plugins, &board, local_device(), &intent, None, Some(phone), 2_000)
+            .expect("dispatched rather than refused");
+        let invoke = decided.outbound.expect("an envelope to send").envelope;
+        let mut reply = synra_core::intent::remote::result(
+            target,
+            invoke.from,
+            &synra_core::intent::remote::InvokeResult {
+                ok: true,
+                result: "opened".to_owned(),
+                error: None,
+                elapsed_ms: 2,
+            },
+            invoke.trace_id,
+            3_000,
+        )
+        .expect("a result");
+        reply.reply_to = Some(invoke.request_id);
+
+        let handled = super::handle_event(&plugins, &board, local_device(), &reply, 3_500);
+        assert!(
+            matches!(handled, synra_core::listener::KernelEventOutcome::Handled),
+            "{handled:?}"
+        );
+        assert_eq!(
+            snapshot(&board, &intent).expect("a snapshot")["state"],
+            "succeeded",
+            "the late answer was not applied"
+        );
+
+        // ★ And a second copy of the same answer is still `Handled`: `apply_result` finds nothing in flight and ignores
+        // it. Reporting that as a refusal would make a harmless duplicate look like a protocol error.
+        let repeat = super::handle_event(&plugins, &board, local_device(), &reply, 3_600);
+        assert!(matches!(repeat, synra_core::listener::KernelEventOutcome::Handled), "{repeat:?}");
     }
 
     #[test]
