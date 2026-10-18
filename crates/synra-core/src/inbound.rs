@@ -326,6 +326,28 @@ impl Inbox {
         &self.inbox
     }
 
+    /// Gives up on the transfer in progress: tells the sender, forgets the transfer and removes the partial file.
+    ///
+    /// Answers the transfer it cancelled, or `None` when nothing was in progress. A host calls this between messages —
+    /// the listener loop is the only thing holding the link — which is why it takes the link rather than keeping a
+    /// handle to it: a cancel that could be called from another thread would be a second writer to the same socket.
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError`] when the abort cannot be sent. The partial file is still removed: a link that is already broken
+    /// is not a reason to keep bytes that nobody will finish receiving.
+    pub fn cancel(&mut self, link: &mut PeerLink, now_ms: i64) -> Result<Option<String>, crate::SessionError> {
+        let Some(receiving) = self.receiving.as_ref() else {
+            return Ok(None);
+        };
+        let transfer_id = receiving.transfer_id();
+        let partial = receiving.path().to_path_buf();
+        self.receiving = None;
+        let _ = std::fs::remove_file(&partial);
+        crate::abort(link, transfer_id, TransferAbortReason::UserCancelled, self.trace, now_ms)?;
+        Ok(Some(transfer_id.to_string()))
+    }
+
     /// Reads one inbound message and does whatever it calls for.
     ///
     /// # Errors
