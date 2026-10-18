@@ -17,7 +17,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use super::file::LOG_FILE_NAME;
+use super::file::{DEFAULT_KEEP, LOG_FILE_NAME};
 
 /// Whether a line is a `DEBUG` or `TRACE` line.
 ///
@@ -69,16 +69,36 @@ pub fn newest_file(directory: &Path) -> Option<PathBuf> {
         .map(|(_, path)| path)
 }
 
-/// Reads the tail of the current log.
+/// Reads the tail of the current log, and of the rotated files behind it when it is short.
 ///
 /// `verbose` keeps `DEBUG` and `TRACE` lines, which are hidden otherwise; `trace` keeps only lines that mention the id.
 ///
 /// The two compose, and that is deliberate: a trace's lines are usually the debug ones, so a caller asking for a trace
 /// without `verbose` gets the intersection it asked for rather than a surprise widening.
+///
+/// # Why the rotated files are read
+///
+/// Because rotation renames the whole file, and a reader that only opened the current one would answer a request for the
+/// last hundred lines with the three lines written since the rename — the moment a user is most likely to be reading the
+/// log. The files are `synra.log.1` (the newest rotated) through `.N` (the oldest), so the reader takes what it still
+/// needs from `.1`, then `.2`, and puts them in front of the current file's lines. Only the files it needs are read: a
+/// current file with enough lines costs no extra open.
 #[must_use]
 pub fn tail(directory: &Path, lines: usize, verbose: bool, trace: Option<&str>) -> LogTail {
-    let Some(source) = newest_file(directory) else {
-        return LogTail { lines: Vec::new(), source: None, matched: 0 };
+    // ★ The active file wins over modification time. A directory's newest entry is *usually* the active log, but the two
+    // are written within the same clock tick at a rotation, and on a tie the reader could pick `.1` — answering "the last
+    // hundred lines" with a file that is no longer being written. The plain name is not a heuristic: rotation renames the
+    // old file away, so a file called `synra.log` **is** the active one. Modification time stays for a directory that has
+    // no active file, such as a copied or rotated-only log.
+    let active = path_in(directory);
+    let source = if active.is_file() {
+        active
+    }
+    else {
+        let Some(newest) = newest_file(directory) else {
+            return LogTail { lines: Vec::new(), source: None, matched: 0 };
+        };
+        newest
     };
     let Ok(text) = std::fs::read_to_string(&source) else {
         // Unreadable is reported as "nothing to read" rather than as an error, because the caller's next step is the
@@ -87,16 +107,37 @@ pub fn tail(directory: &Path, lines: usize, verbose: bool, trace: Option<&str>) 
         return LogTail { lines: Vec::new(), source: Some(source), matched: 0 };
     };
 
-    let wanted: Vec<&str> = text
-        .lines()
-        .filter(|line| keep(line, verbose, trace))
-        .collect();
+    let current: Vec<&str> = text.lines().filter(|line| keep(line, verbose, trace)).collect();
+    let mut matched = current.len();
+    let start = current.len().saturating_sub(lines);
+    let mut chosen: Vec<String> =
+        current.get(start..).unwrap_or(&[]).iter().map(|line| (*line).to_owned()).collect();
+    let mut needed = lines.saturating_sub(chosen.len());
 
-    let matched = wanted.len();
-    let start = matched.saturating_sub(lines);
-    let tail = wanted.get(start..).unwrap_or(&[]).iter().map(|line| (*line).to_owned()).collect();
+    // ★ Only when the newest file is the active one: if `newest_file` selected a rotated file (the current one is absent
+    // or older by clock), reading `.<n>` siblings by name would put them in a guessed order relative to it.
+    let rotated = source.file_name().and_then(|name| name.to_str()) == Some(LOG_FILE_NAME);
+    let mut index = 1usize;
+    while rotated && needed > 0 && index <= DEFAULT_KEEP {
+        let older = directory.join(format!("{LOG_FILE_NAME}.{index}"));
+        let Ok(text) = std::fs::read_to_string(&older) else {
+            // A gap in the numbering is the ordinary case for a young installation: nothing older to read.
+            break;
+        };
+        let older_lines: Vec<&str> = text.lines().filter(|line| keep(line, verbose, trace)).collect();
+        matched = matched.saturating_add(older_lines.len());
+        let take = older_lines.len().min(needed);
+        let from = older_lines.len().saturating_sub(take);
+        let mut older_chosen: Vec<String> =
+            older_lines.get(from..).unwrap_or(&[]).iter().map(|line| (*line).to_owned()).collect();
+        // Older lines go in front: `.2` precedes `.1`, and both precede the active file.
+        older_chosen.append(&mut chosen);
+        chosen = older_chosen;
+        needed = needed.saturating_sub(take);
+        index = index.saturating_add(1);
+    }
 
-    LogTail { lines: tail, source: Some(source), matched }
+    LogTail { lines: chosen, source: Some(source), matched }
 }
 
 /// Whether a line passes the level and trace filters.
@@ -511,6 +552,68 @@ mod tests {
         });
 
         assert_eq!(seen, vec!["one", "two", "x"]);
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn the_tail_reaches_back_into_the_rotated_files() {
+        // ★ Rotation renames the file, so a reader that only opened the current one answered "the last three lines" with
+        // the one line written since the rename — at exactly the moment a user is reading the log.
+        let directory = scratch("tail-rotated");
+        std::fs::write(directory.join("synra.log.2"), "oldest one\noldest two\n").expect("a rotated log");
+        std::fs::write(directory.join("synra.log.1"), "older one\nolder two\nolder three\n")
+            .expect("a rotated log");
+        std::fs::write(directory.join("synra.log"), "newest one\n").expect("the active log");
+
+        let three = tail(&directory, 3, false, None);
+        assert_eq!(three.lines, vec!["older two", "older three", "newest one"]);
+        // The reader read the current file and `.1` — it stopped once it had enough, so `.2` was not opened, and the count
+        // says "four matched" rather than pretending it saw the whole history.
+        assert_eq!(three.matched, 4);
+
+        let five = tail(&directory, 5, false, None);
+        assert_eq!(
+            five.lines,
+            vec!["oldest two", "older one", "older two", "older three", "newest one"]
+        );
+        assert_eq!(five.matched, 6, "the oldest file was read for the last two lines");
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn the_tail_filters_the_rotated_files_with_the_same_rule() {
+        let directory = scratch("tail-rotated-filter");
+        std::fs::write(
+            directory.join("synra.log.1"),
+            "visible one\nDEBUG hidden\nvisible two\n",
+        )
+        .expect("a rotated log");
+        std::fs::write(directory.join("synra.log"), "newest\n").expect("the active log");
+
+        let quiet = tail(&directory, 2, false, None);
+        assert_eq!(quiet.lines, vec!["visible two", "newest"]);
+        assert_eq!(quiet.matched, 3, "the hidden line is not counted as matched");
+
+        let verbose = tail(&directory, 4, true, None);
+        assert_eq!(
+            verbose.lines,
+            vec!["visible one", "DEBUG hidden", "visible two", "newest"]
+        );
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn the_active_file_wins_over_a_rotated_one_even_when_its_clock_is_older() {
+        // ★ The two are written in the same clock tick at a rotation, and on a tie the reader must not pick `.1`: the file
+        // with the plain name is the one being written, because rotation renames the old one away.
+        let directory = scratch("tail-active");
+        std::fs::write(path_in(&directory), "current\n").expect("the active log");
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(directory.join("synra.log.1"), "rotated\n").expect("a rotated log");
+
+        let read = tail(&directory, 12, false, None);
+        assert_eq!(read.lines, vec!["rotated", "current"]);
+        assert_eq!(read.source.as_deref(), Some(path_in(&directory).as_path()));
         let _ = std::fs::remove_dir_all(&directory);
     }
 
