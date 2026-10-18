@@ -150,7 +150,7 @@ fn one_plugins_trail_is_read_newest_first_and_within_the_limit() {
     db.record_audit(&call("@acme/chat", "log:info", "allowed", 4_000)).expect("recorded");
 
     let ats: Vec<i64> = db
-        .audit_trail_for("@acme/notes", 2)
+        .audit_trail_for("@acme/notes", 0, 2)
         .expect("listed")
         .into_iter()
         .map(|row| row.at_ms)
@@ -160,13 +160,35 @@ fn one_plugins_trail_is_read_newest_first_and_within_the_limit() {
 }
 
 #[test]
+fn an_offset_walks_the_same_order_without_repeating_a_row() {
+    // ★ "Show more" is an offset, not a second query with a different `limit`: a page the user has already seen must not
+    // appear again, and the row order it walks is the same newest-first order the first page used.
+    let db = db();
+    for at in [1_000, 2_000, 3_000, 4_000] {
+        db.record_audit(&call("@acme/notes", "device:list", "allowed", at)).expect("recorded");
+    }
+
+    let page = |offset: u32| -> Vec<i64> {
+        db.audit_trail_for("@acme/notes", offset, 2)
+            .expect("listed")
+            .into_iter()
+            .map(|row| row.at_ms)
+            .collect()
+    };
+
+    assert_eq!(page(0), vec![4_000, 3_000]);
+    assert_eq!(page(2), vec![2_000, 1_000]);
+    assert!(page(4).is_empty(), "past the end is empty, not a repeat of the last page");
+}
+
+#[test]
 fn a_limit_of_zero_answers_nothing_rather_than_everything() {
     // `LIMIT 0` is the SQL that says "nothing". A reader that treated zero as "no limit" would turn a malformed request
     // into the whole history.
     let db = db();
     db.record_audit(&call("@acme/notes", "device:list", "allowed", 1_000)).expect("recorded");
 
-    assert!(db.audit_trail_for("@acme/notes", 0).expect("listed").is_empty());
+    assert!(db.audit_trail_for("@acme/notes", 0, 0).expect("listed").is_empty());
 }
 
 #[test]
@@ -178,6 +200,6 @@ fn forgetting_one_plugins_rows_leaves_the_other() {
 
     assert_eq!(db.forget_audit_for("@acme/notes").expect("collected"), 1);
 
-    assert!(db.audit_trail_for("@acme/notes", 10).expect("listed").is_empty());
-    assert_eq!(db.audit_trail_for("@acme/chat", 10).expect("listed").len(), 1);
+    assert!(db.audit_trail_for("@acme/notes", 0, 10).expect("listed").is_empty());
+    assert_eq!(db.audit_trail_for("@acme/chat", 0, 10).expect("listed").len(), 1);
 }

@@ -68,25 +68,26 @@ impl SynraDb {
         self.audit_rows(&sql, &[])
     }
 
-    /// One plugin's recorded calls, newest first, at most `limit` of them.
+    /// One plugin's recorded calls, newest first, at most `limit` of them, skipping `offset`.
     ///
-    /// # Why the filter and the limit are in SQL
+    /// # Why the filter, the limit and the offset are in SQL
     ///
     /// Because the table is the unbounded copy: a reader that loaded every row to take the last twenty would turn a
     /// screen refresh into a scan of the whole history. The index `(plugin_id, at_ms DESC)` exists for exactly this
-    /// query.
+    /// query, and the offset is how "show me more" walks the same index rather than re-reading from the start.
     ///
     /// # Errors
     ///
     /// [`DbError::Statement`] when the query is refused, or [`DbError::Row`] for a row the schema should not have
     /// allowed.
-    pub fn audit_trail_for(&self, plugin_id: &str, limit: u32) -> Result<Vec<AuditRecord>, DbError> {
+    pub fn audit_trail_for(&self, plugin_id: &str, offset: u32, limit: u32) -> Result<Vec<AuditRecord>, DbError> {
         let sql = format!(
-            "SELECT {} FROM plugin_audit WHERE plugin_id = ?1 ORDER BY at_ms DESC, id DESC LIMIT ?2",
+            "SELECT {} FROM plugin_audit WHERE plugin_id = ?1 ORDER BY at_ms DESC, id DESC LIMIT ?2 OFFSET ?3",
             columns::AUDIT.join(", ")
         );
         let limit = i64::from(limit);
-        self.audit_rows(&sql, &[&plugin_id, &limit])
+        let offset = i64::from(offset);
+        self.audit_rows(&sql, &[&plugin_id, &limit, &offset])
     }
 
     /// Forgets one plugin's recorded calls, and answers how many rows went.
