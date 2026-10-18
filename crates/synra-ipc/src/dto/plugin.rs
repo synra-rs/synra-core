@@ -14,6 +14,14 @@ use synra_protocol::{DeviceId, PluginId};
 pub struct PluginSnapshot {
     /// The plugin.
     pub plugin_id: PluginId,
+    /// Where this plugin's own data lives, for a screen that is about to delete it.
+    ///
+    /// ★ A path rather than a boolean: the removal dialog has two outcomes and one of them deletes this directory, so the
+    /// user is entitled to see it before agreeing. The shell builds it from `Paths::plugin_sandbox_dir`, which is the
+    /// same function the removal itself uses — two derivations of "where the data is" would be two answers to a question
+    /// about deletion.
+    #[serde(default)]
+    pub data_path: String,
     /// Its name.
     pub title: String,
     /// Its description, if it has one.

@@ -301,6 +301,7 @@ fn a_plugin_snapshot_reports_its_state_rather_than_leaving_it_to_be_derived() {
     // interface would mean two implementations of the same rule.
     let plugin = PluginSnapshot {
         plugin_id: plugin_id(),
+        data_path: "/tmp/synra/plugin-data/chat".to_owned(),
         title: "Chat".to_owned(),
         description: None,
         version: "1.0.0".to_owned(),
