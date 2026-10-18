@@ -63,6 +63,35 @@ const GC_FIRST_DELAY: Duration = Duration::from_secs(60);
 ///
 /// Because a test that waited an hour to see whether the sweep ran would not be a test. The schedule is decided where the
 /// daemon is built and passed in, so the same loop can be driven with milliseconds.
+/// Finishes a previous uninstall's leftovers, before any plugin is loaded.
+///
+/// # Why this is a function
+///
+/// Because it is three error branches and a report, and `serve` has a complexity budget that a reader benefits from: the
+/// start-up reads as "open, restore, sweep, load, serve" when each step is named.
+fn sweep_plugin_leftovers(db: &synra_store::SynraDb, paths: &synra_store::Paths) {
+    let Ok(rows) = db.plugins() else {
+        // A database that cannot list its plugins is a fault the next read will report; the sweep is not where a start-up
+        // should fail.
+        return;
+    };
+    let installed: Vec<String> = rows.into_iter().map(|row| row.plugin_id).collect();
+    match synra_store::PluginFiles::new(paths.clone()).sweep_orphans(&installed) {
+        Ok(sweep) if !sweep.removed.is_empty() => println!(
+            "removed {} leftover plugin director{} ({} bytes)",
+            sweep.removed.len(),
+            if sweep.removed.len() == 1 { "y" } else { "ies" },
+            sweep.bytes_freed
+        ),
+        Ok(sweep) => {
+            for path in sweep.leftovers {
+                eprintln!("synra-daemon: could not remove {}", path.display());
+            }
+        }
+        Err(error) => eprintln!("synra-daemon: the plugin directory could not be swept: {error}"),
+    }
+}
+
 /// Starts the two loops the daemon runs for its whole life, and returns what to join on shutdown.
 ///
 /// """ + S + """ Why `run_task` rather than `std::thread::spawn`.
@@ -335,6 +364,12 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
     let crashes = synra_observe::crash::CrashStore::new(&log_dir);
     // The daemon's own version, not the observe layer's: the report is about the binary that crashed.
     synra_observe::crash::install_panic_hook(crashes.clone(), env!("CARGO_PKG_VERSION"));
+
+    // ★ A previous run's uninstall may have left an artifact directory behind: a loaded engine held its wasm file open,
+    // the row was already gone, and the leftover was reported to the user. This is the moment to finish it — the process
+    // that held the file is gone, and no plugin has been loaded yet. The sandbox is **not** swept: data kept on purpose
+    // belongs to the user.
+    sweep_plugin_leftovers(&db, &paths);
 
     // ★ And the log itself. Nothing wrote this file before: `synra logs` read a path no code created, so it always
     // answered "no lines", and the CLI's `--follow` and `--trace` had nothing to filter. The subscriber is installed

@@ -65,6 +65,17 @@ pub struct Removal {
     pub leftovers: Vec<std::path::PathBuf>,
 }
 
+/// What a sweep of orphaned artifact directories did.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Sweep {
+    /// Directories that are gone.
+    pub removed: Vec<std::path::PathBuf>,
+    /// The bytes those directories held.
+    pub bytes_freed: u64,
+    /// Directories that still could not be removed.
+    pub leftovers: Vec<std::path::PathBuf>,
+}
+
 /// Deletes a plugin's artifact directory, and its data directory when asked.
 #[derive(Debug, Clone)]
 pub struct PluginFiles {
@@ -133,6 +144,54 @@ impl PluginFiles {
             total = total.saturating_add(directory_size(&self.paths.plugin_sandbox_dir(plugin_id)));
         }
         total
+    }
+
+    /// Removes artifact directories that no installed plugin owns.
+    ///
+    /// # Why this exists
+    ///
+    /// Because a removal can leave a directory behind — a loaded engine holds its wasm file open on Windows — and the
+    /// plugin's row is gone, so nothing will ever refer to that directory again. The next start is the moment to finish
+    /// the job: the process that held the files open is gone, and this host has not loaded a plugin yet. Without the sweep
+    /// a leftover was a fact the user could only fix by hand.
+    ///
+    /// # What it will not touch
+    ///
+    /// The **data** directories. A plugin's data is kept on purpose when the user uninstalls without deleting it, so a
+    /// sandbox directory with no row is a user's settings, not garbage. Only the artifact root is swept, and only
+    /// directories in it: a stray file there is somebody else's business.
+    ///
+    /// # Errors
+    ///
+    /// [`PathError::Unresolvable`] when the artifact root cannot be listed. A directory that cannot be removed is a
+    /// leftover in the answer, not an error — the sweep is best effort about files, exact about what it left.
+    pub fn sweep_orphans(&self, installed: &[String]) -> Result<Sweep, PathError> {
+        let root = self.paths.plugins_dir();
+        let expected: std::collections::HashSet<std::path::PathBuf> =
+            installed.iter().map(|id| self.paths.plugin_dir(id)).collect();
+        let entries = std::fs::read_dir(&root).map_err(|error| PathError::Unresolvable {
+            path: root.display().to_string(),
+            detail: error.to_string(),
+        })?;
+
+        let mut sweep = Sweep::default();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() || expected.contains(&path) {
+                continue;
+            }
+            let held = directory_size(&path);
+            let mut leftovers = Vec::new();
+            self.remove_below(&path, &root, &mut leftovers)?;
+            if leftovers.is_empty() {
+                sweep.removed.push(path);
+                sweep.bytes_freed = sweep.bytes_freed.saturating_add(held);
+            }
+            else {
+                sweep.leftovers.extend(leftovers);
+            }
+        }
+        Ok(sweep)
     }
 
     /// Removes one tree, having checked it is where it claims to be.
@@ -303,5 +362,61 @@ mod tests {
         assert_eq!(files.size_of("@acme/hello", false), 4, "the artifact's four bytes");
         assert_eq!(files.size_of("@acme/hello", true), 8, "artifact and sandbox");
         assert_eq!(files.size_of("@acme/absent", true), 0, "a directory that is not there");
+    }
+
+    #[test]
+    fn a_sweep_takes_orphan_artifacts_and_leaves_everything_else() {
+        // ★ The second chance a leftover gets: the row is gone, so the artifact directory is trash no later code can
+        // reach. The sandbox is not — data kept on purpose is a user's settings — and a stray file in the artifact root is
+        // somebody else's business.
+        let scratch = Scratch::new("sweep");
+        let paths = scratch.paths();
+        fill(&paths.plugin_dir("@acme/hello"));
+        fill(&paths.plugin_dir("@acme/orphan"));
+        fill(&paths.plugin_sandbox_dir("@acme/orphan"));
+        std::fs::write(paths.plugins_dir().join("README"), b"keep").expect("a stray file");
+
+        let sweep = PluginFiles::new(paths.clone())
+            .sweep_orphans(&["@acme/hello".to_owned()])
+            .expect("sweeps");
+
+        assert_eq!(sweep.removed, vec![paths.plugin_dir("@acme/orphan")]);
+        assert_eq!(sweep.bytes_freed, 4, "the orphan's artifact bytes, not its data");
+        assert!(sweep.leftovers.is_empty());
+        assert!(paths.plugin_dir("@acme/hello").exists(), "an installed plugin is not touched");
+        assert!(!paths.plugin_dir("@acme/orphan").exists());
+        assert!(
+            paths.plugin_sandbox_dir("@acme/orphan").exists(),
+            "data is kept until the user says otherwise"
+        );
+        assert!(paths.plugins_dir().join("README").exists(), "a file is not a directory");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_sweep_reports_an_orphan_it_still_cannot_remove() {
+        use std::os::windows::fs::OpenOptionsExt as _;
+
+        let scratch = Scratch::new("sweep-locked");
+        let paths = scratch.paths();
+        let directory = paths.plugin_dir("@acme/orphan");
+        fill(&directory);
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(directory.join("plugin.wasm"))
+            .expect("an exclusive handle");
+
+        let sweep = PluginFiles::new(paths.clone())
+            .sweep_orphans(&[])
+            .expect("the sweep reports rather than throws");
+        assert_eq!(sweep.removed, Vec::<std::path::PathBuf>::new());
+        assert_eq!(sweep.leftovers, vec![directory]);
+        assert_eq!(sweep.bytes_freed, 0, "nothing left the disk");
+
+        drop(held);
+        let sweep = PluginFiles::new(paths).sweep_orphans(&[]).expect("sweeps");
+        assert_eq!(sweep.bytes_freed, 4, "the next start finishes the job");
+        assert!(sweep.leftovers.is_empty());
     }
 }
