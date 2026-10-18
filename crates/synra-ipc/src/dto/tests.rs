@@ -209,6 +209,7 @@ fn a_decision_is_tagged_on_the_wire() {
 fn an_intent_snapshot_round_trips() {
     let snapshot = IntentSnapshot {
         intent_id: intent_id(),
+        trace_id: synra_protocol::ids::TraceId::new(),
         state: "awaiting_decision".to_owned(),
         plugin_id: Some(plugin_id()),
         candidates: vec![IntentCandidate {
@@ -509,6 +510,7 @@ fn no_snapshot_carries_a_field_named_for_content() {
         .expect("serialises"),
         serde_json::to_value(IntentSnapshot {
             intent_id: intent_id(),
+            trace_id: synra_protocol::ids::TraceId::new(),
             state: "pending".to_owned(),
             plugin_id: None,
             candidates: Vec::new(),

@@ -430,6 +430,16 @@ impl Kernel for Runtime {
         }
         let answer = routed?;
 
+        // ★ The one line in the log that names an action's trace, so `synra logs --trace <id>` has something to find.
+        // The id is the one the interface now shows on the received row; the rest of this action's steps still log
+        // without it, which is why this is one line and not a claim that tracing is complete.
+        if let (Some(intent), Some(trace)) = (
+            answer.get("intent").and_then(serde_json::Value::as_str),
+            answer.get("trace").and_then(serde_json::Value::as_str),
+        ) {
+            tracing::info!(trace_id = trace, intent, "share routed");
+        }
+
         // ★ Written down here, from the identifier the library returned, so what is stored is whatever the board now holds
         // rather than a second opinion about it.
         //

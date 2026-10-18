@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use synra_protocol::{DeviceId, IntentId, PluginId};
+use synra_protocol::{DeviceId, IntentId, PluginId, TraceId};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Intents
@@ -75,6 +75,13 @@ impl IntentSourceDto {
 pub struct IntentSnapshot {
     /// The intent.
     pub intent_id: IntentId,
+    /// The trace every step of this action is grouped under.
+    ///
+    /// ★ The board has carried this from the first version and the snapshot dropped it, so the one identifier a person
+    /// pastes into `synra logs --trace` was the one the interface could not show. The log lines still have to learn to
+    /// carry it; exposing it is the half that makes that filter usable when they do.
+    #[serde(default)]
+    pub trace_id: TraceId,
     /// What stage it is at. `snake_case`, matching the kernel's own states.
     pub state: String,
     /// The plugin the kernel chose, if it has chosen one.
