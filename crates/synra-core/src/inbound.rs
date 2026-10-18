@@ -443,6 +443,9 @@ impl Inbox {
         let Some(receiving) = self.receiving.as_mut() else {
             return Ok(Decision::Ignored);
         };
+        // ★ Kept before the read, because the failure paths below drop the receiver — and a partial file left in the inbox
+        // is a file the user never received, under a name that looks like one they did.
+        let partial = receiving.path().to_path_buf();
         match receiving.absorb(link, now_ms, deadline)? {
             Received::Block { index, duplicate } => {
                 // ★ The report the sender is waiting for, and the daemon never sent it. Its absence is what made **every**
@@ -479,10 +482,14 @@ impl Inbox {
             }
             Received::Failed { why, .. } => {
                 self.receiving = None;
+                let _ = std::fs::remove_file(&partial);
                 Ok(Decision::Failed { why })
             }
             Received::Aborted { reason, .. } => {
                 self.receiving = None;
+                // ★ The peer gave up, so the bytes it had written are not a file this device received. Removing them is
+                // what makes "cancelled" mean the same thing on both sides.
+                let _ = std::fs::remove_file(&partial);
                 Ok(Decision::Failed { why: format!("the peer gave up: {reason:?}") })
             }
             // A message the transfer has nothing to do with, while a transfer *is* in progress: reported so it is not lost

@@ -91,6 +91,12 @@ pub struct InboundProgressEvent {
     pub peer: synra_protocol::ids::DeviceId,
     /// How far the transfer has got.
     pub progress: crate::session::InboundProgress,
+    /// The transfer ended without a file: the peer aborted, or a block was refused.
+    ///
+    /// ★ The last event of a failed transfer is still an event. Without it a reporter that opened a row for
+    /// [`InboundProgress`] would keep it for ever — the sender's abort would be a row that says "arriving" until the
+    /// process ends.
+    pub aborted: bool,
 }
 
 /// What the listener does with each step of an inbound transfer.
@@ -534,7 +540,7 @@ pub fn handle_within_with(
                     // being created. A reporter that waited for the first block would show nothing for a slow link.
                     last_progress = inbox.progress();
                     if let Some(progress) = &last_progress {
-                        on_progress(&InboundProgressEvent { peer, progress: progress.clone() });
+                        on_progress(&InboundProgressEvent { peer, progress: progress.clone(), aborted: false });
                     }
                 }
                 Decision::Stored { index, duplicate } => {
@@ -545,7 +551,7 @@ pub fn handle_within_with(
                     }
                     last_progress = inbox.progress();
                     if let Some(progress) = &last_progress {
-                        on_progress(&InboundProgressEvent { peer, progress: progress.clone() });
+                        on_progress(&InboundProgressEvent { peer, progress: progress.clone(), aborted: false });
                     }
                 }
                 Decision::Finished {
@@ -605,6 +611,15 @@ pub fn handle_within_with(
                 Decision::Failed { why } => {
                     events.push("failed".to_owned());
                     eprintln!("synra-daemon: a transfer from {peer} failed: {why}");
+                    // ★ The row this connection opened has to be closed, and a failure is still an event. Without this a
+                    // peer's abort left the interface showing a transfer arriving for ever.
+                    if let Some(progress) = &last_progress {
+                        on_progress(&InboundProgressEvent {
+                            peer,
+                            progress: progress.clone(),
+                            aborted: true,
+                        });
+                    }
                 }
             },
             // A `Bye` is the ordinary end, and so is a peer that hung up. Neither is a fault, and both end the loop.
