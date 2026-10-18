@@ -94,8 +94,8 @@ pub enum Decision {
         byte_length: u64,
         /// Which plugin it is a bundle for, when it is one.
         ///
-        /// Carried rather than guessed from the file name: `proposed_name` builds `plugin-<id>.wasm`, and a consumer
-        /// that parsed that back would be wrong the first time somebody sent a file called `plugin-notes.wasm`.
+        /// Carried rather than guessed from the file name: `proposed_name` builds `plugin-<id>.synra`, and a consumer
+        /// that parsed that back would be wrong the first time somebody sent a file called `plugin-notes.synra`.
         bundle: Option<synra_protocol::ids::PluginId>,
         /// The trace this transfer belongs to.
         ///
@@ -535,10 +535,10 @@ fn proposed_name(envelope: &synra_protocol::envelope::Envelope) -> Result<String
         })?;
     Ok(match request.meta {
         synra_protocol::session::TransferMeta::Attachment { file_name, .. } => file_name,
-        // A plugin bundle is not something this kernel installs yet, and its "name" is a plugin identifier rather than a
-        // file. Named as such so the file in the inbox says what it is.
+        // A plugin bundle is a `.synra` archive now, not a bare Wasm file: the receiver unpacks it, so the name in the
+        // inbox has to say which kind of thing it is.
         synra_protocol::session::TransferMeta::PluginBundle { plugin_id, .. } => {
-            format!("plugin-{plugin_id}.wasm")
+            format!("plugin-{plugin_id}.synra")
         }
         // `TransferMeta` is `#[non_exhaustive]`, so a kind this build does not know is named rather than guessed at — a
         // newer peer sending something this one cannot describe still gets a file rather than a failure.

@@ -103,7 +103,7 @@ impl TransferSender {
     ///
     /// The bytes are the same bytes an attachment would carry — what differs is what the request *says* it is, and
     /// the receiver acts on that: a `PluginBundle` is what makes a bundle land as a bundle (the `bundle` field on
-    /// `FinishedTransfer` decides it in the daemon) rather than as a file called `plugin-something.wasm`.
+    /// `FinishedTransfer` decides it in the daemon) rather than as a file called `plugin-something.synra`.
     ///
     /// # Errors
     ///

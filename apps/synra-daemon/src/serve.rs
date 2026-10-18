@@ -570,6 +570,10 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
         // The runtime's own desk, not a second one: a prompt raised by the transport must be the prompt a control command
         // answers, and two desks would mean a user answering a request the waiting connection never hears about.
         let desk = Arc::clone(&runtime.pairing);
+        // ★ Cloned before the task closure: the closure owns what it captures, and the listener below still needs the
+        // runtime. A `runtime.plugins` moved into the closure would make `serve_one(&runtime)` a use after move.
+        let receive_plugins = Arc::clone(&runtime.plugins);
+        let receive_plugins_dir = runtime.data_dir.join("plugins");
         let id = synra_core::supervisor::TaskId::new("transport.accept");
         // The token is the loop's stop condition, so cancelling the task *is* stopping the listener — there is no second
         // flag for the two to disagree about.
@@ -580,8 +584,37 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
             // never as this device's.
             let on_finished: synra_core::listener::FinishedCallback = {
                 let history_db = Arc::clone(&history_db);
+                let plugins = Arc::clone(&receive_plugins);
+                let plugins_dir = receive_plugins_dir.clone();
                 Arc::new(move |transfer: &synra_core::listener::FinishedTransfer| {
-                    synra_core::plugin_sync::record_received(&history_db.lock(), transfer)
+                    // ★ A bundle is a `.synra` package now, so receiving one is installing it. Same pipeline as the shell:
+                    // the difference between the hosts is the `HostFacts`, not a second set of checks.
+                    let mut db = history_db.lock();
+                    if let Some(plugin_id) = &transfer.bundle {
+                        let backend = plugins.lock().backend().clone();
+                        match synra_core::install::from_package(
+                            &mut db,
+                            &backend,
+                            &plugins_dir,
+                            &transfer.path,
+                            synra_store::sqlite::now_ms(),
+                            synra_plugin_host::verify::HostFacts::headless(),
+                        ) {
+                            Ok(_) => synra_core::plugin_sync::record_received(&db, transfer),
+                            Err(refusal) => Some(synra_core::plugin_sync::SyncOutcome::refused(
+                                plugin_id.clone(),
+                                synra_core::plugin_sync::SyncSessionId::new(
+                                    transfer
+                                        .sync_session_id
+                                        .map_or_else(String::new, |session| session.to_string()),
+                                ),
+                                format!("{}: {}", refusal.stage, refusal.reason),
+                            )),
+                        }
+                    }
+                    else {
+                        synra_core::plugin_sync::record_received(&db, transfer)
+                    }
                 })
             };
     synra_core::listener::serve(&peers, token, &data_dir, &desk, &router, &on_finished);
