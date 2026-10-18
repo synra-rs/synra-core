@@ -399,6 +399,46 @@ fn every_audited_call_reaches_the_sink_as_well_as_the_ring() {
     assert_eq!(set.audit(), vec![entry], "and so did the ring");
 }
 
+#[test]
+fn clearing_one_plugins_history_leaves_the_other() {
+    // ★ Clearing is a per-card action: the ring holds every plugin's calls, and a "clear" that took the whole ring would
+    // erase what the user was about to read on the next card. The counts are part of the history too, so the assertion is
+    // on what the ring answers after the removal rather than on the entries alone.
+    let backend = ScriptedBackend::new();
+    let mut set = PluginSet::new(Backend::new(std::sync::Arc::new(backend.clone())), host());
+    load(
+        &mut set,
+        &backend,
+        "@synra/aaa-notes",
+        Scripted::Ok(r#"{"handled":true}"#.to_owned()),
+    );
+    load(
+        &mut set,
+        &backend,
+        "@synra/bbb-notes",
+        Scripted::Ok(r#"{"handled":true}"#.to_owned()),
+    );
+
+    let cleared = id("@synra/aaa-notes");
+    let kept = id("@synra/bbb-notes");
+    let record = |plugin: &PluginId, at_ms: i64| {
+        synra_observe::audit::AuditEntry::new(
+            at_ms,
+            plugin.clone(),
+            synra_capability::Capability::parse("device:list").expect("a capability"),
+            synra_observe::audit::AuditOutcome::Allowed,
+            Some(1),
+        )
+    };
+    assert!(set.drain_record_for_test(&cleared, record(&cleared, 1_000)));
+    assert!(set.drain_record_for_test(&kept, record(&kept, 2_000)));
+
+    set.clear_audit(&cleared);
+
+    assert!(set.audit_for(&cleared).is_empty(), "the cleared plugin has no records left");
+    assert_eq!(set.audit_for(&kept).len(), 1, "another plugin's records are not collateral");
+}
+
 /// thread was running it — no `Trap` outcome, no audit record, and no prompt for the user. The test detects the
 /// regression; the difference it makes in production is larger than the difference it makes here.
 #[test]

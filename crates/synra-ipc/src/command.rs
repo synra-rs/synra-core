@@ -257,6 +257,10 @@ commands! {
     "plugins_publishers" => Plugins, Host, Many, false;
     "plugins_publisher_decide" => Plugins, Host, Unit, true;
     "plugins_audit" => Plugins, Host, Many, false;
+    // ★ The user's half of the audit: reading it was implemented first, and 18 §5.2 has always asked for "clear this
+    // plugin's history" beside it. `Many` and `false` on the read, `Unit` and `true` here — clearing is the one audit verb
+    // that changes anything.
+    "plugins_audit_clear" => Plugins, Host, Unit, true;
     "plugins_request_registry_search" => Plugins, Host, Many, true;
 
     // ── the plugin interface ──
@@ -502,6 +506,7 @@ mod tests {
             "plugins_publishers",
             "plugins_publisher_decide",
             "plugins_audit",
+            "plugins_audit_clear",
             "plugins_request_registry_search",
             // plugin ui
             "plugin_ui_rpc",

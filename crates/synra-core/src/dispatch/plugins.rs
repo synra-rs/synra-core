@@ -358,6 +358,20 @@ impl PluginSet {
         self.audit.refusals_for_plugin(id)
     }
 
+    /// Forgets one plugin's records, which is the user's "clear this plugin's history".
+    ///
+    /// # Why it is per plugin rather than whole-ring
+    ///
+    /// Because the screen an audit is read on is a plugin's card, and the action is taken beside one plugin's trail. A
+    /// `clear()` of the whole ring would let the button on one card erase what the user was about to read on another.
+    ///
+    /// The counts go with the entries: a history the user cleared that still reports a total is one they did not clear.
+    /// That detail belongs to `AuditRing::clear_plugin` rather than here, so the two readers of the ring cannot disagree
+    /// about it.
+    pub fn clear_audit(&mut self, id: &PluginId) {
+        self.audit.clear_plugin(id);
+    }
+
     /// Hands every record to a sink as well as to the ring.
     ///
     /// # Why the host installs one
