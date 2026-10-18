@@ -70,12 +70,35 @@ impl PluginFiles {
     /// [`PathError::Escapes`] when a computed target is outside the root it belongs to — unreachable through [`Paths`],
     /// and checked here so it stays unreachable if this type's callers change. [`PathError::Unwritable`] when the
     /// operating system refuses a removal.
-    pub fn remove(&self, plugin_id: &str, remove_data: bool) -> Result<(), PathError> {
-        self.remove_below(&self.paths.plugin_dir(plugin_id), &self.paths.plugins_dir())?;
+    /// Deletes a plugin's artifact directory, and its data directory when asked.
+    ///
+    /// # Returns
+    ///
+    /// The paths that could not be removed. Empty is the ordinary answer. A directory held open by the running process
+    /// (a loaded engine keeps its wasm file open on Windows) is **reported rather than refused**: the caller has already
+    /// taken the plugin out of the database, so a removal that stopped at the first locked file would leave the files
+    /// behind **and** say nothing about them. The caller shows the list; a second attempt after a restart removes them.
+    ///
+    /// # Errors
+    ///
+    /// [`PathError::Escapes`] when a computed target is outside the root it belongs to — unreachable through [`Paths`],
+    /// and checked here so it stays unreachable if this type's callers change. A filesystem refusal is a leftover, not an
+    /// error: the one thing that must not happen is a refusal that hides what is still there.
+    pub fn remove(&self, plugin_id: &str, remove_data: bool) -> Result<Vec<std::path::PathBuf>, PathError> {
+        let mut leftovers = Vec::new();
+        self.remove_below(
+            &self.paths.plugin_dir(plugin_id),
+            &self.paths.plugins_dir(),
+            &mut leftovers,
+        )?;
         if remove_data {
-            self.remove_below(&self.paths.plugin_sandbox_dir(plugin_id), &self.paths.plugin_data_dir())?;
+            self.remove_below(
+                &self.paths.plugin_sandbox_dir(plugin_id),
+                &self.paths.plugin_data_dir(),
+                &mut leftovers,
+            )?;
         }
-        Ok(())
+        Ok(leftovers)
     }
 
     /// How many bytes a removal would free: the artifacts, plus the data when `remove_data` is true.
@@ -93,7 +116,12 @@ impl PluginFiles {
     }
 
     /// Removes one tree, having checked it is where it claims to be.
-    fn remove_below(&self, target: &Path, root: &Path) -> Result<(), PathError> {
+    fn remove_below(
+        &self,
+        target: &Path,
+        root: &Path,
+        leftovers: &mut Vec<std::path::PathBuf>,
+    ) -> Result<(), PathError> {
         if !is_within(root, target) {
             return Err(PathError::Escapes {
                 path: target.display().to_string(),
@@ -102,11 +130,12 @@ impl PluginFiles {
         }
         match std::fs::remove_dir_all(target) {
             Ok(()) => Ok(()),
+            // A directory that is not there satisfies "this plugin should not be here".
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(PathError::Unwritable {
-                path: target.display().to_string(),
-                detail: error.to_string(),
-            }),
+            Err(_) => {
+                leftovers.push(target.to_path_buf());
+                Ok(())
+            }
         }
     }
 }
@@ -183,10 +212,42 @@ mod tests {
         fill(&paths.plugin_dir("@acme/hello"));
         fill(&paths.plugin_sandbox_dir("@acme/hello"));
 
-        PluginFiles::new(paths.clone()).remove("@acme/hello", true).expect("removes");
+        let leftovers = PluginFiles::new(paths.clone())
+            .remove("@acme/hello", true)
+            .expect("removes");
 
+        assert!(leftovers.is_empty(), "nothing was held back: {leftovers:?}");
         assert!(!paths.plugin_dir("@acme/hello").exists());
         assert!(!paths.plugin_sandbox_dir("@acme/hello").exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_locked_file_is_reported_as_a_leftover_rather_than_failing() {
+        // ★ A loaded engine keeps its wasm file open on Windows, and a deletion then fails. The row is already gone, so
+        // refusing would leave the files behind and say nothing; the leftover list is how the caller tells the user.
+        use std::os::windows::fs::OpenOptionsExt as _;
+
+        let scratch = Scratch::new("locked");
+        let paths = scratch.paths();
+        let directory = paths.plugin_dir("@acme/hello");
+        fill(&directory);
+        // Share mode zero: no other open — including the one a removal needs — may touch the file.
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(directory.join("plugin.wasm"))
+            .expect("an exclusive handle");
+
+        let leftovers = PluginFiles::new(paths.clone())
+            .remove("@acme/hello", false)
+            .expect("the refusal is reported, not thrown");
+        assert_eq!(leftovers, vec![directory.clone()], "the directory that survived");
+        assert!(directory.exists(), "the files are still there, as reported");
+
+        drop(held);
+        let leftovers = PluginFiles::new(paths).remove("@acme/hello", false).expect("removes");
+        assert!(leftovers.is_empty(), "a later attempt finishes the job: {leftovers:?}");
     }
 
     #[test]

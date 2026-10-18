@@ -193,10 +193,21 @@ fn prose(value: &serde_json::Value) -> Vec<String> {
     if let Some(bytes) = value.get("bytesFreed").and_then(serde_json::Value::as_u64) {
         let id = value.get("pluginId").and_then(serde_json::Value::as_str).unwrap_or("?");
         let kept = value.get("dataKept").and_then(serde_json::Value::as_bool).unwrap_or(true);
-        return vec![format!(
+        let mut sentence = format!(
             "removed {id}; {bytes} bytes freed; {}",
             if kept { "its data was kept" } else { "its data was deleted" }
-        )];
+        );
+        // ★ Files the operating system would not let go are part of the answer. A loaded engine keeps its wasm file open
+        // on Windows; the plugin is gone from the list, and a user who is not told which path survived goes looking.
+        let leftovers: Vec<&str> = value
+            .get("leftovers")
+            .and_then(serde_json::Value::as_array)
+            .map(|paths| paths.iter().filter_map(serde_json::Value::as_str).collect())
+            .unwrap_or_default();
+        if !leftovers.is_empty() {
+            sentence.push_str(&format!("; could not remove {}", leftovers.join(", ")));
+        }
+        return vec![sentence];
     }
     if let Some(lines) = value.get("lines").and_then(serde_json::Value::as_array) {
         return lines.iter().map(render_line).collect();
@@ -658,6 +669,30 @@ mod tests {
         match outcome_of(&response, Shape::Prose) {
             crate::session::CommandOutcome::Lines(lines) => {
                 assert_eq!(lines, vec!["no devices".to_owned()]);
+            }
+            other => panic!("expected lines, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_removal_report_names_the_files_the_system_would_not_let_go() {
+        // ★ The row is gone and the removal cannot fail on a locked file, so this sentence is the only place the user
+        // learns that something is still on disk. A count alone would send them looking; the paths are the answer.
+        let response = Response::ok(serde_json::json!({
+            "pluginId": "@acme/hello",
+            "bytesFreed": 1536,
+            "dataKept": true,
+            "leftovers": ["/tmp/synra/plugins/@acme/hello"]
+        }));
+        match outcome_of(&response, Shape::Prose) {
+            crate::session::CommandOutcome::Lines(lines) => {
+                assert_eq!(
+                    lines,
+                    vec![
+                        "removed @acme/hello; 1536 bytes freed; its data was kept; could not remove \
+                         /tmp/synra/plugins/@acme/hello"
+                    ]
+                );
             }
             other => panic!("expected lines, got {other:?}"),
         }

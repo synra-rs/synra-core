@@ -369,13 +369,19 @@ impl Kernel for Runtime {
                 format!("no plugin is installed as `{plugin_id}`"),
             ));
         }
-        files
+        let leftovers = files
             .remove(plugin_id, remove_data)
             .map_err(|error| Refusal::new(ErrorCode::Internal, error.to_string()))?;
+        // ★ Reported, not refused: the row is already gone, and a directory the operating system would not let go (a
+        // loaded engine holds its wasm file open on Windows) is a fact the user has to see. The paths are the answer to
+        // "so what is still on my disk?" — a count alone would make them go looking.
+        let leftover_paths: Vec<String> =
+            leftovers.iter().map(|path| path.display().to_string()).collect();
         Ok(serde_json::json!({
             "pluginId": plugin_id,
             "bytesFreed": bytes_freed,
             "dataKept": !remove_data,
+            "leftovers": leftover_paths,
         }))
     }
 
