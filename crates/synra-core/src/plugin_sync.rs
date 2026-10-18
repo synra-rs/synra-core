@@ -21,7 +21,7 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
-use synra_protocol::ids::{DeviceId, PluginId, TransferId};
+use synra_protocol::ids::{DeviceId, PluginId, TraceId, TransferId};
 use synra_protocol::session::{PluginList, PluginSummary};
 
 /// Which round of sync a message belongs to.
@@ -188,6 +188,66 @@ pub fn answer_plugin_list(
 ) -> Result<synra_protocol::envelope::Envelope, ListAnswerError> {
     let list = local_list(db)?;
     Ok(crate::messaging::plugin_list_response(request, from, &list, now_ms)?)
+}
+
+/// Asks a connected peer what plugins it has, and waits for the answer.
+///
+/// # Why the deadline is an argument rather than a constant here
+///
+/// Because how long an answer may take is the caller's judgement about its own network and its own command: a plan a
+/// person is waiting on and a background refresh do not share one figure. The deadline is checked between reads, so a
+/// peer that says nothing produces an error instead of a thread that never comes back.
+///
+/// # What is skipped rather than refused
+///
+/// Any other traffic on the link. The answer is the only thing this side is waiting for, and a peer that says something
+/// else first — an acknowledgement, a message for another feature — has not broken anything. A block on a link where this
+/// side is not receiving is skipped for the same reason: it is not the answer, and the caller's deadline still bounds the
+/// wait.
+///
+/// # Errors
+///
+/// [`SessionError::Link`] for a failed send, a closed link, or the deadline passing; [`SessionError::Payload`] for an
+/// answer that is not a plugin list.
+pub fn ask_plugin_list(
+    link: &mut crate::link::PeerLink,
+    ours: DeviceId,
+    peer: DeviceId,
+    trace_id: TraceId,
+    now_ms: i64,
+    deadline: std::time::Instant,
+) -> Result<PluginList, crate::SessionError> {
+    let request = crate::messaging::plugin_list_request(ours, peer, trace_id, now_ms).map_err(|error| {
+        crate::SessionError::Payload { message: "plugin list request", why: error.to_string() }
+    })?;
+    link.send(&request)?;
+    loop {
+        if std::time::Instant::now() >= deadline {
+            return Err(crate::SessionError::Link(crate::link::LinkError::TimedOut));
+        }
+        match link.receive_inbound() {
+            Ok(crate::link::Inbound::Envelope(envelope))
+                if envelope.event.as_str() == synra_protocol::event::events::PLUGIN_LIST_RESPONSE =>
+            {
+                let payload = envelope.payload_str().ok_or_else(|| crate::SessionError::Payload {
+                    message: "plugin list",
+                    why: "the answer carried no payload".to_owned(),
+                })?;
+                return serde_json::from_str(payload).map_err(|error| crate::SessionError::Payload {
+                    message: "plugin list",
+                    why: error.to_string(),
+                });
+            }
+            Ok(_) => continue,
+            Err(crate::link::LinkError::TimedOut) => {
+                if std::time::Instant::now() >= deadline {
+                    return Err(crate::SessionError::Link(crate::link::LinkError::TimedOut));
+                }
+                continue;
+            }
+            Err(error) => return Err(crate::SessionError::Link(error)),
+        }
+    }
 }
 
 /// What to do about what the other device has.
@@ -877,7 +937,7 @@ pub struct SyncRecord {
     /// 传了多少字节。
     pub bytes_transferred: u64,
     /// 这一轮属于哪条追踪，还没认出是哪一轮时为 `None`。
-    pub trace_id: Option<synra_protocol::ids::TraceId>,
+    pub trace_id: Option<TraceId>,
 }
 
 impl SyncRecord {
@@ -954,7 +1014,7 @@ impl SyncRecord {
         id: SyncId,
         direction: SyncDirection,
         version: Option<String>,
-        trace_id: synra_protocol::ids::TraceId,
+        trace_id: TraceId,
     ) -> Self {
         self.id = id;
         self.direction = direction;
