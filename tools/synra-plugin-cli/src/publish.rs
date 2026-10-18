@@ -141,7 +141,32 @@ fn verify_remote(
         }
     }
 
-    if failures.is_empty() { Ok(lines) } else { Err(failures) }
+    if failures.is_empty() {
+        return Ok(lines);
+    }
+
+    // ★ A failure is only half the answer: the author needs to know which file to upload where. The list names the local
+    // path and the URL the index expects, so a re-upload is a copy of two values rather than a re-derivation.
+    let mut reupload = Vec::new();
+    for (version, entry) in &index.document.versions {
+        if !failures.iter().any(|line| line.contains(version)) {
+            continue;
+        }
+        let local = local_tarball(directory, args.base.as_deref(), &entry.dist.tarball);
+        let tarball = remote
+            .document
+            .at(version)
+            .map_or(&entry.dist.tarball, |served| &served.dist.tarball);
+        let target = resolve_remote(&index_url, tarball);
+        if let (Ok(local), Ok(target)) = (local, target) {
+            reupload.push(format!("  re-upload  {version}  {}  ->  {target}", local.display()));
+        }
+    }
+    if !reupload.is_empty() {
+        failures.push("  upload these again:".to_owned());
+        failures.extend(reupload);
+    }
+    Err(failures)
 }
 
 /// A URL's bytes, through the host's own network guard.
@@ -565,6 +590,11 @@ mod tests {
         assert!(failure);
         assert!(
             lines.iter().any(|line| line.contains("different bytes")),
+            "{lines:?}"
+        );
+        // ★ The second half of the answer: which file, and where it goes.
+        assert!(
+            lines.iter().any(|line| line.contains("re-upload") && line.contains("1.0.0")),
             "{lines:?}"
         );
         let _ = std::fs::remove_dir_all(&root);
