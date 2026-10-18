@@ -18,12 +18,16 @@ const TRANSFER_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30
 
 /// How long a dispatched action's outcome is waited for before the intent stays dispatching.
 ///
-/// Three seconds, not the plugin's full budget: the wait holds this connection and this intent open, and a sender that
-/// waited indefinitely would turn a silent peer into a stuck command. It no longer costs other clients anything — the
-/// daemon serves each control connection on its own thread — but a longer wait still delays the user who asked for the
-/// action. A local-network plugin call fits comfortably; a receiver slower than this answers into a closed link, and this
-/// side says "dispatching" rather than inventing an outcome. The limitation is written down in 07 §"远程 target" as well.
-const REMOTE_RESULT_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+/// The plugin's execution budget is five seconds (`synra_core::dispatch::EXECUTE_BUDGET_MS`), so the wait has to be
+/// longer than that plus the round trip; eight seconds is those five, a handshake's worth of network, and a margin. A
+/// shorter wait reported "still running" for an action that then succeeded — the receiver answered into a closed link.
+///
+/// It no longer costs other clients anything — each control connection has its own thread — but it still holds this
+/// connection and this intent, so it is bounded rather than indefinite. A receiver slower than this answers into a closed
+/// link, and this side says "dispatching" rather than inventing an outcome; the limitation is written down in 07
+/// §"远程 target" as well.
+pub(super) const REMOTE_RESULT_WAIT: std::time::Duration =
+    std::time::Duration::from_millis(synra_core::dispatch::EXECUTE_BUDGET_MS + 3_000);
 
 impl Kernel for Runtime {
     fn version(&self) -> String {
@@ -1103,7 +1107,19 @@ impl Runtime {
                                 // Written down now: the outcome is the state, and a crash before the next sweep would
                                 // otherwise persist a "dispatching" for work that has finished.
                                 self.checkpoint_intent(&id.to_string());
-                                synra_core::intent::remote::result_from(&reply).ok()
+                                let result = synra_core::intent::remote::result_from(&reply).ok();
+                                // ★ The remote step joins the trace: the routing and decision lines already name the
+                                // action, and without this the one step that happened on another device is the one a
+                                // `synra logs --trace` cannot show.
+                                if let Some(result) = &result {
+                                    tracing::info!(
+                                        trace_id = %reply.trace_id,
+                                        intent = %id,
+                                        ok = result.ok,
+                                        "remote outcome applied"
+                                    );
+                                }
+                                result
                             }
                             // A reply this device is not waiting on. Nothing to apply, and nothing to report: the
                             // intent may have been cancelled while the answer was in flight.

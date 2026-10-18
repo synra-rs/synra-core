@@ -2490,3 +2490,15 @@ fn a_scan_is_counted_by_how_it_ended() {
         || snapshot.get("scans_total{result=unavailable}").is_some();
     assert!(counted, "a scan was not counted at all");
 }
+
+#[test]
+fn the_remote_wait_outlasts_a_plugins_execution_budget() {
+    // ★ The wait exists to cover an action running on the far side. A wait shorter than the plugin's own budget gave up
+    // while the receiver was still legitimately working, and reported "dispatching" for an action that then succeeded.
+    // The two numbers are read from their owners rather than written here, so changing the budget without the wait fails.
+    assert!(
+        crate::runtime::commands::REMOTE_RESULT_WAIT
+            > std::time::Duration::from_millis(synra_core::dispatch::EXECUTE_BUDGET_MS),
+        "a dispatched action is awaited for less time than a plugin may run"
+    );
+}
