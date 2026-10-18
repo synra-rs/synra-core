@@ -27,6 +27,7 @@
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
+use std::sync::Arc;
 
 /// A byte stream backed by memory, for a link with no socket behind it.
 ///
@@ -215,6 +216,12 @@ pub struct PeerLink {
     sent: u64,
     /// Envelopes received and accepted, for a report.
     received: u64,
+    /// Where the byte counters go, when the host has a recorder.
+    ///
+    /// ★ Payload bytes, not wire bytes: the frame header is the transport's accounting, and what a reader of
+    /// `bytes_sent_total` is asking is "how much did this device move". A link with no recorder is a link, not a broken
+    /// one — the same rule `Host::with_metrics` and the plugin host follow.
+    metrics: Option<Arc<synra_observe::metrics::RingRecorder>>,
 }
 
 impl PeerLink {
@@ -243,6 +250,27 @@ impl PeerLink {
             write_timeout_override: None,
             sent: 0,
             received: 0,
+            metrics: None,
+        }
+    }
+
+    /// Counts payload bytes into `metrics`.
+    ///
+    /// ★ A builder rather than a constructor argument: every existing caller keeps working, and the one place that builds
+    /// a link from a dial (`Dialled::into_link`) is also the one place that now passes a recorder.
+    #[must_use]
+    pub fn with_metrics(mut self, metrics: Arc<synra_observe::metrics::RingRecorder>) -> Self {
+        self.metrics = Some(metrics);
+        self
+    }
+
+    /// Adds to one of the two byte counters, when this link has a recorder.
+    fn count_bytes(&self, metric: &str, bytes: usize) {
+        if let Some(metrics) = &self.metrics {
+            metrics.counter_add(
+                &synra_observe::metrics::SeriesKey::new(metric, []),
+                u64::try_from(bytes).unwrap_or(u64::MAX),
+            );
         }
     }
 
@@ -354,6 +382,12 @@ impl PeerLink {
         let encoded = FrameEncoder::encode_to_vec(&frame)?;
         self.write_frame(&encoded)?;
         self.sent = self.sent.saturating_add(1);
+        // Payload only: a frame header is the transport's accounting, and it is not what the reader of `bytes_sent_total`
+        // is asking about. Counted after the write, because a refused write moved nothing.
+        self.count_bytes(
+            "bytes_sent_total",
+            envelope.payload.as_ref().map_or(0, |payload| payload.get().len()),
+        );
         Ok(())
     }
 
@@ -379,6 +413,7 @@ impl PeerLink {
         };
         self.send_frame(&frame)?;
         self.sent = self.sent.saturating_add(1);
+        self.count_bytes("bytes_sent_total", data.len());
         Ok(())
     }
 
@@ -401,6 +436,10 @@ impl PeerLink {
                 FrameKind::Envelope => {
                     let envelope = self.parse_envelope(&frame)?;
                     self.received = self.received.saturating_add(1);
+                    self.count_bytes(
+                        "bytes_received_total",
+                        envelope.payload.as_ref().map_or(0, |payload| payload.get().len()),
+                    );
                     return Ok(Inbound::Envelope(Box::new(envelope)));
                 }
                 FrameKind::Chunk => {
@@ -408,6 +447,7 @@ impl PeerLink {
                         return Err(LinkError::Unexpected { found: format!("{:?}", frame.body) });
                     };
                     self.received = self.received.saturating_add(1);
+                    self.count_bytes("bytes_received_total", chunk.data.len());
                     return Ok(Inbound::Block { chunk_id: chunk.chunk_id, data: chunk.data });
                 }
                 FrameKind::Ping => self.pong()?,
@@ -858,6 +898,30 @@ mod tests {
         assert_eq!(got.target, device(LOCAL));
         assert_eq!(sender.sent(), 1);
         assert_eq!(receiver.received(), 1);
+    }
+
+    #[test]
+    fn a_link_with_a_recorder_counts_the_payload_bytes_it_moves() {
+        // ★ The byte counters live on the link because the link is what holds the payloads; the host counts frames and
+        // cannot add a number it never took. Payload bytes, not wire bytes: the frame header is the transport's accounting,
+        // and "how much did this device move" is the question the counter exists to answer.
+        use synra_observe::metrics::Value;
+
+        let (a, b) = connected();
+        let sender_metrics = Arc::new(synra_observe::metrics::RingRecorder::new());
+        let receiver_metrics = Arc::new(synra_observe::metrics::RingRecorder::new());
+        let mut sender = link(a, PEER, LOCAL).with_metrics(Arc::clone(&sender_metrics));
+        let mut receiver = link(b, LOCAL, PEER).with_metrics(Arc::clone(&receiver_metrics));
+
+        // The envelope helper carries no payload, so a block is what proves the counters move — and it proves it for both
+        // directions, which are separate series.
+        sender.send(&envelope(PEER, LOCAL, "device.ping")).expect("sends");
+        let _ = receiver.receive().expect("receives");
+        sender.send_chunk(0, &[1, 2, 3, 4]).expect("sends a block");
+        let _ = receiver.receive_inbound().expect("receives a block");
+
+        assert_eq!(sender_metrics.snapshot().get("bytes_sent_total"), Some(&Value::Counter(4)));
+        assert_eq!(receiver_metrics.snapshot().get("bytes_received_total"), Some(&Value::Counter(4)));
     }
 
     #[test]

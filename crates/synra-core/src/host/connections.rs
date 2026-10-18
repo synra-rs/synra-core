@@ -1,4 +1,5 @@
 use std::net::{SocketAddr, TcpStream};
+use std::sync::Arc;
 
 use synra_protocol::envelope::Envelope;
 use synra_protocol::handshake::{LinkToken, PairingState};
@@ -116,13 +117,19 @@ impl Host {
             .handshaked(negotiated.device_id, address, Some(&negotiated.display_name), millis_reading(now_ms));
 
         let _ = &address;
-        Ok(PeerLink::new(
+        let mut link = PeerLink::new(
             stream,
             self.identity.device_id,
             negotiated.device_id,
             negotiated.agreed,
             self.flags,
-        ))
+        );
+        // ★ The host's recorder, passed to the link it just made. Without this the byte counters stop at the API: the
+        // host counts frames and the link owns the payloads, and a reader cannot add two numbers that were never taken.
+        if let Some(metrics) = &self.metrics {
+            link = link.with_metrics(Arc::clone(metrics));
+        }
+        Ok(link)
     }
 
     /// Dials a candidate and completes a handshake.
@@ -256,16 +263,18 @@ impl Host {
             millis_reading(now_ms),
         );
 
-        Ok((
-            PeerLink::new(
-                stream,
-                self.identity.device_id,
-                negotiated.device_id,
-                negotiated.agreed,
-                self.flags,
-            ),
-            events,
-        ))
+        let mut link = PeerLink::new(
+            stream,
+            self.identity.device_id,
+            negotiated.device_id,
+            negotiated.agreed,
+            self.flags,
+        );
+        // Same recorder as the dialler's link: accepted and dialled connections are two halves of one network view.
+        if let Some(metrics) = &self.metrics {
+            link = link.with_metrics(Arc::clone(metrics));
+        }
+        Ok((link, events))
     }
 
     /// Accepts one connection and completes a handshake on it.
@@ -319,16 +328,18 @@ impl Host {
             millis_reading(now_ms),
         );
 
-        Ok((
-            PeerLink::new(
-                stream,
-                self.identity.device_id,
-                negotiated.device_id,
-                negotiated.agreed,
-                self.flags,
-            ),
-            events,
-        ))
+        let mut link = PeerLink::new(
+            stream,
+            self.identity.device_id,
+            negotiated.device_id,
+            negotiated.agreed,
+            self.flags,
+        );
+        // Same recorder as the dialler's link: accepted and dialled connections are two halves of one network view.
+        if let Some(metrics) = &self.metrics {
+            link = link.with_metrics(Arc::clone(metrics));
+        }
+        Ok((link, events))
     }
 
     /// Whether a session for this link's peer is ready to carry a message, without sending one.
