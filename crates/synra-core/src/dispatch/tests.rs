@@ -738,6 +738,15 @@ fn a_call_is_counted_and_timed_per_plugin_and_interface() {
         Some(&Value::Gauge(4096)),
         "the instance's memory is reported for the plugin that ran"
     );
+    // ★ And the report a card reads: the rung, the sentence, and the calls admitted so far. It is the same budget the
+    // gate counted into, so a loaded plugin that ran has a report — and a plugin that is not loaded has none.
+    let report = set.report_of("@synra/aaa-notes").expect("the plugin is loaded");
+    assert_eq!(report.health, "good");
+    // Zero because this guest makes no **host** calls — `admitted` counts the gate's, not the dispatcher's. A report of
+    // zeroes would still be a report; what matters is that the loaded plugin has one and the unloaded id does not.
+    assert_eq!(report.admitted, 0);
+    assert!(!report.explanation.is_empty(), "the rung comes with its sentence");
+    assert!(set.report_of("@synra/absent").is_none(), "nothing is loaded under that id");
     // ★ And no fuel reading: the scripted backend has no instruction counter, and `None` has to stay "nothing recorded"
     // rather than a zero — a histogram of zeroes would say this plugin spent no instructions when it spent an unknown
     // number. The `Some` side of the same branch is asserted in `wasmtime_tests`, where a real store reports it.

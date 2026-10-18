@@ -76,7 +76,10 @@ pub struct PluginSnapshot {
 pub struct PluginHealthDto {
     /// Where it sits on the escalation ladder. `snake_case`.
     pub health: String,
-    /// A message key explaining it.
+    /// A sentence explaining it.
+    ///
+    /// ★ A sentence rather than a message key, which is what this field used to claim: the quota's `Health::explain` returns
+    /// prose from a stable crate, and calling it a key made the interface look like it could translate something it cannot.
     pub explanation: String,
     /// How many host calls it has made.
     pub calls_admitted: u64,

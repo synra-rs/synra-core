@@ -320,6 +320,15 @@ impl PluginSet {
         self.loaded.get(&id).map(|loaded| loaded.authority.budget.health())
     }
 
+    /// The quota report of a loaded plugin, for a screen that shows its health.
+    ///
+    /// The rung alone is what [`PluginSet::health_of`] answers; this is the rung plus the sentence, the call counts and the
+    /// quota in force — the facts a card needs to say *why* a plugin is degraded rather than only that it is.
+    pub fn report_of(&self, id: &str) -> Option<synra_plugin_host::quota::QuotaReport> {
+        let id = PluginId::try_from(id.to_owned()).ok()?;
+        self.loaded.get(&id).map(|loaded| loaded.authority.budget.report())
+    }
+
     /// A set with no plugins, over a given engine and reaching a given host.
     ///
     /// # Why the host is required rather than defaulted
