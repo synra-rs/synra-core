@@ -91,6 +91,10 @@ pub struct PackArgs {
     #[arg(long, value_name = "FILE")]
     pub out: Option<PathBuf>,
 
+    /// The registry this package is intended for. Checked for shape only; nothing is uploaded.
+    #[arg(long, value_name = "URL")]
+    pub registry: Option<String>,
+
     /// Print the target without writing it.
     #[arg(long)]
     pub dry_run: bool,

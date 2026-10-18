@@ -82,6 +82,20 @@ pub fn pack_plugin(args: &crate::args::PackArgs) -> Result<Outcome, String> {
         dir.join("dist").join(file)
     });
 
+    // ★ A registry is checked for shape, not contacted. Publishing is an account and a policy; what this tool can know is
+    // whether the address it would send an author to is one the installing side could ever read (16 §4.2).
+    let publish_to = match args.registry.as_deref().map(registry_base) {
+        Some(Ok(registry)) => Some(registry),
+        Some(Err(reason)) => {
+            return Ok(Outcome::Reported {
+                lines: vec![format!("--registry is not usable: {reason}")],
+                code: 1,
+                failure: true,
+            });
+        }
+        None => None,
+    };
+
     let mut lines = vec![
         format!("packing {} {}", manifest.id, manifest.version),
         "  manifest.json".to_owned(),
@@ -93,6 +107,12 @@ pub fn pack_plugin(args: &crate::args::PackArgs) -> Result<Outcome, String> {
         lines.push("  signature.json".to_owned());
     }
     lines.push(format!("  -> {}", target.display()));
+    if let Some(registry) = publish_to {
+        lines.push(format!(
+            "publish with: npm publish --registry {registry} {}",
+            target.display()
+        ));
+    }
 
     Ok(Outcome::Archive {
         target,
@@ -159,6 +179,42 @@ fn append(builder: &mut tar::Builder<flate2::write::GzEncoder<std::fs::File>>, s
     Ok(())
 }
 
+/// The scheme and authority of a registry URL, or why it is not a shape the installing side could read.
+///
+/// The client reads the scheme and host and takes the protocol's paths from there (16 §4.2), so a URL with a path, a
+/// non-http scheme or plain `http` for a public host is a mistake worth naming here rather than a surprise after publish.
+fn registry_base(url: &str) -> Result<String, String> {
+    let url = url.trim();
+    let (secure, rest) = if let Some(rest) = url.strip_prefix("https://") {
+        (true, rest)
+    }
+    else if let Some(rest) = url.strip_prefix("http://") {
+        (false, rest)
+    }
+    else {
+        return Err("it must start with https:// or http://".to_owned());
+    };
+    let authority = rest.split('/').next().unwrap_or_default();
+    if authority.is_empty() {
+        return Err("it names no host".to_owned());
+    }
+    if rest.trim_end_matches('/') != authority {
+        return Err("it must name only a scheme and a host, with no path".to_owned());
+    }
+    let host = match authority.rsplit_once(':') {
+        Some((host, port)) if port.chars().all(|character| character.is_ascii_digit()) => host,
+        _ => authority,
+    };
+    let host = host.trim_matches(['[', ']']);
+    let loopback = matches!(host, "127.0.0.1" | "localhost" | "::1");
+    if !secure && !loopback {
+        return Err(
+            "plain http is only for a local registry; a published package must travel over https".to_owned()
+        );
+    }
+    Ok(format!("{}://{authority}", if secure { "https" } else { "http" }))
+}
+
 /// The file names the manifest says a package contains.
 ///
 /// Mirrors the installer's own list: the headless artifact and the UI bundle, each a plain file name. A name that is a
@@ -213,6 +269,7 @@ mod tests {
         let outcome = pack_plugin(&crate::args::PackArgs {
             dir: root.clone(),
             out: Some(root.join("out.tgz")),
+            registry: None,
             dry_run: false,
         })
         .expect("it packs");
@@ -250,7 +307,8 @@ mod tests {
             let outcome = pack_plugin(&crate::args::PackArgs {
                 dir: root.clone(),
                 out: Some(target.clone()),
-                dry_run: false,
+                registry: None,
+            dry_run: false,
             })
             .expect("it packs");
             let crate::run::Outcome::Archive { manifest, artifacts, signature, .. } = &outcome else {
@@ -271,6 +329,7 @@ mod tests {
         let crate::run::Outcome::Reported { lines, failure, .. } = pack_plugin(&crate::args::PackArgs {
             dir: root.clone(),
             out: None,
+            registry: None,
             dry_run: false,
         })
         .expect("a report") else {
@@ -291,6 +350,7 @@ mod tests {
         let outcome = pack_plugin(&crate::args::PackArgs {
             dir: root.clone(),
             out: None,
+            registry: None,
             dry_run: false,
         })
         .expect("it packs");
@@ -312,6 +372,7 @@ mod tests {
         let outcome = pack_plugin(&crate::args::PackArgs {
             dir: root.clone(),
             out: None,
+            registry: None,
             dry_run: false,
         })
         .expect("the decision is a report, not an error");
@@ -335,6 +396,7 @@ mod tests {
         let outcome = pack_plugin(&crate::args::PackArgs {
             dir: root.clone(),
             out: Some(root.join("out.tgz")),
+            registry: None,
             dry_run: false,
         })
         .expect("a signed package packs");
@@ -358,6 +420,7 @@ mod tests {
         let crate::run::Outcome::Reported { lines, failure, .. } = pack_plugin(&crate::args::PackArgs {
             dir: root.clone(),
             out: None,
+            registry: None,
             dry_run: false,
         })
         .expect("a report") else {
@@ -382,6 +445,7 @@ mod tests {
         let crate::run::Outcome::Reported { failure, .. } = pack_plugin(&crate::args::PackArgs {
             dir: root.clone(),
             out: None,
+            registry: None,
             dry_run: false,
         })
         .expect("a report") else {
@@ -398,6 +462,60 @@ mod tests {
         let content = crate::sign::SignedContent::read(root).expect("what a signature covers");
         let document = key.sign(&content, "2026-01-01T00:00:00Z");
         std::fs::write(root.join("signature.json"), document).expect("a signature");
+    }
+
+    #[test]
+    fn a_registry_flag_is_checked_and_shown_as_the_command_to_run() {
+        // ★ Nothing is uploaded. The flag answers "is this a registry the installing side could read?" and turns the
+        // answer into the command an author would run, so the address is stated once instead of retyped.
+        let root = scratch("registry");
+        std::fs::write(root.join("manifest.json"), manifest("1.2.3", &["log:*"])).expect("a manifest");
+        std::fs::write(root.join("plugin.wasm"), b"\0asm\x01\0\0\0").expect("an artifact");
+
+        let outcome = pack_plugin(&crate::args::PackArgs {
+            dir: root.clone(),
+            out: Some(root.join("out.tgz")),
+            registry: Some("https://r.example".to_owned()),
+            dry_run: false,
+        })
+        .expect("it packs");
+        let crate::run::Outcome::Archive { lines, .. } = outcome else {
+            panic!("expected an archive outcome");
+        };
+
+        assert!(
+            lines.iter().any(|line| line.contains("npm publish --registry https://r.example")),
+            "{lines:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_registry_that_could_not_be_read_is_refused() {
+        let root = scratch("bad-registry");
+        std::fs::write(root.join("manifest.json"), manifest("1.2.3", &["log:*"])).expect("a manifest");
+        std::fs::write(root.join("plugin.wasm"), b"\0asm\x01\0\0\0").expect("an artifact");
+
+        for (url, acceptable) in [
+            ("https://r.example", true),
+            ("https://r.example/", true),
+            ("http://127.0.0.1:4873", true),
+            ("http://r.example", false),
+            ("ftp://r.example", false),
+            ("https://r.example/path", false),
+            ("https://", false),
+        ] {
+            let outcome = pack_plugin(&crate::args::PackArgs {
+                dir: root.clone(),
+                out: None,
+                registry: Some(url.to_owned()),
+                dry_run: true,
+            })
+            .expect("a decision");
+            let accepted = matches!(&outcome, crate::run::Outcome::Archive { .. });
+            assert_eq!(accepted, acceptable, "for {url}: {outcome:?}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
