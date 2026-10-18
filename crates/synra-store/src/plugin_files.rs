@@ -50,6 +50,21 @@ pub fn remove_tree(root: &Path, path: &Path) -> Result<(), PathError> {
     })
 }
 
+/// What a removal actually did.
+///
+/// # Why the byte count is measured again on the way out
+///
+/// Because "how much was there" and "how much went" are different numbers the moment a directory cannot be removed. A
+/// report that said the first would tell a user they freed space that is still occupied — and the leftover list beside it
+/// would be the only thing contradicting the number.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Removal {
+    /// Bytes that are no longer on disk: measured before, minus what the leftovers still hold.
+    pub bytes_freed: u64,
+    /// Paths that could not be removed, empty in the ordinary case.
+    pub leftovers: Vec<std::path::PathBuf>,
+}
+
 /// Deletes a plugin's artifact directory, and its data directory when asked.
 #[derive(Debug, Clone)]
 pub struct PluginFiles {
@@ -74,17 +89,18 @@ impl PluginFiles {
     ///
     /// # Returns
     ///
-    /// The paths that could not be removed. Empty is the ordinary answer. A directory held open by the running process
-    /// (a loaded engine keeps its wasm file open on Windows) is **reported rather than refused**: the caller has already
-    /// taken the plugin out of the database, so a removal that stopped at the first locked file would leave the files
-    /// behind **and** say nothing about them. The caller shows the list; a second attempt after a restart removes them.
+    /// What actually went, and what could not be removed. A directory held open by the running process (a loaded engine
+    /// keeps its wasm file open on Windows) is **reported rather than refused**: the caller has already taken the plugin
+    /// out of the database, so a removal that stopped at the first locked file would leave the files behind **and** say
+    /// nothing about them. `bytes_freed` subtracts what the leftovers still hold, so the number matches the disk.
     ///
     /// # Errors
     ///
     /// [`PathError::Escapes`] when a computed target is outside the root it belongs to — unreachable through [`Paths`],
     /// and checked here so it stays unreachable if this type's callers change. A filesystem refusal is a leftover, not an
     /// error: the one thing that must not happen is a refusal that hides what is still there.
-    pub fn remove(&self, plugin_id: &str, remove_data: bool) -> Result<Vec<std::path::PathBuf>, PathError> {
+    pub fn remove(&self, plugin_id: &str, remove_data: bool) -> Result<Removal, PathError> {
+        let before = self.size_of(plugin_id, remove_data);
         let mut leftovers = Vec::new();
         self.remove_below(
             &self.paths.plugin_dir(plugin_id),
@@ -98,7 +114,11 @@ impl PluginFiles {
                 &mut leftovers,
             )?;
         }
-        Ok(leftovers)
+        let remaining: u64 = leftovers
+            .iter()
+            .map(|path| directory_size(path))
+            .fold(0, u64::saturating_add);
+        Ok(Removal { bytes_freed: before.saturating_sub(remaining), leftovers })
     }
 
     /// How many bytes a removal would free: the artifacts, plus the data when `remove_data` is true.
@@ -199,8 +219,12 @@ mod tests {
         fill(&paths.plugin_dir("@acme/hello"));
         fill(&paths.plugin_sandbox_dir("@acme/hello"));
 
-        PluginFiles::new(paths.clone()).remove("@acme/hello", false).expect("removes");
+        let removal = PluginFiles::new(paths.clone())
+            .remove("@acme/hello", false)
+            .expect("removes");
 
+        assert!(removal.leftovers.is_empty(), "nothing was held back");
+        assert_eq!(removal.bytes_freed, 4, "the artifact's four bytes");
         assert!(!paths.plugin_dir("@acme/hello").exists(), "artifacts are gone");
         assert!(paths.plugin_sandbox_dir("@acme/hello").exists(), "data is kept");
     }
@@ -212,11 +236,12 @@ mod tests {
         fill(&paths.plugin_dir("@acme/hello"));
         fill(&paths.plugin_sandbox_dir("@acme/hello"));
 
-        let leftovers = PluginFiles::new(paths.clone())
+        let removal = PluginFiles::new(paths.clone())
             .remove("@acme/hello", true)
             .expect("removes");
 
-        assert!(leftovers.is_empty(), "nothing was held back: {leftovers:?}");
+        assert!(removal.leftovers.is_empty(), "nothing was held back: {:?}", removal.leftovers);
+        assert_eq!(removal.bytes_freed, 8, "artifact and sandbox");
         assert!(!paths.plugin_dir("@acme/hello").exists());
         assert!(!paths.plugin_sandbox_dir("@acme/hello").exists());
     }
@@ -239,15 +264,18 @@ mod tests {
             .open(directory.join("plugin.wasm"))
             .expect("an exclusive handle");
 
-        let leftovers = PluginFiles::new(paths.clone())
+        let removal = PluginFiles::new(paths.clone())
             .remove("@acme/hello", false)
             .expect("the refusal is reported, not thrown");
-        assert_eq!(leftovers, vec![directory.clone()], "the directory that survived");
+        assert_eq!(removal.leftovers, vec![directory.clone()], "the directory that survived");
+        // ★ And the number does not lie: the directory is still on disk, so nothing was freed.
+        assert_eq!(removal.bytes_freed, 0, "a surviving directory frees no space");
         assert!(directory.exists(), "the files are still there, as reported");
 
         drop(held);
-        let leftovers = PluginFiles::new(paths).remove("@acme/hello", false).expect("removes");
-        assert!(leftovers.is_empty(), "a later attempt finishes the job: {leftovers:?}");
+        let removal = PluginFiles::new(paths).remove("@acme/hello", false).expect("removes");
+        assert!(removal.leftovers.is_empty(), "a later attempt finishes the job");
+        assert_eq!(removal.bytes_freed, 4, "the bytes go when the files do");
     }
 
     #[test]
@@ -258,7 +286,8 @@ mod tests {
         fill(&paths.plugin_dir("@acme/hello"));
 
         PluginFiles::new(paths.clone()).remove("@acme/hello", false).expect("first");
-        PluginFiles::new(paths).remove("@acme/hello", false).expect("second");
+        let second = PluginFiles::new(paths).remove("@acme/hello", false).expect("second");
+        assert_eq!(second.bytes_freed, 0, "there was nothing left to free");
     }
 
     #[test]

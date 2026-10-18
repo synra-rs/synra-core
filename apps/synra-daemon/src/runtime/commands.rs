@@ -353,11 +353,9 @@ impl Kernel for Runtime {
     }
 
     fn plugin_remove(&self, plugin_id: &str, remove_data: bool) -> Result<serde_json::Value, Refusal> {
-        // ★ Measured before the removal: after `remove_dir_all` there is nothing to measure, and a number read then would
-        // be a zero dressed as a measurement. The layout comes from `Paths`, not from joining `plugins_dir` by hand — the
-        // artifact and the sandbox are two different roots, and `PluginFiles` is what knows both.
+        // ★ The row first, then the files. The store's removal reports what actually went: measuring before and calling
+        // that "freed" would count a locked directory that is still on disk.
         let files = synra_store::PluginFiles::new(self.paths.clone());
-        let bytes_freed = files.size_of(plugin_id, remove_data);
         let removed = self
             .db
             .lock()
@@ -369,17 +367,17 @@ impl Kernel for Runtime {
                 format!("no plugin is installed as `{plugin_id}`"),
             ));
         }
-        let leftovers = files
+        let removal = files
             .remove(plugin_id, remove_data)
             .map_err(|error| Refusal::new(ErrorCode::Internal, error.to_string()))?;
         // ★ Reported, not refused: the row is already gone, and a directory the operating system would not let go (a
         // loaded engine holds its wasm file open on Windows) is a fact the user has to see. The paths are the answer to
         // "so what is still on my disk?" — a count alone would make them go looking.
         let leftover_paths: Vec<String> =
-            leftovers.iter().map(|path| path.display().to_string()).collect();
+            removal.leftovers.iter().map(|path| path.display().to_string()).collect();
         Ok(serde_json::json!({
             "pluginId": plugin_id,
-            "bytesFreed": bytes_freed,
+            "bytesFreed": removal.bytes_freed,
             "dataKept": !remove_data,
             "leftovers": leftover_paths,
         }))

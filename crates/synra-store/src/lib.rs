@@ -72,7 +72,7 @@ pub use sqlite::{ConfigChange, DbError, Paired, SynraDb, WriteObserver, migratio
 pub use sqlite::{PublisherRow, TRUST_REVOKED, TRUST_SEEN, TRUST_TRUSTED};
 mod plugin_files;
 
-pub use plugin_files::{PluginFiles, remove_tree};
+pub use plugin_files::{PluginFiles, Removal, remove_tree};
 pub use paths::{DB_FILE_NAME, PathError, Paths, is_within, sanitise_component};
 pub use sandbox::{CACHE, FILES, PluginDataRoot, SandboxMeta, SUBDIRECTORIES};
 pub use secrets::{
