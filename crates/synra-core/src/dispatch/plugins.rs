@@ -670,6 +670,20 @@ impl PluginSet {
                 ));
             }
         }
+        // ★ The instance's memory, read after the call and before the pool releases the handle: it is the only moment
+        // the set can see how much the plugin is holding, and the number is what the design's `plugin_memory_bytes` gauge
+        // names. A gauge rather than a delta, because memory can be given back.
+        if let Some(metrics) = &self.metrics
+            && let Some(instance) = loaded.live.get(&handle)
+        {
+            metrics.gauge_set(
+                &synra_observe::metrics::SeriesKey::new(
+                    "plugin_memory_bytes",
+                    [("plugin".to_owned(), id.as_str().to_owned())],
+                ),
+                i64::try_from(instance.memory_bytes()).unwrap_or(i64::MAX),
+            );
+        }
         let _ = loaded.pool.release(handle, now_ms);
         // ★ Drained **after** the call, not inside it: the entries are produced while the guest runs, and the ring lives
         // behind the set that the caller is borrowing. Collecting here is also what keeps the buffer one call deep.

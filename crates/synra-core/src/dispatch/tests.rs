@@ -731,6 +731,13 @@ fn a_call_is_counted_and_timed_per_plugin_and_interface() {
         Some(Value::Histogram(histogram)) => assert_eq!(histogram.count, 1),
         other => panic!("expected a duration histogram, got {other:?}"),
     }
+    // ★ The scripted instance adds 4096 bytes on every call, so the gauge has to be that number: a constant zero would
+    // also satisfy "the series exists", and the point is that the instance's own reading reached the recorder.
+    assert_eq!(
+        snapshot.get("plugin_memory_bytes{plugin=@synra/aaa-notes}"),
+        Some(&Value::Gauge(4096)),
+        "the instance's memory is reported for the plugin that ran"
+    );
 }
 
 #[test]
