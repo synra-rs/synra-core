@@ -8,6 +8,7 @@ pub struct LogStats {
     pub(super) lines: AtomicU64,
     pub(super) bytes: AtomicU64,
     pub(super) redactions: AtomicU64,
+    pub(super) dropped: AtomicU64,
 }
 
 impl LogStats {
@@ -31,5 +32,23 @@ impl LogStats {
     #[must_use]
     pub fn redactions(&self) -> u64 {
         self.redactions.load(Ordering::Relaxed)
+    }
+
+    /// How many lines were discarded because the writer could not keep up.
+    ///
+    /// # Why a log line is ever discarded
+    ///
+    /// Because the alternative is worse: a synchronous writer blocks whatever was being logged — a transport thread, a
+    /// command — for as long as the disk takes, and a diagnostics facility that slows the product down is one that gets
+    /// turned off. The queue is bounded, so a flood over a loaded disk drops lines; this counter is what keeps that from
+    /// being silent.
+    #[must_use]
+    pub fn dropped(&self) -> u64 {
+        self.dropped.load(Ordering::Relaxed)
+    }
+
+    /// Counts one discarded line.
+    pub(super) fn record_drop(&self) {
+        self.dropped.fetch_add(1, Ordering::Relaxed);
     }
 }

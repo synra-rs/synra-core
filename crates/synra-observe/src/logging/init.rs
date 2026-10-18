@@ -28,6 +28,8 @@ use tracing_subscriber::fmt::MakeWriter;
 
 use super::file::{DEFAULT_KEEP, DEFAULT_MAX_BYTES, RotatingFile};
 use super::level::LogLevel;
+use super::nonblocking::{DEFAULT_QUEUE_CAPACITY, QueueWriter, Worker};
+use super::stats::LogStats;
 use super::writer::RedactingWriter;
 
 /// What the caller wants logged, and where.
@@ -86,6 +88,9 @@ pub enum LogError {
     /// The log file could not be opened.
     #[error("the log file could not be opened: {0}")]
     File(#[from] io::Error),
+    /// The writer thread could not be started.
+    #[error("the log writer thread could not be started: {0}")]
+    Thread(io::Error),
     /// A subscriber was already installed for this process.
     #[error("a logging subscriber is already installed for this process")]
     AlreadyInstalled,
@@ -103,12 +108,16 @@ pub enum LogError {
 /// the shutdown.
 #[must_use = "dropping the guard stops the log being written"]
 pub struct LogGuard {
-    writer: Arc<Mutex<RedactingWriter<RotatingFile>>>,
+    writer: Arc<Mutex<RedactingWriter<QueueWriter>>>,
     /// What is being written, and the window a raise lasts for.
     ///
     /// Held here because the guard is what `init` hands back and what a caller keeps for the life of the process — the
     /// daemon shares this with the thread that answers `synra logs --verbose`.
     verbosity: Arc<super::verbosity::Verbosity>,
+    /// The thread that writes what was queued. Declared last so it drops last: the guard's own drop flushes the writer,
+    /// and the worker then drains what the flush queued. The name starts with `_` because it is held **for its `Drop`**,
+    /// not read: the field is the guard's promise that nothing queued is lost on the way out.
+    _worker: Option<Worker>,
 }
 
 impl LogGuard {
@@ -144,10 +153,10 @@ impl Drop for LogGuard {
 ///
 /// Cheap to clone — an `Arc` — because `MakeWriter` is called for every event.
 #[derive(Clone)]
-struct SharedWriter(Arc<Mutex<RedactingWriter<RotatingFile>>>);
+struct SharedWriter(Arc<Mutex<RedactingWriter<QueueWriter>>>);
 
 /// One event's writer, holding the shared handle for the duration of the write.
-struct SharedGuard(Arc<Mutex<RedactingWriter<RotatingFile>>>);
+struct SharedGuard(Arc<Mutex<RedactingWriter<QueueWriter>>>);
 
 impl Write for SharedGuard {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
@@ -208,7 +217,13 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for DynamicLevel {
 /// instead, because a logging call is not a good place to abort a process that was otherwise starting.
 pub fn init(config: &LogConfig) -> Result<LogGuard, LogError> {
     let file = RotatingFile::open(config.directory.clone(), config.max_bytes, config.keep)?;
-    let writer = Arc::new(Mutex::new(RedactingWriter::new(file)));
+    // ★ The queue sits **between** the redacting writer and the file. Bytes are redacted on the caller's thread and only
+    // redacted bytes are handed to the worker, so a secret never waits in the queue and the policy cannot be bypassed by
+    // the threading.
+    let stats = Arc::new(LogStats::default());
+    let (queue, worker) = Worker::spawn(file, DEFAULT_QUEUE_CAPACITY, Arc::clone(&stats))
+        .map_err(LogError::Thread)?;
+    let writer = Arc::new(Mutex::new(RedactingWriter::with_stats(queue, Arc::clone(&stats))));
     let verbosity = Arc::new(super::verbosity::Verbosity::new(config.level));
 
     use tracing_subscriber::layer::SubscriberExt as _;
@@ -230,7 +245,7 @@ pub fn init(config: &LogConfig) -> Result<LogGuard, LogError> {
     use tracing_subscriber::util::SubscriberInitExt;
     subscriber.try_init().map_err(|_| LogError::AlreadyInstalled)?;
 
-    Ok(LogGuard { writer, verbosity })
+    Ok(LogGuard { writer, verbosity, _worker: Some(worker) })
 }
 
 /// The bytes a running logger has written, for a status report.
@@ -238,6 +253,6 @@ pub fn init(config: &LogConfig) -> Result<LogGuard, LogError> {
 /// A free function rather than a method on the guard, because the daemon needs it from a thread that does not own the
 /// guard — and the guard is what keeps the file open, not what owns the count.
 #[must_use]
-pub fn stats_of(guard: &LogGuard) -> Arc<super::stats::LogStats> {
+pub fn stats_of(guard: &LogGuard) -> Arc<LogStats> {
     guard.writer.lock().stats()
 }

@@ -26,9 +26,20 @@ pub struct RedactingWriter<W> {
 impl<W: Write> RedactingWriter<W> {
     /// Wraps a writer with the default policy.
     pub fn new(inner: W) -> Self {
+        Self::with_stats(inner, Arc::new(LogStats::default()))
+    }
+
+    /// Wraps a writer with counters a caller already holds.
+    ///
+    /// # Why the caller would hold them
+    ///
+    /// Because the destination may be a queue in front of the file, and the queue is the thing that knows when a line was
+    /// dropped. One set of counters has to cover both halves, or the status report would say a line was written when it
+    /// was discarded on the way.
+    pub fn with_stats(inner: W, stats: Arc<LogStats>) -> Self {
         Self {
             inner: Mutex::new(inner),
-            stats: Arc::new(LogStats::default()),
+            stats,
             enabled: AtomicBool::new(true),
             fields: DEFAULT_REDACTED_FIELDS.to_vec(),
             strip_urls: true,
