@@ -178,6 +178,27 @@ pub trait Kernel {
         ))
     }
 
+    /// Installs a plugin the registry names.
+    ///
+    /// # Why the default refuses
+    ///
+    /// Because a kernel with no registry client cannot answer, and a double that returned an empty success would be a
+    /// double claiming an install it never performed.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::Unsupported`] by default; the real kernel's refusals are the registry's and the installer's.
+    fn plugin_install_package(
+        &self,
+        _package: &str,
+        _version: Option<&str>,
+    ) -> Result<serde_json::Value, Refusal> {
+        Err(Refusal::new(
+            ErrorCode::Unsupported,
+            "this kernel does not install plugins from a registry",
+        ))
+    }
+
     /// Records the user's decision about a plugin's capabilities.
     ///
     /// # Why the default refuses
@@ -480,6 +501,9 @@ impl Server {
                 kernel.plugin_set_enabled(plugin_id, *enabled)
             }
             Request::PluginInstall { path } => kernel.plugin_install(path),
+            Request::PluginInstallPackage { package, version } => {
+                kernel.plugin_install_package(package, version.as_deref())
+            }
             Request::PluginConsent { plugin_id, granted } => kernel.plugin_consent(plugin_id, granted),
             Request::PluginRemove { plugin_id, remove_data } => {
                 kernel.plugin_remove(plugin_id, *remove_data)

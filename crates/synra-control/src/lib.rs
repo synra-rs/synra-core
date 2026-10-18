@@ -225,6 +225,21 @@ pub enum Request {
         path: String,
     },
 
+    /// Install a plugin from a registry, by the name the registry spells.
+    ///
+    /// # Why this is a request of its own rather than a `PluginInstall` with a URL
+    ///
+    /// Because the two need different things from the kernel: a path is already on disk and only has to be verified, while
+    /// a package name means fetching a document, choosing a version, fetching bytes and comparing them with an integrity
+    /// string. A request that carried a string the kernel had to classify would put that decision on the wrong side of
+    /// the boundary — and would make "the path does not exist" and "the registry has no such version" the same failure.
+    PluginInstallPackage {
+        /// The package, as the registry spells it, such as `@acme/chat`.
+        package: String,
+        /// A version, or `None` for the registry's `latest` tag.
+        version: Option<String>,
+    },
+
     /// Records the user's decision about what a plugin may do.
     ///
     /// # Why this is a request and not a field on the install
@@ -400,6 +415,7 @@ impl Request {
                 Self::CatalogSearch { .. } => "catalogSearch",
         Self::PluginSetEnabled { .. } => "pluginSetEnabled",
             Self::PluginInstall { .. } => "pluginInstall",
+            Self::PluginInstallPackage { .. } => "pluginInstallPackage",
             Self::PluginConsent { .. } => "pluginConsent",
             Self::PluginRemove { .. } => "pluginRemove",
                 Self::IntentCancel { .. } => "intentCancel",

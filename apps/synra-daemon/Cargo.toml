@@ -28,6 +28,9 @@ synra-control = { path = "../../crates/synra-control" }
 synra-plugin-host = { path = "../../crates/synra-plugin-host", features = ["wasm-runtime"] }
 synra-plugin-api = { path = "../../crates/synra-plugin-api" }
 synra-capability = { path = "../../crates/synra-capability" }
+# A registry package is a gzip'd tar, and the extractor that refuses escaping entries lives in this crate. Naming it here
+# keeps the install from growing a second unpacker with a second set of rules.
+synra-registry = { path = "../../crates/synra-registry" }
 
 clap = { workspace = true }
 serde.workspace = true
@@ -37,6 +40,9 @@ thiserror.workspace = true
 [dev-dependencies]
 # A UI half is a `ui.zip`, so the install test has to be able to make one.
 zip = { version = "2", default-features = false, features = ["deflate"] }
+# And a registry package is a gzip'd tar, so the registry-install test has to be able to make one.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+tar = "0.4"
 proptest.workspace = true
 # One test needs a nil device identifier, and the protocol refuses to produce one from a string or from `Default` — so it
 # has to be built from a raw UUID.

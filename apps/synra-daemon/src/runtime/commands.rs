@@ -316,6 +316,49 @@ impl Kernel for Runtime {
         }
     }
 
+    /// Installs a plugin the registry names.
+    ///
+    /// # Why the locks are held the same way as `plugin_install`
+    ///
+    /// Because the last step **is** that install: the registry path differs in where the directory came from, not in what
+    /// it does with it. Holding the same two locks across both means a registry install cannot interleave with a local one
+    /// on the same plugin identifier.
+    fn plugin_install_package(&self, package: &str, version: Option<&str>) -> Result<serde_json::Value, Refusal> {
+        let plugins = self.plugins.lock();
+        let backend = plugins.backend();
+        let mut db = self.db.lock();
+        let staging = self
+            .plugins_dir
+            .parent()
+            .unwrap_or(&self.plugins_dir)
+            .join(".install-staging");
+        std::fs::create_dir_all(&staging).map_err(|error| {
+            Refusal::new(ErrorCode::Internal, format!("{}: {error}", staging.display()))
+        })?;
+        let outcome = super::registry_install::install_from_registry(
+            &mut db,
+            backend,
+            &self.plugins_dir,
+            &staging,
+            &super::registry_install::NetworkFetch,
+            package,
+            version,
+            i64::try_from(now_ms()).unwrap_or(i64::MAX),
+        );
+        drop(db);
+        drop(plugins);
+
+        let installed = outcome?;
+        Ok(serde_json::json!({
+            "pluginId": installed.plugin_id,
+            "version": installed.version,
+            "path": installed.path.to_string_lossy(),
+            "warnings": installed.warnings,
+            // Installing is not approving; the same answer the path install gives.
+            "enabled": false,
+        }))
+    }
+
     /// Records the user's decision about a plugin's capabilities.
     ///
     /// ★ The writer `plugin_grants` had only in tests. The loader has read decisions since it stopped treating a

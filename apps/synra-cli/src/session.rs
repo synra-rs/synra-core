@@ -301,7 +301,15 @@ fn plugin_request(command: &Command) -> Option<Request> {
         // directory and recording a row are three things only the process that owns the data directory may do. The
         // registry half is still absent — a `@scope/name` reaches the kernel and is refused as a path that is not a
         // directory, which `dispatch` reports in the kernel's words.
-        PluginAction::Install { source, .. } => Some(Request::PluginInstall { path: source.clone() }),
+        PluginAction::Install { source, version } => Some(if registry_reference(source) {
+            Request::PluginInstallPackage {
+                package: source.clone(),
+                version: version.clone(),
+            }
+        }
+        else {
+            Request::PluginInstall { path: source.clone() }
+        }),
         // ★ Reinstalling is a sequence of installs, not one request: the container's list is read here and each source is
         // sent to the kernel in turn. It is handled in `dispatch` before this mapping is asked, because `Question` holds
         // one request and this act has as many as the container lists.
@@ -320,6 +328,26 @@ fn plugin_request(command: &Command) -> Option<Request> {
             remove_data: *data,
         }),
     }
+}
+
+/// Whether an install argument names a registry package rather than a path.
+///
+/// # The rule
+///
+/// An existing path is a path, whatever it is called. A relative or absolute path that does not exist is still a path —
+/// the installer's "there is no such directory" is the useful answer. Everything else that has no separator is a package
+/// name, and a scoped name (`@scope/name`) is the one package form that contains a slash.
+///
+/// `--version` only means something for a package, and it is carried rather than applied here: the kernel is the side that
+/// knows which versions a registry offers.
+fn registry_reference(source: &str) -> bool {
+    if std::path::Path::new(source).exists() {
+        return false;
+    }
+    if source.starts_with('.') || source.starts_with('/') || source.contains(":/") || source.contains(":\\") {
+        return false;
+    }
+    source.starts_with('@') || !source.contains(['/', '\\'])
 }
 
 /// Runs the probes and formats the report.
@@ -463,13 +491,19 @@ mod tests {
         // ★ And installing asks the kernel, with the path the user typed. It used to ask nothing on the grounds that
         // there was no install layer — and there was not, which made a command in the documented list answer "you need a
         // running kernel" while one was running.
-        assert!(matches!(
+        //
+        // ★ A name with no path separators now goes to the registry. It used to be sent as a path and refused by the
+        // installer with "not a directory", which made the command's documented "or a `@scope/name` for a registry" a lie.
+        let Some(Request::PluginInstallPackage { package, version }) =
             request(crate::args::PluginAction::Install {
                 source: "@acme/x".to_owned(),
-                version: None,
-            }),
-            Some(Request::PluginInstall { .. })
-        ));
+                version: Some("1.0.0".to_owned()),
+            })
+        else {
+            panic!("expected a registry install request");
+        };
+        assert_eq!(package, "@acme/x");
+        assert_eq!(version.as_deref(), Some("1.0.0"));
         let Some(Request::PluginInstall { path }) = request(crate::args::PluginAction::Install {
             source: "./build".to_owned(),
             version: None,
