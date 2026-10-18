@@ -754,6 +754,12 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
     // handling, and two of them in a function already at the workspace's complexity limit is what pushes it over.
     let (heartbeat, collector) = start_loops(&supervisor, &shared_db, &plan.lock_path());
 
+    // ★ "Trusted" is not "bounded": a local client with a bug can open connections in a loop, and each one costs a thread
+    // until the process runs out. The gate admits a fixed number and closes the rest; see `control_gate`.
+    let gate = Arc::new(crate::control_gate::ControlGate::new(
+        crate::control_gate::MAX_CONTROL_CONNECTIONS,
+    ));
+
     let mut code = ExitCode::SUCCESS;
     while !supervisor.is_shutting_down() {
         // ★ One thread per connection. The loop used to call `serve_one`, so one client at a time — which made a command
@@ -762,8 +768,21 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
         // started, so a thread per connection is the same trust boundary the one-at-a-time loop had, without the queue.
         match listener.accept() {
             Ok(stream) => {
+                let Some(permit) = gate.try_enter() else {
+                    // ★ Closing rather than answering: a refusal needs a request to answer, and a client over the limit is
+                    // not one whose request is worth reading. The caller sees a transport error naming the closed
+                    // connection, which is the truth.
+                    eprintln!(
+                        "synra-daemon: refusing a control connection: {} are already open",
+                        gate.active()
+                    );
+                    drop(stream);
+                    continue;
+                };
                 let runtime = Arc::clone(&runtime);
                 std::thread::spawn(move || {
+                    // The permit is held for the connection's lifetime, so the count cannot leak on an early return.
+                    let _permit = permit;
                     if let Err(error) = synra_control::serve_stream(stream, &*runtime) {
                         eprintln!("synra-daemon: {error}");
                     }

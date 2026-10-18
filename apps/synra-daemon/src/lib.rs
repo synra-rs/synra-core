@@ -43,6 +43,7 @@
 )]
 
 pub mod args;
+mod control_gate;
 pub mod dispatch;
 pub mod lock;
 pub mod pairing;
