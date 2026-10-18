@@ -59,6 +59,7 @@ pub const fn is_dry_run(cli: &Cli) -> bool {
     match &cli.command {
         crate::args::Command::New(args) => args.dry_run,
         crate::args::Command::Build(args) => args.dry_run,
+        crate::args::Command::Pack(args) => args.dry_run,
         // Neither has a dry run: `verify` changes nothing, and a signature an author asked for is one they want.
         crate::args::Command::Verify(_) | crate::args::Command::Sign(_) => false,
     }
@@ -86,6 +87,16 @@ pub fn execute(outcome: &Outcome, dry_run: bool) -> Executed {
                 return Executed::ok(Vec::new());
             }
             run_steps(plan)
+        }
+
+        Outcome::Archive { target, manifest, artifacts, signature, .. } => {
+            if dry_run {
+                return Executed::ok(vec![format!("would write {}", target.display())]);
+            }
+            match crate::pack::write_archive(target, manifest, artifacts, signature.as_deref()) {
+                Ok(()) => Executed::ok(vec![format!("wrote {}", target.display())]),
+                Err(error) => Executed::failed(vec![error]),
+            }
         }
 
         Outcome::Signature { path, signature, public, .. } => {

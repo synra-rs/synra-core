@@ -6,7 +6,7 @@
 use clap::Parser;
 use std::process::ExitCode;
 use synra_plugin_cli::args::{Cli, Command};
-use synra_plugin_cli::{build_plugin, execute, is_dry_run, new_plugin, sign_plugin, verify_plugin};
+use synra_plugin_cli::{build_plugin, execute, is_dry_run, new_plugin, pack_plugin, sign_plugin, verify_plugin};
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -19,6 +19,7 @@ fn main() -> ExitCode {
         Command::Build(args) => build_plugin(args),
         Command::Sign(args) => sign_plugin(args),
         Command::Verify(args) => Ok(verify_plugin(args)),
+        Command::Pack(args) => pack_plugin(args),
     };
 
     let decision = match decision {

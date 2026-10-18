@@ -1967,6 +1967,7 @@ dependencies = [
  "base64 0.22.1",
  "clap",
  "ed25519-dalek",
+ "flate2",
  "rand_core 0.6.4",
  "rstest",
  "serde",
@@ -1975,6 +1976,8 @@ dependencies = [
  "synra-plugin-api",
  "synra-plugin-host",
  "synra-protocol",
+ "synra-registry",
+ "tar",
  "thiserror",
 ]
 

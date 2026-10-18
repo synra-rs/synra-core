@@ -41,6 +41,8 @@ pub enum Command {
     Verify(VerifyArgs),
     /// Sign a plugin with a publisher's key.
     Sign(SignArgs),
+    /// Pack a plugin into an npm-compatible `.tgz` for a registry.
+    Pack(PackArgs),
 }
 
 /// Options for `build`.
@@ -76,6 +78,22 @@ pub struct SignArgs {
     /// Check an existing signature instead of making one.
     #[arg(long, value_name = "PATH")]
     pub verify: Option<PathBuf>,
+}
+
+/// Options for `pack`.
+#[derive(Debug, Args)]
+pub struct PackArgs {
+    /// The plugin's directory, as it stands after `build` and `sign`.
+    #[arg(long, value_name = "DIR", default_value = ".")]
+    pub dir: PathBuf,
+
+    /// Where the archive goes. Defaults to `<dir>/dist/<id>-<version>.tgz`.
+    #[arg(long, value_name = "FILE")]
+    pub out: Option<PathBuf>,
+
+    /// Print the target without writing it.
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 /// Options for `new`.

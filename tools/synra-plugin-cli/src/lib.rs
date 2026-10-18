@@ -24,6 +24,9 @@
 //!
 //! [`build`] and [`sign`] are here: a build shell is a compiler invocation this tool can make, and a signature is an
 //! ed25519 key and a canonical form of the artifact, both of which are values rather than services.
+//!
+//! [`pack`] is here too: it writes the npm-shaped `.tgz` a registry serves (16 §4.1) and stops at the file, because
+//! publishing is a registry's decision (an account, a scope, a policy) rather than an archive's.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -43,14 +46,16 @@
 pub mod args;
 pub mod build;
 pub mod execute;
+pub mod pack;
 pub mod run;
 pub mod sign;
 pub mod template;
 pub mod verify;
 
-pub use args::{BuildArgs, Cli, Command, NewArgs, SignArgs, VerifyArgs};
+pub use args::{BuildArgs, Cli, Command, NewArgs, PackArgs, SignArgs, VerifyArgs};
 pub use build::{BuildError, BuildPlan, Step, UI_BUILD_SCRIPT, WASM_RELEASE_DIR, WASM_TARGET};
 pub use execute::{Executed, execute, is_dry_run};
+pub use pack::{pack_plugin, write_archive};
 pub use run::{Outcome, build_plugin, new_plugin, sign_plugin, verify_plugin};
 pub use sign::{SignError, SignedContent, SigningKeyFile};
 pub use template::{Scaffold, ScaffoldError, ScaffoldFile, TemplateKind};

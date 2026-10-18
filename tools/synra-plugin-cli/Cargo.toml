@@ -26,9 +26,15 @@ rand_core = { workspace = true }
 # implementation it trusts.
 sha2.workspace = true
 base64.workspace = true
+# The npm-shaped archive a registry serves: gzip around tar, written deterministically so two packs of unchanged files
+# match byte for byte.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+tar = "0.4"
 
 [dev-dependencies]
 rstest.workspace = true
+# The test unpacker is the one the registry install runs, so "the archive is well formed" means "the installer reads it".
+synra-registry = { path = "../../crates/synra-registry" }
 
 [lints]
 workspace = true

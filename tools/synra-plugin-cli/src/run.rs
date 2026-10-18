@@ -46,6 +46,19 @@ pub enum Outcome {
         /// The lines to print.
         lines: Vec<String>,
     },
+    /// A package archive to write.
+    Archive {
+        /// Where the `.tgz` goes.
+        target: PathBuf,
+        /// The manifest, which becomes `package/manifest.json`.
+        manifest: PathBuf,
+        /// The artifacts the manifest names, by file name.
+        artifacts: Vec<String>,
+        /// The signature, when the package carries one.
+        signature: Option<PathBuf>,
+        /// The lines to print.
+        lines: Vec<String>,
+    },
     /// A scaffold to write.
     ///
     /// The paths are **relative** to the root rather than joined, so the caller is the one that decides where the
@@ -68,6 +81,7 @@ impl Outcome {
             Self::Reported { lines, .. }
             | Self::Build { lines, .. }
             | Self::Signature { lines, .. }
+            | Self::Archive { lines, .. }
             | Self::Scaffold { lines, .. } => lines,
         }
     }
@@ -79,7 +93,7 @@ impl Outcome {
             Self::Reported { code, .. } => *code,
             // A scaffold, a build and a signature that were decided are ones the caller will carry out; a failure to
             // decide them never reaches here.
-            Self::Scaffold { .. } | Self::Build { .. } | Self::Signature { .. } => 0,
+            Self::Scaffold { .. } | Self::Build { .. } | Self::Signature { .. } | Self::Archive { .. } => 0,
         }
     }
 
@@ -88,7 +102,7 @@ impl Outcome {
     pub const fn is_failure(&self) -> bool {
         match self {
             Self::Reported { failure, .. } => *failure,
-            Self::Scaffold { .. } | Self::Build { .. } | Self::Signature { .. } => false,
+            Self::Scaffold { .. } | Self::Build { .. } | Self::Signature { .. } | Self::Archive { .. } => false,
         }
     }
 }
