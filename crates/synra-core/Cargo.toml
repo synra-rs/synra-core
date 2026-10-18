@@ -23,6 +23,9 @@ synra-observe = { path = "../synra-observe" }
 
 serde.workspace = true
 serde_json.workspace = true
+# The package container: a `.synra` is a zip of the directory the installer takes, and the same reader unpacks a UI
+# bundle. `synra-plugin-ui` already depends on this version, so naming it here adds no download.
+zip = { version = "2", default-features = false, features = ["deflate"] }
 thiserror.workspace = true
 parking_lot.workspace = true
 # The frame body is the protocol's own `Bytes`, so the peer layer names it rather than copying into a `Vec`.

@@ -88,6 +88,19 @@ impl ArchiveLimits {
     pub fn artifact() -> Self {
         Self::default()
     }
+
+    /// Limits for a plugin package: the whole `.synra` archive, not one artifact inside it.
+    ///
+    /// The design document caps the package at 64 MiB and one artifact at 32 MiB; the entry count and ratio stay the
+    /// artifact defaults, because a package is the same shape as an artifact tree with one more file in it.
+    #[must_use]
+    pub fn package() -> Self {
+        Self {
+            max_total_uncompressed: 64 * 1024 * 1024,
+            max_single_file: 32 * 1024 * 1024,
+            ..Self::default()
+        }
+    }
 }
 
 /// What an entry is.

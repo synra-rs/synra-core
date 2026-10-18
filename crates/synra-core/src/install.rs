@@ -387,20 +387,158 @@ pub fn from_directory(
     Ok(Installed { plugin_id, version, path: destination, warnings })
 }
 
-/// Removes a directory this module made, without a recursive delete.
+/// Installs a plugin from a `.synra` archive.
 ///
-/// # Why not `remove_dir_all`
+/// # What the archive is
 ///
-/// Because the workspace's structural guard says only the sandbox may delete a directory tree (11 §D2), and it is
-/// right: a recursive delete is the operation that turns a path mistake into somebody's lost files. Everything in a
-/// staging directory here is a file this function wrote, so the exact list is known — a `remove_file` for each, then
-/// the now-empty `remove_dir`. No recursion, no glob, and nothing that could walk somewhere else.
+/// A zip of the directory [`from_directory`] takes: `manifest.json`, the artifacts the manifest names, and
+/// `signature.json` when the publisher signed it. The container is zip because the UI half is already one and the same
+/// reader covers both — and because the unpacking rules that matter (no `..`, no absolute path, no link, entry and size
+/// limits) are about archives rather than about UI bundles, so there is one implementation of them.
 ///
-/// The empty `remove_dir` is what reports a directory that contains something this module did not put there: the caller
-/// ignores the result, so a leftover is left rather than a stranger's file deleted.
-fn discard(directory: &Path, files: &[(String, Vec<u8>)]) {
-    for (name, _) in files {
-        let _ = std::fs::remove_file(directory.join(name));
+/// # Why the unpack goes through the UI crate
+///
+/// Because `synra_plugin_ui::artifact::unpack` is the tested implementation of those rules, with a plan-then-write split
+/// and a cleanup of what a refusal already wrote. A second unpacker here would be a second place for a zip-slip check to
+/// be forgotten.
+///
+/// # Errors
+///
+/// [`InstallRefusal`] with stage `archive` for an archive the rules refuse, and any stage [`from_directory`] reports.
+pub fn from_package(
+    db: &mut synra_store::SynraDb,
+    backend: &Backend,
+    plugins_dir: &Path,
+    archive: &Path,
+    now_ms: i64,
+    host: HostFacts,
+) -> Result<Installed, InstallRefusal> {
+    let staging_root = plugins_dir.parent().unwrap_or(plugins_dir).join(".install-staging");
+    std::fs::create_dir_all(&staging_root)
+        .map_err(|error| InstallRefusal::new("archive", format!("{}: {error}", staging_root.display())))?;
+    // Outside `plugins/` for the same reason the installer's own staging is: a directory with a manifest under the
+    // plugins tree is discovered as an installed plugin, so a half-unpacked archive must not be there.
+    let unpacked = staging_root.join(format!("package.{now_ms}.{}", std::process::id()));
+    if unpacked.exists() {
+        return Err(InstallRefusal::new(
+            "archive",
+            format!("{} is left over from an earlier install", unpacked.display()),
+        ));
+    }
+    std::fs::create_dir(&unpacked)
+        .map_err(|error| InstallRefusal::new("archive", format!("{}: {error}", unpacked.display())))?;
+
+    let written = match synra_plugin_ui::artifact::unpack(
+        archive,
+        &unpacked,
+        synra_plugin_ui::artifact::ArchiveLimits::package(),
+    ) {
+        Ok(written) => written,
+        Err(error) => {
+            // The unpacker removed the files it wrote; what is left is the directory this function made.
+            let _ = std::fs::remove_dir(&unpacked);
+            return Err(InstallRefusal::new("archive", error.to_string()));
+        }
+    };
+    let outcome = from_directory(db, backend, plugins_dir, &unpacked, now_ms, host);
+    discard_unpacked(&unpacked, &written);
+    outcome
+}
+
+/// Writes a directory as a `.synra` archive, for the side that sends one.
+///
+/// # What is left out, and why
+///
+/// The unpacked UI directory (`ui/`) is not part of the package: the archive carries the `ui.zip` the manifest names, and
+/// the unpacked copy is this device's rendering of it. Including both would double every UI plugin and, worse, ship a
+/// second copy that the installer would then overwrite from the zip — two sources for one directory.
+///
+/// # Errors
+///
+/// [`InstallRefusal`] with stage `archive` when the directory cannot be walked, a limit is exceeded, or the archive
+/// cannot be written.
+pub fn package_directory(source: &Path, archive: &Path) -> Result<(), InstallRefusal> {
+    use std::io::Write as _;
+
+    let file = std::fs::File::create(archive)
+        .map_err(|error| InstallRefusal::new("archive", format!("{}: {error}", archive.display())))?;
+    let mut writer = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+
+    let mut entries: Vec<PathBuf> = Vec::new();
+    let mut pending = vec![source.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        let read = std::fs::read_dir(&directory)
+            .map_err(|error| InstallRefusal::new("archive", format!("{}: {error}", directory.display())))?;
+        for entry in read {
+            let entry = entry
+                .map_err(|error| InstallRefusal::new("archive", format!("{}: {error}", directory.display())))?;
+            let path = entry.path();
+            let kind = entry
+                .file_type()
+                .map_err(|error| InstallRefusal::new("archive", format!("{}: {error}", path.display())))?;
+            if kind.is_dir() {
+                // The unpacked UI is rebuilt from `ui.zip`; everything else is part of the package.
+                if path.file_name().is_some_and(|name| name == "ui") && directory == source {
+                    continue;
+                }
+                pending.push(path);
+            }
+            else if kind.is_file() {
+                entries.push(path);
+            }
+        }
+    }
+    entries.sort();
+
+    let mut total = 0u64;
+    for path in entries {
+        let bytes = std::fs::read(&path)
+            .map_err(|error| InstallRefusal::new("archive", format!("{}: {error}", path.display())))?;
+        total = total.saturating_add(bytes.len() as u64);
+        if total > MAX_PACKAGE_BYTES {
+            return Err(InstallRefusal::new(
+                "archive-limits",
+                format!("the package is over the {MAX_PACKAGE_BYTES} bytes a package may be"),
+            ));
+        }
+        let relative = path
+            .strip_prefix(source)
+            .map_err(|error| InstallRefusal::new("archive", format!("{}: {error}", path.display())))?;
+        let name = relative.to_string_lossy().replace('\\', "/");
+        writer
+            .start_file(name, options)
+            .map_err(|error| InstallRefusal::new("archive", error.to_string()))?;
+        writer
+            .write_all(&bytes)
+            .map_err(|error| InstallRefusal::new("archive", error.to_string()))?;
+    }
+    writer
+        .finish()
+        .map_err(|error| InstallRefusal::new("archive", error.to_string()))?;
+    Ok(())
+}
+
+/// Removes what an unpack wrote, without a recursive delete.
+///
+/// The same rule as [`discard`]: a recursive delete turns a path mistake into somebody's lost files. The list is known —
+/// the unpacker returned it — so each file is removed, then the now-empty directories deepest first. A directory holding
+/// something this module did not write is left, and the caller does not care.
+fn discard_unpacked(directory: &Path, written: &[PathBuf]) {
+    for path in written.iter().rev() {
+        let _ = std::fs::remove_file(path);
+    }
+    let mut parents: Vec<PathBuf> = written
+        .iter()
+        .filter_map(|path| path.parent().map(Path::to_path_buf))
+        .collect();
+    parents.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+    parents.dedup();
+    for parent in parents {
+        if parent.starts_with(directory) {
+            let _ = std::fs::remove_dir(&parent);
+        }
     }
     let _ = std::fs::remove_dir(directory);
 }
@@ -436,3 +574,173 @@ fn is_plain_file_name(name: &str) -> bool {
         && !name.contains(['/', '\\', ':'])
 }
 
+/// Removes a directory this module made, without a recursive delete.
+///
+/// # Why not `remove_dir_all`
+///
+/// Because the workspace's structural guard says only the sandbox may delete a directory tree (11 §D2), and it is
+/// right: a recursive delete is the operation that turns a path mistake into somebody's lost files. Everything in a
+/// staging directory here is a file this function wrote, so the exact list is known — a `remove_file` for each, then
+/// the now-empty `remove_dir`. No recursion, no glob, and nothing that could walk somewhere else.
+///
+/// The empty `remove_dir` is what reports a directory that contains something this module did not put there: the caller
+/// ignores the result, so a leftover is left rather than a stranger's file deleted.
+fn discard(directory: &Path, files: &[(String, Vec<u8>)]) {
+    for (name, _) in files {
+        let _ = std::fs::remove_file(directory.join(name));
+    }
+    let _ = std::fs::remove_dir(directory);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write as _;
+    use std::sync::Arc;
+
+    /// A scratch directory for one test, removed by the test.
+    fn scratch(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("synra-package-{label}-{}-{}", std::process::id(), crate::reading_millis(synra_store::sqlite::now_ms())))
+    }
+
+    /// A manifest naming one headless artifact, in the shape the verifier accepts.
+    fn manifest() -> String {
+        format!(
+            r#"{{"id": "@acme/hello", "version": "1.0.0", "title": "Hello",
+                "publisher": {{"id": "@acme"}}, "sdk": {{"min": "0.1.0"}},
+                "wit": "{}",
+                "capabilities": [{{"cap": "log:*"}}],
+                "runtime": {{"headless": {{"artifact": "plugin.wasm", "stateful": false}}}}}}"#,
+            synra_plugin_host::host_world()
+        )
+    }
+
+    /// A directory an installer would take: a manifest and one artifact.
+    fn write_source(directory: &Path) {
+        std::fs::create_dir_all(directory).expect("the source directory");
+        std::fs::write(directory.join("manifest.json"), manifest()).expect("a manifest");
+        std::fs::write(directory.join("plugin.wasm"), b"\0asm\x01\0\0\0").expect("an artifact");
+    }
+
+    fn backend() -> Backend {
+        Backend::new(Arc::new(synra_plugin_host::ScriptedBackend::new()))
+    }
+
+    fn database() -> synra_store::SynraDb {
+        let mut db = synra_store::SynraDb::open_in_memory().expect("a database");
+        db.migrate().expect("migrates");
+        db
+    }
+
+    #[test]
+    fn a_package_installs_what_the_directory_inside_it_would() {
+        let root = scratch("valid");
+        let source = root.join("source");
+        write_source(&source);
+        let plugins = root.join("plugins");
+        std::fs::create_dir_all(&plugins).expect("the plugins directory");
+        let archive = root.join("hello.synra");
+        package_directory(&source, &archive).expect("the package is written");
+
+        let mut db = database();
+        let installed =
+            from_package(&mut db, &backend(), &plugins, &archive, 1_000, HostFacts::headless())
+                .expect("the package installs");
+
+        assert_eq!(installed.plugin_id, "@acme/hello");
+        assert_eq!(installed.version, "1.0.0");
+        assert!(installed.path.join("manifest.json").is_file(), "the manifest was not written");
+        assert!(installed.path.join("plugin.wasm").is_file(), "the artifact was not written");
+        assert!(
+            !root.join(".install-staging").read_dir().expect("the staging directory").any(|_| true),
+            "the unpacked archive was left behind"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_package_that_escapes_its_directory_is_refused_before_anything_is_installed() {
+        // ★ The archive's own rules, not the installer's: an entry named `../escape.txt` is a package asking to write
+        // outside the directory it is unpacked into. `unpack` refuses it and removes what it wrote, and the installer is
+        // never reached.
+        let root = scratch("escape");
+        let plugins = root.join("plugins");
+        std::fs::create_dir_all(&plugins).expect("the plugins directory");
+        let archive = root.join("evil.synra");
+        {
+            let file = std::fs::File::create(&archive).expect("a file");
+            let mut writer = zip::ZipWriter::new(file);
+            for (name, bytes) in [
+                ("manifest.json", manifest().into_bytes()),
+                ("../escape.txt", b"outside".to_vec()),
+            ] {
+                writer
+                    .start_file(name, zip::write::SimpleFileOptions::default())
+                    .expect("an entry");
+                writer.write_all(&bytes).expect("the bytes");
+            }
+            writer.finish().expect("a finished archive");
+        }
+
+        let mut db = database();
+        let refused = from_package(&mut db, &backend(), &plugins, &archive, 1_000, HostFacts::headless())
+            .expect_err("the entry escapes");
+
+        assert_eq!(refused.stage, "archive", "{}", refused.reason);
+        assert!(!root.join("escape.txt").exists(), "the entry was written outside the package");
+        assert!(
+            !plugins.join("@acme/hello").exists(),
+            "a refused package left an installed plugin behind"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_package_with_no_manifest_is_refused_by_the_installer() {
+        let root = scratch("no-manifest");
+        let plugins = root.join("plugins");
+        std::fs::create_dir_all(&plugins).expect("the plugins directory");
+        let archive = root.join("empty.synra");
+        {
+            let file = std::fs::File::create(&archive).expect("a file");
+            let mut writer = zip::ZipWriter::new(file);
+            writer
+                .start_file("plugin.wasm", zip::write::SimpleFileOptions::default())
+                .expect("an entry");
+            writer.write_all(b"\0asm\x01\0\0\0").expect("the bytes");
+            writer.finish().expect("a finished archive");
+        }
+
+        let mut db = database();
+        let refused = from_package(&mut db, &backend(), &plugins, &archive, 1_000, HostFacts::headless())
+            .expect_err("there is no manifest");
+
+        assert_eq!(refused.stage, "read", "{}", refused.reason);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn packaging_an_installed_plugin_leaves_the_unpacked_ui_out() {
+        // ★ `ui.zip` is the artifact; `ui/` is this device's rendering of it. Shipping both would send the same files
+        // twice and give the installer two sources for one directory.
+        let root = scratch("ui");
+        let source = root.join("source");
+        write_source(&source);
+        std::fs::create_dir_all(source.join("ui")).expect("a ui directory");
+        std::fs::write(source.join("ui").join("index.html"), b"<html></html>").expect("a ui file");
+        std::fs::write(source.join("ui.zip"), b"PK\x05\x06\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0").expect("a ui zip");
+        let archive = root.join("hello.synra");
+        package_directory(&source, &archive).expect("the package is written");
+
+        let mut zip = zip::ZipArchive::new(std::fs::File::open(&archive).expect("the archive")).expect("a zip");
+        let mut names: Vec<String> = (0..zip.len())
+            .map(|index| zip.by_index(index).expect("an entry").name().to_owned())
+            .collect();
+        names.sort();
+
+        assert!(names.contains(&"ui.zip".to_owned()), "{names:?}");
+        assert!(!names.iter().any(|name| name.starts_with("ui/")), "the unpacked UI was packaged: {names:?}");
+        assert!(names.contains(&"manifest.json".to_owned()));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
