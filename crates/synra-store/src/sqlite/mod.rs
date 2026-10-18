@@ -44,10 +44,12 @@ mod plugins;
 mod storage;
 mod settings;
 mod publishers;
+mod restore;
 
 pub use migrations::migration_versions;
 pub use pairing::Paired;
 pub use publishers::{PublisherRow, TRUST_REVOKED, TRUST_SEEN, TRUST_TRUSTED};
+pub use restore::{RestoreReport, restore_from};
 pub use settings::ConfigChange;
 
 #[cfg(test)]
@@ -164,6 +166,32 @@ impl SynraDb {
 
         let db = Self { connection, write_observer: None };
         db.apply_pragmas()?;
+        db.refuse_a_future_schema()?;
+        Ok(db)
+    }
+
+    /// Opens an existing database **without** the right to write it.
+    ///
+    /// # Why this exists
+    ///
+    /// Because restoring a backup has to inspect the file it is about to copy, and inspecting it with the ordinary open
+    /// would apply the pragmas — `journal_mode = WAL` is a write, and it leaves `-wal`/`-shm` beside the backup. A
+    /// recovery path that modifies the file it is recovering from is not a recovery path.
+    ///
+    /// The pragmas are therefore **not** applied here: this connection is for reading the schema version and running the
+    /// integrity check, and it is dropped before the file is copied.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::Open`] when the file cannot be opened read-only, and [`DbError::FromTheFuture`] when its schema is newer
+    /// than this build understands.
+    pub fn open_read_only(path: &Path) -> Result<Self, DbError> {
+        let connection = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(|error| DbError::Open { path: path.to_path_buf(), why: error.to_string() })?;
+        let db = Self { connection, write_observer: None };
         db.refuse_a_future_schema()?;
         Ok(db)
     }

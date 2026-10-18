@@ -400,6 +400,21 @@ pub enum DbAction {
         #[arg(value_name = "PATH")]
         path: std::path::PathBuf,
     },
+    /// Replace the database with a backup.
+    ///
+    /// # Why the old file is kept
+    ///
+    /// Because the reason to run this is usually that the current database looks damaged, and "looks damaged" is a
+    /// diagnosis. The file that was there is moved aside rather than deleted, so a wrong diagnosis is recoverable; the
+    /// command says where it went.
+    ///
+    /// The kernel must be stopped: replacing a database under a process that has it open is how a recovery becomes a
+    /// second failure, so this refuses while a kernel is listening.
+    Restore {
+        /// The backup to restore from.
+        #[arg(value_name = "PATH")]
+        path: std::path::PathBuf,
+    },
 }
 
 #[cfg(test)]
@@ -761,6 +776,17 @@ mod tests {
             panic!("expected db");
         };
         assert!(matches!(args.action, DbAction::Integrity));
+    }
+
+    #[test]
+    fn db_restore_names_the_backup_to_restore_from() {
+        let Command::Db(args) = parsed(&["synra", "db", "restore", "old.db"]).command else {
+            panic!("expected db");
+        };
+        let DbAction::Restore { path } = args.action else {
+            panic!("expected restore");
+        };
+        assert_eq!(path, std::path::PathBuf::from("old.db"));
     }
 
     #[test]

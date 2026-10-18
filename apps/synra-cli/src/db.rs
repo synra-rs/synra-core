@@ -45,6 +45,12 @@ pub fn outcome_at(
     args: &DbArgs,
 ) -> CommandOutcome {
     let paths = Paths::under(root);
+    // ★ Restore runs before the database is opened. Opening it applies pragmas and runs any pending migration — against
+    // the file a user has just asked to replace, on the assumption that it opens at all. A recovery path that needs the
+    // broken database to be healthy is not a recovery path.
+    if let DbAction::Restore { path } = &args.action {
+        return restore(root, &paths, format, path);
+    }
     let opened = SynraDb::open(&paths.db_path()).and_then(|mut db| {
         db.migrate()?;
         Ok(db)
@@ -65,6 +71,53 @@ pub fn outcome_at(
         DbAction::Integrity => integrity(format, &db),
         DbAction::Backup { path } => backup(format, &db, path),
         DbAction::Dump { table } => dump(format, &db, table.as_deref()),
+        // Handled before the database was opened; see `outcome_at`.
+        DbAction::Restore { .. } => unreachable!("a restore returns before the database is opened"),
+    }
+}
+
+/// Replaces the database with a backup.
+fn restore(
+    root: &std::path::Path,
+    paths: &Paths,
+    format: Option<crate::args::OutputFormat>,
+    backup: &std::path::Path,
+) -> CommandOutcome {
+    // ★ Refused while a kernel is listening. Replacing an open database under the process that holds it is how a recovery
+    // becomes a second failure, and the control socket is the one fact that says a kernel is up.
+    if synra_control::Client::connect(root).is_ok() {
+        return CommandOutcome::Failed(
+            "a kernel is running; stop it before restoring, because replacing the database under an open connection is \
+             not a recovery"
+                .to_owned(),
+        );
+    }
+    if !backup.is_file() {
+        return CommandOutcome::Failed(format!("{} is not a file", backup.display()));
+    }
+    let report = match synra_store::restore_from(backup, &paths.db_path()) {
+        Ok(report) => report,
+        Err(error) => return CommandOutcome::Failed(error.to_string()),
+    };
+    match format {
+        Some(crate::args::OutputFormat::Json) => CommandOutcome::json(
+            serde_json::json!({
+                "restoredFrom": backup.display().to_string(),
+                "database": paths.db_path().display().to_string(),
+                "previous": report.previous.as_ref().map(|path| path.display().to_string()),
+            })
+            .to_string(),
+        ),
+        _ => CommandOutcome::Lines(vec![
+            match &report.previous {
+                Some(previous) => format!(
+                    "restored {}; the database that was there is now {}",
+                    backup.display(),
+                    previous.display()
+                ),
+                None => format!("restored {}; there was no database to replace", backup.display()),
+            },
+        ]),
     }
 }
 
@@ -368,5 +421,76 @@ mod tests {
             }
             other => panic!("overwriting a backup must fail, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_restore_puts_the_backup_back_and_keeps_what_was_there() {
+        // ★ The recovery path the integrity command has been telling users about: "restore from a backup" had no command
+        // until this. The file that was replaced stays beside it, because "looks damaged" is a diagnosis.
+        let root = Root::new("restore");
+        let destination = root.0.join("before.db");
+        {
+            let paths = Paths::under(&root.0);
+            let mut db = SynraDb::open(&paths.db_path()).expect("opens");
+            db.migrate().expect("migrates");
+            db.set_config("test.key", &serde_json::json!("from the backup"), 1)
+                .expect("written");
+            db.backup_to(&destination).expect("a backup");
+            db.set_config("test.key", &serde_json::json!("changed after"), 2)
+                .expect("written");
+        }
+
+        let outcome = outcome_at(
+            &root.0,
+            Some(OutputFormat::Text),
+            &args(DbAction::Restore { path: destination }),
+        );
+        match outcome {
+            CommandOutcome::Lines(lines) => assert!(lines[0].contains("restored"), "{lines:?}"),
+            other => panic!("the restore reported a failure: {other:?}"),
+        }
+
+        let paths = Paths::under(&root.0);
+        let db = SynraDb::open(&paths.db_path()).expect("the restored database opens");
+        let config = db.config().expect("reads");
+        assert_eq!(
+            config.iter().find(|row| row.key == "test.key").map(|row| row.value.clone()),
+            Some(serde_json::json!("from the backup").to_string()),
+            "the backup's value was not restored"
+        );
+        let previous = std::fs::read_dir(&root.0)
+            .expect("reads")
+            .flatten()
+            .find(|entry| entry.file_name().to_string_lossy().contains(".before-restore-"));
+        assert!(previous.is_some(), "the database that was replaced was not kept");
+    }
+
+    #[test]
+    fn a_damaged_backup_is_refused_and_the_database_is_untouched() {
+        let root = Root::new("restore-damaged");
+        let damaged = root.0.join("damaged.db");
+        {
+            let paths = Paths::under(&root.0);
+            let mut db = SynraDb::open(&paths.db_path()).expect("opens");
+            db.migrate().expect("migrates");
+            db.set_config("test.key", &serde_json::json!("current"), 1).expect("written");
+        }
+        std::fs::write(&damaged, b"not a database").expect("the damaged file");
+
+        let outcome = outcome_at(
+            &root.0,
+            Some(OutputFormat::Text),
+            &args(DbAction::Restore { path: damaged }),
+        );
+        assert!(matches!(outcome, CommandOutcome::Failed(_)), "{outcome:?}");
+
+        let paths = Paths::under(&root.0);
+        let db = SynraDb::open(&paths.db_path()).expect("the current database still opens");
+        let config = db.config().expect("reads");
+        assert_eq!(
+            config.iter().find(|row| row.key == "test.key").map(|row| row.value.clone()),
+            Some(serde_json::json!("current").to_string()),
+            "a refused restore changed the database"
+        );
     }
 }
