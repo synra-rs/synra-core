@@ -94,6 +94,26 @@ pub struct UpdateInfo {
     pub added_capabilities: Vec<String>,
 }
 
+/// A publisher whose signature this device has seen.
+///
+/// The key material is not here: a screen shows the **fingerprint**, which is what a person compares, and the installer
+/// reads the key from the table when it verifies a package.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublisherDto {
+    /// The publisher's own identifier, from its signature.
+    pub publisher_id: String,
+    /// The key's fingerprint, grouped for a person to read.
+    pub fingerprint: String,
+    /// `seen`, `trusted` or `revoked`.
+    pub trust: String,
+    /// When a signature from this key was first seen.
+    pub first_seen_ms: i64,
+    /// When the user decided, if they have.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decided_ms: Option<i64>,
+}
+
 /// A plugin in the catalogue.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

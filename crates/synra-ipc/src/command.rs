@@ -253,6 +253,8 @@ commands! {
     "plugins_update" => Plugins, Host, Unit, true;
     "plugins_sync_plan" => Plugins, Host, One, false;
     "plugins_sync_run" => Plugins, Host, One, true;
+    "plugins_publishers" => Plugins, Host, Many, false;
+    "plugins_publisher_decide" => Plugins, Host, Unit, true;
     "plugins_audit" => Plugins, Host, Many, false;
     "plugins_request_registry_search" => Plugins, Host, Many, true;
 
@@ -495,6 +497,8 @@ mod tests {
             "plugins_update",
             "plugins_sync_plan",
             "plugins_sync_run",
+            "plugins_publishers",
+            "plugins_publisher_decide",
             "plugins_audit",
             "plugins_request_registry_search",
             // plugin ui
