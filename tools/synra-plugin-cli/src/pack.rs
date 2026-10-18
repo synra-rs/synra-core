@@ -100,15 +100,20 @@ pub fn pack_plugin(args: &crate::args::PackArgs) -> Result<Outcome, String> {
         None => None,
     };
 
-    let index_to = match args.index.as_deref().map(index_base) {
-        Some(Ok(base)) => Some(base),
-        Some(Err(reason)) => {
-            return Ok(Outcome::Reported {
-                lines: vec![format!("--index is not usable: {reason}")],
-                code: 1,
-                failure: true,
-            });
-        }
+    let index_to = match args.index.as_deref() {
+        // `--index` with no value: the tarball is named relative to the index, and the client resolves it. An author
+        // uploading to a bucket usually does not know its public URL at pack time.
+        Some("") => Some(String::new()),
+        Some(url) => match index_base(url) {
+            Ok(base) => Some(base),
+            Err(reason) => {
+                return Ok(Outcome::Reported {
+                    lines: vec![format!("--index is not usable: {reason}")],
+                    code: 1,
+                    failure: true,
+                });
+            }
+        },
         None => None,
     };
 
@@ -153,11 +158,17 @@ pub fn pack_plugin(args: &crate::args::PackArgs) -> Result<Outcome, String> {
                 Err(error) => return Err(format!("{}: {error}", path.display())),
             };
             let publisher = signed_by.as_ref().map(|(id, fingerprint)| (id.as_str(), fingerprint.as_str()));
+            let tarball = if base.is_empty() {
+                file
+            }
+            else {
+                format!("{base}/{file}")
+            };
             let text = merge_index(
                 existing.as_deref(),
                 &manifest.id.to_string(),
                 &manifest.version,
-                &format!("{base}/{file}"),
+                &tarball,
                 &manifest_value,
                 publisher,
             )?;
@@ -819,6 +830,35 @@ mod tests {
         )
         .expect_err("it is not an index");
         assert!(refused.contains("not JSON"), "{refused}");
+    }
+
+    #[test]
+    fn an_index_without_a_base_names_the_tarball_relatively() {
+        // ★ The author does not know the bucket's public URL at pack time; the client resolves the name against the
+        // index's own URL, so publishing is "upload these two files".
+        let root = scratch("index-relative");
+        std::fs::write(root.join("manifest.json"), manifest("1.2.3", &["log:*"])).expect("a manifest");
+        std::fs::write(root.join("plugin.wasm"), b"\0asm\x01\0\0\0").expect("an artifact");
+
+        let outcome = pack_plugin(&crate::args::PackArgs {
+            dir: root.clone(),
+            out: Some(root.join("one.tgz")),
+            index: Some(String::new()),
+            registry: None,
+            dry_run: false,
+        })
+        .expect("it packs");
+        let _ = crate::execute::execute(&outcome, false);
+
+        let index = synra_registry::parse_static_index(
+            &std::fs::read_to_string(root.join("@acme").join("hello.json")).expect("the index"),
+        )
+        .expect("the index parses");
+        assert_eq!(
+            index.document.latest().expect("a latest").dist.tarball,
+            "one.tgz"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
