@@ -967,6 +967,52 @@ fn a_second_round_for_the_same_peer_corrects_the_row_rather_than_adding_one() {
     assert_eq!(db.sync_records().expect("reads").len(), 2);
 }
 
+#[test]
+fn a_peer_that_was_asked_again_replaces_what_was_known() {
+    // ★ 一次**活的答复**是完整的：它说的是「现在有哪些」，不是增量。一台设备卸载了一个插件之后，
+    // 它的答复里就没有那一行 —— 而 upsert 看不见「没有」，旧行会留到永远，于是每次计划都认为对端还持有着它。
+    let db = migrated();
+    db.record_sync("@acme/chat", "device-b", "1.0.0", "sha256-old", 1_000).expect("first");
+    db.record_sync("@acme/gone", "device-b", "1.0.0", "sha256-gone", 1_000).expect("second");
+    // 另一台设备的话不受影响：这次问的是 device-b。
+    db.record_sync("@acme/chat", "device-c", "1.0.0", "sha256-old", 1_000).expect("another peer");
+
+    let held = [("@acme/chat".to_owned(), "1.1.0".to_owned(), "sha256-new".to_owned())];
+    db.replace_sync_for_peer("device-b", &held, 2_000).expect("replaces");
+
+    let rows = db.sync_records().expect("reads");
+    assert_eq!(rows.len(), 2, "one row for each peer: {rows:?}");
+    let b = rows.iter().find(|row| row.peer_device == "device-b").expect("device-b");
+    assert_eq!(b.version, "1.1.0");
+    assert_eq!(b.digest, "sha256-new");
+    assert_eq!(b.synced_at_ms, 2_000);
+    assert!(
+        rows.iter().all(|row| row.plugin_id != "@acme/gone"),
+        "the plugin device-b no longer has is gone from the table: {rows:?}"
+    );
+    let c = rows.iter().find(|row| row.peer_device == "device-c").expect("device-c");
+    assert_eq!(c.version, "1.0.0", "the other peer's answer is untouched");
+}
+
+#[test]
+fn a_refused_replacement_leaves_the_old_answer_alone() {
+    // ★ 删除与插入属于同一个事务：一次失败的插入如果只回滚自己，对端就会变成「什么都没有」——
+    // 那是这张表能给出的、代价最大的错误答案。同一插件两行会撞主键，正好用来让第二次插入失败。
+    let db = migrated();
+    db.record_sync("@acme/chat", "device-b", "1.0.0", "sha256-old", 1_000).expect("first");
+    let duplicated = [
+        ("@acme/chat".to_owned(), "1.1.0".to_owned(), "sha256-new".to_owned()),
+        ("@acme/chat".to_owned(), "1.2.0".to_owned(), "sha256-newer".to_owned()),
+    ];
+
+    let refused = db.replace_sync_for_peer("device-b", &duplicated, 2_000);
+
+    assert!(refused.is_err(), "a duplicate primary key was accepted");
+    let rows = db.sync_records().expect("reads");
+    assert_eq!(rows.len(), 1, "the delete was not rolled back: {rows:?}");
+    assert_eq!(rows[0].version, "1.0.0", "the old answer survived");
+}
+
 // ── 同步的历史 ──────────────────────────────────────────────────────────────────────────────────
 
 fn a_log_row(sync_id: &str, plugin: &str, started_at_ms: i64, finished: bool) -> SyncLogRow {

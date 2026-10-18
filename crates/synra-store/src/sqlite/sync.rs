@@ -67,4 +67,50 @@ impl SynraDb {
             .map_err(|error| DbError::Statement { why: error.to_string() })?;
         Ok(())
     }
+
+    /// Replaces everything known about one peer with what it just said it holds.
+    ///
+    /// # Why a replacement and not a series of upserts
+    ///
+    /// Because a live answer is **complete**: it is the whole list, not a delta. A plugin the peer has uninstalled is
+    /// absent from the answer, and an upsert has no way to notice an absence — its old row would stay for ever, and every
+    /// plan would keep claiming the peer holds something it does not.
+    ///
+    /// # Why one transaction
+    ///
+    /// Because the delete is only meaningful together with the insert that follows it. A failure between them would leave
+    /// the peer with **no** rows, which reads as "it has nothing" — the direction that wastes a transfer, but worse, the
+    /// answer this device gave was one it could not support. A rolled-back delete restores exactly what was known.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::Statement`] when the delete or an insert is refused. Nothing changed: the transaction is dropped
+    /// unfinished.
+    pub fn replace_sync_for_peer(
+        &self,
+        peer_device: &str,
+        held: &[(String, String, String)],
+        synced_at_ms: i64,
+    ) -> Result<(), DbError> {
+        let transaction = self
+            .connection
+            .unchecked_transaction()
+            .map_err(|error| DbError::Statement { why: error.to_string() })?;
+        transaction
+            .execute("DELETE FROM sync_records WHERE peer_device = ?1", params![peer_device])
+            .map_err(|error| DbError::Statement { why: error.to_string() })?;
+        for (plugin_id, version, digest) in held {
+            transaction
+                .execute(
+                    "INSERT INTO sync_records (plugin_id, peer_device, version, digest, synced_at_ms) \
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![plugin_id, peer_device, version, digest, synced_at_ms],
+                )
+                .map_err(|error| DbError::Statement { why: error.to_string() })?;
+        }
+        transaction
+            .commit()
+            .map_err(|error| DbError::Statement { why: error.to_string() })?;
+        Ok(())
+    }
 }
