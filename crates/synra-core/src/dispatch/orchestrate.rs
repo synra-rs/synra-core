@@ -131,6 +131,11 @@ pub struct IntentView {
 pub struct Decided {
     /// Which intent.
     pub intent_id: synra_protocol::ids::IntentId,
+    /// The trace this action's steps are grouped under.
+    ///
+    /// ★ Carried so the log line that says what happened can be found by `synra logs --trace`: the routing line already
+    /// names the trace, and a decision without it would be the one step a user cannot correlate.
+    pub trace: synra_protocol::ids::TraceId,
     /// The envelope id a remote dispatch would be sent under.
     pub request_id: synra_protocol::ids::RequestId,
     /// Which plugin ran.
@@ -252,6 +257,7 @@ impl Decided {
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
             "intent": self.intent_id.to_string(),
+            "trace": self.trace.to_string(),
             "requestId": self.request_id.to_string(),
             "pluginId": self.plugin_id.as_str(),
             "action": self.action,
@@ -451,7 +457,7 @@ pub fn decide(
     // acting on one that was never shown would run something the user did not choose". Looking the action up from the
     // board rather than taking it from the client also means a client sends what the user clicked (a plugin) rather than
     // a hand-built action string, which is one fewer thing for it to get wrong.
-    let (candidate, request_id, target) = {
+    let (candidate, request_id, target, trace) = {
         let mut intents = board.lock();
         if let Some(wanted) = plugin_id {
             let plugin = PluginId::try_from(wanted.to_owned()).map_err(|_| {
@@ -504,10 +510,21 @@ pub fn decide(
             _ => None,
         });
         let (candidate, request_id) = intents.confirm(id).map_err(|error| refuse_intent(&error))?;
+        // ★ The trace is read from the board after `confirm`, in the same lock: it is the intent's own trace, and the
+        // decision's log line and answer both need it.
+        let trace = intents
+            .get(id)
+            .map(|found| found.trace)
+            .ok_or_else(|| {
+                RouteError::new(
+                    synra_protocol::ErrorCode::InvalidArgument,
+                    "this kernel has no such intent",
+                )
+            })?;
         // Released here rather than at the end of the enclosing block: the board is shared with every other connection,
         // and a guard held past its last use is a second share waiting on this one.
         drop(intents);
-        (candidate, request_id, target)
+        (candidate, request_id, target, trace)
     };
 
     // ★ Only a target that is **this** device runs here.
@@ -531,12 +548,12 @@ pub fn decide(
         // does not exist — a fabricated value standing in for the real one, in the one place whose whole purpose is that
         // nothing is fabricated. `confirm` has already moved the intent into `Dispatching` with the candidate it chose,
         // so the board is asked what it holds.
-        let (trace, state) = {
+        let state = {
             let intents = board.lock();
             let found = intents
                 .get(id)
                 .ok_or_else(|| RouteError::new(synra_protocol::ErrorCode::InvalidArgument, "this kernel has no such intent"))?;
-            let answer = (found.trace, state_name(&found.state));
+            let answer = state_name(&found.state);
             // Released rather than left to the end of the block: the board is shared with every other connection, and the
             // envelope below is built while holding nothing.
             drop(intents);
@@ -561,6 +578,7 @@ pub fn decide(
 
         return Ok(Decided {
             intent_id: id,
+            trace,
             request_id,
             plugin_id: candidate.plugin_id,
             action: candidate.planned.action,
@@ -596,6 +614,7 @@ pub fn decide(
 
     Ok(Decided {
         intent_id: id,
+        trace,
         request_id,
         plugin_id: candidate.plugin_id,
         action: candidate.planned.action,

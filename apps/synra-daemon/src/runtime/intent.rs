@@ -304,6 +304,9 @@ mod tests {
         assert_eq!(answer["ok"], true, "{answer}");
         assert_eq!(answer["pluginId"], "@acme/opener");
         assert_eq!(answer["action"], "open");
+        // ★ One action, one trace: the decision answers with the id the routing answer used, which is what a user pastes
+        // into `synra logs --trace`.
+        assert_eq!(answer["trace"], routed["trace"], "the decision keeps the action's trace");
         // The plugin's own return value, carried through rather than replaced by a status word.
         assert_eq!(answer["result"], "opened");
         assert_eq!(answer["state"], "succeeded", "{answer}");

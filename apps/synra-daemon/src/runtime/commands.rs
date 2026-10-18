@@ -498,7 +498,17 @@ impl Kernel for Runtime {
         // the state the caller is actually in — the far side may still have received the message.
         self.checkpoint_intent(intent);
 
-        Ok(decided.to_json())
+        // ★ The decision's own line, with the trace it shares with the routing line. A user who copied the trace from
+        // the received row can follow the action through both steps now; the plugin's execution itself is inside the call
+        // above, so `ok` here is the outcome of running it.
+        let answer = decided.to_json();
+        tracing::info!(
+            trace_id = %decided.trace,
+            intent,
+            ok = answer.get("ok").and_then(serde_json::Value::as_bool).unwrap_or(false),
+            "action decided"
+        );
+        Ok(answer)
     }
 
 
