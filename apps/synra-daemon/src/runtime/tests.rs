@@ -2187,6 +2187,15 @@ fn a_share_nothing_can_answer_is_counted_as_refused() {
         Some(&synra_observe::metrics::Value::Counter(1)),
         "nothing could handle it, and that is not recorded"
     );
+    // ★ And the pass was measured. A histogram with no observations is a shape rather than a measurement, and the shell
+    // writes the same name — two hosts describing one dispatch with two metric names would be the drift this workspace
+    // keeps finding.
+    match snapshot.get("intent_duration_ms") {
+        Some(synra_observe::metrics::Value::Histogram(histogram)) => {
+            assert!(histogram.count >= 1, "the dispatch was not measured");
+        }
+        other => panic!("expected a duration histogram, got {other:?}"),
+    }
 }
 
 

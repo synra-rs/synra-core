@@ -358,6 +358,7 @@ impl Kernel for Runtime {
             transfers: Vec::new(),
             context_id: None,
         };
+        let started = std::time::Instant::now();
         let routed = crate::runtime::intent::dispatch(
             &self.plugins,
             &self.board,
@@ -370,6 +371,12 @@ impl Kernel for Runtime {
         // count the shares something handled — which is the opposite of the question it exists for. "Why did nothing
         // answer this" is asked about the refusals.
         {
+            // ★ The duration is observed before the `?` too: a share the matcher refused still spent its matching time,
+            // and a distribution built only from successes would answer "how slow is a share" with no failures in it.
+            self.metrics.histogram_observe(
+                &synra_observe::metrics::SeriesKey::new("intent_duration_ms", Vec::new()),
+                started.elapsed().as_secs_f64() * 1_000.0,
+            );
             let outcome = if routed.is_ok() { "ok" } else { "refused" };
             self.metrics.counter_inc(&synra_observe::metrics::SeriesKey::new(
                 "intents_total",
