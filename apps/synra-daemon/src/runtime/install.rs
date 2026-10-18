@@ -24,7 +24,7 @@ use synra_plugin_host::verify::HostFacts;
 /// [`InstallRefusal`] naming the step that refused. Nothing is written to `plugins_dir` and no row is recorded unless
 /// every check passed and the copy completed.
 pub fn from_directory(
-    db: &synra_store::SynraDb,
+    db: &mut synra_store::SynraDb,
     backend: &Backend,
     plugins_dir: &Path,
     source: &Path,

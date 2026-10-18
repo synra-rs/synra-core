@@ -28,8 +28,10 @@
 //!
 //! # What it does not decide
 //!
-//! Whether the user trusts the publisher, and whether the plugin may run. The row it writes is **installed, switched
-//! off and untrusted** — the design's `AwaitingConsent` in durable form — so installing and approving stay two acts.
+//! Whether the user trusts the publisher, and whether the plugin may run. The rows it writes are **installed, switched
+//! off and untrusted** — the design's `AwaitingConsent` in durable form — so installing and approving stay two acts. It
+//! also records **which version is in effect** in `plugin_versions`, because that is what a peer's question "what do you
+//! have" is answered from.
 
 use std::path::{Path, PathBuf};
 
@@ -112,8 +114,14 @@ impl InstallRefusal {
 ///
 /// [`InstallRefusal`] naming the step that refused. Nothing is written to `plugins_dir` and no row is recorded unless
 /// every check passed and the copy completed.
+///
+/// # Why the database is `&mut`
+///
+/// Because the install writes **two** rows that must undo together: the plugin and the version now in effect. The second
+/// write can fail after the first succeeded, and the rollback removes the row as well as the directory — a plugin row
+/// naming discarded files is what the loader reports as a broken plugin rather than as a failed install.
 pub fn from_directory(
-    db: &synra_store::SynraDb,
+    db: &mut synra_store::SynraDb,
     backend: &Backend,
     plugins_dir: &Path,
     source: &Path,
@@ -343,6 +351,35 @@ pub fn from_directory(
     // row fails. The other order would leave a row naming files that were never written, which `load_installed` would
     // report as a broken plugin rather than as a failed install.
     if let Err(error) = db.insert_plugin(&plugin_id, false, false, "installed", now_ms, now_ms) {
+        discard(&destination, &files);
+        return Err(InstallRefusal::new("record", error.to_string()));
+    }
+
+    // ── Which version is now the one in effect ─────────────────────────────────────────────────────────────────────
+    //
+    // ★ **This row was missing from the pipeline, and its absence was invisible.** `active_plugin_version` reads
+    // `plugin_versions`; every doc that mentioned the table said the installer wrote it; the installer wrote `plugins` and
+    // the files and never touched it. So a freshly installed plugin had no active version, and every sync plan — the only
+    // reader — answered "this device has no such plugin".
+    //
+    // ★ **Why an empty digest rather than the empty artifact's digest**: a UI-only plugin has no headless artifact, and
+    // `ObjectDigest::of(&[])` is a real digest of zero bytes — recording it would claim the plugin holds an artifact that is
+    // not there. Empty is the store's word for "none", the same shape the receiving side writes when it knows the bytes but
+    // not the version.
+    //
+    // ★ **The rollback is the pair.** The plugin row was written a line earlier, so a failure here would leave a plugin that
+    // appears installed with no version and no files (they are discarded below) — the state that makes the loader report a
+    // broken plugin instead of a failed install.
+    let active_digest = if headless.is_some() { artifact_digest.clone() } else { String::new() };
+    if let Err(error) = db.record_plugin_version(
+        &plugin_id,
+        &version,
+        headless.as_deref().unwrap_or_default(),
+        &active_digest,
+        &manifest_json,
+        now_ms,
+    ) {
+        let _ = db.remove_plugin(&plugin_id);
         discard(&destination, &files);
         return Err(InstallRefusal::new("record", error.to_string()));
     }

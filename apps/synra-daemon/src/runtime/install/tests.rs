@@ -107,10 +107,10 @@ fn installing_a_ui_plugin_unpacks_its_bundle_beside_the_artifact() {
         &ui_manifest(&["log:*"], "plugin.wasm", "ui.zip"),
         &[("plugin.wasm", wasm()), ("ui.zip", &ui)],
     );
-    let db = database();
+    let mut db = database();
 
     let installed =
-        from_directory(&db, &backend(), &plugins(dir.path()), &source, 1_000).expect("the package is installed");
+        from_directory(&mut db, &backend(), &plugins(dir.path()), &source, 1_000).expect("the package is installed");
 
     assert!(
         installed.path.join("ui").join("index.html").is_file(),
@@ -129,10 +129,10 @@ fn plugins(root: &Path) -> PathBuf {
 fn a_verified_package_is_written_and_recorded_switched_off() {
     let dir = TempDir::new("install-ok");
     let source = package(dir.path(), "source", &manifest(&["log:*"], "plugin.wasm"), &[("plugin.wasm", wasm())]);
-    let db = database();
+    let mut db = database();
 
     let installed =
-        from_directory(&db, &backend(), &plugins(dir.path()), &source, 1_000).expect("the package is installed");
+        from_directory(&mut db, &backend(), &plugins(dir.path()), &source, 1_000).expect("the package is installed");
 
     assert_eq!(installed.plugin_id, "@acme/hello");
     assert_eq!(installed.version, "1.2.3");
@@ -147,6 +147,15 @@ fn a_verified_package_is_written_and_recorded_switched_off() {
     assert!(!row.enabled, "installing must not switch a plugin on");
     assert!(!row.trusted, "installing must not trust a plugin's capabilities");
     assert!(!row.should_run(), "a plugin nobody approved must not run");
+
+    // ★ And the row that says which version is in effect. `plugin_versions` had a reader (`active_plugin_version`) and no
+    // production writer, so every plan built from it answered "nothing is installed". This is the install that fills it.
+    let (version, digest) = db
+        .active_plugin_version("@acme/hello")
+        .expect("the active version can be read")
+        .expect("the install records one");
+    assert_eq!(version, "1.2.3");
+    assert!(!digest.is_empty(), "the digest of the bytes that were written is recorded");
 }
 
 #[test]
@@ -156,9 +165,9 @@ fn the_signature_file_travels_with_the_package() {
     // Not a valid document: this asserts that the file is *carried*, and a package that ships one is refused by the
     // pipeline rather than by this copy step — which is the next test's subject.
     std::fs::write(source.join("signature.json"), "{}").expect("a signature file");
-    let db = database();
+    let mut db = database();
 
-    let refusal = from_directory(&db, &backend(), &plugins(dir.path()), &source, 1_000).expect_err("refused");
+    let refusal = from_directory(&mut db, &backend(), &plugins(dir.path()), &source, 1_000).expect_err("refused");
 
     assert_eq!(refusal.stage, "signature");
     assert!(!plugins(dir.path()).join("@acme/hello").exists(), "a refused install writes nothing");
@@ -174,9 +183,9 @@ fn a_signed_package_with_a_genuine_signature_installs() {
     let dir = TempDir::new("install-signed-good");
     let source = package(dir.path(), "source", &manifest(&["log:*"], "plugin.wasm"), &[("plugin.wasm", wasm())]);
     crate::runtime::tests::sign_plugin(&source, false);
-    let db = database();
+    let mut db = database();
 
-    let installed = from_directory(&db, &backend(), &plugins(dir.path()), &source, 1_000).expect("installs");
+    let installed = from_directory(&mut db, &backend(), &plugins(dir.path()), &source, 1_000).expect("installs");
 
     assert!(installed.path.join("signature.json").is_file(), "the signature travels with it");
     assert!(installed.warnings.is_empty(), "{:?}", installed.warnings);
@@ -187,9 +196,9 @@ fn a_signed_package_whose_signature_covers_other_bytes_is_refused_at_the_signatu
     let dir = TempDir::new("install-signed-swapped");
     let source = package(dir.path(), "source", &manifest(&["log:*"], "plugin.wasm"), &[("plugin.wasm", wasm())]);
     crate::runtime::tests::sign_plugin(&source, true);
-    let db = database();
+    let mut db = database();
 
-    let refusal = from_directory(&db, &backend(), &plugins(dir.path()), &source, 1_000).expect_err("refused");
+    let refusal = from_directory(&mut db, &backend(), &plugins(dir.path()), &source, 1_000).expect_err("refused");
 
     assert_eq!(refusal.stage, "signature", "{}", refusal.reason);
     assert!(refusal.reason.contains("different bytes"), "{}", refusal.reason);
@@ -204,9 +213,9 @@ fn a_capability_the_host_does_not_know_stops_before_anything_is_written() {
     let dir = TempDir::new("install-bad-cap");
     let source =
         package(dir.path(), "source", &manifest(&["platform:teleport"], "plugin.wasm"), &[("plugin.wasm", wasm())]);
-    let db = database();
+    let mut db = database();
 
-    let refusal = from_directory(&db, &backend(), &plugins(dir.path()), &source, 1_000).expect_err("refused");
+    let refusal = from_directory(&mut db, &backend(), &plugins(dir.path()), &source, 1_000).expect_err("refused");
 
     assert_eq!(refusal.stage, "capability-syntax", "{}", refusal.reason);
     assert!(!plugins(dir.path()).join("@acme/hello").exists());
@@ -219,9 +228,9 @@ fn an_artifact_name_that_leaves_the_package_is_refused() {
     // A manifest is third-party data: `../../outside.wasm` is a string that joins to a path, and reading it would be the
     // package deciding which file a host opens.
     let source = package(dir.path(), "source", &manifest(&["log:*"], "../outside.wasm"), &[]);
-    let db = database();
+    let mut db = database();
 
-    let refusal = from_directory(&db, &backend(), &plugins(dir.path()), &source, 1_000).expect_err("refused");
+    let refusal = from_directory(&mut db, &backend(), &plugins(dir.path()), &source, 1_000).expect_err("refused");
 
     assert_eq!(refusal.stage, "manifest", "{}", refusal.reason);
     assert!(!plugins(dir.path()).join("@acme/hello").exists());
@@ -231,9 +240,9 @@ fn an_artifact_name_that_leaves_the_package_is_refused() {
 fn a_missing_artifact_is_refused_rather_than_installed_half_copied() {
     let dir = TempDir::new("install-missing-file");
     let source = package(dir.path(), "source", &manifest(&["log:*"], "plugin.wasm"), &[]);
-    let db = database();
+    let mut db = database();
 
-    let refusal = from_directory(&db, &backend(), &plugins(dir.path()), &source, 1_000).expect_err("refused");
+    let refusal = from_directory(&mut db, &backend(), &plugins(dir.path()), &source, 1_000).expect_err("refused");
 
     assert_eq!(refusal.stage, "read", "{}", refusal.reason);
     assert!(!plugins(dir.path()).join("@acme/hello").exists());
@@ -243,11 +252,11 @@ fn a_missing_artifact_is_refused_rather_than_installed_half_copied() {
 fn a_second_install_is_refused_and_leaves_the_first_alone() {
     let dir = TempDir::new("install-twice");
     let source = package(dir.path(), "source", &manifest(&["log:*"], "plugin.wasm"), &[("plugin.wasm", wasm())]);
-    let db = database();
-    let first = from_directory(&db, &backend(), &plugins(dir.path()), &source, 1_000).expect("the first install");
+    let mut db = database();
+    let first = from_directory(&mut db, &backend(), &plugins(dir.path()), &source, 1_000).expect("the first install");
     let written = std::fs::read(first.path.join("plugin.wasm")).expect("the artifact");
 
-    let refusal = from_directory(&db, &backend(), &plugins(dir.path()), &source, 2_000).expect_err("refused");
+    let refusal = from_directory(&mut db, &backend(), &plugins(dir.path()), &source, 2_000).expect_err("refused");
 
     assert_eq!(refusal.stage, "install", "{}", refusal.reason);
     assert_eq!(std::fs::read(first.path.join("plugin.wasm")).expect("the artifact"), written);
@@ -258,9 +267,9 @@ fn a_source_that_is_not_a_directory_is_refused_before_the_manifest_is_read() {
     let dir = TempDir::new("install-not-a-dir");
     let file = dir.path().join("not-a-package");
     std::fs::write(&file, b"not a directory").expect("a file");
-    let db = database();
+    let mut db = database();
 
-    let refusal = from_directory(&db, &backend(), &plugins(dir.path()), &file, 1_000).expect_err("refused");
+    let refusal = from_directory(&mut db, &backend(), &plugins(dir.path()), &file, 1_000).expect_err("refused");
 
     assert_eq!(refusal.stage, "source", "{}", refusal.reason);
 }

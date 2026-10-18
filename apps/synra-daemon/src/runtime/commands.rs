@@ -272,9 +272,9 @@ impl Kernel for Runtime {
         // the answer is built.
         let plugins = self.plugins.lock();
         let backend = plugins.backend();
-        let db = self.db.lock();
+        let mut db = self.db.lock();
         let outcome = crate::runtime::install_from_directory(
-            &db,
+            &mut db,
             backend,
             &self.plugins_dir,
             std::path::Path::new(path),
