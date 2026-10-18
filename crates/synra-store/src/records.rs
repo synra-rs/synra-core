@@ -564,6 +564,24 @@ impl PluginRow {
     }
 }
 
+/// One action a plugin has declared, as `plugin_actions` holds it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginActionRow {
+    /// The action's name, unique within the plugin.
+    ///
+    /// The name is what the page passes to `self.invoke`, so it is the identity of the action rather than a label: two
+    /// declarations under one name are one action, and the later schema replaces the earlier.
+    pub name: String,
+    /// The JSON Schema of its arguments, when it declared one.
+    ///
+    /// Stored as the text the plugin sent rather than parsed, because this table's job is to remember the declaration;
+    /// a schema is read by an interface that wants to render a form, not by the kernel.
+    pub args_schema: Option<String>,
+    /// What it does, when the plugin said.
+    pub description: Option<String>,
+}
+
 /// One capability's decision, as `plugin_grants` holds it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
