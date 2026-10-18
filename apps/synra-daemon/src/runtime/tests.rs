@@ -67,6 +67,9 @@ fn runtime_over(dir: &Path, shared_db: std::sync::Arc<parking_lot::Mutex<synra_s
         version: "0.1.0-test".to_owned(),
         data_dir: dir.to_path_buf(),
         plugins_dir: dir.join("plugins"),
+        // The same layout the serve path builds, so a command that measures or removes plugin files answers about the
+        // directories this fixture actually uses.
+        paths: synra_store::Paths::new(dir.to_path_buf(), dir.join("cache")),
         listen_port: 47100,
         discovery_port: 47101,
         started_at_ms: 1_000,
@@ -568,6 +571,39 @@ fn a_missing_argument_is_not_retryable() {
 
 
 // ── Plugins ───────────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn removing_a_plugin_takes_the_row_and_the_artifacts_and_reports_the_bytes() {
+    // ★ The CLI's `plugin remove` was refused in words that named a decision nobody had made. The decision exists now —
+    // keep the data by default, delete it only when asked — so the daemon has to be able to perform both halves and say
+    // what it freed. Measured before the removal, or the number is a zero dressed as a measurement.
+    let dir = TempDir::new("plugins-remove");
+    let runtime = runtime(dir.path());
+    install(&runtime, "@acme/hello", 1, 1);
+    let artifacts = runtime.paths.plugin_dir("@acme/hello");
+    std::fs::create_dir_all(&artifacts).expect("the artifacts");
+    std::fs::write(artifacts.join("manifest.json"), b"12345").expect("an artifact file");
+    let data = runtime.paths.plugin_sandbox_dir("@acme/hello");
+    std::fs::create_dir_all(&data).expect("the sandbox");
+    std::fs::write(data.join("cache.bin"), b"123").expect("a data file");
+
+    let report = runtime.plugin_remove("@acme/hello", false).expect("removes");
+
+    assert_eq!(report["bytesFreed"], 5, "the artifact's bytes, not the sandbox's");
+    assert_eq!(report["dataKept"], true);
+    assert!(runtime.db().plugins().expect("rows").is_empty(), "the row is gone");
+    assert!(!artifacts.exists(), "and the artifacts with it");
+    assert!(data.exists(), "the data stays unless asked");
+}
+
+#[test]
+fn removing_a_plugin_that_is_not_installed_is_a_refusal() {
+    let dir = TempDir::new("plugins-remove-absent");
+    let refused = runtime(dir.path())
+        .plugin_remove("@acme/absent", false)
+        .expect_err("nothing is installed as that");
+    assert_eq!(refused.code, ErrorCode::PluginNotInstalled);
+}
 
 #[test]
 fn a_fresh_installation_has_no_plugins_and_that_is_not_an_error() {

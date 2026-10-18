@@ -78,6 +78,20 @@ impl PluginFiles {
         Ok(())
     }
 
+    /// How many bytes a removal would free: the artifacts, plus the data when `remove_data` is true.
+    ///
+    /// Measured **before** [`PluginFiles::remove`], because after it there is nothing to measure. A directory that does not
+    /// exist counts as zero, and an entry that cannot be read is skipped rather than failing the count: the number is a
+    /// report, and a plugin whose sandbox is unreadable is still a plugin that can be removed.
+    #[must_use]
+    pub fn size_of(&self, plugin_id: &str, remove_data: bool) -> u64 {
+        let mut total = directory_size(&self.paths.plugin_dir(plugin_id));
+        if remove_data {
+            total = total.saturating_add(directory_size(&self.paths.plugin_sandbox_dir(plugin_id)));
+        }
+        total
+    }
+
     /// Removes one tree, having checked it is where it claims to be.
     fn remove_below(&self, target: &Path, root: &Path) -> Result<(), PathError> {
         if !is_within(root, target) {
@@ -95,6 +109,25 @@ impl PluginFiles {
             }),
         }
     }
+}
+
+/// The bytes under a directory, or zero when it cannot be read.
+///
+/// Recursive, because a plugin's artifact is a directory tree and a sandbox may have subdirectories of its own. Errors are
+/// zero rather than a refusal: this number is shown to a user deciding about a removal, and a directory that cannot be
+/// read is still a directory the removal can attempt.
+fn directory_size(root: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|entry| match entry.file_type() {
+            Ok(kind) if kind.is_dir() => directory_size(&entry.path()),
+            Ok(_) => entry.metadata().map_or(0, |metadata| metadata.len()),
+            Err(_) => 0,
+        })
+        .fold(0, u64::saturating_add)
 }
 
 #[cfg(test)]
@@ -165,5 +198,20 @@ mod tests {
 
         PluginFiles::new(paths.clone()).remove("@acme/hello", false).expect("first");
         PluginFiles::new(paths).remove("@acme/hello", false).expect("second");
+    }
+
+    #[test]
+    fn the_size_is_the_artifacts_and_the_data_when_asked() {
+        // ★ Measured before the removal, and only the data when it is going: the number is what a user is told a removal
+        // frees, so counting a sandbox that stays would be telling them they got space back they did not.
+        let scratch = Scratch::new("size");
+        let paths = scratch.paths();
+        fill(&paths.plugin_dir("@acme/hello"));
+        fill(&paths.plugin_sandbox_dir("@acme/hello"));
+        let files = PluginFiles::new(paths);
+
+        assert_eq!(files.size_of("@acme/hello", false), 4, "the artifact's four bytes");
+        assert_eq!(files.size_of("@acme/hello", true), 8, "artifact and sandbox");
+        assert_eq!(files.size_of("@acme/absent", true), 0, "a directory that is not there");
     }
 }

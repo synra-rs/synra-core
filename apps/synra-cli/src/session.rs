@@ -180,12 +180,13 @@ pub fn dispatch(cli: &Cli) -> CommandOutcome {
                     // "this command reads the database directly, which is not implemented yet". Three verbs a user can
                     // see and none of them worked. The store side already existed; what was missing was this branch.
                     Command::Db(args) => crate::db::outcome(cli.output, args),
-                    // ★ "No kernel is reachable" is true for a command that needs one and cannot find it, and false
-                    // for one that never asks. `plugin install` and `plugin remove` parse, appear in the documented list,
-                    // and have no request to send — so they get the answer that is about them.
+                    // ★ "No kernel is reachable" is true for a command that needs one and cannot find it, and false for
+                    // one that never asks. Every plugin action maps to a request now, so this arm is the answer for a
+                    // plugin action a future build adds before its request exists — and it says exactly that rather than
+                    // blaming a missing kernel.
                     Command::Plugin(_) => CommandOutcome::Failed(
-                        "this command is not implemented: installing needs a registry client, and removing needs a \
-decision about the plugin's stored data that nothing has made yet"
+                        "this plugin action has no request in this build: it parses, but nothing sends it. \
+                         `synra plugins` asks a running kernel; `synra doctor` needs none."
                             .to_owned(),
                     ),
                     _ => CommandOutcome::Failed(
@@ -208,10 +209,9 @@ decision about the plugin's stored data that nothing has made yet"
 ///
 /// # What is asked and what is not
 ///
-/// Every action has a request except `remove`: installing changes the kernel's state and the kernel is the only process
-/// that may write to the plugin directory, so it is asked; removing needs a decision about the plugin's stored data
-/// that nothing has made, so it is not asked for at all rather than invented. An action with no request is reported by
-/// `dispatch` for what it is, which is a thing this build does not do — not a missing kernel.
+/// Every action has a request now, including `remove`: the kernel is the only process that may write to the plugin
+/// directory, so it is asked for both halves of the removal. The data decision travels with the request rather than
+/// being invented here — `plugin remove --data` is the destructive half, and off by default the data stays.
 fn plugin_request(command: &Command) -> Option<Request> {
     use crate::args::PluginAction;
 
@@ -247,9 +247,13 @@ fn plugin_request(command: &Command) -> Option<Request> {
             plugin_id: plugin_id.clone(),
             granted: allow.clone(),
         }),
-        // Still nothing, and now for a reason that is true: removing needs a decision about the plugin's stored data
-        // that nothing has made. `question_for` cannot say that, so `dispatch` does.
-        PluginAction::Remove { .. } => None,
+        // ★ Removing is one act with two outcomes. The kernel removes the row and the artifact either way; `--data` is
+        // the only thing that decides whether the sandbox goes too, and it defaults to off because a plugin the user may
+        // reinstall should keep its settings.
+        PluginAction::Remove { plugin_id, data } => Some(Request::PluginRemove {
+            plugin_id: plugin_id.clone(),
+            remove_data: *data,
+        }),
     }
 }
 
@@ -422,11 +426,18 @@ mod tests {
         assert_eq!(plugin_id, "@acme/x");
         assert_eq!(granted, ["log:*", "platform:open-url"]);
 
-        // Removing still asks nothing, and `dispatch` reports it in its own words rather than as a missing kernel.
-        assert!(request(crate::args::PluginAction::Remove {
+        // Removing asks the kernel now, and carries the data decision with it: the flag is the only difference between
+        // "remove" and "remove and delete", and a request that could not express it would make `--data` a promise with
+        // nothing behind it.
+        let Some(Request::PluginRemove { plugin_id, remove_data }) = request(crate::args::PluginAction::Remove {
             plugin_id: "@acme/x".to_owned(),
-            data: false,
-        }).is_none());
+            data: true,
+        })
+        else {
+            panic!("expected a remove request");
+        };
+        assert_eq!(plugin_id, "@acme/x");
+        assert!(remove_data, "the flag reaches the kernel");
     }
 
     use super::*;

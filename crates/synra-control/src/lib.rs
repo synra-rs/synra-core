@@ -245,6 +245,20 @@ pub enum Request {
         granted: Vec<String>,
     },
 
+    /// Removes a plugin, and its data when the caller asked for that.
+    ///
+    /// # Why the data decision is a parameter rather than a second request
+    ///
+    /// Because removing and deleting the data are one act with two outcomes, and the default is the reversible one. The
+    /// CLI's `plugin remove` has a `--data` flag for the destructive half; a request that could not carry the decision
+    /// would make the flag a promise with nothing behind it — which is the failure `--follow` was recorded for.
+    PluginRemove {
+        /// Which plugin.
+        plugin_id: String,
+        /// Whether to delete its data as well. Off by default at the command line.
+        remove_data: bool,
+    },
+
     /// Hands the kernel something to route.
     ///
     /// # ★ Why this request had to exist
@@ -387,6 +401,7 @@ impl Request {
         Self::PluginSetEnabled { .. } => "pluginSetEnabled",
             Self::PluginInstall { .. } => "pluginInstall",
             Self::PluginConsent { .. } => "pluginConsent",
+            Self::PluginRemove { .. } => "pluginRemove",
                 Self::IntentCancel { .. } => "intentCancel",
                 Self::IntentDecide { .. } => "intentDecide",
                 Self::IntentSnapshot { .. } => "intentSnapshot",
@@ -661,6 +676,7 @@ mod tests {
             Request::SendText { to: "dev_a".to_owned(), text: "hi".to_owned() },
             Request::SendFile { to: "dev_a".to_owned(), path: "/tmp/a".to_owned() },
             Request::Plugins,
+            Request::PluginRemove { plugin_id: "@acme/x".to_owned(), remove_data: true },
             Request::Logs { lines: 50, verbose: true, trace: None },
         ];
         for request in requests {

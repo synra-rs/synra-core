@@ -188,6 +188,16 @@ fn pretty(value: &serde_json::Value) -> String {
 /// A build of the client that does not know a command's shape must still print the answer rather than nothing. The
 /// fallback is the JSON, which is ugly and complete — and complete is what a user filing a bug report needs.
 fn prose(value: &serde_json::Value) -> Vec<String> {
+    // ★ The removal's report, as a sentence: it is the one answer whose point is what happened to the user's data, and a
+    // JSON blob would make them read a field name to learn whether their settings were deleted.
+    if let Some(bytes) = value.get("bytesFreed").and_then(serde_json::Value::as_u64) {
+        let id = value.get("pluginId").and_then(serde_json::Value::as_str).unwrap_or("?");
+        let kept = value.get("dataKept").and_then(serde_json::Value::as_bool).unwrap_or(true);
+        return vec![format!(
+            "removed {id}; {bytes} bytes freed; {}",
+            if kept { "its data was kept" } else { "its data was deleted" }
+        )];
+    }
     if let Some(lines) = value.get("lines").and_then(serde_json::Value::as_array) {
         return lines.iter().map(render_line).collect();
     }
@@ -659,6 +669,22 @@ mod tests {
         match outcome_of(&response, Shape::Prose) {
             crate::session::CommandOutcome::Lines(lines) => {
                 assert!(lines[0].contains("no plugins"), "{lines:?}");
+            }
+            other => panic!("expected lines, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_removal_report_reads_as_a_sentence_about_the_data() {
+        // ★ The field name `dataKept` is not what a user is asking about; the sentence says which of the two acts happened.
+        let response = Response::ok(serde_json::json!({
+            "pluginId": "@acme/hello",
+            "bytesFreed": 1536,
+            "dataKept": false
+        }));
+        match outcome_of(&response, Shape::Prose) {
+            crate::session::CommandOutcome::Lines(lines) => {
+                assert_eq!(lines, vec!["removed @acme/hello; 1536 bytes freed; its data was deleted"]);
             }
             other => panic!("expected lines, got {other:?}"),
         }

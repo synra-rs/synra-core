@@ -10,6 +10,8 @@ pub struct Runtime {
     pub data_dir: PathBuf,
     /// Where plugins are installed.
     pub plugins_dir: PathBuf,
+    /// The directory layout, so a command that touches plugin files uses the same answer the rest of the kernel does.
+    pub paths: synra_store::Paths,
     /// The transport port.
     pub listen_port: u16,
     /// The discovery port.

@@ -339,6 +339,33 @@ impl Kernel for Runtime {
         self.plugins_value()
     }
 
+    fn plugin_remove(&self, plugin_id: &str, remove_data: bool) -> Result<serde_json::Value, Refusal> {
+        // ★ Measured before the removal: after `remove_dir_all` there is nothing to measure, and a number read then would
+        // be a zero dressed as a measurement. The layout comes from `Paths`, not from joining `plugins_dir` by hand — the
+        // artifact and the sandbox are two different roots, and `PluginFiles` is what knows both.
+        let files = synra_store::PluginFiles::new(self.paths.clone());
+        let bytes_freed = files.size_of(plugin_id, remove_data);
+        let removed = self
+            .db
+            .lock()
+            .remove_plugin(plugin_id)
+            .map_err(|error| Refusal::new(ErrorCode::Internal, error.to_string()))?;
+        if !removed {
+            return Err(Refusal::new(
+                ErrorCode::PluginNotInstalled,
+                format!("no plugin is installed as `{plugin_id}`"),
+            ));
+        }
+        files
+            .remove(plugin_id, remove_data)
+            .map_err(|error| Refusal::new(ErrorCode::Internal, error.to_string()))?;
+        Ok(serde_json::json!({
+            "pluginId": plugin_id,
+            "bytesFreed": bytes_freed,
+            "dataKept": !remove_data,
+        }))
+    }
+
     fn logs(&self, lines: usize, verbose: bool, trace: Option<&str>) -> Result<serde_json::Value, Refusal> {
         self.logs_value(lines, verbose, trace)
     }

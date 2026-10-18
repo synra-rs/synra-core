@@ -200,6 +200,28 @@ pub trait Kernel {
         ))
     }
 
+    /// Removes a plugin, and its data when `remove_data` is true.
+    ///
+    /// # Why the default refuses
+    ///
+    /// As [`Kernel::plugin_install`]: a kernel with no plugin store cannot remove one, and the refusal names that rather
+    /// than answering with a report of zero bytes — which a caller would read as a successful removal.
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal`] with [`ErrorCode::PluginNotInstalled`] when no plugin has that identifier, [`ErrorCode::Internal`] when
+    /// the row or the files cannot be removed; [`ErrorCode::Unsupported`] by default.
+    fn plugin_remove(
+        &self,
+        _plugin_id: &str,
+        _remove_data: bool,
+    ) -> Result<serde_json::Value, Refusal> {
+        Err(Refusal::new(
+            ErrorCode::Unsupported,
+            "this kernel does not remove plugins",
+        ))
+    }
+
     /// Searches the plugin catalogue.
     ///
     /// # Why this has a default body
@@ -459,6 +481,9 @@ impl Server {
             }
             Request::PluginInstall { path } => kernel.plugin_install(path),
             Request::PluginConsent { plugin_id, granted } => kernel.plugin_consent(plugin_id, granted),
+            Request::PluginRemove { plugin_id, remove_data } => {
+                kernel.plugin_remove(plugin_id, *remove_data)
+            }
             Request::IntentDispatch { mime, text } => kernel.intent_dispatch(mime, text),
             Request::IntentSnapshot { intent } => kernel.intent_snapshot(intent),
             Request::IntentDecide { intent, plugin_id, target } => {

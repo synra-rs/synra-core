@@ -327,12 +327,11 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
     // The order matters and is the whole reason this is up here rather than beside the safe-mode check below: a hook
     // installed after the plugin host is built does not record a failure while building it. The log directory comes from
     // `Paths` rather than being joined here, because `Paths` is the one place that decides where things live.
-    let log_dir = synra_store::Paths::new(
+    let paths = synra_store::Paths::new(
         std::path::PathBuf::from(&plan.data_dir),
         std::path::PathBuf::from(&plan.data_dir).join("cache"),
-    )
-    .log_dir()
-    .to_path_buf();
+    );
+    let log_dir = paths.log_dir().to_path_buf();
     let crashes = synra_observe::crash::CrashStore::new(&log_dir);
     // The daemon's own version, not the observe layer's: the report is about the binary that crashed.
     synra_observe::crash::install_panic_hook(crashes.clone(), env!("CARGO_PKG_VERSION"));
@@ -500,6 +499,7 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
         version: env!("CARGO_PKG_VERSION").to_owned(),
         data_dir: std::path::PathBuf::from(&plan.data_dir),
         plugins_dir: std::path::PathBuf::from(&plan.plugins_dir),
+        paths,
         listen_port: plan.listen_port,
         discovery_port: plan.discovery_port,
         started_at_ms: now_ms(),
