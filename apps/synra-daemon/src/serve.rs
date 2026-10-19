@@ -103,15 +103,36 @@ fn sweep_plugin_leftovers(db: &synra_store::SynraDb, paths: &synra_store::Paths)
 ///
 /// A task that will not start leaves nothing to join: the daemon serves without it rather than refusing to run, which is the
 /// choice the two services make as well.
+/// One supervised loop's handle, when it started.
+type LoopHandle = Option<std::thread::JoinHandle<()>>;
+
 fn start_loops(
     supervisor: &Arc<synra_core::supervisor::Supervisor>,
     db: &Arc<Mutex<synra_store::SynraDb>>,
     lock_path: &std::path::Path,
-) -> (
-    Option<std::thread::JoinHandle<()>>,
-    Option<std::thread::JoinHandle<()>>,
-) {
+    host: &Arc<Mutex<synra_core::Host>>,
+    data_dir: &std::path::Path,
+) -> (LoopHandle, LoopHandle, LoopHandle) {
     use synra_core::supervisor::{TaskId, run_task};
+
+    // ★ Answers that could not be delivered when they were produced are retried here, on a timer, because the producer is
+    // a connection thread and a connection thread must not wait for a device that may be gone. Thirty seconds is short
+    // enough that a peer's restart is noticed and long enough that a permanently gone peer costs two dials a minute.
+    let retrier = {
+        let host = Arc::clone(host);
+        let data_dir = data_dir.to_path_buf();
+        let id = TaskId::new("late.retry");
+        match run_task(supervisor, &id, move |token| {
+            late_retry_loop(token, &host, &data_dir);
+            Ok(())
+        }) {
+            Ok(handle) => Some(handle),
+            Err(error) => {
+                eprintln!("synra-daemon: the late-answer retrier did not start: {error}");
+                None
+            }
+        }
+    };
 
     let heartbeat = {
         // One clone for the task's body and the caller's own reference for `run_task`: the body may not hold the same
@@ -147,7 +168,41 @@ fn start_loops(
         }
     };
 
-    (heartbeat, collector)
+    (heartbeat, collector, retrier)
+}
+
+/// Joins every supervised loop that started.
+///
+/// # Why a tuple rather than three calls in `serve`
+///
+/// Because `serve` has a complexity budget, and three "if it started, join it" branches beside the shutdown report is the
+/// kind of code that pushes it over. The loops are a set: they stop together and are joined together.
+fn join_loops(loops: (LoopHandle, LoopHandle, LoopHandle)) {
+    for handle in [loops.0, loops.1, loops.2].into_iter().flatten() {
+        let _ = handle.join();
+    }
+}
+
+/// Retries queued late answers until the supervisor asks the daemon to stop.
+fn late_retry_loop(
+    token: &synra_core::supervisor::Cancellation,
+    host: &Arc<Mutex<synra_core::Host>>,
+    data_dir: &std::path::Path,
+) {
+    loop {
+        let summary = synra_core::listener::retry_late(host, data_dir);
+        if summary.delivered > 0 || summary.dropped > 0 {
+            tracing::info!(
+                delivered = summary.delivered,
+                failed = summary.failed,
+                dropped = summary.dropped,
+                "late answers were retried"
+            );
+        }
+        if token.wait(Duration::from_secs(30)) {
+            break;
+        }
+    }
 }
 
 /// The schedule this daemon collects on: the design's `GcTask`, as a value.
@@ -819,7 +874,13 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
     //
     // Both are started by one function, which is what `serve` needs: starting a supervised task is four lines of error
     // handling, and two of them in a function already at the workspace's complexity limit is what pushes it over.
-    let (heartbeat, collector) = start_loops(&supervisor, &shared_db, &plan.lock_path());
+    let loops = start_loops(
+        &supervisor,
+        &shared_db,
+        &plan.lock_path(),
+        &runtime.host,
+        &runtime.data_dir,
+    );
 
     // ★ "Trusted" is not "bounded": a local client with a bug can open connections in a loop, and each one costs a thread
     // until the process runs out. The gate admits a fixed number and closes the rest; see `control_gate`.
@@ -843,14 +904,7 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
     // ★ Asked through the supervisor rather than by setting a flag, so the two services stop the way they were started:
     // the token they were given is cancelled, and the stop order is the reverse of registration.
     let _ = supervisor.begin_shutdown();
-    if let Some(handle) = heartbeat {
-        let _ = handle.join();
-    }
-    // ★ Joined for the reason the heartbeat is: a sweep interrupted mid-delete is a row removed and a count never reported,
-    // and the shutdown report the supervisor keeps would be missing the task that was still running.
-    if let Some(handle) = collector {
-        let _ = handle.join();
-    }
+    join_loops(loops);
     code
 }
 

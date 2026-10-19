@@ -34,6 +34,7 @@ use parking_lot::Mutex;
 // The types this module's own API is expressed in, re-exported so a caller can name them without reaching past it.
 pub use crate::inbound::{Decision, Inbox, PairingAnswer};
 use crate::host::Host;
+use crate::late_queue::LateQueue;
 use crate::SessionError;
 use crate::link::{LinkError, PeerLink};
 use synra_protocol::envelope::Envelope;
@@ -553,6 +554,7 @@ pub fn handle_within_with(
                                 &envelope,
                                 on_kernel_events,
                                 &mut events,
+                                data_dir,
                             );
                         }
                         // ★ **A question this kernel can answer by itself.** "What plugins do you have" is a read of
@@ -786,6 +788,7 @@ fn answer_kernel_event(
     envelope: &Envelope,
     on_kernel_events: &Arc<KernelEventCallback>,
     events: &mut Vec<String>,
+    data_dir: &Path,
 ) {
     let event = envelope.event.as_str();
     match on_kernel_events(envelope) {
@@ -801,10 +804,21 @@ fn answer_kernel_event(
                     reply.target
                 );
                 if let Err(error) = deliver_late(host, &reply) {
-                    eprintln!(
-                        "synra-daemon: the answer to {event} for {} could not be delivered late either: {error}",
-                        reply.target
-                    );
+                    // ★ And when the dial-back fails as well, the answer is written down rather than dropped: the host's
+                    // periodic task drains this queue. A file that cannot be written is reported and the connection still
+                    // continues — the work it describes really happened.
+                    match LateQueue::in_data_dir(data_dir)
+                        .push(&reply, synra_store::sqlite::now_ms())
+                    {
+                        Ok(()) => eprintln!(
+                            "synra-daemon: the answer to {event} for {} is queued for a later attempt ({error})",
+                            reply.target
+                        ),
+                        Err(queue_error) => eprintln!(
+                            "synra-daemon: the answer to {event} for {} could not be delivered ({error}) or queued ({queue_error})",
+                            reply.target
+                        ),
+                    }
                 }
             }
         }
@@ -814,6 +828,21 @@ fn answer_kernel_event(
         // Not an error: an event this kernel does not run is one it must not guess at.
         KernelEventOutcome::Ignored => events.push(format!("unhandled {event}")),
     }
+}
+
+/// Delivers the answers that could not be sent when they were produced.
+///
+/// # Why this is here rather than in a host
+///
+/// Because the queue is written by the listener and the delivery is the listener's own dial-back; a host that had to
+/// re-implement both would have a second definition of a late answer. A host's only job is to call this on a timer.
+///
+/// Returns what this pass did, so a caller that keeps metrics can record it without reading the directory.
+pub fn retry_late(host: &Arc<Mutex<Host>>, data_dir: &Path) -> crate::late_queue::RetrySummary {
+    LateQueue::in_data_dir(data_dir).retry_with(
+        synra_store::sqlite::now_ms(),
+        |envelope| deliver_late(host, envelope),
+    )
 }
 
 /// Delivers an answer to the device it is addressed to, on a new connection.

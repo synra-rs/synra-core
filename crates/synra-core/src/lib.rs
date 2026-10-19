@@ -63,6 +63,7 @@ pub mod inbound;
 pub mod install;
 pub mod intent;
 pub mod kernel;
+pub mod late_queue;
 pub mod link;
 pub mod listener;
 pub mod messaging;
