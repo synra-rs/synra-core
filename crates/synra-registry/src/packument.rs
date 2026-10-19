@@ -104,6 +104,58 @@ impl Packument {
     pub fn version_names(&self) -> impl Iterator<Item = &str> {
         self.versions.keys().map(String::as_str)
     }
+
+    /// The version a request names: an exact version, a semver range, or `latest`.
+    ///
+    /// # Why a range is resolved here rather than at each caller
+    ///
+    /// Because "the newest version matching `^1.2`" is an ordering question, and string comparison answers it wrong for
+    /// `1.10` against `1.9`. The packument already holds every version; this is the one place that decides which one a
+    /// request means, so the shell and the daemon cannot disagree about it.
+    ///
+    /// # Errors
+    ///
+    /// [`SelectError::NoLatest`] when no version was asked for and the document has no `latest` tag;
+    /// [`SelectError::NoSuchVersion`] when the exact version is absent and the request is not a range that matches one of
+    /// the published versions.
+    pub fn select<'a>(&'a self, requested: Option<&str>) -> Result<&'a Version, SelectError> {
+        let Some(requested) = requested else {
+            return self
+                .latest()
+                .ok_or_else(|| SelectError::NoLatest(self.name.clone()));
+        };
+        if let Some(version) = self.at(requested) {
+            return Ok(version);
+        }
+        let range = semver::VersionReq::parse(requested)
+            .map_err(|_| SelectError::NoSuchVersion(self.name.clone(), requested.to_owned()))?;
+        let mut best: Option<semver::Version> = None;
+        let mut chosen: Option<&Version> = None;
+        for (name, version) in &self.versions {
+            let Ok(parsed) = semver::Version::parse(name) else {
+                continue;
+            };
+            if !range.matches(&parsed) {
+                continue;
+            }
+            if best.as_ref().is_none_or(|current| &parsed > current) {
+                best = Some(parsed);
+                chosen = Some(version);
+            }
+        }
+        chosen.ok_or_else(|| SelectError::NoSuchVersion(self.name.clone(), requested.to_owned()))
+    }
+}
+
+/// Why a version request could not be satisfied.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SelectError {
+    /// The document has no `latest` tag, and no version was asked for.
+    #[error("the registry has no `latest` tag for {0}")]
+    NoLatest(String),
+    /// The requested version and range both match nothing.
+    #[error("{0} does not publish {1}")]
+    NoSuchVersion(String, String),
 }
 
 #[cfg(test)]
@@ -176,6 +228,53 @@ mod tests {
         assert!(matches!(
             Packument::parse(r#"{"name": "x"}"#),
             Ok(packument) if packument.latest().is_none()
+        ));
+    }
+
+    #[test]
+    fn a_range_picks_the_newest_matching_version() {
+        // ★ `1.10.0` sorts before `1.9.0` as a string and after it as a version; the whole reason this uses semver.
+        let document = serde_json::json!({
+            "name": "x",
+            "dist-tags": { "latest": "1.9.0" },
+            "versions": {
+                "1.9.0": { "name": "x", "version": "1.9.0", "dist": { "tarball": "https://e/x-1.9.0.tgz" } },
+                "1.10.0": { "name": "x", "version": "1.10.0", "dist": { "tarball": "https://e/x-1.10.0.tgz" } },
+                "2.0.0": { "name": "x", "version": "2.0.0", "dist": { "tarball": "https://e/x-2.0.0.tgz" } }
+            }
+        })
+        .to_string();
+        let packument = Packument::parse(&document).expect("a document");
+
+        assert_eq!(packument.select(Some("^1.9")).expect("a match").version, "1.10.0");
+        assert_eq!(packument.select(Some("~1.9.0")).expect("a match").version, "1.9.0");
+        assert_eq!(packument.select(Some("1.10.0")).expect("exact").version, "1.10.0");
+        assert_eq!(packument.select(None).expect("latest").version, "1.9.0");
+        assert!(matches!(
+            packument.select(Some("^2")),
+            Ok(version) if version.version == "2.0.0"
+        ));
+        assert!(matches!(
+            packument.select(Some("^3")),
+            Err(super::SelectError::NoSuchVersion(_, _))
+        ));
+    }
+
+    #[test]
+    fn a_request_that_is_neither_a_version_nor_a_range_is_named() {
+        let packument = Packument::parse(DOCUMENT).expect("a document");
+        assert!(matches!(
+            packument.select(Some("not-a-version")),
+            Err(super::SelectError::NoSuchVersion(_, _))
+        ));
+    }
+
+    #[test]
+    fn a_document_without_a_latest_cannot_be_asked_for_nothing() {
+        let packument = Packument::parse(r#"{"name": "x"}"#).expect("a document");
+        assert!(matches!(
+            packument.select(None),
+            Err(super::SelectError::NoLatest(_))
         ));
     }
 }

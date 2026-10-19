@@ -22,8 +22,9 @@
 use std::path::Path;
 
 use synra_core::install::Installed;
-use synra_plugin_host::registry::{Packument, RegistryConfig, check_integrity};
+use synra_plugin_host::registry::{RegistryConfig, check_integrity};
 use synra_protocol::error::ErrorCode;
+use synra_registry::Packument;
 use synra_store::SynraDb;
 
 use synra_control::Refusal;
@@ -104,26 +105,23 @@ pub(crate) fn install_from_registry(
                 continue;
             }
         };
-        let packument = match Packument::parse(&mirror, &bytes) {
+        let packument = match std::str::from_utf8(&bytes)
+            .map_err(|error| error.to_string())
+            .and_then(|text| Packument::parse(text).map_err(|error| error.to_string()))
+        {
             Ok(packument) => packument,
             Err(error) => {
-                attempts.push((mirror, error.to_string()));
+                attempts.push((mirror, error));
                 continue;
             }
         };
-        let entry = match version {
-            Some(wanted) => packument.versions.get(wanted),
-            None => packument.tagged("latest"),
-        };
-        let Some(entry) = entry else {
-            return Err(Refusal::new(
-                ErrorCode::Unsupported,
-                format!(
-                    "`{package}` has no version {} in {}",
-                    version.unwrap_or("latest"),
-                    mirror
-                ),
-            ));
+        // ★ Exact, range or `latest` — the same decision the shell makes, in the same place. The old code compared the
+        // request with the version map's keys, so `^1.9` was "no such version" even when it matched several.
+        let entry = match packument.select(version) {
+            Ok(entry) => entry,
+            Err(error) => {
+                return Err(Refusal::new(ErrorCode::Unsupported, error.to_string()));
+            }
         };
         let Some(declared) = entry.dist.integrity.as_deref() else {
             // ★ No integrity is not "skip the check": there is nothing to check the bytes against, and installing them
@@ -301,7 +299,7 @@ mod tests {
         serde_json::json!({
             "name": "@acme/hello",
             "dist-tags": { "latest": "1.0.0" },
-            "versions": { "1.0.0": { "version": "1.0.0", "dist": serde_json::from_str::<serde_json::Value>(&dist).expect("JSON") } }
+            "versions": { "1.0.0": { "name": "@acme/hello", "version": "1.0.0", "dist": serde_json::from_str::<serde_json::Value>(&dist).expect("JSON") } }
         })
         .to_string()
         .into_bytes()

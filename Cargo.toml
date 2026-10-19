@@ -42,6 +42,9 @@ authors = ["imba97 <mail@imba97.cn>"]
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["raw_value", "preserve_order"] }
 compact_str = { version = "0.9", features = ["serde"] }
+# A registry version request is a semver range (`^1.2`, `~1.2.0`) at least as often as it is an exact version, and picking
+# the newest matching version is ordering, not string comparison. One implementation, in the crate that reads packuments.
+semver = "1"
 
 # ── 外部：字节与集合 ──
 bytes = "1"

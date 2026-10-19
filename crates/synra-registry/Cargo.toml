@@ -20,6 +20,9 @@ thiserror.workspace = true
 # extraction rules below are the point, and a helper that hides the entry list would hide the entries this refuses.
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 tar = "0.4"
+# Range resolution: the newest version a request matches is an ordering question, and a string comparison answers it wrong
+# for `1.10` against `1.9`.
+semver.workspace = true
 
 [lints]
 workspace = true
