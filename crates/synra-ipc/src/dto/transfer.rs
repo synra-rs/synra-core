@@ -8,6 +8,24 @@ use synra_protocol::{DeviceId, TransferId};
 // Transfers
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// A file that has landed in this device's inbox.
+///
+/// This is the history the in-flight list cannot be: `TransferFinished` removes the row, and the file stays. It is read
+/// from the inbox rather than from a table because the inbox is where the file actually is — a row that outlived the file
+/// would send a user to a path that no longer exists.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReceivedFile {
+    /// Its name, as it landed.
+    pub file_name: String,
+    /// Where it landed, so the user can open it.
+    pub path: String,
+    /// How large it is.
+    pub bytes: u64,
+    /// When it was last written, in milliseconds since the epoch.
+    pub received_at_ms: i64,
+}
+
 /// A transfer, as a row in the list.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

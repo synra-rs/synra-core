@@ -53,7 +53,7 @@ pub use plugin::{
     PluginHealthDto, PluginSnapshot, PublisherDto, RemoveOptionsDto, RemoveReport, SyncFailure, SyncPlanDto,
     SyncReport, SyncTarget, UpdateInfo,
 };
-pub use transfer::{SendFileRequest, SendTextRequest, TransferSnapshot, TransferSummary};
+pub use transfer::{ReceivedFile, SendFileRequest, SendTextRequest, TransferSnapshot, TransferSummary};
 
 #[cfg(test)]
 mod tests;

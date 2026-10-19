@@ -240,6 +240,9 @@ commands! {
     "transfer_cancel" => Transfer, Host, Unit, true;
     "transfer_respond" => Transfer, Host, Unit, true;
     "transfer_list" => Transfer, Host, Many, false;
+    // ★ The files that already landed. `transfer_list` is the in-flight registry and a finished transfer leaves it; the
+    // inbox is what remains, and it is read rather than remembered.
+    "transfer_received" => Transfer, Host, Many, false;
 
     // ── plugins ──
     "plugins_list" => Plugins, Host, Many, false;
@@ -501,6 +504,7 @@ mod tests {
             "transfer_cancel",
             "transfer_respond",
             "transfer_list",
+            "transfer_received",
             // plugins
             "plugins_list",
             "plugins_catalog_search",
