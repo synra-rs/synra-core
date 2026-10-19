@@ -1146,6 +1146,13 @@ fn a_plugin_at_the_bottom_of_the_ladder_is_faulted_and_refused() {
     // This is the join: the last rung of the ladder is a fault, and a faulted plugin is refused before it runs again.
     let backend = std::sync::Arc::new(ScriptedBackend::default());
     let mut set = PluginSet::new(Backend::new(std::sync::Arc::clone(&backend)), host());
+    // ★ The window learns about the move, not just about the refusal: `PluginHealthChanged` had no publisher before the
+    // sink existed, so a faulted card stayed green until the user re-read the list.
+    let reported = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let sink = std::sync::Arc::clone(&reported);
+    set = set.with_health_sink(std::sync::Arc::new(move |id, health, explanation| {
+        sink.lock().push((id.to_string(), health.to_owned(), explanation.to_owned()));
+    }));
     let name = "@synra/aaa-faults";
     load(&mut set, &backend, name, Scripted::Trap { detail: "boom".to_owned() });
     let plugin = id(name);
@@ -1178,4 +1185,10 @@ fn a_plugin_at_the_bottom_of_the_ladder_is_faulted_and_refused() {
         matches!(refused, Some(PluginSetError::Faulted { .. })),
         "a faulted plugin was still called: {refused:?}"
     );
+    let events = reported.lock();
+    assert!(
+        events.iter().any(|(id, health, _)| id == name && health == "faulted"),
+        "the window was never told about the fault: {events:?}"
+    );
+    drop(events);
 }

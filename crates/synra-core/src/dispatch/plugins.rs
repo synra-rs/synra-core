@@ -304,7 +304,19 @@ pub struct PluginSet {
     /// Shared rather than one per plugin, because the design's `gate_*` metrics are read as one series across plugins: the
     /// plugin is a **label** on a series, not a series of its own.
     metrics: Option<Arc<synra_observe::metrics::RingRecorder>>,
+    /// Where a health change goes, when a host has a window to tell.
+    ///
+    /// ★ Why this is a callback and not an event type here: `synra-core` does not own the event contract, and a kernel
+    /// that constructed IPC events would depend on the interface's vocabulary. The host passes what it wants done; the
+    /// event's field names are the host's business.
+    health_sink: Option<HealthSink>,
 }
+
+/// Where one health change goes.
+///
+/// The arguments are the plugin, the new rung's `snake_case` name and the ladder's own explanation. A boxed closure with
+/// three arguments rather than a trait, for the same reason [`AuditSink`] is one: there is exactly one thing it can do.
+pub type HealthSink = Arc<dyn Fn(&PluginId, &str, &str) + Send + Sync>;
 
 /// Where one audit record goes, besides the ring.
 ///
@@ -371,6 +383,7 @@ impl PluginSet {
             audit: synra_observe::audit::AuditRing::new(),
             audit_sink: None,
             metrics: None,
+            health_sink: None,
         }
     }
 
@@ -417,6 +430,13 @@ impl PluginSet {
     #[must_use]
     pub fn with_audit_sink(mut self, sink: AuditSink) -> Self {
         self.audit_sink = Some(sink);
+        self
+    }
+
+    /// The same set, telling a host when a plugin's health moves.
+    #[must_use]
+    pub fn with_health_sink(mut self, sink: HealthSink) -> Self {
+        self.health_sink = Some(sink);
         self
     }
 
@@ -799,13 +819,23 @@ impl PluginSet {
         // Here rather than inside `run_on` because this is where the clock is and where the plugin's own `Budget` is
         // reachable — `run_on` takes the *call* budget, which is a different type with a different job.
         if outcome.as_ref().is_ok_and(CallOutcome::is_misbehaviour) {
+            let before = loaded.authority.budget.health();
             loaded.authority.budget.record_misbehaviour(now_ms);
-            // ★ When the ladder reaches the bottom, the lifecycle follows it. A plugin that trapped, timed out or
-            // exhausted its fuel often enough is `Faulted`, and every later call is refused above until a user re-enables
-            // it (which reloads) — a health rung nobody enforces is a report, not a decision.
-            if loaded.authority.budget.health() == Health::Faulted {
-                let reason = loaded.authority.budget.report().explanation;
-                let _ = loaded.lifecycle.apply(Transition::Fault { reason });
+            let after = loaded.authority.budget.health();
+            // ★ The health rung is a fact the window can draw, and until this line nothing told it: `PluginHealthChanged`
+            // existed in the contract with no publisher. The sink is called only when the rung actually moved, so a
+            // plugin that traps ten times at `good` does not produce ten identical events.
+            if after != before {
+                let report = loaded.authority.budget.report();
+                if let Some(sink) = &self.health_sink {
+                    sink(id, &report.health, &report.explanation);
+                }
+                // ★ When the ladder reaches the bottom, the lifecycle follows it. A plugin that trapped, timed out or
+                // exhausted its fuel often enough is `Faulted`, and every later call is refused above until a user
+                // re-enables it (which reloads) — a health rung nobody enforces is a report, not a decision.
+                if after == Health::Faulted {
+                    let _ = loaded.lifecycle.apply(Transition::Fault { reason: report.explanation });
+                }
             }
             // ★ And the counter the plugin's card can show without reading its health ladder: a plugin that trapped five
             // times is a different story from one that has never run. The outcome is the protocol's own name (`trap`,
