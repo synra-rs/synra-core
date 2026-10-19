@@ -41,6 +41,10 @@ use synra_observe::crash::StartupVerdict;
 
 use crate::dispatch::{PluginSet, PluginSpec};
 
+mod discovery;
+
+pub use discovery::{Discovered, record_discovered_plugins};
+
 /// How many instances one plugin may have.
 ///
 /// # Why this is a constant here rather than in the manifest
