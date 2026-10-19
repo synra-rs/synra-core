@@ -309,6 +309,7 @@ fn a_plugin_snapshot_reports_its_state_rather_than_leaving_it_to_be_derived() {
         publisher: "synra-official".to_owned(),
         enabled: true,
         state: "faulted".to_owned(),
+        state_reason: None,
         hybrid: true,
         has_ui: true,
         health: None,

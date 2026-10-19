@@ -39,6 +39,17 @@ pub struct PluginSnapshot {
     /// enabled but faulted is a state the user has to be told about, and deriving it in the interface would mean
     /// two implementations of the same rule.
     pub state: String,
+    /// Why it is not running, when the host knows a reason the state word cannot carry.
+    ///
+    /// ★ The state word says *what* (`unavailable`, `unreadable`); this says *why*, in the sentence the layer that
+    /// decided produced. Safe mode is the case that made it necessary: every plugin is `unavailable` because the host
+    /// chose not to start any of them after a crash loop, and a user who is told only "unavailable" goes looking for a
+    /// broken plugin instead of the crash they need to see.
+    ///
+    /// Omitted rather than `null` when there is nothing to say, so "no reason recorded" and "the host had no reason"
+    /// are the same absent field the page already handles.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state_reason: Option<String>,
     /// Whether it has both halves.
     pub hybrid: bool,
     /// Whether it has a page of its own.
