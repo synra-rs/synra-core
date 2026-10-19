@@ -172,8 +172,18 @@ impl Kernel for Runtime {
             host.dialling_parts()
         };
         let handshake_now = synra_core::reading_millis(now);
-        let dialled = synra_core::dial_peer(&parts.0, parts.1, address, None, handshake_now)
-            .map_err(|error| refusal_of(&error))?;
+        let dialled = synra_core::retry::with_retries(
+            synra_core::retry::ATTEMPTS,
+            |_| {
+                synra_core::dial_peer(&parts.0, parts.1, address, None, handshake_now)
+                    .map_err(|error| refusal_of(&error))
+            },
+            |attempt| {
+                std::thread::sleep(std::time::Duration::from_millis(
+                    100 * (u64::try_from(attempt).unwrap_or(0) + 1),
+                ));
+            },
+        )?;
         let mut host = self.host.lock();
         let mut link = host
             .adopt(dialled, handshake_now)
@@ -705,8 +715,18 @@ impl Kernel for Runtime {
             host.dialling_parts()
         };
         let handshake_now = synra_core::reading_millis(now);
-        let dialled = synra_core::dial_peer(&parts.0, parts.1, address, None, handshake_now)
-            .map_err(|error| refusal_of(&error))?;
+        let dialled = synra_core::retry::with_retries(
+            synra_core::retry::ATTEMPTS,
+            |_| {
+                synra_core::dial_peer(&parts.0, parts.1, address, None, handshake_now)
+                    .map_err(|error| refusal_of(&error))
+            },
+            |attempt| {
+                std::thread::sleep(std::time::Duration::from_millis(
+                    100 * (u64::try_from(attempt).unwrap_or(0) + 1),
+                ));
+            },
+        )?;
         let mut host = self.host.lock();
         let mut link = host
             .adopt(dialled, handshake_now)
@@ -934,8 +954,18 @@ impl Runtime {
             host.dialling_parts()
         };
         let handshake_now = synra_core::reading_millis(now);
-        let dialled = synra_core::dial_peer(&parts.0, parts.1, address, None, handshake_now)
-            .map_err(|error| refusal_of(&error))?;
+        let dialled = synra_core::retry::with_retries(
+            synra_core::retry::ATTEMPTS,
+            |_| {
+                synra_core::dial_peer(&parts.0, parts.1, address, None, handshake_now)
+                    .map_err(|error| refusal_of(&error))
+            },
+            |attempt| {
+                std::thread::sleep(std::time::Duration::from_millis(
+                    100 * (u64::try_from(attempt).unwrap_or(0) + 1),
+                ));
+            },
+        )?;
         let mut host = self.host.lock();
         let mut link = host
             .adopt(dialled, handshake_now)
@@ -1128,8 +1158,18 @@ impl Runtime {
                 host.dialling_parts()
             };
             let handshake_now = synra_core::reading_millis(now);
-            let dialled = synra_core::dial_peer(&parts.0, parts.1, address, None, handshake_now)
-                .map_err(|error| refusal_of(&error))?;
+            let dialled = synra_core::retry::with_retries(
+            synra_core::retry::ATTEMPTS,
+            |_| {
+                synra_core::dial_peer(&parts.0, parts.1, address, None, handshake_now)
+                    .map_err(|error| refusal_of(&error))
+            },
+            |attempt| {
+                std::thread::sleep(std::time::Duration::from_millis(
+                    100 * (u64::try_from(attempt).unwrap_or(0) + 1),
+                ));
+            },
+        )?;
             let mut host = self.host.lock();
             let mut link = host
                 .adopt(dialled, handshake_now)

@@ -824,42 +824,9 @@ fn answer_kernel_event(
 /// intent `dispatching` although the action succeeded — is the state this exists to remove. The event is the same
 /// `INTENT_RESULT`; the origin's listener applies it with `orchestrate::apply_result`, which ignores a result for work it
 /// is no longer waiting on, so a late duplicate is harmless.
-/// How many times a late answer is dialled before the failure is reported.
 ///
-/// # Why retrying at all
-///
-/// Because the ordinary reason a dial to the origin fails is that the origin's listener is briefly busy — it is the same
-/// process that just answered this device — and a second attempt a moment later usually reaches it. Three attempts with a
-/// short pause each cost at most a few hundred milliseconds inside a connection thread, and they turn "the answer was
-/// lost" into "the answer arrived a moment late".
-///
-/// This is **not** the design's reconnect mechanism and not a queue: nothing survives the process, and an origin that is
-/// gone for longer than the pause is still lost. The `late_delivery_attempts_total` counter is what makes that visible.
-const LATE_DELIVERY_ATTEMPTS: usize = 3;
-
-/// Dials, retrying a failure a bounded number of times.
-///
-/// Split out so the retry decision is testable without a socket: the network is the argument, not the thing under test.
-fn dial_with_retries<T>(
-    attempts: usize,
-    mut dial: impl FnMut(usize) -> Result<T, String>,
-    mut pause: impl FnMut(usize),
-) -> Result<T, String> {
-    let mut last = String::new();
-    for attempt in 0..attempts {
-        match dial(attempt) {
-            Ok(value) => return Ok(value),
-            Err(error) => {
-                last = error;
-                if attempt + 1 < attempts {
-                    pause(attempt);
-                }
-            }
-        }
-    }
-    Err(last)
-}
-
+/// The retry decision is [`crate::retry::with_retries`]: the same bound and pause the daemon uses for an ordinary send, so
+/// the two paths cannot drift about how many times a listener is given.
 fn deliver_late(host: &Arc<Mutex<Host>>, envelope: &Envelope) -> Result<(), String> {
     let address = {
         let host = host.lock();
@@ -879,7 +846,7 @@ fn deliver_late(host: &Arc<Mutex<Host>>, envelope: &Envelope) -> Result<(), Stri
         host.lock().count_late_delivery(if result.is_ok() { "delivered" } else { "retry" });
         result
     };
-    let dialled = match dial_with_retries(LATE_DELIVERY_ATTEMPTS, &mut attempt_dial, |attempt| {
+    let dialled = match crate::retry::with_retries(crate::retry::ATTEMPTS, &mut attempt_dial, |attempt| {
         // 100 ms, then 200 ms: enough for a listener that is shutting down a previous connection to come back, short
         // enough that a peer which is truly gone does not hold this thread.
         std::thread::sleep(Duration::from_millis(100 * (u64::try_from(attempt).unwrap_or(0) + 1)));
@@ -960,57 +927,4 @@ pub type FinishedCallback =
 #[must_use]
 pub fn no_answer() -> FinishedCallback {
     Arc::new(|_| None)
-}
-
-#[cfg(test)]
-mod retry_tests {
-    use super::dial_with_retries;
-
-    #[test]
-    fn a_dial_is_retried_before_it_gives_up() {
-        // ★ The decision under test: a first failure is not a final one, and the number of attempts is bounded.
-        let mut attempts = 0;
-        let succeeded = dial_with_retries(
-            3,
-            |_| {
-                attempts += 1;
-                if attempts < 3 {
-                    Err("the listener was busy".to_owned())
-                }
-                else {
-                    Ok(42)
-                }
-            },
-            |_| {},
-        );
-        assert_eq!(succeeded, Ok(42));
-        assert_eq!(attempts, 3, "the third attempt is the one that reached it");
-
-        let mut attempts = 0;
-        let failed = dial_with_retries(
-            3,
-            |_| {
-                attempts += 1;
-                Err::<u8, _>("still gone".to_owned())
-            },
-            |_| {},
-        );
-        assert_eq!(failed, Err("still gone".to_owned()));
-        assert_eq!(attempts, 3, "a permanent failure stops at the bound, not at one attempt");
-    }
-
-    #[test]
-    fn a_first_success_is_not_retried() {
-        let mut attempts = 0;
-        let succeeded = dial_with_retries(
-            3,
-            |_| {
-                attempts += 1;
-                Ok::<u8, String>(1)
-            },
-            |_| panic!("a pause must not follow a success"),
-        );
-        assert_eq!(succeeded, Ok(1));
-        assert_eq!(attempts, 1);
-    }
 }
