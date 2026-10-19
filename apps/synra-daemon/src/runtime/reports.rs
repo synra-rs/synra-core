@@ -17,6 +17,21 @@ impl Runtime {
     /// `session` became real, and each removal was made because the feature worked rather than because the list was
     /// inconvenient. Adding a name back means a command genuinely refuses for a missing layer.
     pub(super) fn status_value(&self, now_ms: u64) -> serde_json::Value {
+        // ★ The log's counters are gauges in the same report, so a reader of `status` sees the same numbers `synra logs`
+        // names. `None` (logging not running) writes no gauges rather than zeroes, which keeps "not running" distinguishable
+        // from "running and quiet".
+        if let Some(stats) = &self.log_stats {
+            for (name, value) in [
+                ("log_lines", stats.lines()),
+                ("log_dropped", stats.dropped()),
+                ("log_write_errors", stats.write_errors()),
+            ] {
+                self.metrics.gauge_set(
+                    &synra_observe::metrics::SeriesKey::new(name, Vec::new()),
+                    i64::try_from(value).unwrap_or(i64::MAX),
+                );
+            }
+        }
         // ★ The schema version and the row counts are read rather than described. A status that said "database: ok"
         // without asking would be a status that cannot be wrong — and therefore one that cannot tell a user anything.
         let schema = self.db().recorded_version().ok().flatten();
