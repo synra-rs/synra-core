@@ -129,10 +129,12 @@ fn updating_replaces_the_copy_and_keeps_the_users_decision() {
     let (version, digest) = db.active_plugin_version("@acme/hello").expect("the active version").expect("one");
     assert_eq!(version, "2.0.0");
     assert!(!digest.is_empty(), "the new artifact's digest is recorded");
-    // The update left no backup beside the plugin: the old directory is deleted only once the version row lands.
+    // The update left no backup beside the plugin: the old directory is deleted only once the version row lands. The
+    // installed directory is the **sanitised** identifier (`acme+hello`), so the assertion is about the backup's name
+    // rather than about a prefix.
     assert!(
         std::fs::read_dir(plugins(dir.path())).expect("the plugins directory").all(|entry| {
-            entry.expect("an entry").file_name().to_string_lossy().starts_with("@acme")
+            !entry.expect("an entry").file_name().to_string_lossy().starts_with("previous-")
         }),
         "an update backup was left behind"
     );

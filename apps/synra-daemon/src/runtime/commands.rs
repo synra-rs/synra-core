@@ -286,15 +286,18 @@ impl Kernel for Runtime {
         let plugins = self.plugins.lock();
         let backend = plugins.backend();
         let mut db = self.db.lock();
-        let outcome = crate::runtime::install_from_directory(
-            &mut db,
-            backend,
-            &self.plugins_dir,
-            std::path::Path::new(path),
+        // ★ A path that is a file is a `.synra` package; one that is a directory is the unpacked form. Refusing the file
+        // made the documented "install a plugin from a path" mean only one of the two shapes the product produces.
+        let source = std::path::Path::new(path);
+        let now = i64::try_from(now_ms()).unwrap_or(i64::MAX);
+        let outcome = if source.is_file() {
+            crate::runtime::install_from_package(&mut db, backend, &self.plugins_dir, source, now)
+        }
+        else {
             // The runtime's clock is `u64` and the database stamps `i64`; saturating rather than `as`, the same
             // direction as every other stamp in this host — a clock past 2262 should let the daemon run.
-            i64::try_from(now_ms()).unwrap_or(i64::MAX),
-        );
+            crate::runtime::install_from_directory(&mut db, backend, &self.plugins_dir, source, now)
+        };
         drop(db);
         drop(plugins);
 

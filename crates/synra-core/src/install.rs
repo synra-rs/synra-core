@@ -354,7 +354,11 @@ fn from_directory_inner(
     //
     // A staging directory beside the destination and one rename: a plugin directory that exists is one `load_one`
     // will look at, so half an install must never be visible under the name it will be loaded from.
-    let destination = plugins_dir.join(&plugin_id);
+    // ★ The directory name is the **sanitised** identifier, not the raw one. A scoped id (`@acme/hello`) contains a
+    // separator, so joining it raw produced `plugins/@acme/hello` — nested two levels deep — while `Paths::plugin_dir`,
+    // the removal, the sweep and the data sandbox all name `plugins/acme+hello`. The installer was the one place that
+    // disagreed, which made an uninstall delete a directory that never existed while the artifact stayed beside it.
+    let destination = plugins_dir.join(synra_store::sanitise_component(&plugin_id));
     // An update replaces exactly this directory; an install has nothing to replace and refuses rather than overwriting a
     // copy the user did not ask to lose.
     if destination.exists() && !replace {
@@ -618,6 +622,41 @@ pub fn from_package(
     now_ms: i64,
     host: HostFacts,
 ) -> Result<Installed, InstallRefusal> {
+    from_package_inner(db, backend, plugins_dir, archive, now_ms, host, false)
+}
+
+/// Replaces the installed version of a plugin with the package at `archive`.
+///
+/// # Why this exists
+///
+/// Because an update can arrive as a `.synra` file just as easily as a directory — the interface's "install a package"
+/// flow selects a file — and the only difference from [`from_package`] is the last step: the old directory is moved aside
+/// rather than the package being refused for an identifier that is already installed.
+///
+/// # Errors
+///
+/// As [`from_package`], plus `update` when nothing is installed at the identifier.
+pub fn update_from_package(
+    db: &mut synra_store::SynraDb,
+    backend: &Backend,
+    plugins_dir: &Path,
+    archive: &Path,
+    now_ms: i64,
+    host: HostFacts,
+) -> Result<Installed, InstallRefusal> {
+    from_package_inner(db, backend, plugins_dir, archive, now_ms, host, true)
+}
+
+#[allow(clippy::too_many_arguments, reason = "the package's inputs, plus whether it replaces an installed copy")]
+fn from_package_inner(
+    db: &mut synra_store::SynraDb,
+    backend: &Backend,
+    plugins_dir: &Path,
+    archive: &Path,
+    now_ms: i64,
+    host: HostFacts,
+    replace: bool,
+) -> Result<Installed, InstallRefusal> {
     let staging_root = plugins_dir.parent().unwrap_or(plugins_dir).join(".install-staging");
     std::fs::create_dir_all(&staging_root)
         .map_err(|error| InstallRefusal::new("archive", format!("{}: {error}", staging_root.display())))?;
@@ -645,7 +684,12 @@ pub fn from_package(
             return Err(InstallRefusal::new("archive", error.to_string()));
         }
     };
-    let outcome = from_directory(db, backend, plugins_dir, &unpacked, now_ms, host);
+    let outcome = if replace {
+        update_from_directory(db, backend, plugins_dir, &unpacked, now_ms, host)
+    }
+    else {
+        from_directory(db, backend, plugins_dir, &unpacked, now_ms, host)
+    };
     discard_unpacked(&unpacked, &written);
     // ★ The unpacked directory is about to disappear, so the note the inner install wrote names a path that will not
     // exist. Rewrite it with the archive the user actually has: a reinstall list that pointed at a deleted temporary
@@ -822,8 +866,13 @@ mod tests {
 
     /// A manifest naming one headless artifact, in the shape the verifier accepts.
     fn manifest() -> String {
+        manifest_version("1.0.0")
+    }
+
+    /// The same manifest at another version, for the update tests.
+    fn manifest_version(version: &str) -> String {
         format!(
-            r#"{{"id": "@acme/hello", "version": "1.0.0", "title": "Hello",
+            r#"{{"id": "@acme/hello", "version": "{version}", "title": "Hello",
                 "publisher": {{"id": "@acme"}}, "sdk": {{"min": "0.1.0"}},
                 "wit": "{}",
                 "capabilities": [{{"cap": "log:*"}}],
@@ -866,6 +915,9 @@ mod tests {
 
         assert_eq!(installed.plugin_id, "@acme/hello");
         assert_eq!(installed.version, "1.0.0");
+        // ★ The sanitised name, which is what `Paths::plugin_dir`, the removal and the sweep all use. A scoped id used raw
+        // put the artifact two levels down and made an uninstall delete a directory that never existed.
+        assert_eq!(installed.path, plugins.join("acme+hello"));
         assert!(installed.path.join("manifest.json").is_file(), "the manifest was not written");
         assert!(installed.path.join("plugin.wasm").is_file(), "the artifact was not written");
         // ★ The origin travels with the copy: a backup can list the plugin, and only this note can say where to get it
@@ -885,6 +937,55 @@ mod tests {
         assert!(
             !root.join(".install-staging").read_dir().expect("the staging directory").any(|_| true),
             "the unpacked archive was left behind"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_package_can_replace_an_installed_plugin() {
+        // ★ The update path for the interface's "install a package" flow: the same `.synra`, replacing the directory rather
+        // than being refused because the identifier is already installed.
+        let root = scratch("package-update");
+        let first = root.join("first");
+        write_source(&first);
+        let plugins = root.join("plugins");
+        std::fs::create_dir_all(&plugins).expect("the plugins directory");
+        let first_archive = root.join("hello-1.synra");
+        package_directory(&first, &first_archive).expect("the first package");
+        let mut db = database();
+        from_package(&mut db, &backend(), &plugins, &first_archive, 1_000, HostFacts::headless())
+            .expect("installs");
+
+        let second = root.join("second");
+        std::fs::create_dir_all(&second).expect("the second source");
+        std::fs::write(second.join("manifest.json"), manifest_version("2.0.0")).expect("a manifest");
+        std::fs::write(second.join("plugin.wasm"), b"\0asm\x01\0\0\0").expect("an artifact");
+        let second_archive = root.join("hello-2.synra");
+        package_directory(&second, &second_archive).expect("the second package");
+
+        let updated = update_from_package(
+            &mut db,
+            &backend(),
+            &plugins,
+            &second_archive,
+            2_000,
+            HostFacts::headless(),
+        )
+        .expect("updates");
+        assert_eq!(updated.version, "2.0.0");
+        assert_eq!(
+            db.active_plugin_version("@acme/hello").expect("a version").map(|(version, _)| version),
+            Some("2.0.0".to_owned()),
+            "the version row did not move"
+        );
+        let note: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(updated.path.join("source.json")).expect("the source note"),
+        )
+        .expect("source.json is JSON");
+        assert_eq!(
+            std::fs::canonicalize(PathBuf::from(note["path"].as_str().expect("a path"))).expect("canonical"),
+            std::fs::canonicalize(&second_archive).expect("a canonical archive"),
+            "the note should name the package that replaced the first one"
         );
         let _ = std::fs::remove_dir_all(&root);
     }

@@ -33,5 +33,21 @@ pub fn from_directory(
     synra_core::install::from_directory(db, backend, plugins_dir, source, now_ms, HostFacts::headless())
 }
 
+/// Installs the plugin in a `.synra` package, after verifying it.
+///
+/// # Errors
+///
+/// [`InstallRefusal`] naming the step that refused; as [`from_directory`], plus `archive` for a package the unpacking
+/// rules refuse.
+pub fn from_package(
+    db: &mut synra_store::SynraDb,
+    backend: &Backend,
+    plugins_dir: &Path,
+    archive: &Path,
+    now_ms: i64,
+) -> Result<Installed, InstallRefusal> {
+    synra_core::install::from_package(db, backend, plugins_dir, archive, now_ms, HostFacts::headless())
+}
+
 #[cfg(test)]
 mod tests;
