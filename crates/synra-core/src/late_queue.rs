@@ -31,6 +31,13 @@ pub const MAX_ATTEMPTS: u32 = 10;
 /// How long an answer may wait before it is dropped as stale.
 pub const MAX_AGE_MS: i64 = 24 * 60 * 60 * 1000;
 
+/// How many answers may wait at once.
+///
+/// ★ A bound on the **queue**, not only on one entry: ten attempts and a day are per answer, and a device that is gone while
+/// this one keeps producing answers would otherwise fill the data directory with files that will all be dropped after a day
+/// anyway. Past this, the oldest entry is removed first — it is the one closest to its own expiry.
+pub const MAX_ENTRIES: usize = 100;
+
 /// The directory under the data directory that holds the queue.
 pub const DIRECTORY: &str = "late-results";
 
@@ -96,11 +103,55 @@ impl LateQueue {
     /// queue that cannot be written is a warning rather than a reason to fail the work that produced the answer.
     pub fn push(&self, envelope: &Envelope, now_ms: i64) -> Result<(), String> {
         std::fs::create_dir_all(&self.directory).map_err(|error| error.to_string())?;
+        self.prune_for_one_more();
         let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let name = format!("late-{now_ms}-{}-{sequence}.json", std::process::id());
         let entry = Entry { envelope: envelope.clone(), attempts: 0, queued_ms: now_ms };
         let bytes = serde_json::to_vec(&entry).map_err(|error| error.to_string())?;
         std::fs::write(self.directory.join(name), bytes).map_err(|error| error.to_string())
+    }
+
+    /// How many answers are waiting.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        let Ok(entries) = std::fs::read_dir(&self.directory) else {
+            return 0;
+        };
+        entries
+            .flatten()
+            .filter(|entry| entry.path().extension().is_some_and(|extension| extension == "json"))
+            .count()
+    }
+
+    /// Whether nothing is waiting.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Removes the oldest entries until one more fits under [`MAX_ENTRIES`].
+    ///
+    /// The name starts with the queue time, so sorting the file names is sorting by age — and a file whose name is not one
+    /// of this queue's is left alone. A failure to remove is not worth failing the push: the bound is a cleanup, and the
+    /// answer being written is the one that matters.
+    fn prune_for_one_more(&self) {
+        while self.len() >= MAX_ENTRIES {
+            let Ok(entries) = std::fs::read_dir(&self.directory) else {
+                return;
+            };
+            let mut names: Vec<PathBuf> = entries
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| path.extension().is_some_and(|extension| extension == "json"))
+                .collect();
+            names.sort();
+            let Some(oldest) = names.first() else {
+                return;
+            };
+            if std::fs::remove_file(oldest).is_err() {
+                return;
+            }
+        }
     }
 
     /// Reads the entries that may still be tried, dropping the ones that are too old.
@@ -234,6 +285,23 @@ use synra_protocol::{DeviceId, RequestId, TraceId};
         assert_eq!(due.len(), 1);
         assert_eq!(due[0].attempts, 0);
         assert_eq!(due[0].envelope.request_id, before.request_id);
+    }
+
+    #[test]
+    fn the_queue_is_bounded_by_dropping_the_oldest() {
+        let scratch = Scratch::new("bounded");
+        let queue = LateQueue::in_data_dir(&scratch.0);
+        for index in 0..MAX_ENTRIES {
+            queue.push(&envelope(), i64::try_from(index).expect("small") + 1).expect("queued");
+        }
+        assert_eq!(queue.len(), MAX_ENTRIES);
+        queue.push(&envelope(), 10_000).expect("queued");
+        assert_eq!(queue.len(), MAX_ENTRIES, "the queue grew past its bound");
+        let due = queue.due(10_000);
+        assert!(
+            !due.iter().any(|pending| pending.queued_ms == 1),
+            "the oldest entry should have been the one removed"
+        );
     }
 
     #[test]

@@ -810,10 +810,13 @@ fn answer_kernel_event(
                     match LateQueue::in_data_dir(data_dir)
                         .push(&reply, synra_store::sqlite::now_ms())
                     {
-                        Ok(()) => eprintln!(
-                            "synra-daemon: the answer to {event} for {} is queued for a later attempt ({error})",
-                            reply.target
-                        ),
+                        Ok(()) => {
+                            host.lock().count_late_delivery("queued");
+                            eprintln!(
+                                "synra-daemon: the answer to {event} for {} is queued for a later attempt ({error})",
+                                reply.target
+                            );
+                        }
                         Err(queue_error) => eprintln!(
                             "synra-daemon: the answer to {event} for {} could not be delivered ({error}) or queued ({queue_error})",
                             reply.target

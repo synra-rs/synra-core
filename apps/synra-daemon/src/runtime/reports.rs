@@ -41,6 +41,14 @@ impl Runtime {
                 .collect::<serde_json::Map<String, serde_json::Value>>()
         });
 
+        // ★ The backlog of late answers, as a gauge: a growing queue is a device that has been unreachable long enough that
+        // the answers are close to their own expiry.
+        self.metrics.gauge_set(
+            &synra_observe::metrics::SeriesKey::new("late_results", Vec::new()),
+            i64::try_from(synra_core::late_queue::LateQueue::in_data_dir(&self.data_dir).len())
+                .unwrap_or(i64::MAX),
+        );
+
         serde_json::json!({
             "state": "running",
             "version": self.version,
