@@ -158,6 +158,24 @@ pub enum SelectError {
     NoSuchVersion(String, String),
 }
 
+/// Whether `candidate` is a genuine upgrade over `installed`.
+///
+/// # Why equality is not enough
+///
+/// Because a device can hold a version **newer** than the registry's `latest`: a rollback, a local build, a mirror that has
+/// not caught up. Reporting that as an update offers the user a downgrade under the word "update". Semantic versions are
+/// ordered; strings are not — `2.0.0-rc.1` is older than `2.0.0`, and `1.10.0` is newer than `1.9.0`.
+///
+/// A version that is not semver cannot be ordered, so the answer falls back to "different is an update" — the behaviour
+/// before this existed, kept for the builds that publish date-style versions rather than making their update check fail.
+#[must_use]
+pub fn is_newer(candidate: &str, installed: &str) -> bool {
+    match (semver::Version::parse(candidate), semver::Version::parse(installed)) {
+        (Ok(candidate), Ok(installed)) => candidate > installed,
+        _ => candidate != installed,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Packument, PackumentError};
@@ -229,6 +247,21 @@ mod tests {
             Packument::parse(r#"{"name": "x"}"#),
             Ok(packument) if packument.latest().is_none()
         ));
+    }
+
+    #[test]
+    fn only_a_genuinely_newer_version_is_an_update() {
+        // ★ Equality was the old rule, so an installed 2.0 with a registry latest of 1.9 was reported as "an update to
+        // 1.9" — a downgrade under the wrong word. Semver orders; strings do not.
+        assert!(super::is_newer("1.10.0", "1.9.0"));
+        assert!(super::is_newer("2.0.0", "1.9.0"));
+        assert!(!super::is_newer("1.9.0", "1.10.0"), "a downgrade is not an update");
+        assert!(!super::is_newer("2.0.0", "2.0.0"), "the same version is not an update");
+        assert!(super::is_newer("2.0.0", "2.0.0-rc.1"), "a release is newer than its candidate");
+        assert!(!super::is_newer("2.0.0-rc.1", "2.0.0"), "a candidate is older than its release");
+        // A non-semver version has no order, so the honest fallback is "different".
+        assert!(super::is_newer("2026-10-19", "2026-10-18"));
+        assert!(!super::is_newer("2026-10-19", "2026-10-19"));
     }
 
     #[test]
