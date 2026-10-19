@@ -369,7 +369,13 @@ fn loading_one_plugin_records_it_without_claiming_the_rest() {
     .expect("it loads");
     summary.record_loaded(id);
     assert_eq!(summary.len(), 1);
-    assert!(summary.contains(&PluginId::try_from("@acme/hello".to_owned()).expect("an id")));
+    let plugin = PluginId::try_from("@acme/hello".to_owned()).expect("an id");
+    assert!(summary.contains(&plugin));
+    // ★ The loader drives the ladder to its last rung: granted, then active. A set that stops at `Granted` cannot tell a
+    // plugin that answered `activate` from one that never ran, and that difference is the card's whole state.
+    let lifecycle = set.lifecycle(&plugin).expect("the lifecycle was dropped with the load");
+    assert!(lifecycle.is_running(), "it is loaded but not marked active: {:?}", lifecycle.state());
+    assert!(lifecycle.granted_digest().is_some(), "the manifest the user confirmed is not recorded");
 
     // A refusal recorded later replaces the claim for that plugin rather than leaving two answers.
     summary.record_refused("@acme/hello", "the engine refused it".to_owned());

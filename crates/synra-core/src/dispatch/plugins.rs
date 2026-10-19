@@ -35,7 +35,7 @@ use parking_lot::Mutex;
 use synra_capability::CapabilitySet;
 use synra_plugin_host::{
     Backend, BackendError, CallBudget, CallOutcome, CompiledArtifact, Health, InstancePolicy,
-    PluginInstance,
+    Lifecycle, PluginInstance, Transition,
 };
 use synra_protocol::ids::PluginId;
 
@@ -98,6 +98,14 @@ pub enum PluginSetError {
         /// The imported host function, as the component's own type reports it.
         import: String,
     },
+
+    /// The lifecycle refused a move the loader thought it was making.
+    ///
+    /// A bug rather than a user-visible condition: the loader's steps are installed → validated → granted, and every one
+    /// of them is legal from the previous state. It is an error instead of a panic so a corrupt plugin cannot take the
+    /// kernel down, and it names the move so a log line is enough to find where the pair diverged.
+    #[error("the lifecycle refused the move: {0}")]
+    Lifecycle(String),
 }
 
 impl PluginSetError {
@@ -144,6 +152,11 @@ pub struct PluginSpec {
 /// One loaded plugin: its compiled form, its grants, and the pool its instances come from.
 struct Loaded {
     version: String,
+    /// Where this plugin is in its life: installed, validated, granted, active, faulted.
+    ///
+    /// Stored beside the compiled form rather than derived on read, because the transitions are what make the ladder
+    /// meaningful: a state recomputed from flags cannot refuse a move, and a refusal is the only thing it is for.
+    lifecycle: Lifecycle,
     compiled: Box<dyn CompiledArtifact>,
     pool: synra_plugin_host::InstancePool,
     live: HashMap<u64, Box<dyn PluginInstance>>,
@@ -554,6 +567,23 @@ impl PluginSet {
     /// artifact imports a host function its capabilities do not cover. A plugin already loaded is replaced, because a
     /// reinstall is how an update arrives and refusing the second write would make updates depend on a clean shutdown.
     pub fn load(&mut self, spec: PluginSpec) -> Result<(), PluginSetError> {
+        // A caller that has no digest or consent detail still gets a lifecycle that records what it did; the two steps
+        // are installed → validated → granted, and the empty digest is a fact about the caller rather than a bypass.
+        self.load_with_lifecycle(spec, String::new(), false)
+    }
+
+    /// Loads a plugin and records the manifest digest and consent outcome it was loaded under.
+    ///
+    /// # Errors
+    ///
+    /// The same refusals as [`Self::load`], plus [`PluginSetError::Lifecycle`] if the state machine will not make one of
+    /// the two moves every load performs.
+    pub fn load_with_lifecycle(
+        &mut self,
+        spec: PluginSpec,
+        manifest_digest: String,
+        partially_denied: bool,
+    ) -> Result<(), PluginSetError> {
         let compiled = self.backend.compile(&spec.wasm, spec.id.as_str())?;
 
         // ★ The load-time import check, which had no caller until now.
@@ -579,12 +609,21 @@ impl PluginSet {
             });
         }
 
+        let mut lifecycle = Lifecycle::installed(spec.version.clone());
+        lifecycle
+            .apply(Transition::Validate { manifest_digest })
+            .map_err(|error| PluginSetError::Lifecycle(error.to_string()))?;
+        lifecycle
+            .apply(Transition::Grant { partially_denied })
+            .map_err(|error| PluginSetError::Lifecycle(error.to_string()))?;
+
         let pool = synra_plugin_host::InstancePool::new(spec.policy, spec.limit);
         pool.start();
         self.loaded.insert(
             spec.id.clone(),
             Loaded {
                 version: spec.version,
+                lifecycle,
                 compiled,
                 pool,
                 live: HashMap::new(),
@@ -625,6 +664,32 @@ impl PluginSet {
     #[must_use]
     pub fn version(&self, id: &PluginId) -> Option<&str> {
         self.loaded.get(id).map(|loaded| loaded.version.as_str())
+    }
+
+    /// Where a loaded plugin is in its lifecycle, or `None` when it is not loaded.
+    ///
+    /// The state is the machine's, not a rendering of the loader's flags: a plugin that is compiled but has not answered
+    /// `activate` is `Granted`, and the caller that shows a state can say which step is missing.
+    #[must_use]
+    pub fn lifecycle(&self, id: &PluginId) -> Option<&Lifecycle> {
+        self.loaded.get(id).map(|loaded| &loaded.lifecycle)
+    }
+
+    /// Records that a loaded plugin answered its `activate`.
+    ///
+    /// # Errors
+    ///
+    /// [`PluginSetError::NotLoaded`] if it is not here, and [`PluginSetError::Lifecycle`] if the machine refuses the
+    /// move — which would mean the loader activated something it had not finished validating.
+    pub fn mark_active(&mut self, id: &PluginId) -> Result<(), PluginSetError> {
+        let Some(loaded) = self.loaded.get_mut(id) else {
+            return Err(PluginSetError::NotLoaded { id: id.clone() });
+        };
+        loaded
+            .lifecycle
+            .apply(Transition::Activate)
+            .map_err(|error| PluginSetError::Lifecycle(error.to_string()))?;
+        Ok(())
     }
 
     /// Forgets a plugin, dropping its compiled form and every instance of it.

@@ -302,19 +302,26 @@ pub fn load_plugin_with_config(
     }
 
     let grants = granted_of(&decisions)?;
+    // ★ "Granted" is not "granted everything". A decision row that says no is what makes the lifecycle's
+    // `partially_denied` true, and the state machine records it rather than inferring it from a later call refusal.
+    let partially_denied = decisions.iter().any(|decision| !decision.granted);
     let policy = if headless.stateful { InstancePolicy::Stateful } else { InstancePolicy::Stateless };
     // The documented default allowance. A manifest does not declare a quota yet, so there is nothing more specific to
     // take it from — and a number invented here would be a limit the plugin's author never agreed to.
     let quota = synra_plugin_host::quota::Quota::default();
-    set.load(PluginSpec {
-        id: id.clone(),
-        version: manifest.version.clone(),
-        wasm,
-        grants,
-        policy,
-        limit: INSTANCE_LIMIT,
-        quota: quota.clone(),
-    })
+    set.load_with_lifecycle(
+        PluginSpec {
+            id: id.clone(),
+            version: manifest.version.clone(),
+            wasm,
+            grants,
+            policy,
+            limit: INSTANCE_LIMIT,
+            quota: quota.clone(),
+        },
+        digest,
+        partially_denied,
+    )
     .map_err(|error| error.to_string())?;
 
     // ★ Loading is not activation. The design's `enable` is *activating*: compile, then call the plugin's own
@@ -328,6 +335,12 @@ pub fn load_plugin_with_config(
         set.unload(&id);
         return Err(format!("it loaded but did not activate: {reason}"));
     }
+    // ★ The last rung. Without this the set would say every loaded plugin is merely `Granted`, which is exactly the
+    // state a plugin that refused `activate` would have — and the difference is the one the user needs to see.
+    set.mark_active(&id).map_err(|error| {
+        set.unload(&id);
+        error.to_string()
+    })?;
     Ok(id)
 }
 

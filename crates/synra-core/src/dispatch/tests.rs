@@ -1111,3 +1111,30 @@ fn a_real_guest_that_loops_is_stopped_without_costing_the_others() {
         );
     }
 }
+
+#[test]
+fn a_loaded_plugin_is_granted_until_activation_is_recorded() {
+    // ★ Compiling is not running. The lifecycle exists to make that distance visible, and this is the transition that
+    // closes it: `load` leaves the plugin `Granted`, and only `mark_active` says it answered `activate`.
+    let backend = std::sync::Arc::new(ScriptedBackend::default());
+    let mut set = PluginSet::new(Backend::new(std::sync::Arc::clone(&backend)), host());
+    let plugin = id("@synra/aaa-lifecycle");
+    load(&mut set, &backend, "@synra/aaa-lifecycle", Scripted::Ok(r#"{"handled":true}"#.to_owned()));
+
+    let lifecycle = set.lifecycle(&plugin).expect("a loaded plugin has a lifecycle");
+    assert!(!lifecycle.is_running(), "a compiled plugin has not been activated");
+    assert!(
+        matches!(
+            lifecycle.state(),
+            synra_plugin_host::State::Granted { manifest_digest, .. } if manifest_digest.is_empty()
+        ),
+        "the default load records an empty digest, not a guessed one: {:?}",
+        lifecycle.state()
+    );
+
+    set.mark_active(&plugin).expect("activation is a legal move");
+    assert!(set.lifecycle(&plugin).expect("still loaded").is_running());
+
+    assert!(set.unload(&plugin));
+    assert!(set.lifecycle(&plugin).is_none(), "unloading drops the state with the code");
+}
