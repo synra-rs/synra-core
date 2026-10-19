@@ -277,13 +277,17 @@ impl SynraDb {
                 ),
             });
         }
-        // ★ A bound parameter rather than a formatted string: the path comes from a user, and a quote in it would
-        // otherwise end the SQL literal and continue as syntax. `VACUUM INTO` takes an expression, so a placeholder is
-        // allowed here.
-        self.connection
-            .execute("VACUUM INTO ?1", [destination.to_string_lossy().as_ref()])
-            .map_err(|error| DbError::Statement { why: error.to_string() })?;
-        Ok(())
+        // ★ Timed like every other write, even though it writes a **different file**: the work a user waits for is the same
+        // vacuum, and `synra db backup` on a large database is exactly the write whose duration is worth knowing.
+        timed_write!(self, "backup", {
+            // ★ A bound parameter rather than a formatted string: the path comes from a user, and a quote in it would
+            // otherwise end the SQL literal and continue as syntax. `VACUUM INTO` takes an expression, so a placeholder is
+            // allowed here.
+            self.connection
+                .execute("VACUUM INTO ?1", [destination.to_string_lossy().as_ref()])
+                .map_err(|error| DbError::Statement { why: error.to_string() })?;
+            Ok(())
+        })
     }
 
     /// Applies the pragmas the rest of the system assumes.

@@ -83,6 +83,32 @@ fn a_write_reports_its_duration_and_its_kind() {
 }
 
 #[test]
+fn a_backup_is_timed_like_every_other_write() {
+    // ★ The backup writes a different file, but it is the write a user waits longest for on a large database. An observer
+    // that skipped it would make `db_write_duration_us` silent about exactly the operation that needs a number.
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    let mut db = db();
+    let seen: Arc<Mutex<Vec<(&'static str, Duration)>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&seen);
+    db.observe_writes(Arc::new(move |kind, elapsed| sink.lock().expect("a lock").push((kind, elapsed))));
+
+    let destination = std::env::temp_dir().join(format!("synra-timed-backup-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&destination);
+    db.backup_to(&destination).expect("a backup");
+    let _ = std::fs::remove_file(&destination);
+
+    let seen = std::mem::take(&mut *seen.lock().expect("a lock"));
+    let kinds: Vec<&str> = seen.iter().map(|(kind, _)| *kind).collect();
+    assert_eq!(kinds, vec!["backup"], "the backup was not reported");
+    assert!(
+        seen.iter().all(|(_, elapsed)| *elapsed < Duration::from_secs(1)),
+        "a backup of an in-memory database took a second: {seen:?}"
+    );
+}
+
+#[test]
 fn every_call_is_its_own_row() {
     // ★ Why this appends rather than upserts. Two `device:list` calls a millisecond apart are two facts, and "recent
     // activity" is a list of them — an upsert would collapse the history into a count of one.
