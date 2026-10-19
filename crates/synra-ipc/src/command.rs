@@ -246,6 +246,9 @@ commands! {
     // ★ Opening a received file. It changes nothing in the kernel; the path is checked against the inbox before the
     // platform is asked to launch anything.
     "transfer_open" => Transfer, Host, Unit, false;
+    // ★ Showing where a received file is. Like opening it, the path is checked against the inbox before the platform
+    // is asked to reveal anything.
+    "transfer_reveal" => Transfer, Host, Unit, false;
 
     // ── plugins ──
     "plugins_list" => Plugins, Host, Many, false;
@@ -509,6 +512,7 @@ mod tests {
             "transfer_list",
             "transfer_received",
             "transfer_open",
+            "transfer_reveal",
             // plugins
             "plugins_list",
             "plugins_catalog_search",
