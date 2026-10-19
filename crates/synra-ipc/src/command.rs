@@ -288,6 +288,9 @@ commands! {
     "diag_probes" => Diag, Host, One, false;
     "diag_metrics" => Diag, Host, One, false;
     "diag_logs_tail" => Diag, Host, Many, false;
+    // ★ The user's "ignore" for the crash prompt: the reports that make the next start enter safe mode are deleted,
+    // so a fixed installation starts normally instead of waiting five minutes for them to age out.
+    "diag_crash_dismiss" => Diag, Host, Unit, true;
 }
 
 /// Why the registry is not usable.
@@ -527,6 +530,7 @@ mod tests {
             "diag_probes",
             "diag_metrics",
             "diag_logs_tail",
+            "diag_crash_dismiss",
         ];
 
         for name in documented {
