@@ -130,7 +130,7 @@ pub use supervisor::{
     Cancellation, Criticality, Decision, RestartPolicy, ShutdownReport, StopReason, Supervisor, SupervisorError,
     TaskId, TaskRecord, TaskSpec, WhyNot, run_task,
 };
-pub use plugin::{INSTANCE_LIMIT, LoadedSummary, Refused, deactivate, load_installed, load_plugin};
+pub use plugin::{INSTANCE_LIMIT, LoadedSummary, Refused, deactivate, load_installed, load_plugin, migrate};
 pub use plugin_sync::{
     ConflictPolicy, ReceiverDuty, RemoteState, SyncAction, SyncError, SyncOutcome, SyncRecord, SyncSession,
     SyncInbox, SyncSessionId, SyncTable, compare_versions as compare_plugin_versions, decide as decide_sync,

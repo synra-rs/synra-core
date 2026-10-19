@@ -323,6 +323,38 @@ fn activate(
     }
 }
 
+/// Asks one plugin to bring its own data forward, before the new version is written.
+///
+/// # Why this runs on the **old** instance
+///
+/// Because the data being migrated is the old plugin's, and the old code is the only code that knows what it wrote. The
+/// new artifact is not on disk yet, so a migration failure leaves the old version installed and running — which is the
+/// only outcome a user can act on. Running it after the replacement would mean the bytes that wrote the data are already
+/// gone, and a refusal would have nothing to fall back to.
+///
+/// # Errors
+///
+/// The plugin's own refusal, a trap, a budget that could not be granted, or the plugin not being loaded. The caller turns
+/// this into a refusal of the update rather than writing the new version.
+pub fn migrate(
+    set: &mut PluginSet,
+    id: &PluginId,
+    from_version: &str,
+    to_version: &str,
+    now_ms: u64,
+) -> Result<(), String> {
+    let work = Work::Migrate {
+        from_version: from_version.to_owned(),
+        to_version: to_version.to_owned(),
+    };
+    match set.call(id, &work, CallBudget::from_quota(&synra_plugin_host::quota::Quota::default()), now_ms) {
+        Ok(CallOutcome::Ok(_)) => Ok(()),
+        Ok(CallOutcome::Failed { message, .. }) => Err(format!("its migrate refused: {message}")),
+        Ok(other) => Err(format!("its migrate {}", other.as_str())),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 /// Deactivates and unloads one plugin.
 ///
 /// # Why a plugin that will not deactivate is still unloaded
