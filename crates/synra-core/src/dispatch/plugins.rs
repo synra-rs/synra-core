@@ -35,7 +35,7 @@ use parking_lot::Mutex;
 use synra_capability::CapabilitySet;
 use synra_plugin_host::{
     Backend, BackendError, CallBudget, CallOutcome, CompiledArtifact, Health, InstancePolicy,
-    Lifecycle, PluginInstance, Transition,
+    Lifecycle, PluginInstance, State, Transition,
 };
 use synra_protocol::ids::PluginId;
 
@@ -106,6 +106,18 @@ pub enum PluginSetError {
     /// kernel down, and it names the move so a log line is enough to find where the pair diverged.
     #[error("the lifecycle refused the move: {0}")]
     Lifecycle(String),
+
+    /// The plugin reached the bottom of the health ladder and is no longer called.
+    ///
+    /// Distinct from [`Self::NotLoaded`]: the bytes are here and the plugin is installed, but it misbehaved often enough
+    /// that the host stopped asking. The reason is the ladder's own explanation, not a second sentence invented here.
+    #[error("{id} is faulted: {reason}")]
+    Faulted {
+        /// The plugin.
+        id: PluginId,
+        /// Why the host stopped calling it.
+        reason: String,
+    },
 }
 
 impl PluginSetError {
@@ -744,6 +756,11 @@ impl PluginSet {
         let Some(loaded) = self.loaded.get_mut(id) else {
             return Err(PluginSetError::NotLoaded { id: id.clone() });
         };
+        // ★ A faulted plugin is installed and has bytes, but the host has stopped asking. Running it again would make
+        // the lifecycle decorative: the state exists to refuse calls, and this is the refusal.
+        if let State::Faulted { reason, .. } = loaded.lifecycle.state() {
+            return Err(PluginSetError::Faulted { id: id.clone(), reason: reason.clone() });
+        }
         let handle = match loaded.pool.acquire(None, now_ms) {
             Ok(handle) => handle,
             // A plugin at its instance limit is reported, not waited on. The caller turns this into something the user
@@ -783,6 +800,13 @@ impl PluginSet {
         // reachable — `run_on` takes the *call* budget, which is a different type with a different job.
         if outcome.as_ref().is_ok_and(CallOutcome::is_misbehaviour) {
             loaded.authority.budget.record_misbehaviour(now_ms);
+            // ★ When the ladder reaches the bottom, the lifecycle follows it. A plugin that trapped, timed out or
+            // exhausted its fuel often enough is `Faulted`, and every later call is refused above until a user re-enables
+            // it (which reloads) — a health rung nobody enforces is a report, not a decision.
+            if loaded.authority.budget.health() == Health::Faulted {
+                let reason = loaded.authority.budget.report().explanation;
+                let _ = loaded.lifecycle.apply(Transition::Fault { reason });
+            }
             // ★ And the counter the plugin's card can show without reading its health ladder: a plugin that trapped five
             // times is a different story from one that has never run. The outcome is the protocol's own name (`trap`,
             // `timeout`, …), so "why did it fault" is a label rather than a second counter per kind.

@@ -1138,3 +1138,44 @@ fn a_loaded_plugin_is_granted_until_activation_is_recorded() {
     assert!(set.unload(&plugin));
     assert!(set.lifecycle(&plugin).is_none(), "unloading drops the state with the code");
 }
+
+#[test]
+fn a_plugin_at_the_bottom_of_the_ladder_is_faulted_and_refused() {
+    // ★ The health ladder and the lifecycle were two accounts of the same plugin. `record_misbehaviour` moved the first
+    // and nothing moved the second, so a plugin the host had stopped trusting still looked `Active` and was still asked.
+    // This is the join: the last rung of the ladder is a fault, and a faulted plugin is refused before it runs again.
+    let backend = std::sync::Arc::new(ScriptedBackend::default());
+    let mut set = PluginSet::new(Backend::new(std::sync::Arc::clone(&backend)), host());
+    let name = "@synra/aaa-faults";
+    load(&mut set, &backend, name, Scripted::Trap { detail: "boom".to_owned() });
+    let plugin = id(name);
+    let work = Work::CanHandle { item_json: share_json().to_owned() };
+    let budget = Matcher::new(&mut set).budget();
+
+    // Twenty bad calls in one window is what makes a window persistently bad; the ladder then moves one rung per
+    // window, so the fault lands after the sixth. The loop stops the moment a call is refused rather than counting a
+    // magic number that would change with the quota.
+    let mut now = 0;
+    let mut refused = None;
+    'windows: for window in 0..8 {
+        for _ in 0..synra_plugin_host::quota::PERSISTENT_REFUSALS {
+            if let Err(error) = set.call(&plugin, &work, budget, now) {
+                refused = Some(error);
+                break 'windows;
+            }
+        }
+        now = (window + 1) * 10_000;
+    }
+
+    assert!(
+        matches!(
+            set.lifecycle(&plugin).expect("still loaded").state(),
+            synra_plugin_host::State::Faulted { .. }
+        ),
+        "the ladder reached the bottom without the lifecycle following it"
+    );
+    assert!(
+        matches!(refused, Some(PluginSetError::Faulted { .. })),
+        "a faulted plugin was still called: {refused:?}"
+    );
+}
