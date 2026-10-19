@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use synra_plugin_host::testing::RefusingHost;
-use synra_plugin_host::{Backend, ScriptedBackend};
+use synra_plugin_host::{Backend, Scripted, ScriptedBackend, Work};
 use synra_protocol::ids::PluginId;
 
 use super::{LoadedSummary, load_installed, load_plugin};
@@ -61,10 +61,14 @@ fn database() -> synra_store::SynraDb {
     db
 }
 
-fn set() -> crate::dispatch::PluginSet {
+fn set() -> (crate::dispatch::PluginSet, ScriptedBackend) {
     use std::sync::Arc;
-    let backend = Backend::new(Arc::new(ScriptedBackend::new()));
-    crate::dispatch::PluginSet::new(backend, Arc::new(RefusingHost))
+    let backend = ScriptedBackend::new();
+    let set = crate::dispatch::PluginSet::new(
+        Backend::new(Arc::new(backend.clone())),
+        Arc::new(RefusingHost),
+    );
+    (set, backend)
 }
 
 /// Records the user's decision about every capability the manifest declares.
@@ -85,6 +89,43 @@ fn install(db: &synra_store::SynraDb, plugin_id: &str, enabled: bool, trusted: b
 }
 
 #[test]
+fn a_plugin_that_refuses_to_activate_is_not_left_loaded() {
+    // ★ Loading is not activation. A plugin that compiles but refuses `activate` is not fit to answer, and leaving it in
+    // the set would let it match a share it cannot execute. The refusal is the plugin's own sentence, not a code.
+    let root = scratch("activate-refused");
+    let plugins = root.join("plugins");
+    write_plugin(&plugins, "@acme/hello", &["log:info"]);
+    let db = database();
+    install(&db, "@acme/hello", true, true);
+    consent(&db, &plugins, "@acme/hello", &["log:info"]);
+
+    let (mut set, backend) = set();
+    backend.script_for(
+        "@acme/hello",
+        &Work::Activate { config_json: "{}".to_owned() },
+        Scripted::Failed {
+            code: "invalidArgument".to_owned(),
+            message: "the settings are nonsense".to_owned(),
+        },
+    );
+
+    let summary = load_installed(
+        &mut set,
+        &db,
+        &plugins,
+        &synra_observe::crash::StartupVerdict::Clean,
+        &synra_plugin_api::revocation::RevocationList::empty(),
+    );
+
+    assert!(summary.is_empty(), "a plugin that refused to start was left loaded: {:?}", summary.loaded);
+    let reason = summary.refusal_for("@acme/hello").expect("a refusal, not silence");
+    assert!(reason.contains("activate"), "{reason}");
+    assert!(reason.contains("the settings are nonsense"), "the plugin's own sentence is carried: {reason}");
+    assert!(!set.contains(&PluginId::try_from("@acme/hello".to_owned()).expect("an id")));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn a_plugin_the_user_enabled_and_confirmed_loads_with_the_granted_capabilities() {
     // ★ The difference the whole loader exists for, asserted at the place it is observable: the manifest declares two
     // capabilities and the user granted one, so the plugin must run with one. Before consent was consulted, the two
@@ -96,7 +137,7 @@ fn a_plugin_the_user_enabled_and_confirmed_loads_with_the_granted_capabilities()
     install(&db, "@acme/hello", true, true);
     consent(&db, &plugins, "@acme/hello", &["log:info"]);
 
-    let mut set = set();
+    let (mut set, _backend) = set();
     let summary = load_installed(
         &mut set,
         &db,
@@ -141,7 +182,7 @@ fn safe_mode_loads_nothing_and_says_why() {
     let safe = crashes.verdict(1_000);
     assert!(!safe.allows_plugins(), "three crashes in one location did not reach safe mode: {safe:?}");
 
-    let mut set = set();
+    let (mut set, _backend) = set();
     let summary = load_installed(
         &mut set,
         &db,
@@ -167,7 +208,7 @@ fn a_plugin_without_a_recorded_decision_is_refused_rather_than_run_with_its_requ
     let db = database();
     install(&db, "@acme/hello", true, true);
 
-    let mut set = set();
+    let (mut set, _backend) = set();
     let summary = load_installed(
         &mut set,
         &db,
@@ -193,7 +234,7 @@ fn a_manifest_that_changed_since_consent_needs_confirming_again() {
         .expect("the stale decision");
     let _ = text;
 
-    let mut set = set();
+    let (mut set, _backend) = set();
     let summary = load_installed(
         &mut set,
         &db,
@@ -220,7 +261,7 @@ fn a_revoked_version_is_disabled_in_the_store_and_refused() {
     )
     .expect("a revocation list");
 
-    let mut set = set();
+    let (mut set, _backend) = set();
     let summary = load_installed(
         &mut set,
         &db,
@@ -257,7 +298,7 @@ fn a_ui_only_plugin_is_refused_because_it_has_no_headless_half() {
     db.record_grants("@acme/hello", &[("log:info".to_owned(), true)], 200, &synra_plugin_api::manifest_digest(&text))
         .expect("the decisions");
 
-    let mut set = set();
+    let (mut set, _backend) = set();
     let summary = load_installed(
         &mut set,
         &db,
@@ -280,7 +321,7 @@ fn a_plugin_that_is_not_enabled_is_neither_loaded_nor_refused() {
     install(&db, "@acme/hello", false, true);
     consent(&db, &plugins, "@acme/hello", &["log:info"]);
 
-    let mut set = set();
+    let (mut set, _backend) = set();
     let summary = load_installed(
         &mut set,
         &db,
@@ -303,7 +344,7 @@ fn loading_one_plugin_records_it_without_claiming_the_rest() {
     install(&db, "@acme/hello", true, true);
     consent(&db, &plugins, "@acme/hello", &["log:info"]);
 
-    let mut set = set();
+    let (mut set, _backend) = set();
     let mut summary = LoadedSummary::default();
     let id = load_plugin(
         &mut set,
@@ -340,7 +381,7 @@ fn a_missing_artifact_is_refused_with_the_reason_the_author_needs() {
     install(&db, "@acme/hello", true, true);
     consent(&db, &plugins, "@acme/hello", &["log:info"]);
 
-    let mut set = set();
+    let (mut set, _backend) = set();
     let summary = load_installed(
         &mut set,
         &db,

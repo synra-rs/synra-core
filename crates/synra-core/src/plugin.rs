@@ -34,7 +34,7 @@
 use std::path::Path;
 
 use synra_capability::CapabilitySet;
-use synra_plugin_host::InstancePolicy;
+use synra_plugin_host::{CallBudget, CallOutcome, InstancePolicy, Work};
 use synra_protocol::ids::PluginId;
 
 use synra_observe::crash::StartupVerdict;
@@ -268,6 +268,9 @@ pub fn load_plugin(
 
     let grants = granted_of(&decisions)?;
     let policy = if headless.stateful { InstancePolicy::Stateful } else { InstancePolicy::Stateless };
+    // The documented default allowance. A manifest does not declare a quota yet, so there is nothing more specific to
+    // take it from — and a number invented here would be a limit the plugin's author never agreed to.
+    let quota = synra_plugin_host::quota::Quota::default();
     set.load(PluginSpec {
         id: id.clone(),
         version: manifest.version.clone(),
@@ -275,12 +278,64 @@ pub fn load_plugin(
         grants,
         policy,
         limit: INSTANCE_LIMIT,
-        // The documented default allowance. A manifest does not declare a quota yet, so there is nothing more specific
-        // to take it from — and a number invented here would be a limit the plugin's author never agreed to.
-        quota: synra_plugin_host::quota::Quota::default(),
+        quota: quota.clone(),
     })
     .map_err(|error| error.to_string())?;
+
+    // ★ Loading is not activation. The design's `enable` is *activating*: compile, then call the plugin's own
+    // `activate(config)`, and only then is it fit to answer. A plugin that compiles but refuses to start is not a
+    // working plugin, and leaving it in the set would make it match a share it cannot execute.
+    let now = u64::try_from(synra_store::sqlite::now_ms()).unwrap_or(0);
+    if let Err(reason) = activate(set, &id, &quota, now) {
+        // The compiled form is dropped: a plugin that failed to activate must not be left half-live in the set. The
+        // reason is what the caller records, so the card says why rather than "unavailable".
+        set.unload(&id);
+        return Err(format!("it loaded but did not activate: {reason}"));
+    }
     Ok(id)
+}
+
+/// Calls one plugin's `activate` with the budget its quota allows.
+///
+/// # Why the config is `{}`
+///
+/// Because this build has nowhere to store a plugin's own settings yet, and an empty object is the honest description of
+/// "no settings" — inventing keys would tell the plugin about configuration the user never wrote. The contract passes
+/// the JSON through; when a settings table exists this is the one line that changes.
+///
+/// # Errors
+///
+/// The plugin's own refusal, a trap, or a budget the call could not start under. All three mean "not fit to answer", and
+/// the loader records the sentence rather than guessing which kind it was.
+fn activate(
+    set: &mut PluginSet,
+    id: &PluginId,
+    quota: &synra_plugin_host::quota::Quota,
+    now_ms: u64,
+) -> Result<(), String> {
+    let work = Work::Activate { config_json: "{}".to_owned() };
+    match set.call(id, &work, CallBudget::from_quota(quota), now_ms) {
+        Ok(CallOutcome::Ok(_)) => Ok(()),
+        // The plugin handled the call and said no. Its message is the one its author wrote for exactly this moment.
+        Ok(CallOutcome::Failed { message, .. }) => Err(format!("its activate refused: {message}")),
+        Ok(other) => Err(format!("its activate {}", other.as_str())),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// Deactivates and unloads one plugin.
+///
+/// # Why a plugin that will not deactivate is still unloaded
+///
+/// Because the host cannot do better: the contract's `deactivate` returns nothing, and a guest that traps on the way out
+/// has already lost the right to hold its instance. Dropping the compiled form is what actually releases the memory, so
+/// the call is a courtesy with a budget rather than a step whose failure blocks the removal.
+pub fn deactivate(set: &mut PluginSet, id: &PluginId, now_ms: u64) {
+    let work = Work::Deactivate;
+    // A short exchange: the plugin is releasing what it holds, not doing work for a user. The default quota's call
+    // budget is what the contract gives every call, so this is the same bound a lifecycle call would get anywhere else.
+    let _ = set.call(id, &work, CallBudget::from_quota(&synra_plugin_host::quota::Quota::default()), now_ms);
+    set.unload(id);
 }
 
 /// The capability set the user granted, from the decisions on record.

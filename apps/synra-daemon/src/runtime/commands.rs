@@ -280,6 +280,14 @@ impl Kernel for Runtime {
                 format!("no plugin is installed as `{plugin_id}`"),
             ));
         }
+        // ★ Disabling stops it now. Enabling still only writes the flag: this host has no revocation list at hand here,
+        // and loading a plugin without checking it would be the one shortcut this module cannot take. The next start
+        // loads it through `load_installed`, which does check.
+        if !enabled
+            && let Ok(id) = synra_protocol::ids::PluginId::try_from(plugin_id.to_owned())
+        {
+            synra_core::plugin::deactivate(&mut self.plugins.lock(), &id, now_ms());
+        }
         self.plugins_value()
     }
 
@@ -427,6 +435,12 @@ impl Kernel for Runtime {
                 ErrorCode::PluginNotInstalled,
                 format!("no plugin is installed as `{plugin_id}`"),
             ));
+        }
+        // ★ Stop it before its files go. A loaded instance still holds the artifact open, and on Windows that is why a
+        // removal reports leftovers; more importantly a removed plugin that stayed in the set could still answer a share
+        // from bytes the user just deleted.
+        if let Ok(id) = synra_protocol::ids::PluginId::try_from(plugin_id.to_owned()) {
+            synra_core::plugin::deactivate(&mut self.plugins.lock(), &id, now_ms());
         }
         let removal = files
             .remove(plugin_id, remove_data)
