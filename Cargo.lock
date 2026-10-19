@@ -1840,6 +1840,7 @@ dependencies = [
  "synra-plugin-host",
  "synra-plugin-ui",
  "synra-protocol",
+ "synra-registry",
  "synra-store",
  "synra-testkit-alloc",
  "thiserror",

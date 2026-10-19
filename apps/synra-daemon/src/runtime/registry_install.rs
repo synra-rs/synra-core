@@ -22,7 +22,7 @@
 use std::path::Path;
 
 use synra_core::install::Installed;
-use synra_plugin_host::registry::{RegistryConfig, check_integrity};
+use synra_plugin_host::registry::RegistryConfig;
 use synra_protocol::error::ErrorCode;
 use synra_registry::Packument;
 use synra_store::SynraDb;
@@ -137,32 +137,21 @@ pub(crate) fn install_from_registry(
         let tarball = fetch
             .get(&entry.dist.tarball)
             .map_err(|detail| Refusal::new(ErrorCode::DeviceOffline, detail))?;
-        check_integrity(&mirror, declared, &tarball).map_err(|failure| {
-            Refusal::new(ErrorCode::IntegrityMismatch, failure.to_string())
-        })?;
-
-        let directory = staging_root.join(format!("registry.{now_ms}.{}", std::process::id()));
-        std::fs::create_dir_all(&directory).map_err(|error| {
-            Refusal::new(
-                ErrorCode::Internal,
-                format!("{}: {error}", directory.display()),
-            )
-        })?;
-        let unpacked = synra_registry::extract_tgz(
+        // ★ Verify and unpack are the kernel's, not this host's: the digest is checked before a single entry is written,
+        // and the shell runs the same function. The unpacked copy is outside `plugins/`, so a half-unpacked package is
+        // never discovered as an installed plugin.
+        let unpacked = synra_core::install::unpack_published_tarball(
             &tarball,
-            &directory,
-            Some("package"),
-            synra_registry::Limits::default(),
-        );
-        if let Err(error) = unpacked {
-            // `extract_tgz` removes what it wrote; the directory it created is this function's to remove.
-            discard(staging_root, &directory);
-            return Err(Refusal::new(ErrorCode::Unsupported, error.to_string()));
-        }
-        let outcome = super::install_from_directory(db, backend, plugins_dir, &directory, now_ms);
-        // ★ The unpacked copy is removed whether the install worked or not: after a success it is a second copy nothing
-        // reads, and after a failure it is a directory the next attempt would refuse.
-        discard(staging_root, &directory);
+            Some(declared),
+            &entry.dist.tarball,
+            staging_root,
+            now_ms,
+        )
+        .map_err(|refusal| Refusal::new(refusal.code(), format!("{}: {}", refusal.stage, refusal.reason)))?;
+        let outcome = super::install_from_directory(db, backend, plugins_dir, unpacked.path(), now_ms);
+        // ★ Removed whether the install worked or not: after a success it is a second copy nothing reads, and after a
+        // failure it is a directory the next attempt would refuse.
+        unpacked.cleanup();
         return outcome.map_err(|refusal| {
             Refusal::new(
                 refusal.code(),
@@ -184,10 +173,7 @@ pub(crate) fn install_from_registry(
     ))
 }
 
-/// Removes an unpacked package, naming no error because the install has already succeeded or failed for its own reason.
-fn discard(root: &Path, directory: &Path) {
-    let _ = synra_store::remove_tree(root, directory);
-}
+
 
 /// The host of a URL, for the guard.
 ///

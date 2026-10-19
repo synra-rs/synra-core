@@ -15,6 +15,9 @@ synra-plugin-api = { path = "../synra-plugin-api" }
 # The installer unpacks a plugin's UI bundle, and `synra-plugin-ui` is the crate that owns unpacking (design 06). No cycle:
 # it depends on protocol/api/capability only.
 synra-plugin-ui = { path = "../synra-plugin-ui" }
+# A published `.tgz` is opened by the same extractor the registry client uses: the traversal and size rules are the
+# security argument, and a second copy here would be a second place for one of them to be forgotten.
+synra-registry = { path = "../synra-registry" }
 synra-plugin-host = { path = "../synra-plugin-host" }
 synra-net = { path = "../synra-net" }
 synra-store = { path = "../synra-store" }

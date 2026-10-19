@@ -119,6 +119,10 @@ impl InstallRefusal {
     pub fn code(&self) -> synra_protocol::error::ErrorCode {
         match self.stage {
             "write" | "record" => synra_protocol::error::ErrorCode::Internal,
+            // A published tarball whose bytes are not the ones its own document names. The code exists and callers
+            // already branch on it, so folding it into `InvalidArgument` would make a tampered package look like a
+            // malformed request.
+            "integrity" => synra_protocol::error::ErrorCode::IntegrityMismatch,
             _ => synra_protocol::error::ErrorCode::InvalidArgument,
         }
     }
@@ -594,6 +598,89 @@ fn signed_publisher(signature: &str) -> Option<SignedPublisher> {    let documen
         fingerprint: fingerprint.as_str().to_owned(),
         pubkey: document.pubkey,
     })
+}
+
+/// A `.tgz` a registry published, opened into a directory this process owns.
+///
+/// The caller installs from [`Self::path`] and **must** call [`Self::cleanup`]: the directory is outside `plugins/` so a
+/// half-unpacked package is never discovered as an installed plugin, and leaving it behind is a copy nothing reads.
+#[derive(Debug)]
+pub struct UnpackedTarball {
+    directory: PathBuf,
+    files: Vec<PathBuf>,
+}
+
+impl UnpackedTarball {
+    /// The package root the installer takes.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.directory
+    }
+
+    /// Removes the unpacked copy.
+    pub fn cleanup(self) {
+        discard_unpacked(&self.directory, &self.files);
+    }
+}
+
+/// Verifies a published tarball against its own document and opens it for the installer.
+///
+/// # ★ Why both hosts call this
+///
+/// Because the ordering is the security argument: **the digest is checked before a single entry is written**. The daemon
+/// and the shell each had their own copy of "check, then extract, then install", with their own error mappings and their
+/// own staging directories. The copies agreed today; the next change to either would have made "tampered bytes are never
+/// unpacked" true in one host and false in the other.
+///
+/// # The document's digest is not optional
+///
+/// A package whose entry carries no integrity string is refused rather than trusted. There is nothing to compare the
+/// bytes against, which is not the same claim as "the bytes are correct" — a private mirror that cannot publish an
+/// integrity string has to be fixed, not accommodated.
+///
+/// # Errors
+///
+/// [`InstallRefusal`] with stage `integrity` for missing or mismatching bytes, and `archive` for a tarball the extractor
+/// refuses. Nothing is left on disk in either case.
+pub fn unpack_published_tarball(
+    tarball: &[u8],
+    declared_integrity: Option<&str>,
+    label: &str,
+    staging_root: &Path,
+    now_ms: i64,
+) -> Result<UnpackedTarball, InstallRefusal> {
+    let Some(declared) = declared_integrity else {
+        return Err(InstallRefusal::new(
+            "integrity",
+            format!("{label} carries no integrity string, and bytes nothing vouches for are not installed"),
+        ));
+    };
+    synra_plugin_host::registry::check_integrity(label, declared, tarball)
+        .map_err(|failure| InstallRefusal::new("integrity", failure.to_string()))?;
+
+    std::fs::create_dir_all(staging_root)
+        .map_err(|error| InstallRefusal::new("archive", format!("{}: {error}", staging_root.display())))?;
+    // ★ A counter as well as the clock and the pid: two installs from the same process in the same millisecond are
+    // exactly what a test does, and one of them would find the other's directory and refuse.
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let unique = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let directory = staging_root.join(format!("tarball.{now_ms}.{}.{unique}", std::process::id()));
+    std::fs::create_dir(&directory)
+        .map_err(|error| InstallRefusal::new("archive", format!("{}: {error}", directory.display())))?;
+
+    match synra_registry::extract_tgz(
+        tarball,
+        &directory,
+        Some("package"),
+        synra_registry::Limits::default(),
+    ) {
+        Ok(files) => Ok(UnpackedTarball { directory, files }),
+        Err(error) => {
+            // The extractor removed the entries it wrote; the directory it wrote them into is this function's.
+            let _ = std::fs::remove_dir(&directory);
+            Err(InstallRefusal::new("archive", error.to_string()))
+        }
+    }
 }
 
 /// Installs a plugin from a `.synra` archive.
@@ -1099,5 +1186,28 @@ mod tests {
         assert!(!names.iter().any(|name| name.starts_with("ui/")), "the unpacked UI was packaged: {names:?}");
         assert!(names.contains(&"manifest.json".to_owned()));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_published_tarball_without_a_digest_is_refused_before_anything_is_written() {
+        // ★ "No integrity string" is not "skip the check": there is nothing to compare the bytes against. It is refused
+        // with the same `IntegrityMismatch` code a wrong digest gets, because both mean the bytes are not vouched for.
+        let root = scratch("tarball-no-integrity");
+        let refusal = unpack_published_tarball(b"not even a tarball", None, "hello.tgz", &root, 1)
+            .expect_err("bytes nothing vouches for are not opened");
+        assert_eq!(refusal.stage, "integrity");
+        assert_eq!(refusal.code(), synra_protocol::error::ErrorCode::IntegrityMismatch);
+        assert!(!root.exists(), "nothing should have been created: {}", root.display());
+    }
+
+    #[test]
+    fn a_published_tarball_whose_bytes_do_not_match_its_digest_is_refused() {
+        let root = scratch("tarball-mismatch");
+        let declared = ObjectDigest::of(b"the bytes the publisher signed").as_sri().to_string();
+        let refusal = unpack_published_tarball(b"other bytes", Some(&declared), "hello.tgz", &root, 1)
+            .expect_err("a mismatch is not unpacked");
+        assert_eq!(refusal.stage, "integrity");
+        assert!(refusal.reason.contains("digest") || refusal.reason.contains("integrity"), "{}", refusal.reason);
+        assert!(!root.exists(), "nothing should have been created: {}", root.display());
     }
 }
