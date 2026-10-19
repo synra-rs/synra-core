@@ -34,7 +34,8 @@ mod state;
 
 pub use install::{InstallRefusal, Installed, from_directory as install_from_directory, from_package as install_from_package};
 pub use plugins::{
-    Discovered, LoadedSummary, Refused, build_set, load_installed, record_discovered_plugins,
+    Discovered, LoadedSummary, Refused, build_set, load_installed, load_installed_with_config,
+    record_discovered_plugins,
 };
 pub use state::{Runtime, now_ms};
 

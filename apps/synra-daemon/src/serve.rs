@@ -638,14 +638,21 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
         // problem rather than refusing to start.
         let now = i64::try_from(now_ms()).unwrap_or(i64::MAX);
         let verdict = crashes.verdict(now);
+        // ★ The environment is read **before** the store lock is taken. `KernelHost::locale` reads a setting, which
+        // needs the store; reading it while the loader holds the store was a same-thread deadlock.
+        let activation = {
+            let set = plugins.lock();
+            synra_core::plugin::activation_config(set.host().as_ref())
+        };
         let summary = {
             let mut set = plugins.lock();
-            crate::runtime::load_installed(
+            crate::runtime::load_installed_with_config(
                 &mut set,
                 &shared_db.lock(),
                 std::path::Path::new(&plan.plugins_dir),
                 &verdict,
                 &revocations,
+                &activation,
             )
         };
         // ★ Printed, because a plugin that failed to load is invisible otherwise and a silent skip is how a broken

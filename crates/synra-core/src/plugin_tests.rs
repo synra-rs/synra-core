@@ -10,7 +10,9 @@ use synra_plugin_host::testing::RefusingHost;
 use synra_plugin_host::{Backend, Scripted, ScriptedBackend, Work};
 use synra_protocol::ids::PluginId;
 
-use super::{LoadedSummary, load_installed, load_plugin};
+use super::{
+    LoadedSummary, activation_config, load_installed, load_installed_with_config, load_plugin,
+};
 
 /// A scratch directory for one test, removed by the test.
 fn scratch(label: &str) -> PathBuf {
@@ -89,6 +91,16 @@ fn install(db: &synra_store::SynraDb, plugin_id: &str, enabled: bool, trusted: b
 }
 
 #[test]
+fn activation_carries_the_hosts_locale_and_theme() {
+    // ★ `activate` receives a JSON object, and the SDK's own example reads `config.locale`. An empty object withheld a
+    // fact the host already knows; this asserts the two fields are the host's own answers rather than constants.
+    let config: serde_json::Value =
+        serde_json::from_str(&activation_config(&RefusingHost)).expect("the config is JSON");
+    assert_eq!(config["locale"], "en-GB");
+    assert_eq!(config["darkMode"], false);
+}
+
+#[test]
 fn a_plugin_that_refuses_to_activate_is_not_left_loaded() {
     // ★ Loading is not activation. A plugin that compiles but refuses `activate` is not fit to answer, and leaving it in
     // the set would let it match a share it cannot execute. The refusal is the plugin's own sentence, not a code.
@@ -102,19 +114,20 @@ fn a_plugin_that_refuses_to_activate_is_not_left_loaded() {
     let (mut set, backend) = set();
     backend.script_for(
         "@acme/hello",
-        &Work::Activate { config_json: "{}".to_owned() },
+        &Work::Activate { config_json: activation_config(&RefusingHost) },
         Scripted::Failed {
             code: "invalidArgument".to_owned(),
             message: "the settings are nonsense".to_owned(),
         },
     );
 
-    let summary = load_installed(
+    let summary = load_installed_with_config(
         &mut set,
         &db,
         &plugins,
         &synra_observe::crash::StartupVerdict::Clean,
         &synra_plugin_api::revocation::RevocationList::empty(),
+        &activation_config(&RefusingHost),
     );
 
     assert!(summary.is_empty(), "a plugin that refused to start was left loaded: {:?}", summary.loaded);

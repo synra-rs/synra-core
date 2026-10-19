@@ -38,7 +38,8 @@ use synra_plugin_host::BackendError;
 use synra_core::dispatch::PluginSet;
 
 pub use synra_core::plugin::{
-    Discovered, LoadedSummary, Refused, load_installed, record_discovered_plugins,
+    Discovered, LoadedSummary, Refused, load_installed, load_installed_with_config,
+    record_discovered_plugins,
 };
 
 /// Builds the plugin set this daemon runs plugins on.

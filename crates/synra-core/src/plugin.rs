@@ -157,6 +157,26 @@ pub fn load_installed(
     verdict: &StartupVerdict,
     revocations: &synra_plugin_api::revocation::RevocationList,
 ) -> LoadedSummary {
+    load_installed_with_config(set, db, plugins_dir, verdict, revocations, "{}")
+}
+
+/// The same pass, with the activation config a host has already read.
+///
+/// # ★ Why the config is a parameter rather than read here
+///
+/// Because a host's `locale()` may reach the database, and the caller is **already holding that database lock** when it
+/// hands the store to this function. Reading it here was a same-thread deadlock in the daemon: `activate` asked the host
+/// for its locale, the host locked the store, and the loader was still holding it. A host therefore snapshots the
+/// environment before taking the lock and passes the JSON in.
+#[must_use]
+pub fn load_installed_with_config(
+    set: &mut PluginSet,
+    db: &synra_store::SynraDb,
+    plugins_dir: &Path,
+    verdict: &StartupVerdict,
+    revocations: &synra_plugin_api::revocation::RevocationList,
+    activation: &str,
+) -> LoadedSummary {
     let mut summary = LoadedSummary::default();
 
     if !verdict.allows_plugins() {
@@ -177,7 +197,7 @@ pub fn load_installed(
         if !row.should_run() {
             continue;
         }
-        match load_plugin(set, db, plugins_dir, &row.plugin_id, revocations) {
+        match load_plugin_with_config(set, db, plugins_dir, &row.plugin_id, revocations, activation) {
             Ok(id) => summary.loaded.push(id),
             Err(reason) => summary.refused.push(Refused { plugin_id: row.plugin_id.clone(), reason }),
         }
@@ -201,6 +221,21 @@ pub fn load_plugin(
     plugins_dir: &Path,
     plugin_id: &str,
     revocations: &synra_plugin_api::revocation::RevocationList,
+) -> Result<PluginId, String> {
+    load_plugin_with_config(set, db, plugins_dir, plugin_id, revocations, "{}")
+}
+
+/// The same load, with the activation config the caller already read.
+///
+/// See [`load_installed_with_config`] for why this is a parameter: a host's environment may need the store, and the
+/// store's lock is held by the caller for the whole call.
+pub fn load_plugin_with_config(
+    set: &mut PluginSet,
+    db: &synra_store::SynraDb,
+    plugins_dir: &Path,
+    plugin_id: &str,
+    revocations: &synra_plugin_api::revocation::RevocationList,
+    activation: &str,
 ) -> Result<PluginId, String> {
     let id = PluginId::try_from(plugin_id.to_owned()).map_err(|error| format!("the id is not usable: {error}"))?;
     // ★ The **sanitised** directory name, which is the one the installer writes.
@@ -285,8 +320,9 @@ pub fn load_plugin(
     // ★ Loading is not activation. The design's `enable` is *activating*: compile, then call the plugin's own
     // `activate(config)`, and only then is it fit to answer. A plugin that compiles but refuses to start is not a
     // working plugin, and leaving it in the set would make it match a share it cannot execute.
+    let config = activation.to_owned();
     let now = u64::try_from(synra_store::sqlite::now_ms()).unwrap_or(0);
-    if let Err(reason) = activate(set, &id, &quota, now) {
+    if let Err(reason) = activate(set, &id, &quota, now, &config) {
         // The compiled form is dropped: a plugin that failed to activate must not be left half-live in the set. The
         // reason is what the caller records, so the card says why rather than "unavailable".
         set.unload(&id);
@@ -295,13 +331,30 @@ pub fn load_plugin(
     Ok(id)
 }
 
+/// The JSON a plugin receives in `activate`.
+///
+/// # Why these two fields and not an empty object
+///
+/// Because the contract gives `activate` a JSON string and the SDK's own example reads `config.locale`. The host already
+/// knows both answers — [`synra_plugin_host::Host::locale`] and `dark_mode` — so passing `{}` was withholding facts the
+/// plugin otherwise has to make a second call for. There is no per-plugin settings store yet; when there is, it belongs
+/// in this object beside them, and this is the one function that changes.
+#[must_use]
+pub fn activation_config(host: &dyn synra_plugin_host::Host) -> String {
+    serde_json::json!({
+        "locale": host.locale(),
+        "darkMode": host.dark_mode(),
+    })
+    .to_string()
+}
+
 /// Calls one plugin's `activate` with the budget its quota allows.
 ///
-/// # Why the config is `{}`
+/// # Why the config is passed in
 ///
-/// Because this build has nowhere to store a plugin's own settings yet, and an empty object is the honest description of
-/// "no settings" — inventing keys would tell the plugin about configuration the user never wrote. The contract passes
-/// the JSON through; when a settings table exists this is the one line that changes.
+/// Because the caller is the one that can see the host's environment ([`activation_config`]), and a function that built
+/// its own would be a second answer to "what locale is this host in". The contract passes the JSON through; per-plugin
+/// settings, when a table exists for them, belong in that object rather than in a second parameter here.
 ///
 /// # Errors
 ///
@@ -312,8 +365,9 @@ fn activate(
     id: &PluginId,
     quota: &synra_plugin_host::quota::Quota,
     now_ms: u64,
+    config_json: &str,
 ) -> Result<(), String> {
-    let work = Work::Activate { config_json: "{}".to_owned() };
+    let work = Work::Activate { config_json: config_json.to_owned() };
     match set.call(id, &work, CallBudget::from_quota(quota), now_ms) {
         Ok(CallOutcome::Ok(_)) => Ok(()),
         // The plugin handled the call and said no. Its message is the one its author wrote for exactly this moment.
