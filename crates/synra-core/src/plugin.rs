@@ -344,6 +344,29 @@ pub fn load_plugin_with_config(
     Ok(id)
 }
 
+/// Calls one plugin's `activate` again on a set that still holds it.
+///
+/// # Why this exists
+///
+/// A faulted plugin used to be retried by unloading and loading it, which throws away the compiled artifact and the
+/// lifecycle record just to reach the same activation. Clearing the fault and calling `activate` is the same user
+/// action without pretending the plugin was never loaded.
+///
+/// # Errors
+///
+/// A sentence when the plugin is not loaded, when its `activate` refuses, or when the lifecycle will not record the
+/// activation. The caller still owns the decision to unload on failure.
+pub fn reactivate_loaded(
+    set: &mut PluginSet,
+    id: &PluginId,
+    activation: &str,
+    now_ms: u64,
+) -> Result<(), String> {
+    let quota = set.quota(id).ok_or_else(|| "it is not loaded, so there is nothing to re-activate".to_owned())?;
+    activate(set, id, &quota, now_ms, activation)?;
+    set.mark_active(id).map_err(|error| error.to_string())
+}
+
 /// The JSON a plugin receives in `activate`.
 ///
 /// # Why these two fields and not an empty object

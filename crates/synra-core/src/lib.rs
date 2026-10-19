@@ -132,7 +132,7 @@ pub use supervisor::{
 };
 pub use plugin::{
     INSTANCE_LIMIT, LoadedSummary, Refused, activation_config, deactivate, load_installed,
-    load_installed_with_config, load_plugin, load_plugin_with_config, migrate,
+    load_installed_with_config, load_plugin, load_plugin_with_config, migrate, reactivate_loaded,
 };
 pub use plugin_sync::{
     ConflictPolicy, ReceiverDuty, RemoteState, SyncAction, SyncError, SyncOutcome, SyncRecord, SyncSession,

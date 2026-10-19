@@ -164,6 +164,8 @@ pub struct PluginSpec {
 /// One loaded plugin: its compiled form, its grants, and the pool its instances come from.
 struct Loaded {
     version: String,
+    /// Whether the user denied part of what this plugin asked for, kept so clearing a fault can re-grant honestly.
+    partially_denied: bool,
     /// Where this plugin is in its life: installed, validated, granted, active, faulted.
     ///
     /// Stored beside the compiled form rather than derived on read, because the transitions are what make the ladder
@@ -655,6 +657,7 @@ impl PluginSet {
             spec.id.clone(),
             Loaded {
                 version: spec.version,
+                partially_denied,
                 lifecycle,
                 compiled,
                 pool,
@@ -722,6 +725,35 @@ impl PluginSet {
             .apply(Transition::Activate)
             .map_err(|error| PluginSetError::Lifecycle(error.to_string()))?;
         Ok(())
+    }
+
+    /// Clears a fault, resetting the health ladder so the plugin can be activated again.
+    ///
+    /// Returns `false` when the plugin is not faulted, which lets a caller fall back to a reload without asking twice.
+    /// The ladder is reset **and** the lifecycle is moved back to `Granted`: clearing one without the other would leave a
+    /// plugin that is allowed to run but still refused by `call`, or one that is still marked broken on the card.
+    ///
+    /// # Errors
+    ///
+    /// [`PluginSetError::NotLoaded`] when it is not here, and [`PluginSetError::Lifecycle`] if the machine refuses the
+    /// move.
+    pub fn clear_fault(&mut self, id: &PluginId, now_ms: u64) -> Result<bool, PluginSetError> {
+        let Some(loaded) = self.loaded.get_mut(id) else {
+            return Err(PluginSetError::NotLoaded { id: id.clone() });
+        };
+        if !matches!(loaded.lifecycle.state(), State::Faulted { .. }) {
+            return Ok(false);
+        }
+        loaded
+            .lifecycle
+            .apply(Transition::ClearFault)
+            .map_err(|error| PluginSetError::Lifecycle(error.to_string()))?;
+        loaded
+            .lifecycle
+            .apply(Transition::Grant { partially_denied: loaded.partially_denied })
+            .map_err(|error| PluginSetError::Lifecycle(error.to_string()))?;
+        loaded.authority.budget.reset(now_ms);
+        Ok(true)
     }
 
     /// Forgets a plugin, dropping its compiled form and every instance of it.

@@ -1191,4 +1191,14 @@ fn a_plugin_at_the_bottom_of_the_ladder_is_faulted_and_refused() {
         "the window was never told about the fault: {events:?}"
     );
     drop(events);
+
+    // ★ A retry is not a reload. Clearing the fault resets the ladder and returns the lifecycle to `Granted`, so
+    // `activate` can run against the artifact that is already compiled.
+    assert!(set.clear_fault(&plugin, 100_000).expect("a cleared fault"), "it was faulted");
+    assert!(
+        matches!(set.lifecycle(&plugin).expect("still loaded").state(), synra_plugin_host::State::Granted { .. }),
+        "clearing the fault must leave it ready to activate, not active on its own"
+    );
+    assert_eq!(set.health_of(plugin.as_str()), Some(synra_plugin_host::quota::Health::Good));
+    assert!(!set.clear_fault(&plugin, 100_000).expect("a second clear"), "it is not faulted any more");
 }
