@@ -243,6 +243,9 @@ commands! {
     // ★ The files that already landed. `transfer_list` is the in-flight registry and a finished transfer leaves it; the
     // inbox is what remains, and it is read rather than remembered.
     "transfer_received" => Transfer, Host, Many, false;
+    // ★ Opening a received file. It changes nothing in the kernel; the path is checked against the inbox before the
+    // platform is asked to launch anything.
+    "transfer_open" => Transfer, Host, Unit, false;
 
     // ── plugins ──
     "plugins_list" => Plugins, Host, Many, false;
@@ -505,6 +508,7 @@ mod tests {
             "transfer_respond",
             "transfer_list",
             "transfer_received",
+            "transfer_open",
             // plugins
             "plugins_list",
             "plugins_catalog_search",
