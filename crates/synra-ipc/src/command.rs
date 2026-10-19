@@ -249,6 +249,9 @@ commands! {
     // ★ Showing where a received file is. Like opening it, the path is checked against the inbox before the platform
     // is asked to reveal anything.
     "transfer_reveal" => Transfer, Host, Unit, false;
+    // ★ Removing a received file from the inbox. Destructive, so the interface asks first; the shell still checks the
+    // path is inside the inbox before it deletes anything.
+    "transfer_discard" => Transfer, Host, Unit, true;
 
     // ── plugins ──
     "plugins_list" => Plugins, Host, Many, false;
@@ -513,6 +516,7 @@ mod tests {
             "transfer_received",
             "transfer_open",
             "transfer_reveal",
+            "transfer_discard",
             // plugins
             "plugins_list",
             "plugins_catalog_search",
