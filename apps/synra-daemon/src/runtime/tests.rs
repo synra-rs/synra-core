@@ -660,7 +660,7 @@ fn install(runtime: &Runtime, id: &str, enabled: i64, trusted: i64) {
 /// That three tests failed the moment this changed is the point rather than a nuisance: they were installing trusted
 /// plugins with nothing recorded, which is precisely the state the consistency check exists to catch.
 fn consent(runtime: &Runtime, id: &str, granted: &[&str]) {
-    let text = std::fs::read_to_string(runtime.plugins_dir.join(id).join("manifest.json"))
+    let text = std::fs::read_to_string(plugin_dir(&runtime.plugins_dir, id).join("manifest.json"))
         .expect("the manifest this consent is about");
     let manifest: synra_plugin_api::Manifest = serde_json::from_str(&text).expect("a manifest");
     let decisions: Vec<(String, bool)> = manifest
@@ -709,18 +709,48 @@ fn a_plugin_directory_that_is_not_a_plugin_is_reported_rather_than_ignored() {
     // carried out rather than dropped.
     let dir = TempDir::new("discover-broken");
     let runtime = runtime(dir.path());
-    std::fs::create_dir_all(runtime.plugins_dir.join("@acme/half-copied")).expect("a directory");
+    // ★ A direct child, because that is the only layout the installer writes: one sanitised directory per plugin.
+    std::fs::create_dir_all(runtime.plugins_dir.join("half-copied")).expect("a directory");
 
     let found = crate::runtime::record_discovered_plugins(&runtime.db(), &runtime.plugins_dir, 500);
 
     assert_eq!(found.len(), 1);
     let reported = found.first().expect("one entry");
-    assert_eq!(reported.plugin_id, "@acme/half-copied");
+    assert_eq!(reported.plugin_id, "half-copied");
     assert!(
         reported.problem.as_deref().is_some_and(|why| why.contains("manifest")),
         "the reason should name the manifest: {reported:?}"
     );
     // Nothing was recorded for it, so it cannot be enabled by accident later.
+    assert!(runtime.db().plugins().expect("rows").is_empty());
+}
+
+#[test]
+fn a_directory_named_differently_from_its_manifest_is_reported_rather_than_recorded() {
+    // ★ A row whose directory the loader will never look in is worse than no row: the plugin is listed, can be enabled,
+    // and fails every time. The installer names the directory after the sanitised id, so a hand-copied directory under
+    // another name is refused here with the name it needs.
+    let dir = TempDir::new("discover-wrong-name");
+    let runtime = runtime(dir.path());
+    let directory = runtime.plugins_dir.join("wrong-name");
+    std::fs::create_dir_all(&directory).expect("a directory");
+    std::fs::write(
+        directory.join("manifest.json"),
+        manifest_json(
+            "@acme/hello",
+            r#"{"cap": "log:info"}"#,
+            r#"{"headless": {"artifact": "plugin.wasm", "stateful": false}}"#,
+        ),
+    )
+    .expect("a manifest");
+    std::fs::write(directory.join("plugin.wasm"), b"\0asm\x01\0\0\0").expect("an artifact");
+
+    let found = crate::runtime::record_discovered_plugins(&runtime.db(), &runtime.plugins_dir, 500);
+
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].plugin_id, "@acme/hello");
+    let problem = found[0].problem.as_deref().expect("a reason");
+    assert!(problem.contains("acme+hello"), "the reason names the directory it needs: {problem}");
     assert!(runtime.db().plugins().expect("rows").is_empty());
 }
 
@@ -857,7 +887,7 @@ fn a_plugin_whose_artifact_is_on_disk_says_so() {
     let dir = TempDir::new("plugins-artifact");
     let runtime = runtime(dir.path());
     install(&runtime, "@acme/hello", 1, 1);
-    let plugin_dir = dir.path().join("plugins").join("@acme/hello");
+    let plugin_dir = plugin_dir(&runtime.plugins_dir, "@acme/hello");
     std::fs::create_dir_all(&plugin_dir).expect("a plugin directory");
     std::fs::write(
         plugin_dir.join("manifest.json"),
@@ -910,9 +940,14 @@ fn manifest_json(id: &str, capabilities: &str, runtime: &str) -> String {
     )
 }
 
+/// Where the installer puts a plugin: the sanitised directory name, not the raw id.
+fn plugin_dir(plugins_dir: &Path, id: &str) -> PathBuf {
+    plugins_dir.join(synra_store::sanitise_component(id))
+}
+
 /// Writes a plugin directory the loader will accept: a manifest and a component.
 fn write_plugin(plugins_dir: &Path, id: &str, capability: &str) {
-    let directory = plugins_dir.join(id);
+    let directory = plugin_dir(plugins_dir, id);
     std::fs::create_dir_all(&directory).expect("a plugin directory");
     let runtime = r#"{"headless": {"artifact": "plugin.wasm", "stateful": false}}"#;
     std::fs::write(directory.join("manifest.json"), manifest_json(id, capability, runtime)).expect("a manifest");
@@ -974,7 +1009,7 @@ fn a_discovered_package_whose_signature_covers_other_bytes_is_not_recorded() {
     let runtime = runtime(dir.path());
     let plugin = "@acme/signed";
     write_plugin(&runtime.plugins_dir, plugin, r#"{"cap": "log:info"}"#);
-    sign_plugin(&runtime.plugins_dir.join(plugin), true);
+    sign_plugin(&plugin_dir(&runtime.plugins_dir, plugin), true);
 
     let found = crate::runtime::record_discovered_plugins(&runtime.db(), &runtime.plugins_dir, 500);
 
@@ -992,7 +1027,7 @@ fn a_genuinely_signed_directory_is_recorded() {
     let runtime = runtime(dir.path());
     let plugin = "@acme/signed";
     write_plugin(&runtime.plugins_dir, plugin, r#"{"cap": "log:info"}"#);
-    sign_plugin(&runtime.plugins_dir.join(plugin), false);
+    sign_plugin(&plugin_dir(&runtime.plugins_dir, plugin), false);
 
     let found = crate::runtime::record_discovered_plugins(&runtime.db(), &runtime.plugins_dir, 500);
 
@@ -1007,7 +1042,7 @@ fn a_signature_document_that_is_not_one_is_refused_at_discovery() {
     let runtime = runtime(dir.path());
     let plugin = "@acme/broken-signature";
     write_plugin(&runtime.plugins_dir, plugin, r#"{"cap": "log:info"}"#);
-    std::fs::write(runtime.plugins_dir.join(plugin).join("signature.json"), "{}").expect("a file");
+    std::fs::write(plugin_dir(&runtime.plugins_dir, plugin).join("signature.json"), "{}").expect("a file");
 
     let found = crate::runtime::record_discovered_plugins(&runtime.db(), &runtime.plugins_dir, 500);
 
@@ -1362,7 +1397,7 @@ fn one_broken_plugin_does_not_stop_the_others() {
     let runtime = runtime(dir.path());
     write_plugin(&runtime.plugins_dir, "@acme/good", r#"{"cap": "log:info"}"#);
     // The broken one has a manifest and no artifact.
-    let broken = runtime.plugins_dir.join("@acme/broken");
+    let broken = plugin_dir(&runtime.plugins_dir, "@acme/broken");
     std::fs::create_dir_all(&broken).expect("a plugin directory");
     std::fs::write(
         broken.join("manifest.json"),
@@ -1405,7 +1440,7 @@ fn a_ui_only_plugin_is_refused_rather_than_loaded_because_it_has_no_headless_hal
     // failure would be wrong, and calling it loaded would be a lie, so it is named as what it is.
     let dir = TempDir::new("load-ui-only");
     let runtime = runtime(dir.path());
-    let directory = runtime.plugins_dir.join("@acme/ui-only");
+    let directory = plugin_dir(&runtime.plugins_dir, "@acme/ui-only");
     std::fs::create_dir_all(&directory).expect("a plugin directory");
     std::fs::write(
         directory.join("manifest.json"),

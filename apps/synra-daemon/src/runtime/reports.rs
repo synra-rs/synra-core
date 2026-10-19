@@ -129,7 +129,10 @@ impl Runtime {
         for row in rows {
             // The manifest is read for the title, and its absence is reported rather than skipped: a row whose artifact
             // is gone is something the user should see, because the plugin will fail the next time it is called.
-            let manifest_path = self.plugins_dir.join(&row.plugin_id).join("manifest.json");
+            let manifest_path = self
+                .plugins_dir
+                .join(synra_store::sanitise_component(&row.plugin_id))
+                .join("manifest.json");
             let manifest = std::fs::read_to_string(&manifest_path)
                 .ok()
                 .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok());

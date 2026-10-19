@@ -384,7 +384,12 @@ impl Kernel for Runtime {
     fn plugin_consent(&self, plugin_id: &str, granted: &[String]) -> Result<serde_json::Value, Refusal> {
         // The manifest on disk is the document the decision is about. Its digest is what makes a later edit — or an
         // update that adds a capability — visible to the loader, instead of silently inheriting the old consent.
-        let text = std::fs::read_to_string(self.plugins_dir.join(plugin_id).join("manifest.json")).map_err(|_| {
+        let text = std::fs::read_to_string(
+            self.plugins_dir
+                .join(synra_store::sanitise_component(plugin_id))
+                .join("manifest.json"),
+        )
+        .map_err(|_| {
             Refusal::new(
                 ErrorCode::PluginNotInstalled,
                 format!("no plugin is installed as `{plugin_id}`"),

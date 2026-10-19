@@ -145,6 +145,14 @@ pub fn build_set(
 ///
 /// A directory that is not a plugin — a stray file, a half-copied install, a build's output — must not become a row.
 /// The parse is the whole test, and a directory that fails it is reported so the reason is not silent.
+///
+/// # ★ Why one level, and why the manifest decides the identifier
+///
+/// The installer writes one directory per plugin, named [`synra_store::sanitise_component`]: `@acme/hello` lives in
+/// `plugins/acme+hello`. This scan used to read two levels and take the identifier from the directory path, because the
+/// loader did the same — and both were wrong about what the installer wrote, so a plugin installed by either host was
+/// recorded and then could not be loaded. The identifier now comes from the manifest, and a directory whose name does not
+/// match the sanitised id is reported with the name it should have rather than becoming a row that can never load.
 pub fn record_discovered_plugins(
     db: &synra_store::SynraDb,
     plugins_dir: &Path,
@@ -156,74 +164,71 @@ pub fn record_discovered_plugins(
         // state of a fresh one. Reporting it would make every first run print a warning.
         return found;
     };
-
-    // ★ Two levels, because a plugin identifier contains a slash.
-    //
-    // `load_one` resolves a plugin as `plugins_dir.join(plugin_id)`, and ids are `@scope/name` — so `@acme/hello` lives
-    // at `plugins/@acme/hello/`. A scan that looked only at direct children would see `@acme`, find no manifest in it,
-    // and report a perfectly good installation as broken. That is not a hypothetical: it is what the first version of
-    // this function did, and the test that caught it is `discovering_a_plugin_twice_records_it_once`.
-    //
-    // A directory counts as a plugin when it **contains a manifest**, and its identifier is its path relative to the
-    // plugins directory. That is the same rule `load_one` uses, so the two cannot disagree about which directory a
-    // plugin is.
-    let mut candidates: Vec<(String, std::path::PathBuf)> = Vec::new();
-    for scope in entries.flatten() {
-        let scope_path = scope.path();
-        if !scope_path.is_dir() {
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
             continue;
         }
-        let Some(scope_name) = scope_path.file_name().and_then(|name| name.to_str()) else {
+        let Some(directory_name) = path.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
 
-        let mut inner = std::fs::read_dir(&scope_path).ok();
-        let mut had_child_directory = false;
-        if let Some(entries) = inner.as_mut() {
-            for child in entries.flatten() {
-                let child_path = child.path();
-                if !child_path.is_dir() {
-                    continue;
-                }
-                had_child_directory = true;
-                if let Some(child_name) = child_path.file_name().and_then(|name| name.to_str()) {
-                    candidates.push((format!("{scope_name}/{child_name}"), child_path));
-                }
+        if !path.join("manifest.json").is_file() {
+            // ★ A directory with no manifest is reported only when it has nowhere to hide a plugin.
+            //
+            // The installer writes one directory per plugin, named [`synra_store::sanitise_component`] — `@acme/hello`
+            // lives in `plugins/acme+hello`. A directory that has children and no manifest is therefore not a
+            // half-copied plugin but the shape an older layout used (a scope directory), and reporting it would put a
+            // warning in front of every user whose plugin directory predates the sanitised name. One that has no
+            // children is a stray or a half-copy, and the user needs to know which.
+            let has_children = std::fs::read_dir(&path).is_ok_and(|mut inner| inner.any(|child| {
+                child.is_ok_and(|child| child.path().is_dir())
+            }));
+            if !has_children {
+                found.push(Discovered {
+                    plugin_id: directory_name.to_owned(),
+                    problem: Some("no manifest.json".to_owned()),
+                });
             }
-        }
-
-        // A direct child with a manifest is a plugin too: an id without a scope is legal, and the layout should not
-        // have to be either-or.
-        if scope_path.join("manifest.json").is_file() {
-            candidates.push((scope_name.to_owned(), scope_path.clone()));
-        } else if !had_child_directory {
-            // A directory with no manifest and nothing under it is not a plugin and is not a scope: it is a stray or
-            // half-copied entry, and a user needs to be told which of those two situations they are in.
-            candidates.push((scope_name.to_owned(), scope_path));
-        }
-    }
-
-    for (plugin_id, path) in candidates {
-        // Already known: the database is the record, and re-reading the manifest on every start would make the daemon
-        // the thing that decides what a plugin declares rather than what the user approved.
-        if db.plugin_is_installed(&plugin_id).unwrap_or(false) {
             continue;
         }
 
+        // ★ The identifier is the **manifest's**, not the directory's, and the directory has to agree with it.
+        //
+        // The installer names the directory after the sanitised id. A directory copied in by hand under another name
+        // would be recorded under an id whose loader looks somewhere else — a row that can never load. Checking the two
+        // against each other catches the mistake here, with a sentence that says what to rename it to.
         let Ok(text) = std::fs::read_to_string(path.join("manifest.json")) else {
             found.push(Discovered {
-                plugin_id,
+                plugin_id: directory_name.to_owned(),
                 problem: Some("no manifest.json".to_owned()),
             });
             continue;
         };
         let Ok(manifest) = serde_json::from_str::<synra_plugin_api::Manifest>(&text) else {
             found.push(Discovered {
-                plugin_id,
+                plugin_id: directory_name.to_owned(),
                 problem: Some("the manifest is not readable".to_owned()),
             });
             continue;
         };
+        let plugin_id = manifest.id.as_str().to_owned();
+        let expected = synra_store::sanitise_component(&plugin_id);
+        if directory_name != expected {
+            found.push(Discovered {
+                plugin_id,
+                problem: Some(format!(
+                    "the directory is named `{directory_name}` but this id lives in `{expected}`"
+                )),
+            });
+            continue;
+        }
+
+        // Already known: the database is the record, and re-reading the manifest on every start would make the daemon
+        // the thing that decides what a plugin declares rather than what the user approved.
+        if db.plugin_is_installed(&plugin_id).unwrap_or(false) {
+            continue;
+        }
 
         // ★ A signature in the directory is checked here, because this scan is the **second** way into `plugins/`.
         //

@@ -190,7 +190,13 @@ pub fn load_plugin(
     revocations: &synra_plugin_api::revocation::RevocationList,
 ) -> Result<PluginId, String> {
     let id = PluginId::try_from(plugin_id.to_owned()).map_err(|error| format!("the id is not usable: {error}"))?;
-    let directory = plugins_dir.join(plugin_id);
+    // ★ The **sanitised** directory name, which is the one the installer writes.
+    //
+    // A scoped id contains a separator, so joining it raw looked under `plugins/@acme/hello` — two levels the installer
+    // never creates, because it writes `plugins/acme+hello` (the same name `Paths::plugin_dir`, removal, the sweep and
+    // the data sandbox use). The daemon's tests wrote the raw path by hand, so they passed while every installed plugin
+    // failed to load. One function decides this name for everybody.
+    let directory = plugins_dir.join(synra_store::sanitise_component(plugin_id));
     let manifest_text = std::fs::read_to_string(directory.join("manifest.json"))
         .map_err(|error| format!("the manifest could not be read: {error}"))?;
     let manifest: synra_plugin_api::Manifest = serde_json::from_str(&manifest_text)

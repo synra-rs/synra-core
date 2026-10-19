@@ -38,9 +38,14 @@ fn manifest(plugin_id: &str, capabilities: &[&str]) -> String {
     )
 }
 
+/// Where the installer puts a plugin: the sanitised directory name, not the raw id.
+fn plugin_dir(plugins: &Path, plugin_id: &str) -> PathBuf {
+    plugins.join(synra_store::sanitise_component(plugin_id))
+}
+
 /// Writes a plugin the way an install leaves one: a manifest and an artifact.
 fn write_plugin(plugins: &Path, plugin_id: &str, capabilities: &[&str]) -> String {
-    let directory = plugins.join(plugin_id);
+    let directory = plugin_dir(plugins, plugin_id);
     std::fs::create_dir_all(&directory).expect("a plugin directory");
     let text = manifest(plugin_id, capabilities);
     std::fs::write(directory.join("manifest.json"), &text).expect("a manifest");
@@ -64,7 +69,7 @@ fn set() -> crate::dispatch::PluginSet {
 
 /// Records the user's decision about every capability the manifest declares.
 fn consent(db: &synra_store::SynraDb, plugins: &Path, plugin_id: &str, granted: &[&str]) {
-    let text = std::fs::read_to_string(plugins.join(plugin_id).join("manifest.json")).expect("the manifest");
+    let text = std::fs::read_to_string(plugin_dir(plugins, plugin_id).join("manifest.json")).expect("the manifest");
     let manifest: synra_plugin_api::Manifest = serde_json::from_str(&text).expect("a manifest");
     let decisions: Vec<(String, bool)> = manifest
         .capabilities
@@ -236,7 +241,7 @@ fn a_revoked_version_is_disabled_in_the_store_and_refused() {
 fn a_ui_only_plugin_is_refused_because_it_has_no_headless_half() {
     let root = scratch("ui-only");
     let plugins = root.join("plugins");
-    let directory = plugins.join("@acme/hello");
+    let directory = plugin_dir(&plugins, "@acme/hello");
     std::fs::create_dir_all(&directory).expect("a plugin directory");
     // The headless half is what a loader can instantiate; a UI bundle is served by the shell instead.
     let text = format!(
@@ -324,7 +329,7 @@ fn a_missing_artifact_is_refused_with_the_reason_the_author_needs() {
     let root = scratch("missing-artifact");
     let plugins = root.join("plugins");
     write_plugin(&plugins, "@acme/hello", &["log:info"]);
-    std::fs::remove_file(plugins.join("@acme/hello").join("plugin.wasm")).expect("the artifact is removed");
+    std::fs::remove_file(plugin_dir(&plugins, "@acme/hello").join("plugin.wasm")).expect("the artifact is removed");
     let db = database();
     install(&db, "@acme/hello", true, true);
     consent(&db, &plugins, "@acme/hello", &["log:info"]);
