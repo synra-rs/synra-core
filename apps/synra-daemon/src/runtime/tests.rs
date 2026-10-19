@@ -2208,7 +2208,7 @@ fn the_plugin_report_carries_the_live_rung_as_well_as_the_row() {
     consent(&runtime, id, &["log:info"]);
 
     // Loaded into the runtime's **own** set, because that is the one the report reads.
-    crate::runtime::load_installed(
+    let _ = crate::runtime::load_installed(
         &mut runtime.plugins.lock(),
         &runtime.db(),
         &runtime.plugins_dir,
