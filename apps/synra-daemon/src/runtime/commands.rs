@@ -1119,20 +1119,37 @@ impl Runtime {
         // which is the same mistake the intent counter next door exists to avoid. That one needs every exit to pass one
         // place, and this method cannot get that without restructuring a `Kernel` trait method's body — tried this round
         // and backed out, because the surgery cost more than the metric.
+        // ★ `kind` is the same word the retry counter and the receiver use. The first version hardcoded `attachment`,
+        // so a plugin bundle's size and duration were filed under the wrong kind and the two ends disagreed about what
+        // crossed the wire.
+        let kind = if bundle.is_some() { "bundle" } else { "attachment" };
+        let elapsed_ms = started.elapsed().as_secs_f64() * 1_000.0;
         self.metrics.histogram_observe(
             &synra_observe::metrics::SeriesKey::new(
                 "transfer_bytes",
-                [("kind".to_owned(), "attachment".to_owned())],
+                [("kind".to_owned(), kind.to_owned())],
             ),
             bytes as f64,
         );
         self.metrics.histogram_observe(
             &synra_observe::metrics::SeriesKey::new(
                 "transfer_duration_ms",
-                [("kind".to_owned(), "attachment".to_owned())],
+                [("kind".to_owned(), kind.to_owned())],
             ),
-            started.elapsed().as_secs_f64() * 1_000.0,
+            elapsed_ms,
         );
+        // ★ The design's throughput, computed here rather than in the interface: the two numbers it needs are already in
+        // this frame, and a reader that divided them itself would have to know whether duration was seconds or ms.
+        // Zero elapsed is a clock too coarse to divide by; recording nothing is better than an infinite sample.
+        if elapsed_ms > 0.0 {
+            self.metrics.histogram_observe(
+                &synra_observe::metrics::SeriesKey::new(
+                    "transfer_throughput_bps",
+                    [("kind".to_owned(), kind.to_owned())],
+                ),
+                bytes as f64 / (elapsed_ms / 1_000.0),
+            );
+        }
         // ★ And the sender records what the peer now holds — the other half of the mirror whose receiving side landed
         // in round 150 (`sync_records`, keyed by `(plugin_id, peer_device)`).
         //

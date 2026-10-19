@@ -2532,6 +2532,22 @@ fn a_bundle_arrives_as_a_bundle() {
         "a bundle arrived as something else"
     );
 
+    // ★ And the sender files the size and duration under `bundle`, not `attachment`. This was hardcoded, so the two
+    // ends disagreed about what crossed the wire and a bundle was invisible in the attachment series.
+    let snapshot = runtime.metrics.snapshot();
+    assert!(
+        snapshot.get("transfer_bytes{kind=bundle}").is_some(),
+        "a bundle was measured as an attachment"
+    );
+    assert!(
+        snapshot.get("transfer_throughput_bps{kind=bundle}").is_some(),
+        "the throughput of a completed bundle is not recorded"
+    );
+    assert!(
+        snapshot.get("transfer_bytes{kind=attachment}").is_none(),
+        "a bundle contributed to the attachment series"
+    );
+
     // ★ 而**发送端**也记下了「对端现在持有这个版本」—— 与接收端那一半（`sync_records`）对称。
     // 版本在这里是 `1.2.0`，而接收端那一行是空串：接收端只知道传输的元数据里有什么，
     // 而发送端知道它**推的是哪个版本**。两行回答的是同一个问题的两侧。
