@@ -216,9 +216,15 @@ fn prose(value: &serde_json::Value) -> Vec<String> {
         let dropped = value.get("dropped").and_then(serde_json::Value::as_u64).unwrap_or(0);
         let errors = value.get("writeErrors").and_then(serde_json::Value::as_u64).unwrap_or(0);
         if dropped > 0 || errors > 0 {
-            rendered.push(format!(
+            let mut sentence = format!(
                 "the logger dropped {dropped} line(s) and could not write {errors} on its way to the file"
-            ));
+            );
+            // ★ The failure's own words, when the daemon kept them. A count tells the user something is wrong; this tells
+            // them whether to free space, restore a directory, or look at permissions.
+            if let Some(detail) = value.get("lastWriteError").and_then(serde_json::Value::as_str) {
+                sentence.push_str(&format!("; the last failure was: {detail}"));
+            }
+            rendered.push(sentence);
         }
         return rendered;
     }
@@ -928,13 +934,15 @@ mod tests {
         let response = Response::ok(serde_json::json!({
             "lines": [],
             "dropped": 3,
-            "writeErrors": 1
+            "writeErrors": 1,
+            "lastWriteError": "no space left on device"
         }));
         match outcome_of(&response, Shape::Prose) {
             crate::session::CommandOutcome::Lines(lines) => {
                 assert_eq!(lines.len(), 1, "{lines:?}");
                 assert!(lines[0].contains("dropped 3"), "{lines:?}");
                 assert!(lines[0].contains("could not write 1"), "{lines:?}");
+                assert!(lines[0].contains("no space left on device"), "{lines:?}");
             }
             other => panic!("expected lines, got {other:?}"),
         }

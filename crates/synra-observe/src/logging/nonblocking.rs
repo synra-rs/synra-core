@@ -165,13 +165,13 @@ fn run(receiver: Receiver<Message>, mut sink: impl Write, stats: &LogStats) {
             Message::Line(bytes) => {
                 // A failed write has no caller to go to: this *is* the reporting path. The line is lost, and the counter
                 // is what keeps that from being invisible — the next `synra logs` reports it.
-                if sink.write_all(&bytes).is_err() {
-                    stats.record_write_error();
+                if let Err(error) = sink.write_all(&bytes) {
+                    stats.record_write_error(error.to_string());
                 }
             }
             Message::Flush(ack) => {
-                if sink.flush().is_err() {
-                    stats.record_write_error();
+                if let Err(error) = sink.flush() {
+                    stats.record_write_error(error.to_string());
                 }
                 // Whether the flush worked or not, the caller waiting on this must be released: a hanging reader is a
                 // worse failure than a stale file.
@@ -181,8 +181,8 @@ fn run(receiver: Receiver<Message>, mut sink: impl Write, stats: &LogStats) {
         }
     }
     // Every line before the Stop has been written by now; the flush is what makes it visible to a reader.
-    if sink.flush().is_err() {
-        stats.record_write_error();
+    if let Err(error) = sink.flush() {
+        stats.record_write_error(error.to_string());
     }
 }
 
@@ -231,6 +231,11 @@ mod tests {
         drop(worker);
 
         assert_eq!(stats.write_errors(), 2, "the failed write and the failed flush");
+        assert!(
+            stats.last_write_error().is_some_and(|detail| detail.contains("no space")),
+            "the failure's own sentence was not kept: {:?}",
+            stats.last_write_error()
+        );
     }
 
     #[test]

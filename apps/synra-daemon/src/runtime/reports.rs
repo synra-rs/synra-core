@@ -272,6 +272,9 @@ impl Runtime {
             // exactly like a quiet kernel otherwise — these two numbers are the difference.
             "dropped": self.log_stats.as_ref().map_or(0, |stats| stats.dropped()),
             "writeErrors": self.log_stats.as_ref().map_or(0, |stats| stats.write_errors()),
+            // ★ The last failure in its own words. A count says the logger is failing; "no space left on device" says what
+            // to do about it.
+            "lastWriteError": self.log_stats.as_ref().and_then(|stats| stats.last_write_error()),
         }))
     }
 }

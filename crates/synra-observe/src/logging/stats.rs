@@ -10,6 +10,12 @@ pub struct LogStats {
     pub(super) redactions: AtomicU64,
     pub(super) dropped: AtomicU64,
     pub(super) write_errors: AtomicU64,
+    /// The most recent write failure's own words.
+    ///
+    /// A count says the logger is failing; this says *why*, and "the disk is full" and "the directory was removed" call
+    /// for different actions. `parking_lot` rather than a `std` lock because the writer is already using it and a poisoned
+    /// mutex must not be able to stop a log line from being counted.
+    pub(super) last_error: parking_lot::Mutex<Option<String>>,
 }
 
 impl LogStats {
@@ -65,8 +71,15 @@ impl LogStats {
         self.write_errors.load(Ordering::Relaxed)
     }
 
-    /// Counts one failed write to the destination.
-    pub(super) fn record_write_error(&self) {
+    /// Counts one failed write to the destination, keeping the failure's own sentence.
+    pub(super) fn record_write_error(&self, detail: impl Into<String>) {
         self.write_errors.fetch_add(1, Ordering::Relaxed);
+        *self.last_error.lock() = Some(detail.into());
+    }
+
+    /// The most recent write failure, when there was one.
+    #[must_use]
+    pub fn last_write_error(&self) -> Option<String> {
+        self.last_error.lock().clone()
     }
 }
