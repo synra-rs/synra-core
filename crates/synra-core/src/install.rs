@@ -734,6 +734,47 @@ pub fn update_from_package(
     from_package_inner(db, backend, plugins_dir, archive, now_ms, host, true)
 }
 
+/// Reads a package's manifest without installing it.
+///
+/// # Why this exists
+///
+/// The update path has to know the version **before** it replaces the old directory, because the migration runs against
+/// the old instance first. A directory's manifest can be read in place; a package's is inside the archive, and
+/// `from_package` only reveals it after it has already unpacked and verified everything. This is the same unpack, with
+/// the files thrown away and the manifest kept — a package whose bytes cannot be unpacked is refused here exactly as it
+/// would be by the installer.
+///
+/// # Errors
+///
+/// [`InstallRefusal`] with stage `archive` for an archive that cannot be unpacked or whose manifest does not parse.
+pub fn package_manifest(archive: &Path) -> Result<Manifest, InstallRefusal> {
+    let staging_root = archive.parent().unwrap_or_else(|| Path::new(".")).join(".package-inspect");
+    std::fs::create_dir_all(&staging_root)
+        .map_err(|error| InstallRefusal::new("archive", format!("{}: {error}", staging_root.display())))?;
+    let unpacked = staging_root.join(format!(
+        "inspect.{}.{}",
+        std::process::id(),
+        synra_store::sqlite::now_ms()
+    ));
+    std::fs::create_dir(&unpacked)
+        .map_err(|error| InstallRefusal::new("archive", format!("{}: {error}", unpacked.display())))?;
+
+    let outcome = (|| {
+        synra_plugin_ui::artifact::unpack(
+            archive,
+            &unpacked,
+            synra_plugin_ui::artifact::ArchiveLimits::package(),
+        )
+        .map_err(|error| InstallRefusal::new("archive", error.to_string()))?;
+        let text = std::fs::read_to_string(unpacked.join("manifest.json"))
+            .map_err(|error| InstallRefusal::new("archive", format!("the manifest could not be read: {error}")))?;
+        Manifest::from_json(&text)
+            .map_err(|error| InstallRefusal::new("archive", format!("the manifest is not readable: {error}")))
+    })();
+    let _ = std::fs::remove_dir_all(&unpacked);
+    outcome
+}
+
 #[allow(clippy::too_many_arguments, reason = "the package's inputs, plus whether it replaces an installed copy")]
 fn from_package_inner(
     db: &mut synra_store::SynraDb,
@@ -1025,6 +1066,26 @@ mod tests {
             !root.join(".install-staging").read_dir().expect("the staging directory").any(|_| true),
             "the unpacked archive was left behind"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_package_manifest_can_be_read_without_installing_it() {
+        // ★ The update path needs the version before it replaces anything, and a package's manifest is inside the
+        // archive. Reading it must not leave a plugin, a staging directory or an installed row behind.
+        let root = scratch("package-inspect");
+        let source = root.join("source");
+        write_source(&source);
+        let plugins = root.join("plugins");
+        std::fs::create_dir_all(&plugins).expect("the plugins directory");
+        let archive = root.join("hello.synra");
+        package_directory(&source, &archive).expect("the package");
+
+        let manifest = package_manifest(&archive).expect("a readable manifest");
+
+        assert_eq!(manifest.id.as_str(), "@acme/hello");
+        assert_eq!(manifest.version, "1.0.0");
+        assert!(plugins.read_dir().expect("the plugins directory").next().is_none(), "nothing was installed");
         let _ = std::fs::remove_dir_all(&root);
     }
 
