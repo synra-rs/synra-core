@@ -126,6 +126,22 @@ impl Host {
         }
     }
 
+    /// Counts one attempt to deliver a late answer, by outcome.
+    ///
+    /// # Why the counter is not named `reconnect_attempts_total`
+    ///
+    /// Because this device does not reconnect: it dials the origin of an answer once, retries a bounded number of times,
+    /// and gives up. The design names a counter for a mechanism that does not exist yet; giving this one the truthful name
+    /// keeps "the kernel retried a late answer" from being read as "the kernel keeps links alive".
+    pub fn count_late_delivery(&mut self, outcome: &str) {
+        if let Some(metrics) = &self.metrics {
+            metrics.counter_inc(&synra_observe::metrics::SeriesKey::new(
+                "late_delivery_attempts_total",
+                [("outcome".to_owned(), outcome.to_owned())],
+            ));
+        }
+    }
+
     /// Counts one frame this host received, by event.
     ///
     /// ★ A separate method rather than one with a direction: a device that talks more than it is told, and one that is
