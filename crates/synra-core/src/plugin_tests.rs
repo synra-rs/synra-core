@@ -321,6 +321,12 @@ fn loading_one_plugin_records_it_without_claiming_the_rest() {
     summary.record_refused("@acme/hello", "the engine refused it".to_owned());
     assert!(summary.is_empty());
     assert_eq!(summary.refusal_for("@acme/hello"), Some("the engine refused it"));
+
+    // Unloading forgets both, because a disabled plugin is neither a success nor a failure.
+    let id = PluginId::try_from("@acme/hello".to_owned()).expect("an id");
+    summary.record_unloaded(&id);
+    assert!(summary.is_empty());
+    assert_eq!(summary.refusal_for("@acme/hello"), None);
     let _ = std::fs::remove_dir_all(&root);
 }
 

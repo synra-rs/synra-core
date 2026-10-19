@@ -119,6 +119,15 @@ impl LoadedSummary {
         self.refused.retain(|refused| refused.plugin_id != plugin_id);
         self.refused.push(Refused { plugin_id: plugin_id.to_owned(), reason });
     }
+
+    /// Forgets a plugin entirely, for a host that has just unloaded or removed it.
+    ///
+    /// A disabled plugin is neither loaded nor refused — it is a decision the user made — so both lists have to let it
+    /// go. Leaving the loaded claim behind is what makes a later "why is this not running" answer with a stale reason.
+    pub fn record_unloaded(&mut self, id: &PluginId) {
+        self.loaded.retain(|loaded| loaded != id);
+        self.refused.retain(|refused| refused.plugin_id != id.as_str());
+    }
 }
 
 /// Loads every plugin the database says should run.
