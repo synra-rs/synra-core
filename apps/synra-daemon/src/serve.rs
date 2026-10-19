@@ -568,6 +568,35 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
         Arc::clone(&plugins),
         Arc::clone(&board),
     ));
+    // ★ The revocation list, and where it comes from.
+    //
+    // It ships **with the application**, so this reads a file beside the data directory rather than fetching one: the offline
+    // case is the built-in case, and a list that could only be obtained over the network would leave an offline machine with
+    // no revocation data at all — which is the case a revocation list exists for.
+    //
+    // A file that is missing is an empty list, and that is logged rather than silent: "nothing is revoked" and "there is no
+    // list" are different facts, and a daemon that could not tell the user which it was in would be unable to explain why a
+    // plugin it was told to disable is still running. It is read once and kept on the runtime, because `enable` runs long
+    // after start-up and must consult the same document the load pass did.
+    let revocations = {
+        let path = std::path::Path::new(&plan.data_dir).join("revocations.json");
+        match std::fs::read_to_string(&path) {
+            Ok(text) => match synra_plugin_api::revocation::RevocationList::parse(&text) {
+                Ok(list) => {
+                    eprintln!("synra-daemon: {} revocation entries read from {}", list.len(), path.display());
+                    list
+                }
+                Err(error) => {
+                    eprintln!(
+                        "synra-daemon: {} could not be read as a revocation list ({error}); no plugin is disabled on its account",
+                        path.display()
+                    );
+                    synra_plugin_api::revocation::RevocationList::empty()
+                }
+            },
+            Err(_) => synra_plugin_api::revocation::RevocationList::empty(),
+        }
+    };
     let plugin_loads = {
         // ★ Before loading anything: record the plugin directories the database does not know about.
         //
@@ -609,34 +638,6 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
         // problem rather than refusing to start.
         let now = i64::try_from(now_ms()).unwrap_or(i64::MAX);
         let verdict = crashes.verdict(now);
-    // ★ The revocation list, and where it comes from.
-    //
-    // It ships **with the application**, so this reads a file beside the data directory rather than fetching one: the offline
-    // case is the built-in case, and a list that could only be obtained over the network would leave an offline machine with
-    // no revocation data at all — which is the case a revocation list exists for.
-    //
-    // A file that is missing is an empty list, and that is logged rather than silent: "nothing is revoked" and "there is no
-    // list" are different facts, and a daemon that could not tell the user which it was in would be unable to explain why a
-    // plugin it was told to disable is still running.
-    let revocations = {
-        let path = std::path::Path::new(&plan.data_dir).join("revocations.json");
-        match std::fs::read_to_string(&path) {
-            Ok(text) => match synra_plugin_api::revocation::RevocationList::parse(&text) {
-                Ok(list) => {
-                    eprintln!("synra-daemon: {} revocation entries read from {}", list.len(), path.display());
-                    list
-                }
-                Err(error) => {
-                    eprintln!(
-                        "synra-daemon: {} could not be read as a revocation list ({error}); no plugin is disabled on its account",
-                        path.display()
-                    );
-                    synra_plugin_api::revocation::RevocationList::empty()
-                }
-            },
-            Err(_) => synra_plugin_api::revocation::RevocationList::empty(),
-        }
-    };
         let summary = {
             let mut set = plugins.lock();
             crate::runtime::load_installed(
@@ -681,6 +682,9 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
         pairing,
         plugins,
         plugin_loads,
+        // ★ The same document the load pass above consulted. `enable` runs long after start-up and must not load a
+        // plugin the start-up pass would have refused.
+        revocations,
         metrics: Arc::clone(&metrics),
         board: Arc::new(Mutex::new(synra_core::intent::Board::new())),
         // ★ Handed to the runtime so `synra logs --verbose` can raise what the process writes. `None` when logging is

@@ -97,9 +97,12 @@ fn runtime_over(dir: &Path, shared_db: std::sync::Arc<parking_lot::Mutex<synra_s
             )),
         ))),
         metrics: std::sync::Arc::new(synra_observe::metrics::RingRecorder::new()),
-    plugin_loads: std::sync::Arc::new(parking_lot::Mutex::new(
+        plugin_loads: std::sync::Arc::new(parking_lot::Mutex::new(
             crate::runtime::LoadedSummary::default(),
         )),
+        // No revocations in a fixture: the list is a document shipped beside the data directory, and a test that wanted
+        // one would say so explicitly.
+        revocations: synra_plugin_api::revocation::RevocationList::empty(),
         board: std::sync::Arc::new(parking_lot::Mutex::new(synra_core::intent::Board::new())),
         // ★ A real verbosity rather than `None`, so a test can assert that `logs --verbose` actually raised it. `None`
         // is the state of a daemon whose log file could not be opened, and a fixture that used it would make every
@@ -1853,6 +1856,25 @@ fn enabling_a_plugin_writes_the_flag_and_says_so() {
         listed.to_string().contains(plugin),
         "the answer is the plugin list: {listed}"
     );
+}
+
+#[test]
+fn enabling_a_confirmed_plugin_loads_it_without_a_restart() {
+    // ★ The asymmetry this closes: the shell loaded one plugin on enable, and the daemon only wrote a flag — so
+    // `synra plugin enable` answered that the plugin was on while it could not answer a share until the next start.
+    let dir = TempDir::new("enable-loads");
+    let runtime = runtime(dir.path());
+    let plugin = "@acme/switchable";
+    write_plugin(&runtime.plugins_dir, plugin, r#"{"cap": "log:info"}"#);
+    install(&runtime, plugin, 0, 1);
+    consent(&runtime, plugin, &["log:info"]);
+    let id = synra_protocol::ids::PluginId::try_from(plugin.to_owned()).expect("an id");
+
+    runtime.plugin_set_enabled(plugin, true).expect("it enables and loads");
+    assert!(runtime.plugins.lock().contains(&id), "enable wrote the flag but never loaded the plugin");
+
+    runtime.plugin_set_enabled(plugin, false).expect("it disables and unloads");
+    assert!(!runtime.plugins.lock().contains(&id), "disable left the compiled form in the set");
 }
 
 #[test]

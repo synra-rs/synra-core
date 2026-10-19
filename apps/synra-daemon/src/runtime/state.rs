@@ -96,6 +96,12 @@ pub struct Runtime {
     /// Held beside the set rather than recomputed, because a report that reloaded every plugin to find out how many were
     /// loaded would be a report that compiles artifacts as a side effect of being asked a question.
     pub plugin_loads: std::sync::Arc<parking_lot::Mutex<crate::runtime::plugins::LoadedSummary>>,
+    /// The revocation list this daemon was started with.
+    ///
+    /// ★ Held rather than read at each use, because the list ships with the application and a plugin enabled at
+    /// runtime has to be checked against the same document the start-up pass used. Loading without it was the reason
+    /// `enable` could only write a flag: a host that skipped the check would start a revoked plugin.
+    pub revocations: synra_plugin_api::revocation::RevocationList,
     /// The gate's counters, which the plugin set writes to and `status` reads.
     ///
     /// ★ A field here rather than a recorder inside `build_set`, because a recorder nobody can reach is a metrics

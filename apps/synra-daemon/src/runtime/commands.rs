@@ -280,13 +280,48 @@ impl Kernel for Runtime {
                 format!("no plugin is installed as `{plugin_id}`"),
             ));
         }
-        // ★ Disabling stops it now. Enabling still only writes the flag: this host has no revocation list at hand here,
-        // and loading a plugin without checking it would be the one shortcut this module cannot take. The next start
-        // loads it through `load_installed`, which does check.
-        if !enabled
-            && let Ok(id) = synra_protocol::ids::PluginId::try_from(plugin_id.to_owned())
-        {
-            synra_core::plugin::deactivate(&mut self.plugins.lock(), &id, now_ms());
+        // ★ Enabling loads and disabling stops — the same shape the shell has, and the design's lifecycle says enable is
+        // *activating*, not "remember this for the next start". The revocation list is the one this daemon was started
+        // with, so an enable cannot start a plugin the start-up pass would have refused.
+        if let Ok(id) = synra_protocol::ids::PluginId::try_from(plugin_id.to_owned()) {
+            if enabled {
+                let should_run = {
+                    let db = self.db.lock();
+                    let rows = db
+                        .plugins()
+                        .map_err(|error| Refusal::new(ErrorCode::Internal, error.to_string()))?;
+                    // The database lock is released before the plugin set is taken: the two are never held in one
+                    // order here, so there is no second order for another command to deadlock on.
+                    drop(db);
+                    rows.into_iter()
+                        .find(|row| row.plugin_id == plugin_id)
+                        .is_some_and(|row| row.should_run())
+                };
+                if should_run {
+                    let outcome = {
+                        let mut set = self.plugins.lock();
+                        let db = self.db.lock();
+                        synra_core::plugin::load_plugin(
+                            &mut set,
+                            &db,
+                            &self.plugins_dir,
+                            plugin_id,
+                            &self.revocations,
+                        )
+                    };
+                    match outcome {
+                        Ok(loaded) => self.plugin_loads.lock().record_loaded(loaded),
+                        Err(reason) => {
+                            self.plugin_loads.lock().record_refused(plugin_id, reason.clone());
+                            return Err(Refusal::new(ErrorCode::PluginTrapped, reason));
+                        }
+                    }
+                }
+            }
+            else {
+                synra_core::plugin::deactivate(&mut self.plugins.lock(), &id, now_ms());
+                self.plugin_loads.lock().record_unloaded(&id);
+            }
         }
         self.plugins_value()
     }
