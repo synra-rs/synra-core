@@ -18,16 +18,11 @@ const TRANSFER_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30
 
 /// How long a dispatched action's outcome is waited for before the intent stays dispatching.
 ///
-/// The plugin's execution budget is five seconds (`synra_core::dispatch::EXECUTE_BUDGET_MS`), so the wait has to be
-/// longer than that plus the round trip; eight seconds is those five, a handshake's worth of network, and a margin. A
-/// shorter wait reported "still running" for an action that then succeeded — the receiver answered into a closed link.
-///
-/// It no longer costs other clients anything — each control connection has its own thread — but it still holds this
-/// connection and this intent, so it is bounded rather than indefinite. A receiver slower than this answers into a closed
-/// link, and this side says "dispatching" rather than inventing an outcome; the limitation is written down in 07
-/// §"远程 target" as well.
-pub(super) const REMOTE_RESULT_WAIT: std::time::Duration =
-    std::time::Duration::from_millis(synra_core::dispatch::EXECUTE_BUDGET_MS + 3_000);
+/// ★ **The number moved to the kernel.** It was the same arithmetic written in two hosts — this one and the desktop shell
+/// — which drifts the first time the execution budget changes: one host would report an outcome while the other still
+/// called the action in flight. [`synra_core::dispatch::REMOTE_RESULT_WAIT`] owns it now, derived from the budget there.
+/// The reasoning and the limitation (a receiver slower than the wait answers into a closed link) live with it.
+pub(super) use synra_core::dispatch::REMOTE_RESULT_WAIT;
 
 impl Kernel for Runtime {
     fn version(&self) -> String {
