@@ -96,8 +96,28 @@ pub struct IntentSnapshot {
     /// Why it failed, if it did.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<crate::IpcError>,
+    /// How this device is retrying a dispatch nobody has answered, when it is.
+    ///
+    /// ★ A `Dispatching` intent is one state with two very different situations behind it: the first attempt is still
+    /// running, or this device has already sent it again several times. The page cannot tell them apart from `state`
+    /// alone, and "Running" for a device that is asleep is the wrong word for what is happening here.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry: Option<IntentRetry>,
     /// When it started, in milliseconds since the epoch.
     pub started_at_ms: i64,
+}
+
+/// How often a dispatch has been sent again, and whether that has stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IntentRetry {
+    /// How many times it has already been sent again.
+    pub attempts: u32,
+    /// How many attempts this pass will make before it stops.
+    pub max_attempts: u32,
+    /// Whether the bound was reached. The intent is still `Dispatching`: giving up on retries is about this process's
+    /// effort, not about the action's outcome.
+    pub gave_up: bool,
 }
 
 /// One way an intent could be handled.

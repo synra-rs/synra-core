@@ -47,7 +47,7 @@ pub use config::{
 pub use devices::{
     DeviceCard, DevicesSnapshot, IdentitySnapshot, PairingPrompt, ScanOptions, ScanState,
 };
-pub use intent::{IntentCandidate, IntentDecisionDto, IntentPrompt, IntentSnapshot, IntentSourceDto};
+pub use intent::{IntentCandidate, IntentDecisionDto, IntentPrompt, IntentRetry, IntentSnapshot, IntentSourceDto};
 pub use plugin::{
     AuditEntryDto, CatalogItem, CatalogQuery, CatalogSort, InstallPreviewDto, InstallReport, InstallSourceDto,
     PluginHealthDto, PluginSnapshot, PublisherDto, RemoveOptionsDto, RemoveReport, SyncFailure, SyncPlanDto,
