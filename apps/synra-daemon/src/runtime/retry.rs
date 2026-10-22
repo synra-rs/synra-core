@@ -26,7 +26,7 @@ use parking_lot::Mutex;
 
 use synra_core::Host;
 use synra_core::dispatch::orchestrate;
-use synra_core::intent::retry::{RetryPolicy, RetryQueue};
+use synra_core::intent::retry::{Attempt, RetryHost, RetryPolicy, RetryQueue, run_loop};
 use synra_core::intent::{Board, persist};
 use synra_core::supervisor::Cancellation;
 use synra_protocol::ids::{DeviceId, IntentId};
@@ -68,7 +68,7 @@ pub(crate) fn resend_outstanding(
     let mut report = Report::default();
     for (_, outbound) in pending {
         report.attempted += 1;
-        match attempt(host, board, db, &outbound) {
+        match send_attempt(host, board, db, &outbound) {
             Outcome::Answered => report.answered += 1,
             Outcome::Unanswered => report.unanswered += 1,
             Outcome::Failed => report.failed += 1,
@@ -123,51 +123,60 @@ pub(crate) fn run(
         persist(queue.row(*id), db, *id);
     }
 
-    loop {
-        if cancel.is_cancelled() {
-            return;
-        }
+    let mut host = DaemonRetry { host, board, db, local };
+    let mut now = synra_store::sqlite::now_ms;
+    let mut sleep = |wait| sleep_unless_cancelled(cancel, wait);
+    run_loop(&mut queue, cancel, &mut host, &mut now, &mut sleep);
+}
 
-        let now = synra_store::sqlite::now_ms();
-        for id in queue.take_due(now) {
-            // The intent may have ended between the snapshot and this moment.
-            let Some((_, outbound)) = outbound_pairs(board, local, now).into_iter().find(|(candidate, _)| *candidate == id)
-            else {
-                queue.forget(id);
-                persist(queue.row(id), db, id);
-                continue;
-            };
-            match attempt(host, board, db, &outbound) {
-                Outcome::Answered => {
-                    queue.forget(id);
-                    persist(queue.row(id), db, id);
-                }
-                Outcome::Unanswered | Outcome::Failed => {
-                    let more = queue.record_failure(id, synra_store::sqlite::now_ms());
-                    persist(queue.row(id), db, id);
-                    if !more {
-                        eprintln!(
-                            "synra-daemon: intent {id} was re-sent {} times without an answer; it stays dispatching until it expires",
-                            policy.max_attempts
-                        );
-                    }
-                }
-            }
-        }
+/// The daemon's half of the retry loop.
+struct DaemonRetry<'a> {
+    host: &'a Arc<Mutex<Host>>,
+    board: &'a Arc<Mutex<Board>>,
+    db: &'a Arc<Mutex<SynraDb>>,
+    local: DeviceId,
+}
 
-        for id in queue.observe(pending_ids(board, local, synra_store::sqlite::now_ms()), synra_store::sqlite::now_ms()) {
-            persist(queue.row(id), db, id);
+impl RetryHost for DaemonRetry<'_> {
+    fn pending(&mut self) -> Vec<IntentId> {
+        pending_ids(self.board, self.local, synra_store::sqlite::now_ms())
+    }
+
+    fn attempt(&mut self, id: IntentId) -> Attempt {
+        // The intent may have ended between the snapshot and this moment.
+        let Some((_, outbound)) = outbound_pairs(self.board, self.local, synra_store::sqlite::now_ms())
+            .into_iter()
+            .find(|(candidate, _)| *candidate == id)
+        else {
+            return Attempt::Ended;
+        };
+        match send_attempt(self.host, self.board, self.db, &outbound) {
+            Outcome::Answered => Attempt::Answered,
+            Outcome::Unanswered => Attempt::Unanswered,
+            Outcome::Failed => Attempt::Failed,
         }
-        let wait = queue
-            .next_wait(synra_store::sqlite::now_ms())
-            .min(Duration::from_secs(30))
-            .max(Duration::from_millis(10));
-        sleep_unless_cancelled(cancel, wait);
+    }
+
+    fn changed(
+        &mut self,
+        id: IntentId,
+        row: Option<synra_store::IntentRetryRow>,
+        status: Option<synra_core::intent::retry::RetryStatus>,
+    ) {
+        persist(row, self.db, id);
+        if let Some(status) = status
+            && status.gave_up
+        {
+            eprintln!(
+                "synra-daemon: intent {id} was re-sent {} times without an answer; it stays dispatching until it expires",
+                status.max_attempts
+            );
+        }
     }
 }
 
 /// One send, with the answer applied and written down.
-fn attempt(
+fn send_attempt(
     host: &Arc<Mutex<Host>>,
     board: &Arc<Mutex<Board>>,
     db: &Arc<Mutex<SynraDb>>,
