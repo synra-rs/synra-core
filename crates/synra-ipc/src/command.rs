@@ -263,7 +263,7 @@ commands! {
     "plugins_disable" => Plugins, Host, Unit, true;
     "plugins_consent_respond" => Plugins, Host, Unit, true;
     "plugins_check_update" => Plugins, Host, Maybe, false;
-    "plugins_update" => Plugins, Host, Unit, true;
+    "plugins_update" => Plugins, Host, One, true;
     // ★ Retry a load without changing a flag. A faulted plugin is enabled and trusted; what failed was starting it,
     // so switching it off and on again was the only way to ask again. This asks directly and answers with the card.
     "plugins_reload" => Plugins, Host, One, true;
