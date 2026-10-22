@@ -112,6 +112,9 @@ impl Runtime {
         let rows = self.db().plugins().map_err(|error| {
             Refusal::new(ErrorCode::Internal, format!("could not read the plugins table: {error}"))
         })?;
+        let checks = self.db().plugin_update_checks().map_err(|error| {
+            Refusal::new(ErrorCode::Internal, format!("could not read update checks: {error}"))
+        })?;
 
         // ★ The two plugin gauges, set where the truth is read. The daemon has no install command, so this listing is the
         // only place its recorder can learn how many plugins exist — and a daemon whose `plugins_installed` stayed absent
@@ -127,6 +130,7 @@ impl Runtime {
 
         let mut installed: Vec<serde_json::Value> = Vec::new();
         for row in rows {
+            let check = checks.iter().find(|check| check.plugin_id == row.plugin_id);
             // The manifest is read for the title, and its absence is reported rather than skipped: a row whose artifact
             // is gone is something the user should see, because the plugin will fail the next time it is called.
             let manifest_path = self
@@ -161,6 +165,11 @@ impl Runtime {
                     .health_of(&row.plugin_id),
                 "installedAtMs": row.installed_at_ms,
                 "updatedAtMs": row.updated_at_ms,
+                "updateCheckedAtMs": check.map(|check| check.checked_at_ms),
+                "update": check.and_then(|check| check.available_version.as_ref().map(|version| serde_json::json!({
+                    "version": version, "needsNewConsent": !check.added_capabilities.is_empty(),
+                    "addedCapabilities": check.added_capabilities,
+                }))),
                 // ★ Reported rather than assumed. A row whose directory is gone is one `should_run` would say yes to and
                 // the host would fail to load.
                 "artifactPresent": manifest_path.exists(),

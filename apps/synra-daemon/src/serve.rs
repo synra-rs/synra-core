@@ -736,6 +736,8 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
     // version of the listener read `while !stop.load(..)` — so it exited on its first check and silently refused every
     // connection. A cancellation token is one-way, so that polarity cannot be got wrong.
     let supervisor = Arc::new(synra_core::supervisor::Supervisor::new(synra_store::sqlite::now_ms()));
+    let update_worker = crate::runtime::updates::start(&runtime, &supervisor)
+        .map_err(|error| eprintln!("synra-daemon: plugin update checks did not start: {error}")).ok();
     for service in ["transport.accept", "discovery.udp", "intent.retry"] {
         // Reported rather than fatal: `TaskSpec::service` is `Ordinary` criticality, so a task that will not register is a
         // capability this run does not have, not a reason to refuse to serve.
@@ -940,6 +942,7 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
     // ★ Asked through the supervisor rather than by setting a flag, so the two services stop the way they were started:
     // the token they were given is cancelled, and the stop order is the reverse of registration.
     let _ = supervisor.begin_shutdown();
+    if let Some(worker) = update_worker { let _ = worker.join(); }
     join_loops(loops);
     code
 }
