@@ -353,6 +353,10 @@ pub struct ActiveVersion {
     pub artifact: String,
     /// The artifact's digest, as the install computed it. Empty for a plugin with no artifact.
     pub digest: String,
+    /// Who signed the package, when it was signed.
+    pub publisher_id: Option<String>,
+    /// The signing key's fingerprint, as a person reads it. `None` for an unsigned package.
+    pub fingerprint: Option<String>,
 }
 
 /// One intent, as the `intents` table keeps it.

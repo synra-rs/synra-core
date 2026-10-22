@@ -45,6 +45,7 @@ pub use updates::PluginUpdateCheck;
 mod sync;
 pub use retries::IntentRetryRow;
 mod versions;
+pub use versions::PluginVersionRecord;
 mod sync_log;
 mod plugins;
 mod storage;

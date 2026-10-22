@@ -75,8 +75,8 @@ pub use records::{
 // `Paired` is here because `SynraDb::pair_device` takes one: a public method whose argument type is not exported is
 // a method no caller outside this crate can call at all.
 pub use sqlite::{
-    ConfigChange, DbError, IntentRetryRow, Paired, PluginReplacement, PluginUpdateCheck, RestoreReport, SynraDb, WriteObserver, migration_versions,
-    restore_from,
+    ConfigChange, DbError, IntentRetryRow, Paired, PluginReplacement, PluginUpdateCheck, PluginVersionRecord,
+    RestoreReport, SynraDb, WriteObserver, migration_versions, restore_from,
 };
 pub use sqlite::{PublisherRow, TRUST_REVOKED, TRUST_SEEN, TRUST_TRUSTED};
 mod plugin_files;

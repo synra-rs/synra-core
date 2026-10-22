@@ -127,6 +127,7 @@ impl SynraDb {
 
 #[cfg(test)]
 mod tests {
+    use super::super::PluginVersionRecord;
     use super::*;
 
     fn check() -> PluginUpdateCheck {
@@ -145,7 +146,7 @@ mod tests {
         db.migrate().expect("schema");
         db.insert_plugin("@acme/hello", false, false, "good", 1, 1)
             .expect("plugin");
-        db.record_plugin_version("@acme/hello", "1.0.0", "wasm", "digest", "{}", 1)
+        db.record_plugin_version(&PluginVersionRecord { plugin_id: "@acme/hello", version: "1.0.0", artifact: "wasm", digest: "digest", manifest: "{}", installed_ms: 1, ..Default::default() })
             .expect("version");
         db
     }
@@ -170,7 +171,7 @@ mod tests {
     fn replacing_a_version_invalidates_its_check_and_refuses_a_late_answer() {
         let db = database();
         assert!(db.save_plugin_update_check(&check()).expect("save"));
-        db.record_plugin_version("@acme/hello", "2.0.0", "wasm", "new digest", "{}", 2)
+        db.record_plugin_version(&PluginVersionRecord { plugin_id: "@acme/hello", version: "2.0.0", artifact: "wasm", digest: "new digest", manifest: "{}", installed_ms: 2, ..Default::default() })
             .expect("replace");
         assert!(db.plugin_update_checks().expect("read").is_empty());
         assert!(!db.save_plugin_update_check(&check()).expect("late answer"));

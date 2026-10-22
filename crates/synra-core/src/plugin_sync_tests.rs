@@ -5,6 +5,7 @@
 //! whose bytes are not the ones promised, a transfer declared complete with a hole in it.
 
 use synra_protocol::ids::{DeviceId, PluginId, TransferId};
+use synra_store::PluginVersionRecord;
 
 use super::*;
 
@@ -1001,7 +1002,7 @@ fn a_peer_answers_with_its_list_over_a_real_link() {
     let mut db = synra_store::SynraDb::open_in_memory().expect("opens");
     db.migrate().expect("migrates");
     db.insert_plugin("@acme/chat", true, true, "installed", 1_000, 1_000).expect("a plugin");
-    db.record_plugin_version("@acme/chat", "1.2.0", "plugin.wasm", "sha256-abc", "{}", 1_000)
+    db.record_plugin_version(&PluginVersionRecord { plugin_id: "@acme/chat", version: "1.2.0", artifact: "plugin.wasm", digest: "sha256-abc", manifest: "{}", installed_ms: 1_000, ..Default::default() })
         .expect("a version");
 
     let answerer = std::thread::spawn(move || {

@@ -1,6 +1,6 @@
 //! Which row is the one a plan should compare.
 
-use super::SynraDb;
+use super::{PluginVersionRecord, SynraDb};
 use rusqlite::params;
 
 /// A database with one plugin installed at two versions, the older one active.
@@ -54,13 +54,38 @@ fn a_recorded_version_is_the_one_that_counts() {
     db.migrate().expect("migrates");
     db.insert_plugin("@acme/hello", true, true, "active", 1_000, 1_000).expect("a plugin");
 
-    db.record_plugin_version("@acme/hello", "1.2.3", "plugin.wasm", "sha256-abc", "{}", 1_000)
+    db.record_plugin_version(&PluginVersionRecord { plugin_id: "@acme/hello", version: "1.2.3", artifact: "plugin.wasm", digest: "sha256-abc", manifest: "{}", installed_ms: 1_000, ..Default::default() })
         .expect("a recorded version");
 
     assert_eq!(
         db.active_plugin_version("@acme/hello").expect("a read"),
         Some(("1.2.3".to_owned(), "sha256-abc".to_owned()))
     );
+}
+
+#[test]
+fn the_active_version_names_its_signer() {
+    // ★ The version row knew what bytes ran and nothing about who signed them; revocation and a safe automatic update
+    // both need the key, not only the publisher name.
+    let mut db = SynraDb::open_in_memory().expect("an in-memory database");
+    db.migrate().expect("migrates");
+    db.insert_plugin("@acme/hello", true, true, "active", 1_000, 1_000).expect("a plugin");
+    db.record_plugin_version(&PluginVersionRecord {
+        plugin_id: "@acme/hello",
+        version: "1.2.3",
+        artifact: "plugin.wasm",
+        digest: "sha256-abc",
+        manifest: "{}",
+        publisher_id: Some("@acme"),
+        fingerprint: Some("AB12 CD34 EF56 7890"),
+        installed_ms: 1_000,
+    })
+    .expect("a recorded version");
+
+    let active = db.active_plugin("@acme/hello").expect("a read").expect("an active version");
+
+    assert_eq!(active.publisher_id.as_deref(), Some("@acme"));
+    assert_eq!(active.fingerprint.as_deref(), Some("AB12 CD34 EF56 7890"));
 }
 
 #[test]
@@ -88,7 +113,7 @@ fn a_ui_only_plugin_has_an_empty_artifact_name() {
     let mut db = SynraDb::open_in_memory().expect("an in-memory database");
     db.migrate().expect("migrates");
     db.insert_plugin("@acme/hello", true, true, "active", 1_000, 1_000).expect("a plugin");
-    db.record_plugin_version("@acme/hello", "1.2.3", "", "", "{}", 1_000)
+    db.record_plugin_version(&PluginVersionRecord { plugin_id: "@acme/hello", version: "1.2.3", artifact: "", digest: "", manifest: "{}", installed_ms: 1_000, ..Default::default() })
         .expect("a version with no artifact");
 
     let active = db.active_plugin("@acme/hello").expect("a read").expect("an active version");
@@ -105,9 +130,9 @@ fn recording_a_second_version_moves_the_active_row_and_keeps_the_old_one() {
     db.migrate().expect("migrates");
     db.insert_plugin("@acme/hello", true, true, "active", 1_000, 1_000).expect("a plugin");
 
-    db.record_plugin_version("@acme/hello", "1.0.0", "plugin.wasm", "sha256-old", "{}", 1_000)
+    db.record_plugin_version(&PluginVersionRecord { plugin_id: "@acme/hello", version: "1.0.0", artifact: "plugin.wasm", digest: "sha256-old", manifest: "{}", installed_ms: 1_000, ..Default::default() })
         .expect("the first version");
-    db.record_plugin_version("@acme/hello", "2.0.0", "plugin.wasm", "sha256-new", "{}", 2_000)
+    db.record_plugin_version(&PluginVersionRecord { plugin_id: "@acme/hello", version: "2.0.0", artifact: "plugin.wasm", digest: "sha256-new", manifest: "{}", installed_ms: 2_000, ..Default::default() })
         .expect("the second version");
 
     assert_eq!(
