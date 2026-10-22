@@ -124,12 +124,16 @@ pub struct IntentView {
     pub state: &'static str,
     /// What the plugins offered.
     pub candidates: Vec<CandidateView>,
-    /// Why it failed, when it did.
+    /// When it was raised, in milliseconds since the epoch.
+    ///
+    /// ★ The snapshot used to report the moment it was **read** under this name. The board has carried the real value from
+    /// the first version; not carrying it made "how long has this been running?" answer "zero", every time.
+    pub created_at_ms: i64,
+    /// Why it failed or was refused, when either happened.
     ///
     /// ★ The board has carried this since `IntentState::Failed` was written, and the view dropped it — so the interface's
-    /// "why did it fail?" line read a field no host ever filled. The kernel's sentence is kept here; the interface turns
-    /// the code into a message key (see `IpcError::from_synra_error`), and the sentence travels as a detail for a bug
-    /// report rather than as the text a user reads.
+    /// "why did it fail?" line read a field no host ever filled. A refusal carries the admission check's own sentence and
+    /// code, which its type documents as "a sentence the interface can show".
     pub error: Option<synra_protocol::SynraError>,
 }
 
@@ -253,6 +257,7 @@ impl IntentView {
             "intent": self.intent_id.to_string(),
             "trace": self.trace.to_string(),
             "state": self.state,
+            "createdAtMs": self.created_at_ms,
             "candidates": self.candidates.iter().map(CandidateView::to_json).collect::<Vec<_>>(),
             // `null` when there is none: a client that branches on the field has one shape to read, and `null` is the
             // answer to "why did it fail?" for an intent that has not.
@@ -433,10 +438,16 @@ pub fn snapshot(board: &Arc<Mutex<Board>>, intent: &str) -> Result<IntentView, R
         trace: found.trace,
         state: state_name(&found.state),
         candidates: candidates_of(&intents, id),
+        created_at_ms: found.created_at_ms,
         error: match &found.state {
             crate::intent::IntentState::Failed { error, .. } => Some(error.clone()),
-            // The other final states are not failures with a sentence: a timeout has its own label, a refusal names its
-            // own check, and inventing an error for them would give the interface a second, worse description.
+            // A refusal is not a failure of the action — nothing ran — but its type carries the check's own sentence and
+            // code for the interface to show, so dropping it left the page with "Refused" and no reason.
+            crate::intent::IntentState::Refused { refusal } => {
+                Some(synra_protocol::SynraError::new(refusal.code, refusal.detail.clone()))
+            }
+            // The other final states are not failures with a sentence: a timeout has its own label, and inventing an error
+            // would give the interface a second, worse description.
             _ => None,
         },
     };
@@ -1211,7 +1222,38 @@ mod tests {
         let error = view.error.as_ref().expect("the failure is carried");
         assert_eq!(error.code, synra_protocol::ErrorCode::Internal);
         assert_eq!(error.message, "the plugin trapped");
+        assert_eq!(view.created_at_ms, 1_000, "the raising time is carried, not the reading time");
         assert_eq!(view.to_json()["error"]["code"], "internal");
+        assert_eq!(view.to_json()["createdAtMs"], 1_000);
+    }
+
+    #[test]
+    fn a_refused_intent_carries_the_check_that_refused_it() {
+        // ★ "Refused" without a reason is the same failure as "Failed" without one: the refusal type documents its detail
+        // as a sentence the interface can show, and the view was dropping both it and its code.
+        let mut board = Board::new();
+        let (id, ..) = board.raise(
+            direct(peer()),
+            Choice::Automatic,
+            None,
+            Some(synra_protocol::ids::RequestId::new()),
+            1_000,
+        );
+        board.refuse(
+            id,
+            crate::admission::AdmissionRefusal {
+                step: crate::admission::AdmissionStep::PluginActive,
+                detail: "the plugin is not active".to_owned(),
+                code: synra_protocol::ErrorCode::PluginNotInstalled,
+            },
+        );
+        let board = Arc::new(Mutex::new(board));
+
+        let view = snapshot(&board, &id.to_string()).expect("a view");
+        assert_eq!(view.state, "refused");
+        let error = view.error.as_ref().expect("the refusal's sentence is carried");
+        assert_eq!(error.code, synra_protocol::ErrorCode::PluginNotInstalled);
+        assert_eq!(error.message, "the plugin is not active");
     }
 
     #[test]
