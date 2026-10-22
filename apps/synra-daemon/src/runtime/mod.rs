@@ -31,6 +31,7 @@ mod refusals;
 mod registry_install;
 mod reports;
 pub(crate) mod retry;
+pub(crate) mod updates;
 mod state;
 
 pub use install::{InstallRefusal, Installed, from_directory as install_from_directory, from_package as install_from_package};

@@ -398,7 +398,7 @@ impl Kernel for Runtime {
             backend,
             &self.plugins_dir,
             &staging,
-            &super::registry_install::NetworkFetch,
+            &super::registry_install::NetworkFetch::default(),
             package,
             version,
             i64::try_from(now_ms()).unwrap_or(i64::MAX),

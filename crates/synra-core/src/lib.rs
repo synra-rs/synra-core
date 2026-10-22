@@ -72,6 +72,7 @@ pub mod pairing;
 pub mod peer;
 pub mod plugin;
 pub mod plugin_sync;
+pub mod plugin_updates;
 pub mod retry;
 pub mod routing;
 pub mod session;

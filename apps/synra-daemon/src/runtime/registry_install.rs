@@ -41,32 +41,8 @@ pub(crate) trait Fetch {
     fn get(&self, url: &str) -> Result<Vec<u8>, String>;
 }
 
-/// The real network client, one guarded request at a time.
-pub(crate) struct NetworkFetch;
-
-impl Fetch for NetworkFetch {
-    fn get(&self, url: &str) -> Result<Vec<u8>, String> {
-        let host = url_host(url).ok_or_else(|| format!("{url} has no host to allow"))?;
-        let client = synra_fetch::Client::new(
-            synra_core::network::NetworkGuard::for_hosts(&[host]),
-            // A package may be 64 MiB (16 §2.1), and the fetch layer's default response ceiling is the inline-frame one.
-            synra_fetch::Limits {
-                max_response_bytes: 64 * 1024 * 1024,
-                ..synra_fetch::Limits::default()
-            },
-        );
-        let request = synra_fetch::Request {
-            method: "GET".to_owned(),
-            url: url.to_owned(),
-            headers: std::collections::BTreeMap::new(),
-            body: None,
-        };
-        client
-            .fetch(&request)
-            .map(|response| response.body.into_bytes())
-            .map_err(|refusal| refusal.to_string())
-    }
-}
+mod network;
+pub(crate) use network::NetworkFetch;
 
 /// Installs `package` at `version` (or the `latest` tag) from a registry.
 ///
@@ -174,16 +150,6 @@ pub(crate) fn install_from_registry(
 }
 
 
-
-/// The host of a URL, for the guard.
-///
-/// The same rule as the catalogue's: an unparsed URL yields no host, and no host means the guard cannot allow it.
-fn url_host(url: &str) -> Option<String> {
-    let rest = url.split_once("://").map(|(_, rest)| rest)?;
-    let authority = rest.split(['/', '?', '#']).next()?;
-    let host = authority.rsplit('@').next()?.split(':').next()?;
-    (!host.is_empty()).then(|| host.to_owned())
-}
 
 #[cfg(test)]
 mod tests {
