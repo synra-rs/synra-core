@@ -34,6 +34,8 @@ pub mod board;
 /// Writing the board down and reading it back, shared by every host that keeps one.
 pub mod persist;
 pub mod remote;
+/// When an unanswered dispatch is sent again, shared by every host that keeps a board.
+pub mod retry;
 pub mod types;
 
 #[cfg(test)]
