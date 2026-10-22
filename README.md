@@ -71,6 +71,9 @@ synra-core/
 ```text
 synra plugin registry https://registry.example static:https://cdn.example/plugins
 synra plugin policy auto-minor
+synra plugin publisher list
+synra plugin publisher decide @acme trusted --fingerprint "AB12 CD34 EF56 7890"
+synra plugin publisher decide @acme revoked --fingerprint "AB12 CD34 EF56 7890"
 synra plugin check
 synra plugin check @acme/hello
 synra plugin update @acme/hello --version ^1.1

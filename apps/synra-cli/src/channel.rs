@@ -16,6 +16,7 @@ use synra_control::{Client, Request, Response};
 use synra_protocol::error::ErrorCode;
 
 mod plugin_updates;
+mod publishers;
 
 /// What to ask, and what to do with the answer.
 ///
@@ -196,6 +197,9 @@ fn pretty(value: &serde_json::Value) -> String {
 /// A build of the client that does not know a command's shape must still print the answer rather than nothing. The
 /// fallback is the JSON, which is ugly and complete — and complete is what a user filing a bug report needs.
 fn prose(value: &serde_json::Value) -> Vec<String> {
+    if let Some(lines) = publishers::render(value) {
+        return lines;
+    }
     if let Some(lines) = plugin_updates::render(value) {
         return lines;
     }

@@ -315,7 +315,7 @@ fn a_revoked_publisher_is_refused_even_with_a_valid_signature() {
     };
     db.record_publisher("@acme", fingerprint.as_str(), &document.pubkey, 1_000)
         .expect("the publisher is known");
-    db.set_publisher_trust("@acme", synra_store::TRUST_REVOKED, 2_000)
+    db.set_publisher_trust("@acme", fingerprint.as_str(), synra_store::TRUST_REVOKED, 2_000)
         .expect("the key is revoked");
 
     let refusal = from_directory(&mut db, &backend(), &plugins(dir.path()), &source, 3_000)

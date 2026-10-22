@@ -176,6 +176,18 @@ pub enum Request {
     /// The installed plugins.
     Plugins,
 
+    /// Lists previously verified publisher keys and this device's decisions.
+    PluginPublishers,
+    /// Records a decision for the exact key the user confirmed.
+    PluginPublisherDecide {
+        /// A publisher this device has met.
+        publisher_id: String,
+        /// The fingerprint displayed to the user.
+        fingerprint: String,
+        /// seen, trusted or revoked.
+        trust: String,
+    },
+
     /// Reads or changes the ordered registry source list.
     PluginRegistry {
         /// None reads; an empty list clears the setting; otherwise replaces it.
@@ -434,6 +446,8 @@ impl Request {
             Self::SendText { .. } => "sendText",
             Self::SendFile { .. } => "sendFile",
             Self::Plugins => "plugins",
+            Self::PluginPublishers => "pluginPublishers",
+            Self::PluginPublisherDecide { .. } => "pluginPublisherDecide",
             Self::PluginRegistry { .. } => "pluginRegistry",
             Self::PluginUpdatePolicy { .. } => "pluginUpdatePolicy",
             Self::PluginCheckUpdates { .. } => "pluginCheckUpdates",

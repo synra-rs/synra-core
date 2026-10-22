@@ -267,6 +267,12 @@ pub struct PluginArgs {
 /// What to do with a plugin.
 #[derive(Debug, Subcommand)]
 pub enum PluginAction {
+    /// List known signing keys or decide whether to trust one.
+    Publisher {
+        /// What to do with the publisher key.
+        #[command(subcommand)]
+        action: PublisherAction,
+    },
     /// Read or replace the ordered registry sources. Use --clear to disable registry access.
     Registry {
         /// HTTPS npm URLs or static: URLs, in fallback order. Omit to read the current setting.
@@ -367,6 +373,24 @@ pub enum PluginAction {
         /// trust is what this flag is for.
         #[arg(long)]
         data: bool,
+    },
+}
+
+/// Explicit decisions about previously verified signing keys.
+#[derive(Debug, Subcommand)]
+pub enum PublisherAction {
+    /// List publishers, their key fingerprints and this device's decisions.
+    List,
+    /// Trust, revoke, or clear a decision for the displayed key. Does not grant plugin capabilities.
+    Decide {
+        /// A publisher this device has met through a verified package.
+        publisher_id: String,
+        /// The decision to record.
+        #[arg(value_parser = ["seen", "trusted", "revoked"])]
+        trust: String,
+        /// The fingerprint shown by publisher list; quote it when it contains spaces.
+        #[arg(long, value_name = "FINGERPRINT")]
+        fingerprint: String,
     },
 }
 

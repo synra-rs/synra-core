@@ -35,8 +35,9 @@ impl Fixture {
             HostFacts::headless(),
         )
         .expect("first install");
+        let fingerprint = self.db.publishers().expect("publishers")[0].fingerprint.clone();
         self.db
-            .set_publisher_trust("@acme", synra_store::TRUST_TRUSTED, 2)
+            .set_publisher_trust("@acme", &fingerprint, synra_store::TRUST_TRUSTED, 2)
             .expect("trust");
     }
 
@@ -159,7 +160,10 @@ fn revoking_trust_after_preparation_refuses_the_commit() {
     let prepared = fixture.prepare(UpdatePolicy::AutoMinor).expect("admitted");
     fixture
         .db
-        .set_publisher_trust("@acme", synra_store::TRUST_REVOKED, 4)
+        .set_publisher_trust(
+            "@acme", &fixture.db.publishers().expect("publishers")[0].fingerprint,
+            synra_store::TRUST_REVOKED, 4,
+        )
         .expect("revoke");
     assert_eq!(
         prepared
@@ -222,7 +226,10 @@ fn manual_replacements_keep_verified_bytes_and_recheck_version_and_revocation() 
             _ => {
                 fixture
                     .db
-                    .set_publisher_trust("@acme", synra_store::TRUST_REVOKED, 4)
+                    .set_publisher_trust(
+                        "@acme", &fixture.db.publishers().expect("publishers")[0].fingerprint,
+                        synra_store::TRUST_REVOKED, 4,
+                    )
                     .expect("revoke");
             }
         }

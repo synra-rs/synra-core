@@ -25,6 +25,19 @@ const TRANSFER_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30
 pub(super) use synra_core::dispatch::REMOTE_RESULT_WAIT;
 
 impl Kernel for Runtime {
+    fn plugin_publishers(&self) -> Result<serde_json::Value, Refusal> {
+        super::publishers::list(self)
+    }
+
+    fn plugin_publisher_decide(
+        &self,
+        publisher_id: &str,
+        fingerprint: &str,
+        trust: &str,
+    ) -> Result<serde_json::Value, Refusal> {
+        super::publishers::decide(self, publisher_id, fingerprint, trust, synra_store::sqlite::now_ms())
+    }
+
     fn plugin_registry(&self, urls: Option<&[String]>) -> Result<serde_json::Value, Refusal> {
         super::plugin_settings::registry(self, urls, synra_store::sqlite::now_ms())
     }

@@ -164,9 +164,10 @@ fn installed(root: &Path) -> Runtime {
     runtime
         .plugin_install(first.to_str().expect("path"))
         .expect("install");
+    let fingerprint = runtime.db().publishers().expect("publishers")[0].fingerprint.clone();
     runtime
         .db()
-        .set_publisher_trust("@acme", synra_store::TRUST_TRUSTED, 1)
+        .set_publisher_trust("@acme", &fingerprint, synra_store::TRUST_TRUSTED, 1)
         .expect("trust publisher");
     runtime
         .plugin_consent("@acme/hello", &["log:*".to_owned()])

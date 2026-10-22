@@ -199,6 +199,27 @@ pub trait Kernel {
         ))
     }
 
+    /// Lists known publisher keys and trust decisions.
+    ///
+    /// # Errors
+    /// Unsupported by default, or an implementation's storage error.
+    fn plugin_publishers(&self) -> Result<serde_json::Value, Refusal> {
+        Err(Refusal::new(ErrorCode::Unsupported, "this kernel does not list publisher keys"))
+    }
+
+    /// Records the user's decision for the displayed publisher fingerprint.
+    ///
+    /// # Errors
+    /// Unsupported by default, or invalid input, a stale key or a storage failure.
+    fn plugin_publisher_decide(
+        &self,
+        _publisher_id: &str,
+        _fingerprint: &str,
+        _trust: &str,
+    ) -> Result<serde_json::Value, Refusal> {
+        Err(Refusal::new(ErrorCode::Unsupported, "this kernel does not decide publisher trust"))
+    }
+
     /// Reads or changes registry sources.
     ///
     /// # Errors
@@ -540,6 +561,10 @@ impl Server {
             Request::SendText { to, text } => kernel.send_text(to, text),
             Request::SendFile { to, path } => kernel.send_file(to, path),
             Request::Plugins => kernel.plugins(),
+            Request::PluginPublishers => kernel.plugin_publishers(),
+            Request::PluginPublisherDecide { publisher_id, fingerprint, trust } => {
+                kernel.plugin_publisher_decide(publisher_id, fingerprint, trust)
+            }
             Request::PluginRegistry { urls } => kernel.plugin_registry(urls.as_deref()),
             Request::PluginUpdatePolicy { policy } => kernel.plugin_update_policy(policy.as_deref()),
             Request::PluginCheckUpdates { plugin_id } => kernel.plugin_check_updates(plugin_id.as_deref()),

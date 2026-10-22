@@ -518,7 +518,10 @@ fn a_publisher_is_recorded_once_and_a_decision_survives_later_sightings() {
     assert_eq!(rows[0].trust, crate::TRUST_SEEN);
     assert_eq!(rows[0].decided_ms, None);
 
-    assert!(db.set_publisher_trust("@acme", crate::TRUST_TRUSTED, 2_000).expect("updates"));
+    assert!(!db.set_publisher_trust("@acme", "wrong key", crate::TRUST_TRUSTED, 1_500).expect("stale key"));
+    assert!(!db.set_publisher_trust("@acme", "AB12 CD34 EF56 7890", "maybe", 1_500).expect("invalid trust"));
+    assert_eq!(db.publishers().expect("rows")[0].decided_ms, None);
+    assert!(db.set_publisher_trust("@acme", "AB12 CD34 EF56 7890", crate::TRUST_TRUSTED, 2_000).expect("updates"));
     db.record_publisher("@acme", "AB12 CD34 EF56 7890", "a2V5", 3_000)
         .expect("records again");
     let rows = db.publishers().expect("reads");
@@ -526,7 +529,7 @@ fn a_publisher_is_recorded_once_and_a_decision_survives_later_sightings() {
     assert_eq!(rows[0].decided_ms, Some(2_000));
 
     // A decision about a publisher nobody has met is not a decision: there is no row for the installer to consult.
-    assert!(!db.set_publisher_trust("@ghost", crate::TRUST_TRUSTED, 4_000).expect("updates"));
+    assert!(!db.set_publisher_trust("@ghost", "AB12 CD34 EF56 7890", crate::TRUST_TRUSTED, 4_000).expect("updates"));
 }
 
 #[test]
