@@ -20,6 +20,8 @@ struct Registry {
     worker: Option<std::thread::JoinHandle<()>>,
 }
 
+mod manual;
+
 impl Registry {
     fn start() -> Self {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener");

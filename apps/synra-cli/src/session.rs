@@ -133,6 +133,15 @@ impl CommandOutcome {
             Self::Failed(_) => true,
         }
     }
+
+    /// Text for stderr: JSON remains directly parseable, while prose identifies the command.
+    #[must_use]
+    pub fn diagnostic_text(&self) -> String {
+        match self {
+            Self::Json { body, .. } => body.clone(),
+            _ => format!("synra: {}", self.text()),
+        }
+    }
 }
 
 /// Runs a command.
@@ -280,6 +289,23 @@ fn plugin_request(command: &Command) -> Option<Request> {
         return None;
     };
     match &args.action {
+        PluginAction::Registry { urls, clear } => Some(Request::PluginRegistry {
+            urls: if *clear {
+                Some(Vec::new())
+            } else if urls.is_empty() {
+                None
+            } else {
+                Some(urls.clone())
+            },
+        }),
+        PluginAction::Policy { policy } => Some(Request::PluginUpdatePolicy { policy: policy.clone() }),
+        PluginAction::Check { plugin_id } => Some(Request::PluginCheckUpdates {
+            plugin_id: plugin_id.clone(),
+        }),
+        PluginAction::Update { plugin_id, version } => Some(Request::PluginUpdate {
+            plugin_id: plugin_id.clone(),
+            version: version.clone(),
+        }),
         PluginAction::List { .. } => Some(Request::Plugins),
         PluginAction::Search { package } => {
             Some(Request::CatalogSearch { package: package.clone() })
@@ -459,6 +485,54 @@ fn write_bundle(destination: &str, raw: &ProbeReport) -> Result<Vec<String>, Str
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn plugin_update_commands_parse_and_reach_the_control_request() {
+        use clap::Parser as _;
+        use crate::{Cli, Command};
+        use synra_control::Request;
+        for (args, expected) in [
+            (vec!["registry"], Request::PluginRegistry { urls: None }),
+            (
+                vec!["registry", "https://registry.example", "static:https://cdn.example/plugins"],
+                Request::PluginRegistry {
+                    urls: Some(vec![
+                        "https://registry.example".to_owned(),
+                        "static:https://cdn.example/plugins".to_owned(),
+                    ]),
+                },
+            ),
+            (
+                vec!["registry", "--clear"],
+                Request::PluginRegistry { urls: Some(Vec::new()) },
+            ),
+            (
+                vec!["policy", "auto-all"],
+                Request::PluginUpdatePolicy { policy: Some("auto-all".to_owned()) },
+            ),
+            (vec!["check"], Request::PluginCheckUpdates { plugin_id: None }),
+            (
+                vec!["check", "@acme/hello"],
+                Request::PluginCheckUpdates { plugin_id: Some("@acme/hello".to_owned()) },
+            ),
+            (
+                vec!["update", "@acme/hello", "--version", "^1.1"],
+                Request::PluginUpdate {
+                    plugin_id: "@acme/hello".to_owned(),
+                    version: Some("^1.1".to_owned()),
+                },
+            ),
+        ] {
+            let cli = Cli::try_parse_from(["synra", "plugin"].into_iter().chain(args)).expect("parse");
+            assert!(matches!(cli.command, Command::Plugin(_)));
+            let question = crate::question_for(&cli.command, cli.output, || {
+                plugin_request(&cli.command)
+            }).expect("question");
+            assert_eq!(question.request, expected);
+        }
+        assert!(Cli::try_parse_from(["synra", "plugin", "policy", "yes"]).is_err());
+        assert!(Cli::try_parse_from(["synra", "plugin", "registry", "--clear", "https://example.com"]).is_err());
+    }
 
     #[test]
     fn enabling_and_disabling_a_plugin_ask_the_kernel() {

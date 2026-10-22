@@ -176,6 +176,29 @@ pub enum Request {
     /// The installed plugins.
     Plugins,
 
+    /// Reads or changes the ordered registry source list.
+    PluginRegistry {
+        /// None reads; an empty list clears the setting; otherwise replaces it.
+        urls: Option<Vec<String>>,
+    },
+    /// Reads or changes the background update policy.
+    PluginUpdatePolicy {
+        /// None reads; otherwise never, notify-only, auto-minor or auto-all.
+        policy: Option<String>,
+    },
+    /// Explicitly checks current registry metadata without installing, even when automatic checks are disabled.
+    PluginCheckUpdates {
+        /// None checks all installed plugins.
+        plugin_id: Option<String>,
+    },
+    /// Explicitly updates an installed plugin using verified registry bytes.
+    PluginUpdate {
+        /// The installed identifier.
+        plugin_id: String,
+        /// Exact version or range, or None for latest.
+        version: Option<String>,
+    },
+
     /// Search the plugin catalogue.
     ///
     /// ★ Why this is a request of its own rather than part of `Plugins`.
@@ -411,6 +434,10 @@ impl Request {
             Self::SendText { .. } => "sendText",
             Self::SendFile { .. } => "sendFile",
             Self::Plugins => "plugins",
+            Self::PluginRegistry { .. } => "pluginRegistry",
+            Self::PluginUpdatePolicy { .. } => "pluginUpdatePolicy",
+            Self::PluginCheckUpdates { .. } => "pluginCheckUpdates",
+            Self::PluginUpdate { .. } => "pluginUpdate",
                 Self::IntentDispatch { .. } => "intentDispatch",
                 Self::CatalogSearch { .. } => "catalogSearch",
         Self::PluginSetEnabled { .. } => "pluginSetEnabled",

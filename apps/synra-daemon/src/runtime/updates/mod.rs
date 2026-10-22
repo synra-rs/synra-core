@@ -10,7 +10,14 @@ use synra_store::PluginUpdateCheck;
 use super::Runtime;
 
 mod apply;
+mod manual;
 mod source;
+
+pub(super) use manual::{check as check_manually, update as update_manually};
+
+pub(super) fn validate_sources(raw: &str) -> Result<(), String> {
+    source::Sources::parse(raw).map(|_| ())
+}
 
 /// Registers the update worker with the daemon's shutdown supervisor.
 pub(crate) fn start(
@@ -65,7 +72,7 @@ pub(crate) fn check_all(
         if !due(last, now_ms) {
             continue;
         }
-        match check_one(runtime, &row.plugin_id, now_ms, cancel) {
+        match check_one(runtime, &row.plugin_id, now_ms, cancel, true) {
             Ok(Some(check)) => available.push(check),
             Ok(None) => {}
             Err(error) => {
@@ -81,6 +88,7 @@ fn check_one(
     plugin: &str,
     now_ms: i64,
     cancel: &Cancellation,
+    allow_automatic: bool,
 ) -> Result<Option<PluginUpdateCheck>, String> {
     let (active, raw) = {
         let db = runtime.db();
@@ -135,7 +143,7 @@ fn check_one(
     };
     let policy = {
         let db = runtime.db();
-        if cancel.is_cancelled() || configured_policy(&db).is_none() {
+        if cancel.is_cancelled() || (allow_automatic && configured_policy(&db).is_none()) {
             return Ok(None);
         }
         if !db
@@ -152,7 +160,8 @@ fn check_one(
         return Ok(None);
     };
     let may_load = runtime.plugin_loads.lock().safe_mode.is_none();
-    if let Some(policy) = policy.filter(|policy| *policy != UpdatePolicy::NotifyOnly)
+    if let Some(policy) =
+        policy.filter(|policy| allow_automatic && *policy != UpdatePolicy::NotifyOnly)
         && check.added_capabilities.is_empty()
         && !cancel.is_cancelled()
         && may_load
@@ -182,13 +191,15 @@ fn automatic(
     {
         return Err(reason.to_string());
     }
-    let unpacked = sources.download(
-        document,
-        latest,
-        &runtime.paths.cache_dir().join("registry"),
-        check.checked_at_ms,
-        cancel,
-    )?;
+    let unpacked = sources
+        .download(
+            document,
+            latest,
+            &runtime.paths.cache_dir().join("registry"),
+            check.checked_at_ms,
+            cancel,
+        )
+        .map_err(|error| error.to_string())?;
     let outcome = apply::directory(
         runtime,
         (&check.plugin_id, &latest.version),

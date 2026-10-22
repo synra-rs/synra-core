@@ -15,6 +15,8 @@
 use synra_control::{Client, Request, Response};
 use synra_protocol::error::ErrorCode;
 
+mod plugin_updates;
+
 /// What to ask, and what to do with the answer.
 ///
 /// The two halves are together because they are one decision: a request whose answer nobody formats is a request nobody
@@ -154,6 +156,12 @@ pub fn outcome_of(response: &Response, shape: Shape) -> crate::session::CommandO
     use crate::session::CommandOutcome;
 
     match response {
+        Response::Ok { value }
+            if value.get("failures").and_then(serde_json::Value::as_array)
+                .is_some_and(|failures| !failures.is_empty()) =>
+        {
+            CommandOutcome::json_failure(pretty(value))
+        }
         Response::Ok { value } => match shape {
             Shape::Json => CommandOutcome::json(pretty(value)),
             Shape::Prose => CommandOutcome::Lines(prose(value)),
@@ -188,6 +196,9 @@ fn pretty(value: &serde_json::Value) -> String {
 /// A build of the client that does not know a command's shape must still print the answer rather than nothing. The
 /// fallback is the JSON, which is ugly and complete — and complete is what a user filing a bug report needs.
 fn prose(value: &serde_json::Value) -> Vec<String> {
+    if let Some(lines) = plugin_updates::render(value) {
+        return lines;
+    }
     // ★ The removal's report, as a sentence: it is the one answer whose point is what happened to the user's data, and a
     // JSON blob would make them read a field name to learn whether their settings were deleted.
     if let Some(bytes) = value.get("bytesFreed").and_then(serde_json::Value::as_u64) {

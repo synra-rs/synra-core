@@ -1,5 +1,7 @@
 //! Configured npm mirrors and static indexes, without silently choosing a public registry.
 
+use synra_control::Refusal;
+use synra_protocol::error::ErrorCode;
 use synra_registry::{Packument, Version};
 
 use super::super::registry_install::NetworkFetch;
@@ -130,12 +132,17 @@ impl Sources {
         staging: &std::path::Path,
         now_ms: i64,
         cancel: &synra_core::supervisor::Cancellation,
-    ) -> Result<synra_core::install::UnpackedTarball, String> {
-        let urls = self.tarballs(document, &chosen.dist.tarball)?;
+    ) -> Result<synra_core::install::UnpackedTarball, Refusal> {
+        let urls = self
+            .tarballs(document, &chosen.dist.tarball)
+            .map_err(|error| Refusal::new(ErrorCode::InvalidArgument, error))?;
         let mut failures = Vec::new();
         for (url, loopback) in urls {
             if cancel.is_cancelled() {
-                return Err("the update download was cancelled".to_owned());
+                return Err(Refusal::new(
+                    ErrorCode::InvalidArgument,
+                    "the update download was cancelled",
+                ));
             }
             let response = match (NetworkFetch {
                 allow_loopback: loopback,
@@ -154,7 +161,7 @@ impl Sources {
                     failures.push(error);
                     continue;
                 }
-                return Err(error);
+                return Err(Refusal::new(ErrorCode::Unsupported, error));
             }
             // Integrity failures stop here; another mirror must never bypass the failed verification.
             return synra_core::install::unpack_published_tarball(
@@ -164,9 +171,11 @@ impl Sources {
                 staging,
                 now_ms,
             )
-            .map_err(|error| format!("{}: {}", error.stage, error.reason));
+            .map_err(|error| {
+                Refusal::new(error.code(), format!("{}: {}", error.stage, error.reason))
+            });
         }
-        Err(failures.join("; "))
+        Err(Refusal::new(ErrorCode::DeviceOffline, failures.join("; ")))
     }
 
     fn tarballs(&self, document: &Document, tarball: &str) -> Result<Vec<(String, bool)>, String> {
@@ -205,14 +214,20 @@ fn parse_base(text: &str) -> Result<Base, String> {
         .allowing_insecure(true)
         .parse(url)
         .map_err(|error| error.to_string())?;
+    let loopback = parsed.host == "localhost"
+        || parsed
+            .host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback());
+    if url.starts_with("http://") && !loopback {
+        return Err(
+            "HTTP is permitted only for an explicitly configured loopback registry".to_owned(),
+        );
+    }
     Ok(Base {
         url: url.to_owned(),
         is_static,
-        loopback: parsed.host == "localhost"
-            || parsed
-                .host
-                .parse::<std::net::IpAddr>()
-                .is_ok_and(|ip| ip.is_loopback()),
+        loopback,
     })
 }
 

@@ -267,6 +267,34 @@ pub struct PluginArgs {
 /// What to do with a plugin.
 #[derive(Debug, Subcommand)]
 pub enum PluginAction {
+    /// Read or replace the ordered registry sources. Use --clear to disable registry access.
+    Registry {
+        /// HTTPS npm URLs or static: URLs, in fallback order. Omit to read the current setting.
+        #[arg(value_name = "URL", conflicts_with = "clear")]
+        urls: Vec<String>,
+        /// Remove the registry setting.
+        #[arg(long)]
+        clear: bool,
+    },
+    /// Read or set the background update policy.
+    Policy {
+        /// Omit to read the policy; notify-only is the default.
+        #[arg(value_parser = ["never", "notify-only", "auto-minor", "auto-all"])]
+        policy: Option<String>,
+    },
+    /// Check one installed plugin or all of them now, without installing anything.
+    Check {
+        /// Omit to check all installed plugins.
+        plugin_id: Option<String>,
+    },
+    /// Update an installed plugin from its configured registry.
+    Update {
+        /// The installed plugin identifier.
+        plugin_id: String,
+        /// An exact version or range; omit to use latest. Updates must advance the version.
+        #[arg(long, value_name = "VERSION")]
+        version: Option<String>,
+    },
     /// List the installed plugins.
     List {
         /// Include plugins that are installed but disabled.
