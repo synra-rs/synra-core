@@ -124,6 +124,13 @@ pub struct IntentView {
     pub state: &'static str,
     /// What the plugins offered.
     pub candidates: Vec<CandidateView>,
+    /// Why it failed, when it did.
+    ///
+    /// ★ The board has carried this since `IntentState::Failed` was written, and the view dropped it — so the interface's
+    /// "why did it fail?" line read a field no host ever filled. The kernel's sentence is kept here; the interface turns
+    /// the code into a message key (see `IpcError::from_synra_error`), and the sentence travels as a detail for a bug
+    /// report rather than as the text a user reads.
+    pub error: Option<synra_protocol::SynraError>,
 }
 
 /// The result of running the action a user chose.
@@ -247,6 +254,9 @@ impl IntentView {
             "trace": self.trace.to_string(),
             "state": self.state,
             "candidates": self.candidates.iter().map(CandidateView::to_json).collect::<Vec<_>>(),
+            // `null` when there is none: a client that branches on the field has one shape to read, and `null` is the
+            // answer to "why did it fail?" for an intent that has not.
+            "error": self.error.as_ref().and_then(|error| serde_json::to_value(error).ok()),
         })
     }
 }
@@ -423,6 +433,12 @@ pub fn snapshot(board: &Arc<Mutex<Board>>, intent: &str) -> Result<IntentView, R
         trace: found.trace,
         state: state_name(&found.state),
         candidates: candidates_of(&intents, id),
+        error: match &found.state {
+            crate::intent::IntentState::Failed { error, .. } => Some(error.clone()),
+            // The other final states are not failures with a sentence: a timeout has its own label, a refusal names its
+            // own check, and inventing an error for them would give the interface a second, worse description.
+            _ => None,
+        },
     };
     drop(intents);
     Ok(answer)
@@ -1163,5 +1179,56 @@ mod tests {
         );
         let late = 1_000 + crate::late_queue::MAX_AGE_MS;
         assert!(resume(board.get(stale).expect("raised"), local(), late).is_none());
+    }
+
+    #[test]
+    fn a_failed_intent_carries_its_error_into_the_view() {
+        // ★ The board has held the error since `Failed` was written; the view dropped it, so the interface's "why did it
+        // fail?" line read `null` for every real failure.
+        let mut board = Board::new();
+        let (id, ..) = board.raise(
+            direct(peer()),
+            Choice::Automatic,
+            None,
+            Some(synra_protocol::ids::RequestId::new()),
+            1_000,
+        );
+        board
+            .conclude(
+                id,
+                false,
+                "",
+                Some(synra_protocol::SynraError::new(
+                    synra_protocol::ErrorCode::Internal,
+                    "the plugin trapped",
+                )),
+                3,
+            )
+            .expect("ended");
+        let board = Arc::new(Mutex::new(board));
+
+        let view = snapshot(&board, &id.to_string()).expect("a view");
+        let error = view.error.as_ref().expect("the failure is carried");
+        assert_eq!(error.code, synra_protocol::ErrorCode::Internal);
+        assert_eq!(error.message, "the plugin trapped");
+        assert_eq!(view.to_json()["error"]["code"], "internal");
+    }
+
+    #[test]
+    fn a_successful_intent_has_no_error_to_show() {
+        let mut board = Board::new();
+        let (id, ..) = board.raise(
+            direct(peer()),
+            Choice::Automatic,
+            None,
+            Some(synra_protocol::ids::RequestId::new()),
+            1_000,
+        );
+        board.conclude(id, true, "opened", None, 1).expect("ended");
+        let board = Arc::new(Mutex::new(board));
+
+        let view = snapshot(&board, &id.to_string()).expect("a view");
+        assert!(view.error.is_none());
+        assert!(view.to_json()["error"].is_null());
     }
 }
