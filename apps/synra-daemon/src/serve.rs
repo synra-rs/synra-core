@@ -895,25 +895,26 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
 
     // ★ A restart used to restore every intent and then leave a `Dispatching` one exactly as it found it: the peer was
     // still waiting, the board said the action was running, and the only process that could ask again did nothing until
-    // the 24-hour expiry. The request identifier is the receiver's idempotency key, so asking again is safe. This is one
-    // pass, not the window's backoff loop — the schedule belongs to the host that shows it.
+    // the 24-hour expiry. The request identifier is the receiver's idempotency key, so asking again is safe. The loop
+    // runs the kernel's schedule, which is the same one the window runs.
     {
         let host = Arc::clone(&runtime.host);
         let board = Arc::clone(&runtime.board);
         let db = Arc::clone(&runtime.db);
         let local = runtime.identity.device_id;
         let id = synra_core::supervisor::TaskId::new("intent.retry");
-        if let Err(error) = synra_core::supervisor::run_task(&supervisor, &id, move |_token| {
-            let report = crate::runtime::retry::resend_outstanding(&host, &board, &db, local);
-            if report.attempted > 0 {
-                eprintln!(
-                    "synra-daemon: re-sent {} dispatch(es): {} answered, {} unanswered, {} failed",
-                    report.attempted, report.answered, report.unanswered, report.failed
-                );
-            }
+        if let Err(error) = synra_core::supervisor::run_task(&supervisor, &id, move |token| {
+            crate::runtime::retry::run(
+                &host,
+                &board,
+                &db,
+                local,
+                token,
+                synra_core::intent::retry::RetryPolicy::default(),
+            );
             Ok(())
         }) {
-            eprintln!("synra-daemon: the intent resend did not start: {error}");
+            eprintln!("synra-daemon: the intent retry loop did not start: {error}");
         }
     }
 
