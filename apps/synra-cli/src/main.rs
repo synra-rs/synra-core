@@ -23,7 +23,7 @@ fn main() -> ExitCode {
     // A failure goes to the error stream, so a script redirecting one does not lose it and a user piping to a pager
     // does not have it buried among the output.
     if outcome.is_failure() {
-        eprintln!("synra: {}", outcome.text());
+        eprintln!("{}", outcome.diagnostic_text());
     }
     else {
         println!("{}", outcome.text());

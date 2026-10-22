@@ -45,9 +45,11 @@ use synra_plugin_host::verify::{self, Candidate, DependencyGraph, HostFacts};
 use crate::transfer::ObjectDigest;
 
 mod automatic;
+mod replacement;
 mod writing;
 
 pub use automatic::{PreparedUpdate, prepare_automatic_update};
+pub use replacement::{PreparedReplacement, prepare_replacement};
 
 /// The largest single artifact a directory install will read.
 ///

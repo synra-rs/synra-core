@@ -199,6 +199,50 @@ pub trait Kernel {
         ))
     }
 
+    /// Reads or changes registry sources.
+    ///
+    /// # Errors
+    /// Unsupported by default; implementations validate sources before writing.
+    fn plugin_registry(&self, _urls: Option<&[String]>) -> Result<serde_json::Value, Refusal> {
+        Err(Refusal::new(
+            ErrorCode::Unsupported,
+            "this kernel does not configure plugin registries",
+        ))
+    }
+
+    /// Reads or changes background update policy.
+    ///
+    /// # Errors
+    /// Unsupported by default; invalid policy names must be refused.
+    fn plugin_update_policy(&self, _policy: Option<&str>) -> Result<serde_json::Value, Refusal> {
+        Err(Refusal::new(
+            ErrorCode::Unsupported,
+            "this kernel does not configure plugin updates",
+        ))
+    }
+
+    /// Checks metadata without automatically applying any candidate.
+    ///
+    /// # Errors
+    /// Unsupported by default, or the implementation's source and target errors.
+    fn plugin_check_updates(&self, _plugin: Option<&str>) -> Result<serde_json::Value, Refusal> {
+        Err(Refusal::new(
+            ErrorCode::Unsupported,
+            "this kernel does not check plugin updates",
+        ))
+    }
+
+    /// Updates an installed plugin through the normal verification and lifecycle path.
+    ///
+    /// # Errors
+    /// Unsupported by default, or the implementation's verification and update refusals.
+    fn plugin_update(&self, _plugin: &str, _version: Option<&str>) -> Result<serde_json::Value, Refusal> {
+        Err(Refusal::new(
+            ErrorCode::Unsupported,
+            "this kernel does not update plugins",
+        ))
+    }
+
     /// Records the user's decision about a plugin's capabilities.
     ///
     /// # Why the default refuses
@@ -496,6 +540,10 @@ impl Server {
             Request::SendText { to, text } => kernel.send_text(to, text),
             Request::SendFile { to, path } => kernel.send_file(to, path),
             Request::Plugins => kernel.plugins(),
+            Request::PluginRegistry { urls } => kernel.plugin_registry(urls.as_deref()),
+            Request::PluginUpdatePolicy { policy } => kernel.plugin_update_policy(policy.as_deref()),
+            Request::PluginCheckUpdates { plugin_id } => kernel.plugin_check_updates(plugin_id.as_deref()),
+            Request::PluginUpdate { plugin_id, version } => kernel.plugin_update(plugin_id, version.as_deref()),
             Request::CatalogSearch { package } => kernel.catalog_search(package),
             Request::PluginSetEnabled { plugin_id, enabled } => {
                 kernel.plugin_set_enabled(plugin_id, *enabled)

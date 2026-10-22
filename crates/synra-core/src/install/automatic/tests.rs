@@ -193,3 +193,51 @@ fn unsigned_updates_and_replacing_the_installed_version_are_refused() {
     assert!(prepared.install(&mut fixture.db, 5).is_err());
     assert_eq!(fixture.version(), "1.0.1");
 }
+
+#[test]
+fn manual_replacements_keep_verified_bytes_and_recheck_version_and_revocation() {
+    for reason in ["source", "version", "revocation"] {
+        let mut fixture = Fixture::new();
+        fixture.install();
+        fixture.source("1.1.0-beta.1", 7, "@acme", false);
+        let prepared = crate::install::prepare_replacement(
+            &fixture.db,
+            &fixture.backend,
+            &fixture.root.join("plugins"),
+            &fixture.root.join("source"),
+            3,
+            HostFacts::headless(),
+        )
+        .expect("prepared manual update");
+        match reason {
+            "source" => std::fs::write(
+                fixture.root.join("source/plugin.wasm"),
+                b"corrupt after verification",
+            )
+            .expect("changed source"),
+            "version" => fixture
+                .db
+                .record_plugin_version("@acme/hello", "1.0.1", "plugin.wasm", "digest", "{}", 4)
+                .expect("different installed version"),
+            _ => {
+                fixture
+                    .db
+                    .set_publisher_trust("@acme", synra_store::TRUST_REVOKED, 4)
+                    .expect("revoke");
+            }
+        }
+        let outcome = prepared.install(&mut fixture.db, 5);
+        if reason == "source" {
+            assert!(outcome.is_ok());
+            assert_eq!(
+                std::fs::read(fixture.root.join("plugins/acme+hello/plugin.wasm"))
+                    .expect("installed bytes"),
+                b"\0asm\x01\0\0\0"
+            );
+            assert_eq!(fixture.version(), "1.1.0-beta.1");
+        } else {
+            assert!(outcome.is_err());
+            assert_ne!(fixture.version(), "1.1.0-beta.1");
+        }
+    }
+}

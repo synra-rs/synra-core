@@ -64,6 +64,22 @@ synra-core/
 **铁律**：本仓库的**任何** crate 都不得依赖 `tauri` / `wry` / `tao` / 任何 GUI 库。
 `apps/synra-cli` 能在没有 WebView 的环境里完成发现、配对、收发、插件执行 —— 这是这条铁律的验收标准。
 
+## CLI 插件更新
+
+先启动同一数据目录下的 daemon；CLI 与 daemon 使用相同的 `SYNRA_DATA_DIR`。
+
+```text
+synra plugin registry https://registry.example static:https://cdn.example/plugins
+synra plugin policy auto-minor
+synra plugin check
+synra plugin check @acme/hello
+synra plugin update @acme/hello --version ^1.1
+```
+
+`registry`、`policy` 无参数时读取当前设置，`registry --clear` 清除更新源。手动检查不受后台策略或每日缓存限制，
+也不会自动安装；失败报告保留上次答案并让 CLI 以非零状态退出。手动更新必须前进，新增权限需要再次
+`plugin consent` 和 `plugin enable`；未经批准的公钥变化、撤销版本和安全模式均不能靠手动更新绕过。
+
 ## 对外接触点（只有三个）
 
 | # | 接触点                        | 形态                                                         |
