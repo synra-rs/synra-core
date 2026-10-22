@@ -147,6 +147,32 @@ impl SynraDb {
         Ok(Some(crate::records::ActiveVersion { version, artifact, digest, publisher_id, fingerprint }))
     }
 
+    /// The installed plugins whose active version was signed by this key.
+    ///
+    /// # Why the fingerprint and not the publisher
+    ///
+    /// Because a publisher can rotate a key, and revoking one key must not stop a plugin signed by its successor. The
+    /// version row carries the signer since migration 16, so this is an index lookup rather than a scan of every
+    /// installed manifest.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::Statement`] when the rows cannot be read.
+    pub fn active_plugins_by_fingerprint(&self, fingerprint: &str) -> Result<Vec<String>, DbError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT plugin_id FROM plugin_versions \
+                 WHERE active = 1 AND fingerprint = ?1 ORDER BY plugin_id",
+            )
+            .map_err(|error| DbError::Statement { why: error.to_string() })?;
+        let rows = statement
+            .query_map([fingerprint], |row| row.get::<_, String>(0))
+            .map_err(|error| DbError::Statement { why: error.to_string() })?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| DbError::Statement { why: error.to_string() })
+    }
+
     /// The version and artifact digest of the plugin's active row, or `None` when it has no active version.
     ///
     /// # Why `active` and not the newest
