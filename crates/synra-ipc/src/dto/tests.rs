@@ -333,6 +333,7 @@ fn an_update_reports_whether_it_needs_new_consent() {
     // "An update is available" is a routine message; "this update wants a new permission" is a decision, and
     // the interface says different things for each.
     let routine = UpdateInfo {
+        plugin_id: PluginId::parse("@acme/hello").expect("a plugin id"),
         version: "1.0.1".to_owned(),
         needs_new_consent: false,
         added_capabilities: Vec::new(),
@@ -340,6 +341,7 @@ fn an_update_reports_whether_it_needs_new_consent() {
     assert!(!routine.needs_new_consent);
 
     let needing = UpdateInfo {
+        plugin_id: PluginId::parse("@acme/hello").expect("a plugin id"),
         version: "2.0.0".to_owned(),
         needs_new_consent: true,
         added_capabilities: vec!["platform:simulate-keys".to_owned()],

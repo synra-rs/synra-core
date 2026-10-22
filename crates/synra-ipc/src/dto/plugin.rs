@@ -104,6 +104,11 @@ pub struct PluginHealthDto {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateInfo {
+    /// Which plugin the update is for.
+    ///
+    /// ★ Carried rather than inferred from the call: the background pass reports several at once, and a list of versions
+    /// with no plugin attached would need a second shape to say what each one belongs to.
+    pub plugin_id: PluginId,
     /// The version on offer.
     pub version: String,
     /// Whether its manifest asks for something the current one did not.

@@ -262,6 +262,9 @@ commands! {
     "plugins_enable" => Plugins, Host, Unit, true;
     "plugins_disable" => Plugins, Host, Unit, true;
     "plugins_consent_respond" => Plugins, Host, Unit, true;
+    // ★ What the background pass last found, so the page can show the update buttons without asking the registry again
+    // on open. A read of a cached answer: no network, and empty means "nothing known", not "checked and none".
+    "plugins_updates" => Plugins, Host, Many, false;
     "plugins_check_update" => Plugins, Host, Maybe, false;
     "plugins_update" => Plugins, Host, One, true;
     // ★ Retry a load without changing a flag. A faulted plugin is enabled and trusted; what failed was starting it,
@@ -526,6 +529,7 @@ mod tests {
             "plugins_enable",
             "plugins_disable",
             "plugins_consent_respond",
+            "plugins_updates",
             "plugins_check_update",
             "plugins_update",
             "plugins_reload",
