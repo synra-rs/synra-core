@@ -283,12 +283,22 @@ pub fn follow_in(
 /// directory, so it is asked for both halves of the removal. The data decision travels with the request rather than
 /// being invented here — `plugin remove --data` is the destructive half, and off by default the data stays.
 fn plugin_request(command: &Command) -> Option<Request> {
-    use crate::args::PluginAction;
+    use crate::args::{PluginAction, PublisherAction};
 
     let Command::Plugin(args) = command else {
         return None;
     };
     match &args.action {
+        PluginAction::Publisher { action } => Some(match action {
+            PublisherAction::List => Request::PluginPublishers,
+            PublisherAction::Decide { publisher_id, fingerprint, trust } => {
+                Request::PluginPublisherDecide {
+                    publisher_id: publisher_id.clone(),
+                    fingerprint: fingerprint.clone(),
+                    trust: trust.clone(),
+                }
+            }
+        }),
         PluginAction::Registry { urls, clear } => Some(Request::PluginRegistry {
             urls: if *clear {
                 Some(Vec::new())
@@ -485,6 +495,35 @@ fn write_bundle(destination: &str, raw: &ProbeReport) -> Result<Vec<String>, Str
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn publisher_decisions_require_a_fingerprint_and_reach_the_daemon() {
+        use clap::Parser as _;
+        for (args, expected) in [
+            (vec!["publisher", "list"], Request::PluginPublishers),
+            (
+                vec!["publisher", "decide", "@acme", "trusted", "--fingerprint", "AB12 CD34 EF56 7890"],
+                Request::PluginPublisherDecide {
+                    publisher_id: "@acme".to_owned(),
+                    fingerprint: "AB12 CD34 EF56 7890".to_owned(),
+                    trust: "trusted".to_owned(),
+                },
+            ),
+        ] {
+            let cli = Cli::try_parse_from(["synra", "plugin"].into_iter().chain(args)).expect("parse");
+            let question = crate::question_for(&cli.command, cli.output, || {
+                plugin_request(&cli.command)
+            }).expect("question");
+            assert_eq!(question.request, expected);
+        }
+        assert!(Cli::try_parse_from([
+            "synra", "plugin", "publisher", "decide", "@acme", "trusted"
+        ]).is_err());
+        assert!(Cli::try_parse_from([
+            "synra", "plugin", "publisher", "decide", "@acme", "maybe",
+            "--fingerprint", "AB12 CD34 EF56 7890"
+        ]).is_err());
+    }
 
     #[test]
     fn plugin_update_commands_parse_and_reach_the_control_request() {

@@ -99,6 +99,62 @@ fn explicit_updates_cannot_bypass_safe_mode_or_candidate_revocation() {
     }
 }
 
+fn publisher_decisions_gate_updates(runtime: &Runtime, client: &mut Client) {
+    let publishers = answer(client, &Request::PluginPublishers);
+    let row = &publishers["publishers"][0];
+    assert_eq!(row["publisherId"], "@acme");
+    assert_eq!(row["trust"], "trusted");
+    assert!(row.get("pubkey").is_none());
+    let fingerprint = row["fingerprint"].as_str().expect("fingerprint");
+    for (publisher_id, key, trust) in [
+        ("@ghost", fingerprint, "trusted"),
+        ("@acme", "1111 2222 3333 4444", "trusted"),
+        ("@acme", fingerprint, "maybe"),
+    ] {
+        let response = client
+            .ask(&Request::PluginPublisherDecide {
+                publisher_id: publisher_id.to_owned(),
+                fingerprint: key.to_owned(),
+                trust: trust.to_owned(),
+            })
+            .expect("refusal response");
+        assert!(matches!(response, Response::Failed { code, .. } if code == ErrorCode::InvalidArgument.as_str()));
+    }
+    for trust in ["seen", "revoked"] {
+        let decision = answer(
+            client,
+            &Request::PluginPublisherDecide {
+                publisher_id: "@acme".to_owned(),
+                fingerprint: fingerprint.to_owned(),
+                trust: trust.to_owned(),
+            },
+        );
+        assert_eq!(decision["publisher"]["trust"], trust);
+        assert!(decision["publisher"]["decidedMs"].is_i64());
+    }
+    assert!(!client.ask(&Request::PluginUpdate {
+        plugin_id: "@acme/hello".to_owned(),
+        version: None,
+    }).expect("revoked key refusal").is_ok());
+    assert_eq!(
+        runtime.db().active_plugin("@acme/hello").expect("row").expect("installed").version,
+        "1.0.0"
+    );
+    assert_eq!(
+        runtime.plugins.lock().version(&PluginId::parse("@acme/hello").expect("id")),
+        Some("1.0.0")
+    );
+    let confirmed = answer(
+        client,
+        &Request::PluginPublisherDecide {
+            publisher_id: "@acme".to_owned(),
+            fingerprint: fingerprint.to_lowercase(),
+            trust: "trusted".to_owned(),
+        },
+    );
+    assert_eq!(confirmed["publisher"]["fingerprint"], fingerprint);
+}
+
 #[test]
 fn real_control_requests_configure_check_and_update_both_registry_formats() {
     for is_static in [false, true] {
@@ -181,6 +237,7 @@ fn real_control_requests_configure_check_and_update_both_registry_formats() {
             2,
             "manual checks ignore both never and the daily cache"
         );
+        publisher_decisions_gate_updates(&runtime, &mut client);
         let updated = answer(
             &mut client,
             &Request::PluginUpdate {

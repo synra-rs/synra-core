@@ -98,10 +98,10 @@ impl SynraDb {
         })
     }
 
-    /// Sets the decision for a publisher the device has met.
+    /// Sets the decision for the exact publisher key the user saw.
     ///
-    /// Returns whether a row was updated. A publisher nobody has seen cannot be trusted: a decision about a key with no
-    /// signature behind it would be a row the installer never consults.
+    /// Returns false for an unknown publisher, a different fingerprint or an invalid trust value. Comparing the
+    /// fingerprint in the write keeps a stale prompt from deciding about a replacement key.
     ///
     /// # Errors
     ///
@@ -109,6 +109,7 @@ impl SynraDb {
     pub fn set_publisher_trust(
         &self,
         publisher_id: &str,
+        fingerprint: &str,
         trust: &str,
         now_ms: i64,
     ) -> Result<bool, DbError> {
@@ -116,8 +117,9 @@ impl SynraDb {
             let changed = self
                 .connection
                 .execute(
-                    "UPDATE publishers SET trust = ?2, decided_ms = ?3 WHERE publisher_id = ?1",
-                    params![publisher_id, trust, now_ms],
+                    "UPDATE publishers SET trust = ?3, decided_ms = ?4 \
+                     WHERE publisher_id = ?1 AND fingerprint = ?2 AND ?3 IN ('seen', 'trusted', 'revoked')",
+                    params![publisher_id, fingerprint, trust, now_ms],
                 )
                 .map_err(|error| DbError::Statement { why: error.to_string() })?;
             Ok(changed > 0)

@@ -28,6 +28,7 @@ pub(crate) mod intents;
 pub(crate) mod plugin_host;
 mod plugins;
 mod plugin_settings;
+mod publishers;
 mod refusals;
 mod registry_install;
 mod reports;
