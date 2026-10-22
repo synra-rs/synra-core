@@ -28,6 +28,25 @@ use super::plugins::{PluginSet, PluginSetError};
 /// prompt for five seconds.
 pub const EXECUTE_BUDGET_MS: u64 = 5_000;
 
+/// How long the device that dispatched an action waits for the device running it to answer.
+///
+/// # Why this is derived rather than chosen
+///
+/// Because the far side is running the same [`EXECUTE_BUDGET_MS`] budget, and a wait shorter than that gives up while the
+/// other device is still legitimately working — the first version used three seconds and reported "dispatching" for an
+/// action that then succeeded, with the answer arriving on a link nobody was reading.
+///
+/// The margin is a handshake's worth of network plus slack. It lives here rather than in a host because **both** hosts
+/// wait for the same result, and two copies of the number would drift the first time the budget moved: one host would
+/// report an outcome the other still called in flight.
+///
+/// # What it does not promise
+///
+/// Anything slower than this answers into a closed link. The intent stays `dispatching` rather than being judged failed:
+/// the action may still be running over there, and inventing an outcome is worse than saying nothing.
+pub const REMOTE_RESULT_WAIT: std::time::Duration =
+    std::time::Duration::from_millis(EXECUTE_BUDGET_MS + 3_000);
+
 /// The budget a confirmed action runs under.
 #[must_use]
 pub const fn execute_budget() -> CallBudget {
