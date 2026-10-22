@@ -771,7 +771,12 @@ pub fn package_manifest(archive: &Path) -> Result<Manifest, InstallRefusal> {
         Manifest::from_json(&text)
             .map_err(|error| InstallRefusal::new("archive", format!("the manifest is not readable: {error}")))
     })();
-    let _ = std::fs::remove_dir_all(&unpacked);
+    // ★ Through the one owner of a recursive delete rather than `std::fs::remove_dir_all` here.
+    //
+    // 11 §D2's guard allows exactly two production files to remove a directory tree, and this is not one of them. The
+    // first version of `package_manifest` called `remove_dir_all` directly and made the guard red on the commit that
+    // added it — the rule working as intended, on the round that introduced a temp tree nobody had removed before.
+    let _ = synra_store::remove_tree(&staging_root, &unpacked);
     outcome
 }
 
