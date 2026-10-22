@@ -224,6 +224,7 @@ fn an_intent_snapshot_round_trips() {
             options: vec!["accept".to_owned(), "decline".to_owned()],
         }),
         error: None,
+        retry: Some(IntentRetry { attempts: 2, max_attempts: 8, gave_up: false }),
         started_at_ms: 1_000,
     };
     let json = serde_json::to_string(&snapshot).expect("serialises");
@@ -517,6 +518,7 @@ fn no_snapshot_carries_a_field_named_for_content() {
             candidates: Vec::new(),
             prompt: None,
             error: None,
+            retry: None,
             started_at_ms: 0,
         })
         .expect("serialises"),
