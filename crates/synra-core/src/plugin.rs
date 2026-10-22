@@ -293,7 +293,7 @@ pub fn load_plugin_with_config(
     let digest = synra_plugin_api::manifest_digest(&manifest_text);
     let decisions =
         db.plugin_grants(plugin_id).map_err(|error| format!("the decisions could not be read: {error}"))?;
-    if decisions.is_empty() {
+    if decisions.is_empty() && !manifest.capabilities.is_empty() {
         // Trusted with nothing recorded is the state a pre-consent build left behind, and it is not an authorisation.
         return Err("it has not been confirmed by the user".to_owned());
     }

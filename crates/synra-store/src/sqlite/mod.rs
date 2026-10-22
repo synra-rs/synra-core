@@ -38,6 +38,8 @@ mod intents;
 mod migrations;
 mod pairing;
 mod retries;
+mod replacement;
+pub use replacement::PluginReplacement;
 mod updates;
 pub use updates::PluginUpdateCheck;
 mod sync;
