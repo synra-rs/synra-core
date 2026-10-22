@@ -736,7 +736,7 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
     // version of the listener read `while !stop.load(..)` — so it exited on its first check and silently refused every
     // connection. A cancellation token is one-way, so that polarity cannot be got wrong.
     let supervisor = Arc::new(synra_core::supervisor::Supervisor::new(synra_store::sqlite::now_ms()));
-    for service in ["transport.accept", "discovery.udp"] {
+    for service in ["transport.accept", "discovery.udp", "intent.retry"] {
         // Reported rather than fatal: `TaskSpec::service` is `Ordinary` criticality, so a task that will not register is a
         // capability this run does not have, not a reason to refuse to serve.
         if let Err(error) = supervisor.register(synra_core::supervisor::TaskSpec::service(service)) {
@@ -892,6 +892,30 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
         &runtime.host,
         &runtime.data_dir,
     );
+
+    // ★ A restart used to restore every intent and then leave a `Dispatching` one exactly as it found it: the peer was
+    // still waiting, the board said the action was running, and the only process that could ask again did nothing until
+    // the 24-hour expiry. The request identifier is the receiver's idempotency key, so asking again is safe. This is one
+    // pass, not the window's backoff loop — the schedule belongs to the host that shows it.
+    {
+        let host = Arc::clone(&runtime.host);
+        let board = Arc::clone(&runtime.board);
+        let db = Arc::clone(&runtime.db);
+        let local = runtime.identity.device_id;
+        let id = synra_core::supervisor::TaskId::new("intent.retry");
+        if let Err(error) = synra_core::supervisor::run_task(&supervisor, &id, move |_token| {
+            let report = crate::runtime::retry::resend_outstanding(&host, &board, &db, local);
+            if report.attempted > 0 {
+                eprintln!(
+                    "synra-daemon: re-sent {} dispatch(es): {} answered, {} unanswered, {} failed",
+                    report.attempted, report.answered, report.unanswered, report.failed
+                );
+            }
+            Ok(())
+        }) {
+            eprintln!("synra-daemon: the intent resend did not start: {error}");
+        }
+    }
 
     // ★ "Trusted" is not "bounded": a local client with a bug can open connections in a loop, and each one costs a thread
     // until the process runs out. The gate admits a fixed number and closes the rest; see `control_gate`.
