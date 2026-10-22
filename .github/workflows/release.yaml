@@ -1,0 +1,33 @@
+name: Release
+
+# ★ The one entry: a `v*` tag.
+#
+# **No `push` to `main`, no `pull_request`** — deliberately, the same rule the type library's release workflow states and
+# for the same reason: the gate is the tag. The cost is named rather than hidden: a bad commit merged to `main` is found
+# at release time, when it is already on `main`.
+#
+# The checks are not written here. They are `uses: ./.github/workflows/ci.yml`, so there is still exactly one definition
+# of "green"; this file decides only when it runs and what else happens afterwards. Adding `pull_request` here would put
+# "release" and "checks" in one run with one permission set, which is the pairing the split exists to avoid.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+# ★ At the caller rather than inside `ci.yml`: `concurrency` is not carried through a reusable workflow. A tag run is
+# already unique, but two releases of the same ref (a re-run) should not overlap.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    name: checks
+    uses: ./.github/workflows/ci.yml
+
+  # ★ Publishing the crates — `cargo harbor`, the version bump, the tag — belongs after `needs: checks`, and it is the
+  # owner's step rather than this file's. Leaving it out rather than stubbing it means a green tag run says exactly what
+  # ran: the checks, and nothing that pretended to publish.
