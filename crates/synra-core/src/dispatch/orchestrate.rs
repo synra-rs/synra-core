@@ -27,7 +27,7 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
-use synra_protocol::ids::PluginId;
+use synra_protocol::ids::{DeviceId, PluginId};
 use synra_protocol::inbound::ShareItem;
 
 use super::matching::Matcher;
@@ -110,7 +110,7 @@ pub struct CandidateView {
     /// The capabilities the action needs.
     pub required_caps: Vec<String>,
     /// Where it suggested running, when it had an opinion.
-    pub suggested_target: Option<synra_protocol::ids::DeviceId>,
+    pub suggested_target: Option<DeviceId>,
 }
 
 /// What has become of an intent.
@@ -493,7 +493,7 @@ pub fn apply_result(
 pub fn decide(
     plugins: &Arc<Mutex<PluginSet>>,
     board: &Arc<Mutex<Board>>,
-    local_device: synra_protocol::ids::DeviceId,
+    local_device: DeviceId,
     intent: &str,
     plugin_id: Option<&str>,
     target: Option<&str>,
@@ -543,7 +543,7 @@ pub fn decide(
         // This is the step that had no method: a targetless candidate settles into `Choosing`, which *is* that
         // question, and every other move either refused or undid it. `aim` is what answers it.
         if let Some(named) = target {
-            let device = named.parse::<synra_protocol::ids::DeviceId>().map_err(|_| {
+            let device = named.parse::<DeviceId>().map_err(|_| {
                 RouteError::new(
                     synra_protocol::ErrorCode::InvalidArgument,
                     "that is not a device identifier",
@@ -609,27 +609,7 @@ pub fn decide(
             drop(intents);
             answer
         };
-        let mut envelope = crate::intent::remote::invoke(
-            local_device,
-            device,
-            &crate::intent::remote::Invoke {
-                plugin_id: candidate.plugin_id.clone(),
-                plugin_version: candidate.plugin_version.clone(),
-                action: candidate.planned.action.clone(),
-                // The plugin's own arguments, not the share: this is what the user was shown when they chose.
-                args: candidate.planned.args.clone(),
-            },
-            trace,
-            now_ms,
-        )
-        .map_err(|error| {
-            RouteError::new(synra_protocol::ErrorCode::Internal, error.to_string())
-        })?;
-        // ★ The envelope carries the id `confirm` produced, not the one `Envelope::outbound` minted. That id is what the
-        // board records, what a resend reuses, and what the reply's `reply_to` returns — a fresh one here made the sender
-        // unable to match the answer to its own dispatch, and the receiving side's idempotency keyed on a different id
-        // than the one the board kept.
-        envelope.request_id = request_id;
+        let outbound = invocation(local_device, &candidate, device, request_id, trace, now_ms)?;
 
         return Ok(Decided {
             intent_id: id,
@@ -642,7 +622,7 @@ pub fn decide(
             result: String::new(),
             error: None,
             state,
-            outbound: Some(crate::intent::remote::Outbound { to: device, request_id, envelope }),
+            outbound: Some(outbound),
         });
     }
 
@@ -682,6 +662,77 @@ pub fn decide(
     })
 }
 
+/// Builds the invocation one device sends so another runs a candidate's action.
+///
+/// # Why this is one function
+///
+/// Because `decide` and [`resume`] must produce **the same envelope**. A second construction is a second place for the
+/// action's arguments, the plugin version or the request identifier to be left out — and the request identifier is the
+/// idempotency key, so getting it wrong there runs the action twice rather than failing.
+fn invocation(
+    local: DeviceId,
+    candidate: &crate::intent::IntentCandidate,
+    target: DeviceId,
+    request_id: synra_protocol::ids::RequestId,
+    trace: synra_protocol::ids::TraceId,
+    now_ms: i64,
+) -> Result<crate::intent::remote::Outbound, RouteError> {
+    let mut envelope = crate::intent::remote::invoke(
+        local,
+        target,
+        &crate::intent::remote::Invoke {
+            plugin_id: candidate.plugin_id.clone(),
+            plugin_version: candidate.plugin_version.clone(),
+            action: candidate.planned.action.clone(),
+            // The plugin's own arguments, not the share: this is what the user was shown when they chose.
+            args: candidate.planned.args.clone(),
+        },
+        trace,
+        now_ms,
+    )
+    .map_err(|error| RouteError::new(synra_protocol::ErrorCode::Internal, error.to_string()))?;
+    // ★ The envelope carries the id `confirm` produced, not the one `Envelope::outbound` minted. That id is what the board
+    // records, what a resend reuses, and what the reply's `reply_to` returns — a fresh one here made the sender unable to
+    // match the answer to its own dispatch, and the receiving side's idempotency keyed on a different id than the one the
+    // board kept.
+    envelope.request_id = request_id;
+    Ok(crate::intent::remote::Outbound { to: target, request_id, envelope })
+}
+
+/// The invocation a restored dispatch must be sent again under, when it is one this device sent.
+///
+/// # Why a restart needs this
+///
+/// Because a `Dispatching` intent is a request whose answer has not arrived, and the process that sent it is gone. The
+/// request identifier is the idempotency key on the receiving side: re-sending it either runs the action once (the first
+/// copy never arrived) or returns the outcome that already happened (the first copy did, and its reply was lost). Either
+/// answer is better than a card that says "running" for a day.
+///
+/// # What this deliberately excludes
+///
+/// * An intent with an [`crate::intent::Intent::origin`] came **from** a peer and is running here; re-sending it would ask
+///   the peer to run it again.
+/// * A target that is this device never travelled anywhere, so there is nothing to re-send.
+/// * A dispatch older than the late-answer window cannot be answered any more; [`crate::intent::persist::expire_unanswered`]
+///   is what ends those.
+#[must_use]
+pub fn resume(
+    intent: &crate::intent::Intent,
+    local: DeviceId,
+    now_ms: i64,
+) -> Option<crate::intent::remote::Outbound> {
+    let crate::intent::IntentState::Dispatching { candidate, target, request_id } = &intent.state else {
+        return None;
+    };
+    if intent.origin.is_some() || *target == local {
+        return None;
+    }
+    if now_ms.saturating_sub(intent.created_at_ms) >= crate::late_queue::MAX_AGE_MS {
+        return None;
+    }
+    invocation(local, candidate, *target, *request_id, intent.trace, now_ms).ok()
+}
+
 /// Runs an action another device asked for, and builds the answer to send back.
 ///
 /// # ★ The receiving half, which is three of the design's four pieces
@@ -710,7 +761,7 @@ pub fn decide(
 pub fn accept_remote(
     plugins: &Arc<Mutex<PluginSet>>,
     board: &Arc<Mutex<Board>>,
-    local_device: synra_protocol::ids::DeviceId,
+    local_device: DeviceId,
     envelope: &synra_protocol::envelope::Envelope,
     now_ms: i64,
 ) -> Result<Option<synra_protocol::envelope::Envelope>, RouteError> {
@@ -828,7 +879,7 @@ pub fn accept_remote(
 /// goes back exactly there — a reply addressed anywhere else is one the other side never correlates, and the request
 /// identifier it carries is the same one, which is what the sender's `recall` looks up.
 fn answer(
-    to: synra_protocol::ids::DeviceId,
+    to: DeviceId,
     trace: synra_protocol::ids::TraceId,
     request: &synra_protocol::envelope::Envelope,
     payload: &crate::intent::remote::InvokeResult,
@@ -848,7 +899,7 @@ fn answer(
 /// [`RouteError`] when the identifier is not one or names an intent this kernel never raised.
 pub fn cancel(
     board: &Arc<Mutex<Board>>,
-    local_device: synra_protocol::ids::DeviceId,
+    local_device: DeviceId,
     intent: &str,
     reason: &str,
 ) -> Result<StateChange, RouteError> {
@@ -1023,4 +1074,94 @@ const fn state_name(state: &crate::intent::IntentState) -> &'static str {
     // One definition, in `IntentState::name`. The match that used to stand here was a second copy, and the two names
     // (`kind` for storage, `name` for the wire) are documented where the states are.
     state.name()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::intent::{Choice, IntentSource};
+
+    fn device(id: &str) -> DeviceId {
+        id.parse().expect("a device id")
+    }
+
+    fn local() -> DeviceId {
+        device("11111111-1111-4111-8111-111111111111")
+    }
+
+    fn peer() -> DeviceId {
+        device("22222222-2222-4222-8222-222222222222")
+    }
+
+    /// A candidate named outright, which is the state a restored dispatch is in.
+    fn direct(target: DeviceId) -> IntentSource {
+        IntentSource::Direct {
+            plugin_id: PluginId::parse("@acme/opener").expect("a plugin id"),
+            action: "open".to_owned(),
+            params: serde_json::json!({"url": "https://example.com"}),
+            target,
+        }
+    }
+
+    #[test]
+    fn a_restored_dispatch_is_rebuilt_as_the_invocation_it_was() {
+        // ★ The whole reason this function exists: the request id is the receiving side's idempotency key. A rebuilt
+        // envelope with a fresh id is a second request, and the receiver's cache would run the action twice.
+        let mut board = Board::new();
+        let request_id = synra_protocol::ids::RequestId::new();
+        let (id, trace, created) =
+            board.raise(direct(peer()), Choice::Automatic, None, Some(request_id), 1_000);
+        assert!(created, "a direct source is raised rather than matched");
+
+        let outbound = resume(board.get(id).expect("raised"), local(), 2_000).expect("work this device sent");
+
+        assert_eq!(outbound.to, peer());
+        assert_eq!(outbound.request_id, request_id);
+        assert_eq!(outbound.envelope.from, local());
+        assert_eq!(outbound.envelope.target, peer());
+        assert_eq!(outbound.envelope.trace_id, trace);
+        assert_eq!(outbound.envelope.event.as_str(), synra_protocol::event::events::INTENT_INVOKE);
+        assert_eq!(outbound.envelope.request_id, request_id, "the id is the idempotency key");
+
+        let asked = crate::intent::remote::invoke_from(&outbound.envelope).expect("readable");
+        assert_eq!(asked.plugin_id.as_str(), "@acme/opener");
+        assert_eq!(asked.action, "open");
+        assert_eq!(asked.args["url"], "https://example.com");
+    }
+
+    #[test]
+    fn work_that_never_travelled_is_not_sent_again() {
+        let mut board = Board::new();
+        // An intent a peer asked this device to run: re-sending it would ask the peer to run it again.
+        let (from_peer, ..) = board.raise(
+            direct(peer()),
+            Choice::Automatic,
+            Some(peer()),
+            Some(synra_protocol::ids::RequestId::new()),
+            1_000,
+        );
+        assert!(resume(board.get(from_peer).expect("raised"), local(), 2_000).is_none());
+
+        // A target that is this device: nothing ever left, so there is nothing to re-send.
+        let (here, ..) = board.raise(
+            direct(local()),
+            Choice::Automatic,
+            None,
+            Some(synra_protocol::ids::RequestId::new()),
+            1_000,
+        );
+        assert!(resume(board.get(here).expect("raised"), local(), 2_000).is_none());
+
+        // A dispatch past the window in which a late answer can still arrive: `expire_unanswered` ends these, this does
+        // not re-send them.
+        let (stale, ..) = board.raise(
+            direct(peer()),
+            Choice::Automatic,
+            None,
+            Some(synra_protocol::ids::RequestId::new()),
+            1_000,
+        );
+        let late = 1_000 + crate::late_queue::MAX_AGE_MS;
+        assert!(resume(board.get(stale).expect("raised"), local(), late).is_none());
+    }
 }
