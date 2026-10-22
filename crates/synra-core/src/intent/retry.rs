@@ -71,6 +71,9 @@ pub struct RetryStatus {
     pub max_attempts: u32,
     /// Whether this pass stopped retrying. The intent itself is still in flight.
     pub gave_up: bool,
+    /// When the next try is due, in milliseconds since the epoch. `None` when nothing is scheduled — a given-up entry,
+    /// or one whose attempt is in flight at this moment.
+    pub next_at_ms: Option<i64>,
 }
 
 /// When each outstanding dispatch is next due, and how many times it has been retried.
@@ -217,7 +220,12 @@ impl RetryQueue {
         if attempts == 0 && !gave_up {
             return None;
         }
-        Some(RetryStatus { attempts, max_attempts: self.policy.max_attempts, gave_up })
+        Some(RetryStatus {
+            attempts,
+            max_attempts: self.policy.max_attempts,
+            gave_up,
+            next_at_ms: self.due.get(&id).copied(),
+        })
     }
 
     /// The row that preserves this intent's schedule, when it has one.
@@ -300,7 +308,7 @@ mod tests {
         assert!(queue.gave_up.contains(&id), "the entry is kept so the page can say why");
         assert_eq!(
             queue.status(id),
-            Some(RetryStatus { attempts: 3, max_attempts: 3, gave_up: true })
+            Some(RetryStatus { attempts: 3, max_attempts: 3, gave_up: true, next_at_ms: None })
         );
     }
 
@@ -316,7 +324,15 @@ mod tests {
         let at = NOW + 60_000;
         let _ = queue.take_due(at);
         queue.record_failure(id, at);
-        assert_eq!(queue.status(id), Some(RetryStatus { attempts: 1, max_attempts: 8, gave_up: false }));
+        assert_eq!(
+            queue.status(id),
+            Some(RetryStatus {
+                attempts: 1,
+                max_attempts: 8,
+                gave_up: false,
+                next_at_ms: Some(at + RetryPolicy::default().delay_ms(id, 2)),
+            })
+        );
 
         queue.forget(id);
         assert_eq!(queue.status(id), None);
@@ -380,7 +396,7 @@ mod tests {
 
         assert_eq!(
             queue.status(id),
-            Some(RetryStatus { attempts: 3, max_attempts: 8, gave_up: false }),
+            Some(RetryStatus { attempts: 3, max_attempts: 8, gave_up: false, next_at_ms: Some(50_000) }),
             "the count came back"
         );
         assert!(

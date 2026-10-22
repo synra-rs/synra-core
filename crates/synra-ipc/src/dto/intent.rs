@@ -118,6 +118,12 @@ pub struct IntentRetry {
     /// Whether the bound was reached. The intent is still `Dispatching`: giving up on retries is about this process's
     /// effort, not about the action's outcome.
     pub gave_up: bool,
+    /// When the next try is due, in milliseconds since the epoch.
+    ///
+    /// ★ The page can say "next try at 18:42" from this without a timer: an absolute time stays true between events,
+    /// where a countdown baked into a render would silently age.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_at_ms: Option<i64>,
 }
 
 /// One way an intent could be handled.
