@@ -385,6 +385,20 @@ pub const MIGRATIONS: &[Migration] = &[
             )",
         ],
     },
+    Migration {
+        version: 15,
+        name: "plugin-update-checks",
+        statements: &[
+            "CREATE TABLE plugin_update_checks (
+                plugin_id TEXT PRIMARY KEY REFERENCES plugins(plugin_id) ON DELETE CASCADE,
+                current_version TEXT NOT NULL,
+                checked_at_ms INTEGER NOT NULL,
+                registry TEXT,
+                available_version TEXT,
+                added_capabilities TEXT NOT NULL
+            )",
+        ],
+    },
 ];
 
 /// The schema version this build expects.

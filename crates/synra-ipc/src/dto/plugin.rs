@@ -79,6 +79,9 @@ pub struct PluginSnapshot {
     /// Whether an update is available.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub update: Option<UpdateInfo>,
+    /// When this installed version was last successfully checked, in milliseconds since the epoch.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub update_checked_at_ms: Option<i64>,
 }
 
 /// How a plugin is behaving, for the transparency the design document requires.

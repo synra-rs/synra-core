@@ -38,6 +38,8 @@ mod intents;
 mod migrations;
 mod pairing;
 mod retries;
+mod updates;
+pub use updates::PluginUpdateCheck;
 mod sync;
 pub use retries::IntentRetryRow;
 mod versions;
