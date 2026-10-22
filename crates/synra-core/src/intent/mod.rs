@@ -31,6 +31,8 @@
 //! clock, a socket or a guest — and the sequence is where the bugs are, not the plumbing.
 
 pub mod board;
+/// Writing the board down and reading it back, shared by every host that keeps one.
+pub mod persist;
 pub mod remote;
 pub mod types;
 

@@ -23,9 +23,7 @@
 //! This is the one place in the daemon where a failure is not turned into a refusal, and the reason is that it happens
 //! *after* the point of no return rather than before it.
 
-use synra_core::intent::types::Intent;
 use synra_protocol::ids::IntentId;
-use synra_store::records::IntentRecord;
 
 use super::Runtime;
 
@@ -50,21 +48,20 @@ impl Runtime {
             return;
         };
 
+        // ★ The board guard is released before the database is touched. The board is the lock every intent command takes,
+        // and holding it across a write would make the next raise wait for the disk. The mapping itself lives in the kernel
+        // (`synra_core::intent::persist`) because the window host writes the same rows.
         let record = {
             let board = self.board.lock();
-            let Some(found) = board.get(id) else {
-                return;
-            };
-            let record = record_of(found, store_now());
-            // ★ Released here rather than at the end of the block. The board is the lock every intent command takes, so
-            // holding it across the write below would make a database write block the next raise — and the write is the
-            // slow half.
-            drop(board);
-            record
+            synra_core::intent::persist::record_of(&board, id, store_now())
         };
+        let Some(record) = record else {
+            return;
+        };
+        if record.document.is_empty() {
+            tracing::error!(intent, "an intent could not be serialised, so its row carries no document");
+        }
 
-        // Bound rather than written inline: the lock's guard has a `Drop`, and a temporary held across the `if let` body
-        // is a lock held for longer than the write — which the lint is right to point at.
         let saved = self.db.lock().save_intent(&record);
         if let Err(error) = saved {
             tracing::error!(
@@ -87,6 +84,9 @@ impl Runtime {
     /// changed is a real possibility, and the choice is between losing that one intent and losing all of them — including
     /// the ones a peer is waiting on. Each failure is logged with the intent it names, so the loss is visible.
     pub fn restore_intents(&self) -> usize {
+        // ★ The rows first, then the board. The reverse order is the one that would hold the board's lock across a disk
+        // read, and this runs beside a running kernel more often than the word "start-up" suggests (a test builds a
+        // `Runtime` and restores into it).
         let rows = match self.db.lock().load_intents() {
             Ok(rows) => rows,
             Err(error) => {
@@ -96,28 +96,19 @@ impl Runtime {
         };
 
         let mut board = self.board.lock();
-        let mut restored = 0usize;
-        for row in &rows {
-            match serde_json::from_str::<Intent>(&row.document) {
-                Ok(intent) => {
-                    if board.restore(intent) {
-                        restored += 1;
-                    }
-                    else {
-                        // The board already holds this identifier. Not an error, but worth saying: it is also what a
-                        // duplicate row would look like.
-                        tracing::warn!(intent = row.intent_id, "an intent was restored twice");
-                    }
-                }
-                Err(error) => {
-                    tracing::error!(
-                        intent = row.intent_id,
-                        "a stored intent could not be read back and is being skipped: {error}"
-                    );
-                }
-            }
+        let report = synra_core::intent::persist::restore_rows(&mut board, &rows);
+        // ★ Released before the log lines: the board is the lock every intent command takes, and a line about a row it
+        // could not read is not a reason to hold it while `tracing` decides where to write.
+        drop(board);
+        for (intent, why) in &report.unreadable {
+            tracing::error!("a stored intent could not be read back and is being skipped: {intent}: {why}");
         }
-        restored
+        for intent in &report.duplicates {
+            // The board already holds this identifier. Not an error, but worth saying: it is also what a duplicate row
+            // would look like.
+            tracing::warn!(intent, "an intent was restored twice");
+        }
+        report.restored
     }
 
     /// Forgets intents that finished long enough ago to be worth dropping.
@@ -264,43 +255,6 @@ pub(crate) struct GcTask {
 /// A failure comes back as a sentence naming the target, and [`sweep`] puts it in the report. It used to be logged and
 /// turned into zero, which made "could not collect" and "nothing to collect" the same answer — see [`GcReport`].
 pub(crate) fn collect(db: &synra_store::SynraDb, keep_for_ms: i64) -> Result<usize, String> {
-    let before = store_now().saturating_sub(keep_for_ms);
-    match db.forget_finished_intents(synra_core::intent::types::IntentState::final_kinds(), before) {
-        Ok(removed) => Ok(removed),
-        Err(error) => Err(format!("finished intents: {error}")),
-    }
+    synra_core::intent::persist::collect(db, keep_for_ms, store_now()).map_err(|error| format!("finished intents: {error}"))
 }
 
-/// The row for one intent.
-///
-/// # Why `updated_ms` is "now" rather than a field of the intent
-///
-/// Because the intent does not carry one. `created_at_ms` is when it was raised and belongs to the kernel; when it last
-/// changed is a fact about the row, and the retention sweep is the only thing that reads it. Taking it here — at the moment
-/// of the write — is what makes it the time of the change rather than a value somebody had to remember to set.
-///
-/// # Why the document's failure is not returned
-///
-/// Because there is nothing a caller could do with it that is better than what the log says. An intent that will not
-/// serialise is a bug in a type whose serialisation has its own tests, and the row is written with an empty document so
-/// that the failure is visible on the next start as a document that cannot be read, beside the log line naming it.
-#[must_use]
-fn record_of(intent: &Intent, now_ms: i64) -> IntentRecord {
-    IntentRecord {
-        intent_id: intent.id.to_string(),
-        // ★ The kernel's own name for the state, taken from `kind` rather than spelled here, so a renamed state cannot
-        // leave the sweep comparing against a name nothing writes.
-        state: intent.state.kind().to_owned(),
-        created_ms: intent.created_at_ms,
-        updated_ms: now_ms,
-        origin_device: intent.origin.map(|device| device.to_string()),
-        request_id: intent.request_id.map(|request| request.to_string()),
-        document: match serde_json::to_string(intent) {
-            Ok(document) => document,
-            Err(error) => {
-                tracing::error!(intent = %intent.id, "an intent could not be serialised: {error}");
-                String::new()
-            }
-        },
-    }
-}
