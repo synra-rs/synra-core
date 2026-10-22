@@ -1304,47 +1304,17 @@ pub(super) fn exchange(
     guard.may_send(&link).map_err(|error| refusal_of(&error))?;
     drop(guard);
     // ★ And the write happens holding nothing, because the session layer already writes through a link without the host.
-    // Only counting it needs the host again.
-    link.send(&outbound.envelope).map_err(|error| refusal_of(&error.into()))?;
+    // Only counting it needs the host again. The write and the answer are the kernel's halves so the window and the
+    // daemon cannot disagree about what counts as an answer; the count sits between them because it is about a write
+    // that actually happened.
+    synra_core::intent::remote::send(&mut link, outbound)
+        .map_err(|error| Refusal::new(error.code, error.message))?;
     host.lock().count_sent();
 
-    // ★ An invocation is answered on **this** connection, so the answer is read before the link is closed. The sender
-    // used to say `bye` immediately after the write, which made the request fire-and-forget: the far side ran the action
-    // and then had no connection to reply on, and this side left the intent dispatching for ever.
-    let reply = if wait_for_result {
-        // The wait, and the reason it is bounded rather than generous, is `REMOTE_RESULT_WAIT`'s doc.
-        link.set_read_timeout(Some(REMOTE_RESULT_WAIT));
-        match link.receive() {
-            Ok(reply) if reply.event.as_str() == synra_protocol::event::events::INTENT_RESULT => Some(reply),
-            Ok(other) => {
-                eprintln!(
-                    "synra-daemon: {} answered with {} instead of an intent result",
-                    outbound.to, other.event
-                );
-                None
-            }
-            // A timeout is not a failed dispatch: the action may still be running over there, so the intent stays
-            // dispatching. The answer is not retried, which is the limitation `REMOTE_RESULT_WAIT` documents.
-            Err(synra_core::link::LinkError::TimedOut) => {
-                eprintln!(
-                    "synra-daemon: {} did not answer the intent within the wait; it stays dispatching",
-                    outbound.to
-                );
-                None
-            }
-            Err(error) => {
-                eprintln!(
-                    "synra-daemon: the intent answer from {} could not be read: {error}",
-                    outbound.to
-                );
-                None
-            }
-        }
-    }
-    else {
-        None
-    };
-
-    let _ = link.bye(if wait_for_result { "intent answered" } else { "intent dispatched" });
-    Ok(reply)
+    // ★ An invocation is answered on **this** connection, so the answer is read before the link is closed. A sender that
+    // said `bye` immediately after the write would make the request fire-and-forget: the far side runs the action and then
+    // has no connection to reply on, and this side leaves the intent dispatching for ever.
+    let wait = wait_for_result.then_some(REMOTE_RESULT_WAIT);
+    synra_core::intent::remote::receive(&mut link, wait)
+        .map_err(|error| Refusal::new(error.code, error.message))
 }
