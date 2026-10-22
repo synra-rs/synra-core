@@ -252,9 +252,15 @@ pub enum IntentState {
     },
     /// Nothing installed claims this.
     NoHandler,
-    /// The candidate list arrived too late to be useful.
+    /// Nobody answered in time.
+    ///
+    /// # The two ways to arrive here
+    ///
+    /// The candidate list arrived too late to be useful, or the intent was sent to another device and the window in which
+    /// a late answer could still be delivered has passed. Both are "the network did not answer", and the user's next step
+    /// is the same in each — try again — which is why they share a state rather than one being a `Failed` with a message.
     TimedOut {
-        /// How long the matching window was.
+        /// How long was waited: the matching window, or the time since the dispatch that went unanswered.
         after: Duration,
     },
     /// The intent's admission was refused, so nothing was even attempted.

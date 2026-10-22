@@ -157,6 +157,46 @@ pub fn collect(db: &SynraDb, keep_for_ms: i64, now_ms: i64) -> Result<usize, DbE
     db.forget_finished_intents(IntentState::final_kinds(), now_ms.saturating_sub(keep_for_ms))
 }
 
+/// Ends dispatched work whose answer can no longer arrive, and names what it ended.
+///
+/// # Why this runs after a restore
+///
+/// Because a restored `Dispatching` intent is work this device sent and is still "waiting" for — but the process that was
+/// waiting is gone. The answer can still arrive for as long as the far side keeps it in its late queue
+/// ([`crate::late_queue::MAX_AGE_MS`]); after that it cannot, and an intent that stays `Dispatching` for ever is both a
+/// lie on the home page and a row the retention sweep can never collect (the sweep only takes **finished** intents).
+///
+/// # Why the caller writes the rows
+///
+/// Because this touches the board and nothing else. A host that restored rows already knows how to persist a changed
+/// intent; doing it here would put a database handle into a function whose whole test is a board.
+#[must_use]
+pub fn expire_unanswered(board: &mut Board, now_ms: i64) -> Vec<IntentId> {
+    // ★ Collected before any state change: `Board::all` borrows the board, and `expire_dispatch` needs it mutably.
+    let stale: Vec<(IntentId, i64)> = board
+        .all()
+        .into_iter()
+        .filter_map(|intent| {
+            if !intent.state.is_running() {
+                return None;
+            }
+            let waited = now_ms.saturating_sub(intent.created_at_ms);
+            // `>=` rather than `>`: at exactly the late queue's last moment there is no further moment for an answer to
+            // arrive, and the boundary is the one a test can state without arithmetic.
+            (waited >= crate::late_queue::MAX_AGE_MS).then_some((intent.id, waited))
+        })
+        .collect();
+
+    let mut expired = Vec::new();
+    for (id, waited) in stale {
+        let after = std::time::Duration::from_millis(u64::try_from(waited).unwrap_or(u64::MAX));
+        if board.expire_dispatch(id, after).is_some() {
+            expired.push(id);
+        }
+    }
+    expired
+}
+
 #[cfg(test)]
 mod tests {
     use synra_protocol::inbound::ShareItem;
@@ -281,5 +321,61 @@ mod tests {
         let left = db.load_intents().expect("readable");
         assert!(left.iter().any(|row| row.intent_id == live.to_string()), "work in flight stays");
         assert!(left.iter().any(|row| row.intent_id == recent.to_string()), "a recent result stays");
+    }
+
+    /// A dispatched intent, as a peer's request or a remote decision would leave one.
+    fn dispatching(board: &mut Board, now_ms: i64) -> IntentId {
+        let (id, _, created) = board.raise(
+            IntentSource::Direct {
+                plugin_id: synra_protocol::ids::PluginId::parse("@acme/opener").expect("a plugin id"),
+                action: "open".to_owned(),
+                params: serde_json::json!({"url": "https://example.com"}),
+                target: synra_protocol::ids::DeviceId::new(),
+            },
+            Choice::Automatic,
+            None,
+            None,
+            now_ms,
+        );
+        assert!(created, "a direct source is raised rather than matched");
+        id
+    }
+
+    #[test]
+    fn a_dispatch_nobody_answered_ends_after_the_late_answer_window() {
+        // ★ The invariant: `Dispatching` is a state with an answer coming. Once the far side's late queue has expired
+        // (`late_queue::MAX_AGE_MS`), no answer can arrive — and a row that stays in flight for ever is both a lie on the
+        // home page and uncollectable, because the retention sweep only takes finished intents.
+        let mut board = Board::new();
+        let id = dispatching(&mut board, 1_000);
+        assert!(board.get(id).expect("there").state.is_running());
+
+        assert!(
+            expire_unanswered(&mut board, 1_000 + crate::late_queue::MAX_AGE_MS - 1).is_empty(),
+            "inside the window an answer may still arrive"
+        );
+        assert!(board.get(id).expect("there").state.is_running());
+
+        let expired = expire_unanswered(&mut board, 1_000 + crate::late_queue::MAX_AGE_MS);
+        assert_eq!(expired, vec![id]);
+        assert!(
+            matches!(board.get(id).expect("there").state, IntentState::TimedOut { .. }),
+            "the dispatch ends as unanswered, not failed: the action may have run over there"
+        );
+
+        // ★ And it is not rolled back by a second sweep. Moving a final intent to `TimedOut` would erase an outcome the far
+        // side did report, which is the one thing a late answer must never do.
+        assert!(expire_unanswered(&mut board, i64::MAX).is_empty());
+        assert!(matches!(board.get(id).expect("there").state, IntentState::TimedOut { .. }));
+    }
+
+    #[test]
+    fn an_intent_that_already_ended_is_never_turned_into_an_unanswered_one() {
+        let mut board = Board::new();
+        let id = dispatching(&mut board, 1_000);
+        board.conclude(id, true, "opened", None, 5).expect("ended");
+
+        assert!(expire_unanswered(&mut board, i64::MAX).is_empty());
+        assert!(matches!(board.get(id).expect("there").state, IntentState::Succeeded { .. }));
     }
 }
