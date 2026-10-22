@@ -1206,123 +1206,145 @@ impl Runtime {
             outbound: &synra_core::intent::remote::Outbound,
             wait_for_result: bool,
         ) -> Result<Option<synra_core::intent::remote::InvokeResult>, Refusal> {
-            let now = synra_store::sqlite::now_ms();
-            // Resolve and read the address under the lock; dial outside it, for the reason `send_text` gives — a `dial` blocks
-            // for as long as a connection takes, and a host guard living across it would make a devices listing wait for a
-            // network.
-            let address = {
-                let host = self.host.lock();
-                host.address_of(outbound.to).ok_or_else(|| {
-                    Refusal::new(
-                        ErrorCode::DeviceOffline,
-                        format!(
-                            "{} cannot run this: it has not been seen on this network, so there is nowhere to send it",
-                            outbound.to
-                        ),
-                    )
-                })?
+            let Some(reply) = exchange(&self.host, outbound, wait_for_result)? else {
+                return Ok(None);
             };
-
-            // ★ The handshake runs **outside** the lock, so a `devices` listing does not wait for it.
-            // `Host::dial` needs `&mut self` to record the session; `dial_peer` needs only a clone of this device's record,
-            // and `adopt` records what the exchange proved.
-            let parts = {
-                let host = self.host.lock();
-                host.dialling_parts()
-            };
-            let handshake_now = synra_core::reading_millis(now);
-            let dialled = synra_core::retry::with_retries(
-            synra_core::retry::ATTEMPTS,
-            |_| {
-                synra_core::dial_peer(&parts.0, parts.1, address, None, handshake_now)
-                    .map_err(|error| refusal_of(&error))
-            },
-            |attempt| {
-                std::thread::sleep(std::time::Duration::from_millis(
-                    100 * (u64::try_from(attempt).unwrap_or(0) + 1),
-                ));
-            },
-        )?;
-            let mut host = self.host.lock();
-            let mut link = host
-                .adopt(dialled, handshake_now)
-                .map_err(|error| refusal_of(&error))?;
-            // ★ The read half of the send, under the lock that is already held; the write itself needs no host.
-            host.may_send(&link).map_err(|error| refusal_of(&error))?;
-            drop(host);
-            // ★ And the write happens holding nothing, because the session layer already writes through a link
-            // without the host. Only counting it needs the host again.
-            link.send(&outbound.envelope).map_err(|error| refusal_of(&error.into()))?;
-            self.host.lock().count_sent();
-
-            // ★ An invocation is answered on **this** connection, so the answer is read before the link is closed. The
-            // sender used to say `bye` immediately after the write, which made the request fire-and-forget: the far side
-            // ran the action and then had no connection to reply on, and this side left the intent dispatching for ever.
-            let outcome = if wait_for_result {
-                // The wait, and the reason it is bounded rather than generous, is `REMOTE_RESULT_WAIT`'s doc.
-                link.set_read_timeout(Some(REMOTE_RESULT_WAIT));
-                match link.receive() {
-                    Ok(reply)
-                        if reply.event.as_str() == synra_protocol::event::events::INTENT_RESULT =>
-                    {
-                        match synra_core::dispatch::orchestrate::apply_result(&self.board, &reply) {
-                            Ok(Some(id)) => {
-                                // Written down now: the outcome is the state, and a crash before the next sweep would
-                                // otherwise persist a "dispatching" for work that has finished.
-                                self.checkpoint_intent(&id.to_string());
-                                let result = synra_core::intent::remote::result_from(&reply).ok();
-                                // ★ The remote step joins the trace: the routing and decision lines already name the
-                                // action, and without this the one step that happened on another device is the one a
-                                // `synra logs --trace` cannot show.
-                                if let Some(result) = &result {
-                                    tracing::info!(
-                                        trace_id = %reply.trace_id,
-                                        intent = %id,
-                                        ok = result.ok,
-                                        "remote outcome applied"
-                                    );
-                                }
-                                result
-                            }
-                            // A reply this device is not waiting on. Nothing to apply, and nothing to report: the
-                            // intent may have been cancelled while the answer was in flight.
-                            Ok(None) => None,
-                            Err(error) => {
-                                eprintln!("synra-daemon: the result could not be applied: {error}");
-                                None
-                            }
-                        }
-                    }
-                    Ok(other) => {
-                        eprintln!(
-                            "synra-daemon: {} answered with {} instead of an intent result",
-                            outbound.to, other.event
+            match synra_core::dispatch::orchestrate::apply_result(&self.board, &reply) {
+                Ok(Some(id)) => {
+                    // Written down now: the outcome is the state, and a crash before the next sweep would otherwise
+                    // persist a "dispatching" for work that has finished.
+                    self.checkpoint_intent(&id.to_string());
+                    let result = synra_core::intent::remote::result_from(&reply).ok();
+                    // ★ The remote step joins the trace: the routing and decision lines already name the action, and
+                    // without this the one step that happened on another device is the one a `synra logs --trace` cannot
+                    // show.
+                    if let Some(result) = &result {
+                        tracing::info!(
+                            trace_id = %reply.trace_id,
+                            intent = %id,
+                            ok = result.ok,
+                            "remote outcome applied"
                         );
-                        None
                     }
-                    // A timeout is not a failed dispatch: the action may still be running over there, so the intent stays
-                    // dispatching. The answer is not retried, which is the limitation `REMOTE_RESULT_WAIT` documents.
-                    Err(synra_core::link::LinkError::TimedOut) => {
-                        eprintln!(
-                            "synra-daemon: {} did not answer the intent within the wait; it stays dispatching",
-                            outbound.to
-                        );
-                        None
-                    }
-                    Err(error) => {
-                        eprintln!(
-                            "synra-daemon: the intent answer from {} could not be read: {error}",
-                            outbound.to
-                        );
-                        None
-                    }
+                    Ok(result)
+                }
+                // A reply this device is not waiting on. Nothing to apply, and nothing to report: the intent may have
+                // been cancelled while the answer was in flight.
+                Ok(None) => Ok(None),
+                Err(error) => {
+                    eprintln!("synra-daemon: the result could not be applied: {error}");
+                    Ok(None)
                 }
             }
-            else {
-                None
-            };
-
-            let _ = link.bye(if wait_for_result { "intent answered" } else { "intent dispatched" });
-            Ok(outcome)
         }
+}
+
+/// Puts one envelope on a link, and reads the one answer the same connection carries.
+///
+/// # Why this is a free function
+///
+/// Because two things need it and only one of them has a `Runtime`: the command path, and the start-up pass that sends
+/// again what a restart left in flight. The runtime owns the pieces; a resend thread owns only clones of them, and giving
+/// it a whole runtime it cannot borrow would mean not resending at all.
+///
+/// # Returns
+///
+/// `Some(reply)` for an `INTENT_RESULT`, `None` when there is nothing to apply — a timeout, an unexpected event, or a
+/// withdrawal that is not answered. A timeout is **not** a failed dispatch: the action may still be running over there, so
+/// the intent stays dispatching and a late answer can still end it.
+///
+/// # Errors
+///
+/// [`Refusal`] for a device with no known address, a dial that never connected, or a write the link refused.
+pub(super) fn exchange(
+    host: &std::sync::Arc<parking_lot::Mutex<synra_core::Host>>,
+    outbound: &synra_core::intent::remote::Outbound,
+    wait_for_result: bool,
+) -> Result<Option<synra_protocol::envelope::Envelope>, Refusal> {
+    let now = synra_store::sqlite::now_ms();
+    // Resolve and read the address under the lock; dial outside it, for the reason `send_text` gives — a `dial` blocks
+    // for as long as a connection takes, and a host guard living across it would make a devices listing wait for a
+    // network.
+    let address = {
+        let host = host.lock();
+        host.address_of(outbound.to).ok_or_else(|| {
+            Refusal::new(
+                ErrorCode::DeviceOffline,
+                format!(
+                    "{} cannot run this: it has not been seen on this network, so there is nowhere to send it",
+                    outbound.to
+                ),
+            )
+        })?
+    };
+
+    // ★ The handshake runs **outside** the lock, so a `devices` listing does not wait for it. `Host::dial` needs
+    // `&mut self` to record the session; `dial_peer` needs only a clone of this device's record, and `adopt` records what
+    // the exchange proved.
+    let parts = {
+        let host = host.lock();
+        host.dialling_parts()
+    };
+    let handshake_now = synra_core::reading_millis(now);
+    let dialled = synra_core::retry::with_retries(
+        synra_core::retry::ATTEMPTS,
+        |_| {
+            synra_core::dial_peer(&parts.0, parts.1, address, None, handshake_now)
+                .map_err(|error| refusal_of(&error))
+        },
+        |attempt| {
+            std::thread::sleep(std::time::Duration::from_millis(
+                100 * (u64::try_from(attempt).unwrap_or(0) + 1),
+            ));
+        },
+    )?;
+    let mut guard = host.lock();
+    let mut link = guard.adopt(dialled, handshake_now).map_err(|error| refusal_of(&error))?;
+    // ★ The read half of the send, under the lock that is already held; the write itself needs no host.
+    guard.may_send(&link).map_err(|error| refusal_of(&error))?;
+    drop(guard);
+    // ★ And the write happens holding nothing, because the session layer already writes through a link without the host.
+    // Only counting it needs the host again.
+    link.send(&outbound.envelope).map_err(|error| refusal_of(&error.into()))?;
+    host.lock().count_sent();
+
+    // ★ An invocation is answered on **this** connection, so the answer is read before the link is closed. The sender
+    // used to say `bye` immediately after the write, which made the request fire-and-forget: the far side ran the action
+    // and then had no connection to reply on, and this side left the intent dispatching for ever.
+    let reply = if wait_for_result {
+        // The wait, and the reason it is bounded rather than generous, is `REMOTE_RESULT_WAIT`'s doc.
+        link.set_read_timeout(Some(REMOTE_RESULT_WAIT));
+        match link.receive() {
+            Ok(reply) if reply.event.as_str() == synra_protocol::event::events::INTENT_RESULT => Some(reply),
+            Ok(other) => {
+                eprintln!(
+                    "synra-daemon: {} answered with {} instead of an intent result",
+                    outbound.to, other.event
+                );
+                None
+            }
+            // A timeout is not a failed dispatch: the action may still be running over there, so the intent stays
+            // dispatching. The answer is not retried, which is the limitation `REMOTE_RESULT_WAIT` documents.
+            Err(synra_core::link::LinkError::TimedOut) => {
+                eprintln!(
+                    "synra-daemon: {} did not answer the intent within the wait; it stays dispatching",
+                    outbound.to
+                );
+                None
+            }
+            Err(error) => {
+                eprintln!(
+                    "synra-daemon: the intent answer from {} could not be read: {error}",
+                    outbound.to
+                );
+                None
+            }
+        }
+    }
+    else {
+        None
+    };
+
+    let _ = link.bye(if wait_for_result { "intent answered" } else { "intent dispatched" });
+    Ok(reply)
 }
