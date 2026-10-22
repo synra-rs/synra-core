@@ -2,6 +2,7 @@ use super::*;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use ed25519_dalek::{Signer as _, SigningKey};
 use rstest::rstest;
+use synra_store::PluginVersionRecord;
 use std::sync::Arc;
 use synra_plugin_api::publisher::{Digests, SigningSubject};
 
@@ -192,7 +193,7 @@ fn unsigned_updates_and_replacing_the_installed_version_are_refused() {
     let prepared = fixture.prepare(UpdatePolicy::AutoAll).expect("admitted");
     fixture
         .db
-        .record_plugin_version("@acme/hello", "1.0.1", "plugin.wasm", "digest", "{}", 4)
+        .record_plugin_version(&PluginVersionRecord { plugin_id: "@acme/hello", version: "1.0.1", artifact: "plugin.wasm", digest: "digest", manifest: "{}", installed_ms: 4, ..Default::default() })
         .expect("replacement");
     assert!(prepared.install(&mut fixture.db, 5).is_err());
     assert_eq!(fixture.version(), "1.0.1");
@@ -221,7 +222,7 @@ fn manual_replacements_keep_verified_bytes_and_recheck_version_and_revocation() 
             .expect("changed source"),
             "version" => fixture
                 .db
-                .record_plugin_version("@acme/hello", "1.0.1", "plugin.wasm", "digest", "{}", 4)
+                .record_plugin_version(&PluginVersionRecord { plugin_id: "@acme/hello", version: "1.0.1", artifact: "plugin.wasm", digest: "digest", manifest: "{}", installed_ms: 4, ..Default::default() })
                 .expect("different installed version"),
             _ => {
                 fixture

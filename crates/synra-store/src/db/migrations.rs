@@ -399,6 +399,22 @@ pub const MIGRATIONS: &[Migration] = &[
             )",
         ],
     },
+    Migration {
+        version: 16,
+        name: "plugin-signer",
+        statements: &[
+            // ★ A version row knew what bytes ran and nothing about who signed them. That made "revoke this key" a scan
+            // of installed manifests by publisher id — the v1 single-key assumption — and it made a safe automatic
+            // update impossible to decide without downloading and installing first. The signer is a property of the
+            // version, so it belongs on the version row.
+            //
+            // Nullable because a local package may be unsigned; that is a different fact from "signed by nobody" and
+            // the installer already records it as such.
+            "ALTER TABLE plugin_versions ADD COLUMN publisher_id TEXT",
+            "ALTER TABLE plugin_versions ADD COLUMN fingerprint TEXT",
+            "CREATE INDEX plugin_versions_by_fingerprint ON plugin_versions (fingerprint, active)",
+        ],
+    },
 ];
 
 /// The schema version this build expects.

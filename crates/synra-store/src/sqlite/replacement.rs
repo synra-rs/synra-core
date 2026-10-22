@@ -23,6 +23,10 @@ pub struct PluginReplacement<'a> {
     pub previous_manifest_digest: Option<&'a str>,
     /// Capabilities retained by the new manifest; removed capabilities lose their grants.
     pub capabilities: &'a [String],
+    /// Who signed the new package, when it was signed.
+    pub publisher_id: Option<&'a str>,
+    /// The signing key's fingerprint, when there was a signature.
+    pub fingerprint: Option<&'a str>,
     /// Commit time in epoch milliseconds.
     pub now_ms: i64,
 }
@@ -79,11 +83,22 @@ impl SynraDb {
                     params![replacement.plugin_id],
                 )?;
                 transaction.execute(
-                    "INSERT INTO plugin_versions (plugin_id, version, artifact, digest, manifest, installed_ms, active)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1) ON CONFLICT(plugin_id, version) DO UPDATE SET
+                    "INSERT INTO plugin_versions
+                     (plugin_id, version, artifact, digest, manifest, publisher_id, fingerprint, installed_ms, active)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1) ON CONFLICT(plugin_id, version) DO UPDATE SET
                      artifact = excluded.artifact, digest = excluded.digest, manifest = excluded.manifest,
+                     publisher_id = excluded.publisher_id, fingerprint = excluded.fingerprint,
                      installed_ms = excluded.installed_ms, active = 1",
-                    params![replacement.plugin_id, replacement.version, replacement.artifact, replacement.digest, replacement.manifest, replacement.now_ms],
+                    params![
+                        replacement.plugin_id,
+                        replacement.version,
+                        replacement.artifact,
+                        replacement.digest,
+                        replacement.manifest,
+                        replacement.publisher_id,
+                        replacement.fingerprint,
+                        replacement.now_ms
+                    ],
                 )?;
                 transaction.commit()
             };

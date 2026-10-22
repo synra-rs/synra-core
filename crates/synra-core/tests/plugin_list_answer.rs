@@ -12,7 +12,7 @@ use synra_core::messaging::plugin_list_request;
 use synra_core::plugin_sync::{answer_plugin_list, local_list};
 use synra_protocol::ids::{DeviceId, TraceId};
 use synra_protocol::session::PluginList;
-use synra_store::SynraDb;
+use synra_store::{PluginVersionRecord, SynraDb};
 
 /// A database holding one installed plugin with an active version.
 fn with_a_plugin(version: &str, digest: &str, enabled: bool) -> SynraDb {
@@ -20,8 +20,16 @@ fn with_a_plugin(version: &str, digest: &str, enabled: bool) -> SynraDb {
     db.migrate().expect("migrates");
     db.insert_plugin("@acme/hello", enabled, true, "installed", 1_000, 1_000)
         .expect("a plugin");
-    db.record_plugin_version("@acme/hello", version, "plugin.wasm", digest, "{}", 1_000)
-        .expect("a version");
+    db.record_plugin_version(&PluginVersionRecord {
+        plugin_id: "@acme/hello",
+        version,
+        artifact: "plugin.wasm",
+        digest,
+        manifest: "{}",
+        installed_ms: 1_000,
+        ..Default::default()
+    })
+    .expect("a version");
     db
 }
 

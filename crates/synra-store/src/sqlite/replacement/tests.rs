@@ -1,11 +1,13 @@
 use super::*;
 
+use crate::PluginVersionRecord;
+
 fn database() -> SynraDb {
     let mut db = SynraDb::open_in_memory().expect("database");
     db.migrate().expect("schema");
     db.insert_plugin("@acme/hello", true, true, "good", 1, 1)
         .expect("plugin");
-    db.record_plugin_version("@acme/hello", "1.0.0", "plugin.wasm", "old", "{}", 1)
+    db.record_plugin_version(&PluginVersionRecord { plugin_id: "@acme/hello", version: "1.0.0", artifact: "plugin.wasm", digest: "old", manifest: "{}", installed_ms: 1, ..Default::default() })
         .expect("version");
     db.record_grants(
         "@acme/hello",
@@ -31,6 +33,8 @@ fn replacement<'a>(capabilities: &'a [String]) -> PluginReplacement<'a> {
         manifest_digest: "new-manifest",
         previous_manifest_digest: Some("old-manifest"),
         capabilities,
+        publisher_id: None,
+        fingerprint: None,
         now_ms: 2,
     }
 }

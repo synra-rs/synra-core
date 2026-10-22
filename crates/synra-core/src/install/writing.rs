@@ -159,6 +159,9 @@ pub(super) fn write(
     } else {
         String::new()
     };
+    // Read before the version row: who signed it is a column on that row, and the publisher registration below must not
+    // be the only place the fact exists.
+    let signed_by = signature.as_deref().and_then(signed_publisher);
     let recorded = if replace {
         db.replace_plugin_version(&synra_store::PluginReplacement {
             plugin_id: &plugin_id,
@@ -169,19 +172,23 @@ pub(super) fn write(
             manifest_digest: &manifest_digest,
             previous_manifest_digest: previous_digest.as_deref(),
             capabilities: &capabilities,
+            publisher_id: signed_by.as_ref().map(|publisher| publisher.publisher_id.as_str()),
+            fingerprint: signed_by.as_ref().map(|publisher| publisher.fingerprint.as_str()),
             now_ms,
         })
     } else {
         db.insert_plugin(&plugin_id, false, false, "installed", now_ms, now_ms)
             .and_then(|()| {
-                db.record_plugin_version(
-                    &plugin_id,
-                    &version,
-                    headless.as_deref().unwrap_or_default(),
-                    &active_digest,
-                    &manifest_json,
-                    now_ms,
-                )
+                db.record_plugin_version(&synra_store::PluginVersionRecord {
+                    plugin_id: &plugin_id,
+                    version: &version,
+                    artifact: headless.as_deref().unwrap_or_default(),
+                    digest: &active_digest,
+                    manifest: &manifest_json,
+                    publisher_id: signed_by.as_ref().map(|publisher| publisher.publisher_id.as_str()),
+                    fingerprint: signed_by.as_ref().map(|publisher| publisher.fingerprint.as_str()),
+                    installed_ms: now_ms,
+                })
             })
     };
     if let Err(error) = recorded {
@@ -198,7 +205,6 @@ pub(super) fn write(
     // ★ Recorded after the install succeeded, not before: a package that failed a check did not make its publisher a
     // part of this device's history, and a row written for it would make the next prompt say "seen before" about a
     // signature this device refused.
-    let signed_by = signature.as_deref().and_then(signed_publisher);
     if let Some(publisher) = &signed_by {
         let _ = db.record_publisher(
             &publisher.publisher_id,
