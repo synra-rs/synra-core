@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use synra_protocol::ids::IntentId;
 
-use crate::supervisor::{RestartPolicy, TaskId};
+use crate::supervisor::{Cancellation, RestartPolicy, TaskId};
 
 /// How often a dispatch that is still in flight is sent again.
 ///
@@ -255,11 +255,180 @@ impl RetryQueue {
     }
 }
 
+/// How one attempt ended, as the runner needs to know it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Attempt {
+    /// The answer arrived and the host applied it.
+    Answered,
+    /// The intent is no longer in flight, so there is nothing to send. Its schedule goes without a retry.
+    Ended,
+    /// The send went out and nothing came back inside the wait.
+    Unanswered,
+    /// The send could not be made at all.
+    Failed,
+}
+
+/// The host-specific halves of the retry loop.
+///
+/// # Why a trait and not four closures
+///
+/// Because the three pieces read the same host state, and a closure passed for each would either capture it three times
+/// or need a struct anyway. A trait is that struct with the compiler checking which half is which.
+pub trait RetryHost {
+    /// The intents the host would send right now.
+    fn pending(&mut self) -> Vec<IntentId>;
+
+    /// One attempt at one intent.
+    fn attempt(&mut self, id: IntentId) -> Attempt;
+
+    /// A schedule changed: the row to write (or `None` to remove it) and what to tell the user.
+    fn changed(
+        &mut self,
+        id: IntentId,
+        row: Option<synra_store::IntentRetryRow>,
+        status: Option<RetryStatus>,
+    );
+}
+
+/// Runs the schedule until cancelled.
+///
+/// # What is shared, and what is not
+///
+/// The loop is the same in every host: take what is due, attempt it, forget the answered, back off the rest, see what
+/// new work appeared, then sleep until the next due time. What differs is [`RetryHost`] — how to send, where to write,
+/// what to show. Before this, the window and the daemon each wrote that loop; a change to the wait ceiling or the
+/// give-up rule had to be made twice.
+///
+/// The clock and the sleep are arguments rather than calls, so a test drives a number forward and a cancellation
+/// instead of waiting five minutes.
+pub fn run_loop(
+    queue: &mut RetryQueue,
+    cancel: &Cancellation,
+    host: &mut dyn RetryHost,
+    now: &mut dyn FnMut() -> i64,
+    sleep: &mut dyn FnMut(Duration),
+) {
+    loop {
+        if cancel.is_cancelled() {
+            return;
+        }
+
+        for id in queue.take_due(now()) {
+            match host.attempt(id) {
+                Attempt::Answered | Attempt::Ended => queue.forget(id),
+                Attempt::Unanswered | Attempt::Failed => {
+                    // The return value is "another attempt was scheduled"; a host that cares reads `status.gave_up` in
+                    // `changed`, which is the same fact in the shape it shows.
+                    let _ = queue.record_failure(id, now());
+                }
+            }
+            host.changed(id, queue.row(id), queue.status(id));
+        }
+
+        // New dispatches can appear while a send is in flight; the next wake has to see them, and their first schedule
+        // has to be written down.
+        for id in queue.observe(host.pending(), now()) {
+            host.changed(id, queue.row(id), queue.status(id));
+        }
+
+        let wait = queue
+            .next_wait(now())
+            .min(Duration::from_secs(30))
+            .max(Duration::from_millis(10));
+        sleep(wait);
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
+
     use super::*;
 
     const NOW: i64 = 1_000;
+
+    /// A host that answers from a script and records what the runner told it.
+    struct Fake {
+        pending: Vec<IntentId>,
+        outcomes: VecDeque<Attempt>,
+        changes: Vec<(IntentId, Option<synra_store::IntentRetryRow>, Option<RetryStatus>)>,
+        attempts: usize,
+    }
+
+    impl RetryHost for Fake {
+        fn pending(&mut self) -> Vec<IntentId> {
+            std::mem::take(&mut self.pending)
+        }
+
+        fn attempt(&mut self, _id: IntentId) -> Attempt {
+            self.attempts += 1;
+            self.outcomes.pop_front().unwrap_or(Attempt::Answered)
+        }
+
+        fn changed(
+            &mut self,
+            id: IntentId,
+            row: Option<synra_store::IntentRetryRow>,
+            status: Option<RetryStatus>,
+        ) {
+            self.changes.push((id, row, status));
+        }
+    }
+
+    #[test]
+    fn an_answered_dispatch_is_forgotten_and_the_change_is_reported() {
+        let id = IntentId::new();
+        let mut queue = RetryQueue::new(RetryPolicy::default());
+        let _ = queue.observe([id], 0);
+        let mut host =
+            Fake { pending: Vec::new(), outcomes: VecDeque::from([Attempt::Answered]), changes: Vec::new(), attempts: 0 };
+        let cancel = Cancellation::new();
+        let mut now = || 100_000;
+        let mut waits = Vec::new();
+        let mut sleep = |wait| {
+            waits.push(wait);
+            cancel.cancel();
+        };
+
+        run_loop(&mut queue, &cancel, &mut host, &mut now, &mut sleep);
+
+        assert_eq!(host.attempts, 1, "the due entry was attempted");
+        assert_eq!(queue.status(id), None, "an answered intent is not retried");
+        assert_eq!(host.changes.len(), 1, "one change: the schedule went away");
+        assert!(host.changes[0].1.is_none(), "the row to write is the removal");
+        assert_eq!(waits.len(), 1, "the runner slept once before the cancellation");
+    }
+
+    #[test]
+    fn an_unanswered_dispatch_is_backed_off_and_the_bound_is_reported() {
+        let id = IntentId::new();
+        let policy =
+            RetryPolicy { initial: Duration::from_millis(1), max: Duration::from_millis(2), max_attempts: 1 };
+        let mut queue = RetryQueue::new(policy);
+        let _ = queue.observe([id], 0);
+        let mut host = Fake {
+            pending: vec![id],
+            outcomes: VecDeque::from([Attempt::Unanswered]),
+            changes: Vec::new(),
+            attempts: 0,
+        };
+        let cancel = Cancellation::new();
+        let mut now = || 100_000;
+        let mut sleep = |_| cancel.cancel();
+
+        run_loop(&mut queue, &cancel, &mut host, &mut now, &mut sleep);
+
+        assert_eq!(host.attempts, 1);
+        assert_eq!(
+            queue.status(id),
+            Some(RetryStatus { attempts: 1, max_attempts: 1, gave_up: true, next_at_ms: None })
+        );
+        assert_eq!(
+            host.changes.last().and_then(|(_, _, status)| *status),
+            Some(RetryStatus { attempts: 1, max_attempts: 1, gave_up: true, next_at_ms: None }),
+            "the host was told why the card changes"
+        );
+    }
 
     #[test]
     fn a_pending_dispatch_is_not_due_until_its_first_wait_has_passed() {
