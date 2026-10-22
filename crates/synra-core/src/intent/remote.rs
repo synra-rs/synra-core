@@ -69,6 +69,18 @@ pub struct InvokeResult {
     /// Why it did not, when it did not.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// The protocol code for that failure, when it has one.
+    ///
+    /// # ★ Why the sentence alone was not enough
+    ///
+    /// Because the interface branches on the code, not on the sentence: `capability_denied` asks the user to grant
+    /// something, `plugin_not_installed` asks them to install something, and `Internal` asks them to file a bug. The
+    /// sender used to receive only a string and answered `Internal` for every remote failure, so the one fact the page
+    /// acts on was the one the wire dropped.
+    ///
+    /// Optional and defaulted so a peer running an older build still produces a readable result — it just cannot say why.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<synra_protocol::ErrorCode>,
     /// How long the call took on the device that made it.
     ///
     /// Measured there rather than here, because this is the only side that can see the plugin run: a sender that timed
