@@ -446,8 +446,15 @@ pub fn snapshot(board: &Arc<Mutex<Board>>, intent: &str) -> Result<IntentView, R
             crate::intent::IntentState::Refused { refusal } => {
                 Some(synra_protocol::SynraError::new(refusal.code, refusal.detail.clone()))
             }
-            // The other final states are not failures with a sentence: a timeout has its own label, and inventing an error
-            // would give the interface a second, worse description.
+            // A timeout has a state word of its own, but not a reason: "Timed out" does not say whether the matching
+            // window closed or a device never answered, and it does not say for how long. The `after` is that fact, and the
+            // protocol's `Timeout` code is what the interface translates into a sentence.
+            crate::intent::IntentState::TimedOut { after } => Some(synra_protocol::SynraError::new(
+                synra_protocol::ErrorCode::Timeout,
+                format!("nothing answered within {} ms", after.as_millis()),
+            )),
+            // The other final states are not failures with a sentence: inventing an error for them would give the
+            // interface a second, worse description.
             _ => None,
         },
     };
@@ -1225,6 +1232,28 @@ mod tests {
         assert_eq!(view.created_at_ms, 1_000, "the raising time is carried, not the reading time");
         assert_eq!(view.to_json()["error"]["code"], "internal");
         assert_eq!(view.to_json()["createdAtMs"], 1_000);
+    }
+
+    #[test]
+    fn a_timed_out_intent_says_how_long_it_waited() {
+        // ★ "Timed out" is a state word, not a reason: it does not say whether the matching window closed or a device never
+        // answered, and it does not say for how long. The wait is the fact, and the code is what the page translates.
+        let mut board = Board::new();
+        let (id, ..) = board.raise(
+            direct(peer()),
+            Choice::Automatic,
+            None,
+            Some(synra_protocol::ids::RequestId::new()),
+            1_000,
+        );
+        let _ = board.time_out(id);
+        let board = Arc::new(Mutex::new(board));
+
+        let view = snapshot(&board, &id.to_string()).expect("a view");
+        assert_eq!(view.state, "timedOut");
+        let error = view.error.as_ref().expect("the wait is carried");
+        assert_eq!(error.code, synra_protocol::ErrorCode::Timeout);
+        assert_eq!(error.message, "nothing answered within 400 ms");
     }
 
     #[test]
