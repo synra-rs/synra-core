@@ -499,15 +499,16 @@ pub fn apply_result(
         // reply to work that was cancelled is not a protocol error, and saying so keeps a link open.
         return Ok(None);
     };
+    // ★ The code the far side reported, not `Internal` for everything. The interface branches on it: a remote
+    // `capability_denied` asks the user to grant something, and `Internal` asks them to file a bug.
+    let code = reported.error_code.unwrap_or(synra_protocol::ErrorCode::Internal);
     board
         .lock()
         .conclude(
             id,
             reported.ok,
             &reported.result,
-            reported
-                .error
-                .map(|error| synra_protocol::SynraError::new(synra_protocol::ErrorCode::Internal, error)),
+            reported.error.map(|error| synra_protocol::SynraError::new(code, error)),
             reported.elapsed_ms,
         )
         .map_err(|error| refuse_intent(&error))?;
@@ -668,17 +669,26 @@ pub fn decide(
         crate::dispatch::execute(&mut set, &candidate.plugin_id, &candidate, started_ms, trace)
     };
 
-    let (ok, result, error) = match outcome {
+    let (ok, result, failure) = match outcome {
         Ok(synra_plugin_host::CallOutcome::Ok(payload)) => (true, payload, None),
         Ok(other) => (false, other.as_str().to_owned(), None),
-        Err(failure) => (false, String::new(), Some(failure.to_string())),
+        Err(failure) => (false, String::new(), Some(failure)),
     };
+    let error = failure.as_ref().map(ToString::to_string);
     // Measured from the moment the call was made rather than from the intent's creation: what a user reads is "this took
     // 40 ms", and an intent that sat in a prompt for a minute did not take a minute to run.
     let elapsed_ms = u64::try_from(synra_store::sqlite::now_ms().saturating_sub(now_ms)).unwrap_or(0);
     let state = board
         .lock()
-        .conclude(id, ok, &result, error.as_deref().map(synra_error), elapsed_ms)
+        .conclude(
+            id,
+            ok,
+            &result,
+            failure
+                .as_ref()
+                .map(|failure| synra_protocol::SynraError::new(failure.code(), failure.to_string())),
+            elapsed_ms,
+        )
         .map_err(|error| refuse_intent(&error))?;
 
     Ok(Decided {
@@ -840,6 +850,7 @@ pub fn accept_remote(
                     ok: true,
                     result: result.as_str().unwrap_or_default().to_owned(),
                     error: None,
+                    error_code: None,
                     elapsed_ms,
                 }, now_ms)?))
             }
@@ -848,6 +859,7 @@ pub fn accept_remote(
                     ok: false,
                     result: String::new(),
                     error: Some(error.to_string()),
+                    error_code: Some(error.code),
                     elapsed_ms,
                 }, now_ms)?))
             }
@@ -880,15 +892,25 @@ pub fn accept_remote(
         crate::dispatch::execute(&mut set, &candidate.plugin_id, &candidate, started_ms, trace)
     };
 
-    let (ok, result, error) = match outcome {
+    let (ok, result, failure) = match outcome {
         Ok(synra_plugin_host::CallOutcome::Ok(payload)) => (true, payload, None),
         Ok(other) => (false, other.as_str().to_owned(), None),
-        Err(failure) => (false, String::new(), Some(failure.to_string())),
+        Err(failure) => (false, String::new(), Some(failure)),
     };
+    let error = failure.as_ref().map(ToString::to_string);
+    let error_code = failure.as_ref().map(crate::dispatch::PluginSetError::code);
     let elapsed_ms = u64::try_from(synra_store::sqlite::now_ms().saturating_sub(now_ms)).unwrap_or(0);
     board
         .lock()
-        .conclude(id, ok, &result, error.as_deref().map(synra_error), elapsed_ms)
+        .conclude(
+            id,
+            ok,
+            &result,
+            failure
+                .as_ref()
+                .map(|failure| synra_protocol::SynraError::new(failure.code(), failure.to_string())),
+            elapsed_ms,
+        )
         .map_err(|refusal| refuse_intent(&refusal))?;
 
     Ok(Some(answer(
@@ -899,6 +921,7 @@ pub fn accept_remote(
             ok,
             result,
             error,
+            error_code,
             elapsed_ms,
         },
         now_ms,
@@ -1033,15 +1056,6 @@ pub fn accept_cancel(
         .map_err(|error| refuse_intent(&error))?;
 
     Ok(Some(id))
-}
-
-/// A stable error the board records, from a message.
-///
-/// The board wants a `SynraError` so a device that was told to run something receives a code it can branch on rather than
-/// a sentence. `Internal` is the honest code for "the host could not make the call": the plugin did not fail, the host
-/// did.
-fn synra_error(message: &str) -> synra_protocol::SynraError {
-    synra_protocol::SynraError::new(synra_protocol::ErrorCode::Internal, message)
 }
 
 /// An intent identifier from its text.
@@ -1232,6 +1246,43 @@ mod tests {
         assert_eq!(view.created_at_ms, 1_000, "the raising time is carried, not the reading time");
         assert_eq!(view.to_json()["error"]["code"], "internal");
         assert_eq!(view.to_json()["createdAtMs"], 1_000);
+    }
+
+    #[test]
+    fn a_remote_result_keeps_the_code_it_reports() {
+        // ★ The sender used to answer `Internal` for every remote failure because `InvokeResult.error` carried only a
+        // sentence. The code is what the interface branches on, so it has to survive the wire and reach the board.
+        let mut board = Board::new();
+        let request = synra_protocol::ids::RequestId::new();
+        let (id, trace, _) = board.raise(
+            direct(peer()),
+            Choice::Automatic,
+            None,
+            Some(request),
+            1_000,
+        );
+        let mut reply = crate::intent::remote::result(
+            peer(),
+            local(),
+            &crate::intent::remote::InvokeResult {
+                ok: false,
+                result: String::new(),
+                error: Some("the plugin is not allowed to open that".to_owned()),
+                error_code: Some(synra_protocol::ErrorCode::CapabilityDenied),
+                elapsed_ms: 2,
+            },
+            trace,
+            2_000,
+        )
+        .expect("a result");
+        reply.reply_to = Some(request);
+        let board = Arc::new(Mutex::new(board));
+
+        assert_eq!(apply_result(&board, &reply).expect("applied"), Some(id));
+        let view = snapshot(&board, &id.to_string()).expect("a view");
+        let error = view.error.as_ref().expect("the failure is carried");
+        assert_eq!(error.code, synra_protocol::ErrorCode::CapabilityDenied);
+        assert_eq!(error.message, "the plugin is not allowed to open that");
     }
 
     #[test]

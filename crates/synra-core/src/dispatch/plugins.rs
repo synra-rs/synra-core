@@ -128,6 +128,30 @@ impl PluginSetError {
     pub const fn is_retryable(&self) -> bool {
         matches!(self, Self::Compile(BackendError::Instantiate { .. }))
     }
+
+    /// The protocol code a caller reports for this failure.
+    ///
+    /// # Why the mapping lives here
+    ///
+    /// Because two paths need it and they are on opposite sides of the network: `decide` reports a failure that happened
+    /// on this device, and `accept_remote` reports one that happened elsewhere. Both used to answer `Internal`, which threw
+    /// away the one fact the interface branches on — `capability_denied` and `plugin_not_installed` ask the user to do two
+    /// different things, and `Internal` asks them to file a bug.
+    #[must_use]
+    pub const fn code(&self) -> synra_protocol::ErrorCode {
+        use synra_protocol::ErrorCode;
+        match self {
+            // A compile failure is a package this build cannot run, not a plugin that misbehaved.
+            Self::Compile(_) => ErrorCode::Internal,
+            Self::NotLoaded { .. } => ErrorCode::PluginNotInstalled,
+            Self::NoInstance { .. } => ErrorCode::Internal,
+            Self::AtInstanceLimit { .. } => ErrorCode::RateLimited,
+            // A host function the artifact imports without the capability to back it is exactly a capability refusal.
+            Self::UndeclaredImport { .. } => ErrorCode::CapabilityDenied,
+            Self::Lifecycle(_) => ErrorCode::Internal,
+            Self::Faulted { .. } => ErrorCode::PluginTrapped,
+        }
+    }
 }
 
 /// What a caller has to say when it loads a plugin.
@@ -1036,7 +1060,7 @@ mod tests {
     use synra_plugin_host::quota::Quota;
     use synra_protocol::ids::PluginId;
 
-    use super::Authority;
+    use super::{Authority, PluginSetError};
 
     fn id(name: &str) -> PluginId {
         PluginId::try_from(name.to_owned()).expect("a plugin id")
@@ -1088,5 +1112,30 @@ mod tests {
 
         assert!(Arc::ptr_eq(&first.budget, &second.budget), "two instances, two rates");
         assert!(Arc::ptr_eq(&first.audit, &second.audit), "two instances, two records");
+    }
+
+    #[test]
+    fn every_plugin_failure_names_a_code_the_interface_branches_on() {
+        // ★ The mapping used to be `Internal` for all of them, which told a user to file a bug whether the plugin was
+        // missing, throttled, or had trapped.
+        use synra_protocol::ErrorCode;
+
+        let id = PluginId::parse("@acme/hello").expect("a plugin id");
+        assert_eq!(
+            PluginSetError::NotLoaded { id: id.clone() }.code(),
+            ErrorCode::PluginNotInstalled
+        );
+        assert_eq!(
+            PluginSetError::AtInstanceLimit { id: id.clone() }.code(),
+            ErrorCode::RateLimited
+        );
+        assert_eq!(
+            PluginSetError::UndeclaredImport { id: id.clone(), import: "host.call".to_owned() }.code(),
+            ErrorCode::CapabilityDenied
+        );
+        assert_eq!(
+            PluginSetError::Faulted { id, reason: "too many traps".to_owned() }.code(),
+            ErrorCode::PluginTrapped
+        );
     }
 }

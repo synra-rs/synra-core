@@ -44,6 +44,7 @@ fn a_result_survives_the_wire_including_the_reason_it_failed() {
         ok: false,
         result: String::new(),
         error: Some("the plugin refused the URL".to_owned()),
+        error_code: Some(synra_protocol::ErrorCode::CapabilityDenied),
         elapsed_ms: 42,
     };
 
@@ -63,7 +64,7 @@ fn the_two_events_are_not_the_same_event() {
     let answered = result(
         device(2),
         device(1),
-        &InvokeResult { ok: true, result: "done".to_owned(), error: None, elapsed_ms: 1 },
+        &InvokeResult { ok: true, result: "done".to_owned(), error: None, error_code: None, elapsed_ms: 1 },
         TraceId::new(),
         2,
     )
