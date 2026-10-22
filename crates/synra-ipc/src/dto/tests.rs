@@ -224,7 +224,7 @@ fn an_intent_snapshot_round_trips() {
             options: vec!["accept".to_owned(), "decline".to_owned()],
         }),
         error: None,
-        retry: Some(IntentRetry { attempts: 2, max_attempts: 8, gave_up: false }),
+        retry: Some(IntentRetry { attempts: 2, max_attempts: 8, gave_up: false, next_at_ms: Some(90_000) }),
         started_at_ms: 1_000,
     };
     let json = serde_json::to_string(&snapshot).expect("serialises");
