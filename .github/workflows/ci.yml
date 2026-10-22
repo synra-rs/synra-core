@@ -7,6 +7,10 @@ name: checks
 # only exists in YAML is a check nobody can reproduce, and this repository has one recorded case of exactly that
 # (`NOTES/2026-02-the-feature-matrix-was-never-buildable.md`).
 #
+# ★ **This file has no trigger of its own.** It is a reusable workflow (`workflow_call`), invoked by `release.yaml` when
+# a `v*` tag is pushed. That is the one entry: merging to `main` does not run anything. The sibling `synra-js` repository
+# made the same trade first, and named the cost: a bad commit is found at release time, when it is already on `main`.
+#
 # ★ `cargo fmt --all --check` is deliberately absent.
 #
 # HEAD is not rustfmt-clean, and formatting a whole crate is against the recorded practice
@@ -17,10 +21,7 @@ name: checks
 # is not this repository's failure. The `-D warnings` below is a clippy argument, so it covers this workspace only.
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-  workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -28,10 +29,6 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
 
 jobs:
   checks:
