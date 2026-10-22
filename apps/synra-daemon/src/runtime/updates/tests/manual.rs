@@ -142,7 +142,8 @@ fn publisher_decisions_gate_updates(runtime: &Runtime, client: &mut Client) {
     );
     assert_eq!(
         runtime.plugins.lock().version(&PluginId::parse("@acme/hello").expect("id")),
-        Some("1.0.0")
+        None,
+        "a revoked key stops the running instance, not only the next download"
     );
     let confirmed = answer(
         client,
@@ -153,6 +154,18 @@ fn publisher_decisions_gate_updates(runtime: &Runtime, client: &mut Client) {
         },
     );
     assert_eq!(confirmed["publisher"]["fingerprint"], fingerprint);
+    // The revocation switched the plugin off and untrusted it; trusting the key again is not the same decision as
+    // approving the plugin, so the caller's next step needs both.
+    runtime
+        .plugin_consent("@acme/hello", &["log:*".to_owned()])
+        .expect("consent after re-trust");
+    runtime
+        .plugin_set_enabled("@acme/hello", true)
+        .expect("re-enable after re-trust");
+    assert_eq!(
+        runtime.plugins.lock().version(&PluginId::parse("@acme/hello").expect("id")),
+        Some("1.0.0")
+    );
 }
 
 #[test]

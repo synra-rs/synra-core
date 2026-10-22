@@ -689,3 +689,29 @@ fn migration_failures_keep_the_old_version_and_activation_failures_report_the_co
             .contains("cannot activate")
     );
 }
+
+#[test]
+fn revoking_a_publisher_stops_its_installed_plugin() {
+    // ★ The revocation is about the running code, not only the row the installer consults. v1 keeps one key per
+    // publisher, so the installed manifest's publisher id names the same set the signature would.
+    let root = super::super::tests::TempDir::new("publisher-revoke");
+    let runtime = installed(root.path());
+    let fingerprint = runtime.db().publishers().expect("publishers")[0].fingerprint.clone();
+    let id = PluginId::parse("@acme/hello").expect("a plugin id");
+    assert!(runtime.plugins.lock().contains(&id), "the fixture starts loaded");
+
+    runtime
+        .plugin_publisher_decide("@acme", &fingerprint, "revoked")
+        .expect("revoke the key");
+
+    let row = runtime
+        .db()
+        .plugins()
+        .expect("plugins")
+        .into_iter()
+        .find(|row| row.plugin_id == "@acme/hello")
+        .expect("the plugin row");
+    assert!(!row.enabled, "a revoked publisher's plugin is switched off");
+    assert!(!row.trusted, "and its trust goes with the key");
+    assert!(!runtime.plugins.lock().contains(&id), "the running instance is unloaded");
+}
