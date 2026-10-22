@@ -318,10 +318,12 @@ fn a_plugin_snapshot_reports_its_state_rather_than_leaving_it_to_be_derived() {
         granted: vec!["log:*".to_owned()],
         denied: Vec::new(),
         update: None,
+        update_checked_at_ms: Some(123),
     };
     assert!(plugin.enabled);
     assert_eq!(plugin.state, "faulted");
     assert!(plugin.has_ui, "the card cannot offer a page it was told the plugin lacks");
+    assert_eq!(serde_json::to_value(&plugin).expect("serialises")["updateCheckedAtMs"], 123);
 
     let json = serde_json::to_string(&plugin).expect("serialises");
     let back: PluginSnapshot = serde_json::from_str(&json).expect("deserialises");

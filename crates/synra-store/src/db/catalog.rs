@@ -10,6 +10,7 @@ pub const TABLES: &[&str] = &[
     "devices_seen",
     "plugins",
     "plugin_versions",
+    "plugin_update_checks",
     "plugin_grants",
     "plugin_actions",
     "plugin_deps",

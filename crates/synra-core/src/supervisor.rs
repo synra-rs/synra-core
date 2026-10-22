@@ -28,11 +28,14 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
 
 use parking_lot::Mutex;
+
+mod cancellation;
+pub use cancellation::Cancellation;
 
 /// How long a task is given to notice it was cancelled before the shutdown gives up on it.
 ///
@@ -276,60 +279,6 @@ impl TaskSpec {
     pub const fn with_policy(mut self, restart: RestartPolicy) -> Self {
         self.restart = restart;
         self
-    }
-}
-
-/// A token a task watches to learn that it should stop.
-///
-/// # Why cancellation is a value and not a message
-///
-/// Because a task that is not reading from a channel — one blocked in a syscall, one in a loop that only checks
-/// between iterations — still has to find out. An `Arc<AtomicBool>` is readable from anywhere without a lock and
-/// without the task having to be inside a `select`, and a task that checks it once per iteration stops within one
-/// iteration of the request.
-#[derive(Debug, Clone)]
-pub struct Cancellation {
-    cancelled: Arc<AtomicBool>,
-}
-
-impl Cancellation {
-    /// A token that has not been cancelled.
-    #[must_use]
-    pub fn new() -> Self {
-        Self { cancelled: Arc::new(AtomicBool::new(false)) }
-    }
-
-    /// Asks whoever holds this token to stop.
-    pub fn cancel(&self) {
-        self.cancelled.store(true, Ordering::Release);
-    }
-
-    /// Whether a stop has been asked for.
-    #[must_use]
-    pub fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::Acquire)
-    }
-
-    /// Waits until a stop is asked for, or until the time runs out.
-    ///
-    /// Returns whether it was cancelled. A polling sleep rather than a condition variable, because the wait is short
-    /// and a task that never wakes to check is worse than one that wakes twenty times a second for a moment.
-    #[must_use]
-    pub fn wait(&self, timeout: Duration) -> bool {
-        let deadline = std::time::Instant::now() + timeout;
-        while std::time::Instant::now() < deadline {
-            if self.is_cancelled() {
-                return true;
-            }
-            thread::sleep(Duration::from_millis(5).min(timeout));
-        }
-        self.is_cancelled()
-    }
-}
-
-impl Default for Cancellation {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

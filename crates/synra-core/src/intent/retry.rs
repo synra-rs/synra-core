@@ -257,6 +257,7 @@ impl RetryQueue {
 
 /// How one attempt ended, as the runner needs to know it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Attempt {
     /// The answer arrived and the host applied it.
     Answered,
