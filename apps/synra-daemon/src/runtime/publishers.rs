@@ -23,35 +23,25 @@ pub(super) fn decide(
         synra_core::publishers::decide(&runtime.db(), publisher_id, fingerprint, trust, now_ms)
             .map_err(|error| Refusal::new(error.code(), error.to_string()))?;
     if row.trust == synra_store::TRUST_REVOKED {
-        // ★ A revocation is about the code already installed, not only the next download. v1 keeps one key per
-        // publisher, so the manifest's publisher id names the same set the signature would; key rotation is not
-        // implemented.
-        stop_publisher_plugins(runtime, &row.publisher_id);
+        // ★ A revocation is about the code already installed, not only the next download. The version row carries the
+        // signing key (migration 16), so this is an index lookup and it names the key, not every plugin by the publisher.
+        stop_signer_plugins(runtime, &row.fingerprint);
     }
     Ok(serde_json::json!({"publisher":value(&row)}))
 }
 
-/// Disables and unloads every installed plugin the revoked publisher signed.
+/// Disables and unloads every active plugin the revoked key signed.
 ///
 /// Failures are logged rather than returned: the decision is recorded, and an error would tell the caller the revocation
 /// did not happen. A plugin that could not be stopped keeps `enabled = 0`, so the next start does not bring it back.
-fn stop_publisher_plugins(runtime: &Runtime, publisher_id: &str) {
-    let Ok(rows) = runtime.db().plugins() else {
+fn stop_signer_plugins(runtime: &Runtime, fingerprint: &str) {
+    let Ok(plugins) = runtime.db().active_plugins_by_fingerprint(fingerprint) else {
         return;
     };
-    for row in rows {
-        if !row.enabled && !row.trusted {
-            continue;
-        }
-        let manifest = std::fs::read_to_string(runtime.paths.plugin_dir(&row.plugin_id).join("manifest.json"))
-            .ok()
-            .and_then(|text| synra_plugin_api::Manifest::from_json(&text).ok());
-        if !manifest.is_some_and(|manifest| manifest.publisher.id == publisher_id) {
-            continue;
-        }
-        let _ = runtime.db().set_plugin_trusted(&row.plugin_id, false, synra_store::sqlite::now_ms());
-        if let Err(error) = runtime.plugin_set_enabled(&row.plugin_id, false) {
-            eprintln!("synra-daemon: the revoked plugin {} could not be stopped: {error}", row.plugin_id);
+    for plugin_id in plugins {
+        let _ = runtime.db().set_plugin_trusted(&plugin_id, false, synra_store::sqlite::now_ms());
+        if let Err(error) = runtime.plugin_set_enabled(&plugin_id, false) {
+            eprintln!("synra-daemon: the revoked plugin {plugin_id} could not be stopped: {error}");
         }
     }
 }

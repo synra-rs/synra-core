@@ -89,6 +89,53 @@ fn the_active_version_names_its_signer() {
 }
 
 #[test]
+fn only_active_versions_signed_by_a_key_are_named() {
+    // ★ The old version of a plugin is still on disk for rollback; it is not what is running, so revoking its key must
+    // not name the plugin. The query is the index this migration exists for.
+    let mut db = SynraDb::open_in_memory().expect("an in-memory database");
+    db.migrate().expect("migrates");
+    for plugin in ["@acme/one", "@acme/two"] {
+        db.insert_plugin(plugin, true, true, "active", 1_000, 1_000).expect("a plugin");
+    }
+    db.record_plugin_version(&PluginVersionRecord {
+        plugin_id: "@acme/one",
+        version: "1.0.0",
+        manifest: "{}",
+        fingerprint: Some("KEY A"),
+        installed_ms: 1_000,
+        ..Default::default()
+    })
+    .expect("one");
+    db.record_plugin_version(&PluginVersionRecord {
+        plugin_id: "@acme/two",
+        version: "1.0.0",
+        manifest: "{}",
+        fingerprint: Some("KEY B"),
+        installed_ms: 1_000,
+        ..Default::default()
+    })
+    .expect("two, first");
+    db.record_plugin_version(&PluginVersionRecord {
+        plugin_id: "@acme/two",
+        version: "2.0.0",
+        manifest: "{}",
+        fingerprint: Some("KEY A"),
+        installed_ms: 2_000,
+        ..Default::default()
+    })
+    .expect("two, second");
+
+    assert_eq!(
+        db.active_plugins_by_fingerprint("KEY A").expect("a read"),
+        vec!["@acme/one".to_owned(), "@acme/two".to_owned()]
+    );
+    assert!(
+        db.active_plugins_by_fingerprint("KEY B").expect("a read").is_empty(),
+        "the inactive version's signer names nothing"
+    );
+}
+
+#[test]
 fn the_active_version_names_the_artifact_it_installed() {
     // ★ The plan reads two columns; sending reads three. The artifact is a **file name** relative to the plugin's
     // directory — a path here would point into whatever data directory the row was written in.
