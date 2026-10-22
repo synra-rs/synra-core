@@ -365,6 +365,26 @@ pub const MIGRATIONS: &[Migration] = &[
             "ALTER TABLE plugin_audit ADD COLUMN trace_id TEXT",
         ],
     },
+    Migration {
+        version: 14,
+        name: "intent-retries",
+        statements: &[
+            // ★ The retry schedule was in memory, so every restart started the backoff from zero. A dispatch that had
+            // already been retried five times began again at thirty seconds, and a device asleep across several launches
+            // was retried as if for the first time each time. One row per intent, keyed by the intent itself: a retry that
+            // outlives its intent is a schedule for work that does not exist.
+            //
+            // `next_at_ms` is nullable because a given-up entry has no next time; `gave_up` says so explicitly rather than
+            // making a reader infer it from NULL. The cascade is why this table does not need its own sweep: deleting an
+            // intent removes its schedule, and `foreign_keys` is on for every connection.
+            "CREATE TABLE intent_retries (
+                intent_id   TEXT PRIMARY KEY REFERENCES intents(intent_id) ON DELETE CASCADE,
+                attempts    INTEGER NOT NULL,
+                next_at_ms  INTEGER,
+                gave_up     INTEGER NOT NULL DEFAULT 0
+            )",
+        ],
+    },
 ];
 
 /// The schema version this build expects.
