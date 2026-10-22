@@ -44,6 +44,11 @@ use synra_plugin_host::verify::{self, Candidate, DependencyGraph, HostFacts};
 
 use crate::transfer::ObjectDigest;
 
+mod automatic;
+mod writing;
+
+pub use automatic::{PreparedUpdate, prepare_automatic_update};
+
 /// The largest single artifact a directory install will read.
 ///
 /// The design document's ceiling for a Wasm artifact. It is checked on the file's metadata **and** on the bytes that
@@ -188,6 +193,18 @@ fn from_directory_inner(
     host: HostFacts,
     replace: bool,
 ) -> Result<Installed, InstallRefusal> {
+    let prepared = prepare(db, backend, source, now_ms, host, replace)?;
+    writing::write(db, plugins_dir, now_ms, prepared, replace)
+}
+
+fn prepare(
+    db: &synra_store::SynraDb,
+    backend: &Backend,
+    source: &Path,
+    now_ms: i64,
+    host: HostFacts,
+    replace: bool,
+) -> Result<Prepared, InstallRefusal> {
     let source = source
         .canonicalize()
         .map_err(|error| InstallRefusal::new("source", format!("{}: {error}", source.display())))?;
@@ -204,7 +221,6 @@ fn from_directory_inner(
     let manifest = Manifest::from_json(&manifest_json)
         .map_err(|error| InstallRefusal::new("manifest", error.to_string()))?;
     let plugin_id = manifest.id.to_string();
-    let version = manifest.version.to_string();
 
     let installed = db.plugin_is_installed(&plugin_id).unwrap_or(false);
     if replace && !installed {
@@ -354,206 +370,18 @@ fn from_directory_inner(
         .map(|step| format!("{}: {}", step.stage.as_str(), step.detail))
         .collect();
 
-    // ── Writing, atomically ─────────────────────────────────────────────────────────────────────────────────────────
-    //
-    // A staging directory beside the destination and one rename: a plugin directory that exists is one `load_one`
-    // will look at, so half an install must never be visible under the name it will be loaded from.
-    // ★ The directory name is the **sanitised** identifier, not the raw one. A scoped id (`@acme/hello`) contains a
-    // separator, so joining it raw produced `plugins/@acme/hello` — nested two levels deep — while `Paths::plugin_dir`,
-    // the removal, the sweep and the data sandbox all name `plugins/acme+hello`. The installer was the one place that
-    // disagreed, which made an uninstall delete a directory that never existed while the artifact stayed beside it.
-    let destination = plugins_dir.join(synra_store::sanitise_component(&plugin_id));
-    // An update replaces exactly this directory; an install has nothing to replace and refuses rather than overwriting a
-    // copy the user did not ask to lose.
-    if destination.exists() && !replace {
-        return Err(InstallRefusal::new(
-            "write",
-            format!("{} already exists on disk", destination.display()),
-        ));
-    }
-    let parent = destination
-        .parent()
-        .ok_or_else(|| InstallRefusal::new("write", format!("{} has no parent directory", destination.display())))?;
-    std::fs::create_dir_all(parent)
-        .map_err(|error| InstallRefusal::new("write", format!("{}: {error}", parent.display())))?;
-    // ★ The staging area is **outside** `plugins/`, and that is not tidiness.
-    //
-    // `record_discovered_plugins` treats any directory that contains a manifest as an installed plugin, so a half-written
-    // staging directory inside the plugins tree would be discovered on the next start as a plugin with a truncated
-    // artifact — an install that failed would become a plugin that is broken. Under `<data>/.install-staging/` it is only
-    // what it is, and it is on the same volume as the destination, so the rename below stays a rename.
-    let staging_root = plugins_dir.parent().unwrap_or(plugins_dir).join(".install-staging");
-    std::fs::create_dir_all(&staging_root)
-        .map_err(|error| InstallRefusal::new("write", format!("{}: {error}", staging_root.display())))?;
-    // ★ The identifier is flattened, not used as a path: an id contains a slash (`@acme/hello`), and a staging name
-    // built from it would name a directory two levels down — which is the error this line was first written with.
-    let staging = staging_root.join(format!("{}.{now_ms}", plugin_id.replace(['/', '\\'], "_")));
-    if staging.exists() {
-        // A leftover from a crash. Refused rather than removed: the recursive delete the removal would need is the
-        // sandbox's operation, not this module's, and a timestamp collision is a clock that went backwards.
-        return Err(InstallRefusal::new(
-            "write",
-            format!("{} is left over from an earlier install", staging.display()),
-        ));
-    }
-    std::fs::create_dir(&staging)
-        .map_err(|error| InstallRefusal::new("write", format!("{}: {error}", staging.display())))?;
-    let mut failure: Option<String> = None;
-    for (name, bytes) in &files {
-        if let Err(error) = std::fs::write(staging.join(name), bytes) {
-            failure = Some(format!("{name}: {error}"));
-            break;
-        }
-    }
-    if let Some(reason) = failure {
-        discard(&staging, &files);
-        return Err(InstallRefusal::new("write", reason));
-    }
-    // ── The UI half, unpacked beside the artifact ───────────────────────────────────────────────────────────────────
-    //
-    // The bundle's zip is already in `files` (verified like any other artifact), so this step is only "write it out where
-    // the `synra-plugin://` handler will look". It runs **before** the rename, so a UI that cannot be unpacked is a failed
-    // install rather than an installed plugin whose window is blank.
-    if let Some(ui) = manifest.runtime.ui.as_ref() {
-        let archive = staging.join(&ui.artifact);
-        if let Err(error) = synra_plugin_ui::artifact::unpack(
-            &archive,
-            &synra_plugin_ui::artifact::bundle_dir(&staging),
-            synra_plugin_ui::artifact::ArchiveLimits::artifact(),
-        ) {
-            // `unpack` removes what it wrote before refusing; `discard` removes the artifact files. Together they leave the
-            // staging directory as empty as it started.
-            discard(&staging, &files);
-            return Err(InstallRefusal::new("unpack", format!("{}: {error}", ui.artifact)));
-        }
-    }
+    Ok(Prepared { manifest, manifest_json, files, signature, headless, artifact_digest, warnings })
+}
 
-    let backup = if replace {
-        let path = staging_root.join(format!("previous-{}", plugin_id.replace(['/', '\\'], "_")));
-        // A backup left by a crash is stale by definition: the version row either landed with the new directory or the
-        // update never reached this point. Removing it before the move keeps one backup, not a growing set.
-        let _ = synra_store::remove_tree(&staging_root, &path);
-        if let Err(error) = std::fs::rename(&destination, &path) {
-            discard(&staging, &files);
-            return Err(InstallRefusal::new("write", format!("{}: {error}", destination.display())));
-        }
-        Some(path)
-    }
-    else {
-        None
-    };
-
-    if let Err(error) = std::fs::rename(&staging, &destination) {
-        discard(&staging, &files);
-        if let Some(backup) = &backup {
-            let _ = synra_store::remove_tree(plugins_dir, &destination);
-            let _ = std::fs::rename(backup, &destination);
-        }
-        return Err(InstallRefusal::new("write", format!("{}: {error}", destination.display())));
-    }
-
-    // ── The row, and the rollback if it does not land ───────────────────────────────────────────────────────────────
-    //
-    // The two writes — the directory and the row — cannot both be atomic together, so the directory is undone when the
-    // row fails. The other order would leave a row naming files that were never written, which `load_installed` would
-    // report as a broken plugin rather than as a failed install.
-    //
-    // An update does not insert: the row (and the user's enabled decision) already exists, and installing a new version is
-    // not the moment to forget that the plugin was on — **unless it asks for more**. A new capability is a decision the
-    // user made about the old package and not about this one, so the plugin comes back switched off and untrusted, and
-    // the consent screen asks again.
-    let row_written = if replace {
-        let previous_enabled = db
-            .plugins()
-            .ok()
-            .and_then(|rows| rows.into_iter().find(|row| row.plugin_id == plugin_id))
-            .is_some_and(|row| row.enabled);
-        let previous_capabilities = backup.as_ref().map(|path| capabilities_in(path)).unwrap_or_default();
-        let grew = manifest
-            .capabilities
-            .iter()
-            .any(|declaration| !previous_capabilities.contains(&declaration.cap));
-        let keep_enabled = previous_enabled && !grew;
-        let written = db
-            .set_plugin_enabled(&plugin_id, keep_enabled, now_ms)
-            .map(|_| ())
-            .map_err(|error| error.to_string());
-        if written.is_ok() && grew {
-            // The approval was about the old permission list; the new one has to be asked for again.
-            let _ = db.set_plugin_trusted(&plugin_id, false, now_ms);
-        }
-        written
-    }
-    else {
-        db.insert_plugin(&plugin_id, false, false, "installed", now_ms, now_ms)
-            .map_err(|error| error.to_string())
-    };
-    if let Err(error) = row_written {
-        if let Some(backup) = &backup {
-            let _ = synra_store::remove_tree(plugins_dir, &destination);
-            let _ = std::fs::rename(backup, &destination);
-        }
-        else {
-            discard(&destination, &files);
-        }
-        return Err(InstallRefusal::new("record", error));
-    }
-
-    // ── Which version is now the one in effect ─────────────────────────────────────────────────────────────────────
-    //
-    // ★ **This row was missing from the pipeline, and its absence was invisible.** `active_plugin_version` reads
-    // `plugin_versions`; every doc that mentioned the table said the installer wrote it; the installer wrote `plugins` and
-    // the files and never touched it. So a freshly installed plugin had no active version, and every sync plan — the only
-    // reader — answered "this device has no such plugin".
-    //
-    // ★ **Why an empty digest rather than the empty artifact's digest**: a UI-only plugin has no headless artifact, and
-    // `ObjectDigest::of(&[])` is a real digest of zero bytes — recording it would claim the plugin holds an artifact that is
-    // not there. Empty is the store's word for "none", the same shape the receiving side writes when it knows the bytes but
-    // not the version.
-    //
-    // ★ **The rollback is the pair.** The plugin row was written a line earlier, so a failure here would leave a plugin that
-    // appears installed with no version and no files (they are discarded below) — the state that makes the loader report a
-    // broken plugin instead of a failed install.
-    let active_digest = if headless.is_some() { artifact_digest.clone() } else { String::new() };
-    if let Err(error) = db.record_plugin_version(
-        &plugin_id,
-        &version,
-        headless.as_deref().unwrap_or_default(),
-        &active_digest,
-        &manifest_json,
-        now_ms,
-    ) {
-        if let Some(backup) = &backup {
-            let _ = synra_store::remove_tree(plugins_dir, &destination);
-            let _ = std::fs::rename(backup, &destination);
-        }
-        else {
-            let _ = db.remove_plugin(&plugin_id);
-            discard(&destination, &files);
-        }
-        return Err(InstallRefusal::new("record", error.to_string()));
-    }
-
-    // ★ Recorded after the install succeeded, not before: a package that failed a check did not make its publisher a
-    // part of this device's history, and a row written for it would make the next prompt say "seen before" about a
-    // signature this device refused.
-    let signed_by = signature.as_deref().and_then(signed_publisher);
-    if let Some(publisher) = &signed_by {
-        let _ = db.record_publisher(
-            &publisher.publisher_id,
-            &publisher.fingerprint,
-            &publisher.pubkey,
-            now_ms,
-        );
-    }
-
-    // ★ The old directory is removed only now: it was the rollback for both the move and the version row, and deleting it
-    // earlier would have made a failed record unrecoverable.
-    if let Some(backup) = backup {
-        let _ = synra_store::remove_tree(&staging_root, &backup);
-    }
-
-    Ok(Installed { plugin_id, version, path: destination, warnings, signed_by })
+#[derive(Debug)]
+struct Prepared {
+    manifest: Manifest,
+    manifest_json: String,
+    files: Vec<(String, Vec<u8>)>,
+    signature: Option<String>,
+    headless: Option<String>,
+    artifact_digest: String,
+    warnings: Vec<String>,
 }
 
 /// The publisher decisions this device has made, in the shape the verifier takes.
@@ -573,19 +401,6 @@ fn trust_store(db: &synra_store::SynraDb) -> PublisherTrustStore {
         }
     }
     store
-}
-
-/// The capabilities the manifest in one directory declares.
-///
-/// Used only for the update's before/after comparison; a directory whose manifest cannot be read answers an empty list,
-/// which makes the comparison conservative in the direction that matters — every capability then counts as new, so the
-/// plugin is switched off rather than silently kept on with permissions nobody reviewed.
-fn capabilities_in(directory: &Path) -> Vec<String> {
-    std::fs::read_to_string(directory.join("manifest.json"))
-        .ok()
-        .and_then(|text| Manifest::from_json(&text).ok())
-        .map(|manifest| manifest.capabilities.into_iter().map(|declaration| declaration.cap).collect())
-        .unwrap_or_default()
 }
 
 /// The publisher of a signature this build verified, if it is one.
