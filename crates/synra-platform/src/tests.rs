@@ -516,17 +516,13 @@ use rstest::rstest;
         // mean the same place, and a check that stripped the prefix would be comparing a name with a different one.
         let policies = Policies::new();
         let verbatim = if cfg!(windows) { r"\\?\C:\data\file.txt" } else { r"\\?\tmp\file.txt" };
-        let shares = [r"\\server\share\file.txt", r"\\.\PhysicalDrive0"];
 
-        for path in [verbatim] {
-            match check_path(Path::new(path), PathUse::Reveal, &policies, None) {
-                Err(PlatformError::BadPath { reason, .. }) => {
-                    assert_eq!(reason, PathRefusal::DeviceNamespace, "{path}")
-                }
-                other => panic!("{path:?} should be refused, got {other:?}"),
+        match check_path(Path::new(verbatim), PathUse::Reveal, &policies, None) {
+            Err(PlatformError::BadPath { reason, .. }) => {
+                assert_eq!(reason, PathRefusal::DeviceNamespace, "{verbatim}")
             }
+            other => panic!("{verbatim:?} should be refused, got {other:?}"),
         }
-        let _ = shares;
     }
 
     #[test]
