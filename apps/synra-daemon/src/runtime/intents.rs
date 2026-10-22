@@ -108,6 +108,20 @@ impl Runtime {
             // would look like.
             tracing::warn!(intent, "an intent was restored twice");
         }
+
+        // ★ A restored `Dispatching` intent is work whose answer is still coming — but only inside the far side's late
+        // queue. Once that window has passed, no answer can arrive; leaving it "running" would be wrong on every screen
+        // and would make the row immortal, because the retention sweep only collects finished intents.
+        let expired = {
+            let mut board = self.board.lock();
+            synra_core::intent::persist::expire_unanswered(&mut board, store_now())
+        };
+        for intent in &expired {
+            self.checkpoint_intent(&intent.to_string());
+        }
+        if !expired.is_empty() {
+            tracing::info!(count = expired.len(), "dispatched intents ended without an answer");
+        }
         report.restored
     }
 

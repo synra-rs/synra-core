@@ -487,6 +487,25 @@ impl Board {
         self.intents.get(&id).map(|intent| intent.state.clone())
     }
 
+    /// Ends a dispatched intent whose answer can no longer arrive.
+    ///
+    /// # Why this is not [`Board::time_out`]
+    ///
+    /// Because `time_out` is the matching window's ending: it moves any intent into `TimedOut` after the window in which
+    /// candidates could arrive. This one is about **work sent to another device**, and it must only move work that is
+    /// still `Dispatching` — calling it on a finished intent would roll a real outcome back to "nobody answered", which is
+    /// the one thing a late answer must never do.
+    ///
+    /// `after` is how long the device waited, not the matching window: the two timeouts are different questions.
+    pub fn expire_dispatch(&mut self, id: IntentId, after: Duration) -> Option<IntentState> {
+        let intent = self.intents.get(&id)?;
+        if !intent.state.is_running() {
+            return Some(intent.state.clone());
+        }
+        let _ = self.set_state(id, IntentState::TimedOut { after });
+        self.intents.get(&id).map(|intent| intent.state.clone())
+    }
+
     /// Ends an intent a user or a policy stopped.
     pub fn cancel(&mut self, id: IntentId, reason: impl Into<String>) -> Result<IntentState, IntentError> {
         let intent = self.intents.get(&id).ok_or(IntentError::Unknown { intent_id: id })?;
