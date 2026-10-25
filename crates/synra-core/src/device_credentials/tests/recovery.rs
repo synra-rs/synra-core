@@ -144,7 +144,7 @@ fn competing_database_connections_cannot_overwrite_an_enrollment_in_progress() {
     assert!(!observed.ready());
     assert!(matches!(
         enroll(&contender, backend.as_ref(), id, NOW),
-        Err(CredentialError::MissingKey)
+        Err(CredentialError::OperationBusy)
     ));
     finish.send(()).expect("finish write");
     let winner = writer.join().expect("thread").expect("enroll");

@@ -480,6 +480,17 @@ pub const MIGRATIONS: &[Migration] = &[
             )",
         ],
     },
+    Migration {
+        version: 21,
+        name: "retired-device-credentials",
+        statements: &[
+            "CREATE TABLE retired_device_credentials (
+                certificate BLOB NOT NULL CHECK (length(certificate) BETWEEN 1 AND 16384),
+                backend TEXT NOT NULL,
+                PRIMARY KEY (certificate, backend)
+            )",
+        ],
+    },
 ];
 
 /// The schema version this build expects.

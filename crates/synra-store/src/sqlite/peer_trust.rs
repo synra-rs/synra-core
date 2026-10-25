@@ -316,7 +316,7 @@ impl SynraDb {
         ).optional().map(|found| found.unwrap_or(false)).map_err(|error| statement(&error))
     }
 
-    fn require_durable_trust(&self) -> Result<(), DbError> {
+    pub(super) fn require_durable_trust(&self) -> Result<(), DbError> {
         let file = self.is_file_backed();
         let sync: i64 = self
             .connection

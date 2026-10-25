@@ -419,6 +419,11 @@ pub trait Kernel {
     /// # Errors
     /// Refuses invalid invitations, unavailable credentials, occupied tasks and failed cancellation.
     fn pairing(&self, action: &crate::PairingAction) -> Result<serde_json::Value, Refusal>;
+
+    /// Inspects or explicitly repairs local device credentials.
+    /// # Errors
+    /// Refuses stale confirmation, unavailable backends and failed persistence.
+    fn credentials(&self, action: &crate::CredentialAction) -> Result<serde_json::Value, Refusal>;
 }
 
 /// What the handler decided about a connection.
@@ -567,6 +572,7 @@ impl Server {
 
         let result = match request {
             Request::Status => kernel.status(),
+            Request::Credentials { action } => kernel.credentials(action),
             Request::Devices {
                 include_unpaired,
                 scan_ms,
@@ -763,6 +769,13 @@ mod tests {
             self.asked.borrow_mut().push((false, lines, verbose));
             self.logs.clone()
         }
+        fn credentials(
+            &self,
+            action: &crate::CredentialAction,
+        ) -> Result<serde_json::Value, Refusal> {
+            Ok(serde_json::json!({"action": action}))
+        }
+
         fn pairing(&self, action: &crate::PairingAction) -> Result<serde_json::Value, Refusal> {
             self.asked.borrow_mut().push((false, 0, false));
             Ok(serde_json::json!({ "action": action }))
@@ -916,6 +929,28 @@ mod tests {
             "devices did not get its flag and its scan budget"
         );
         assert_eq!(asked[1], (false, 25, true), "logs did not get its operands");
+    }
+
+    #[test]
+    fn every_identity_maintenance_action_requires_the_local_handshake() {
+        for action in [
+            crate::CredentialAction::Status,
+            crate::CredentialAction::Cleanup,
+            crate::CredentialAction::Repair {
+                expected_fingerprint: "displayed".to_owned(),
+            },
+        ] {
+            let request = Request::Credentials {
+                action: action.clone(),
+            };
+            let (refused, _) = run(&Fake::ok(), std::slice::from_ref(&request));
+            assert!(!refused[0].is_ok());
+            let (accepted, _) = run(&Fake::ok(), &[hello(), request]);
+            assert_eq!(
+                accepted[1],
+                Response::ok(serde_json::json!({"action": action}))
+            );
+        }
     }
 
     #[test]

@@ -13,7 +13,13 @@ use synra_store::secrets::{SecretBackend, SecretBytes, SecretError, SecretKey, S
 use synra_store::sqlite::DeviceCredentialRecord;
 
 mod network;
-pub use network::{DEVICE_IDENTITY_SERVICE, NetworkStartupError, initialize_native_network};
+mod operation;
+mod repair;
+pub use network::{
+    DEVICE_IDENTITY_SERVICE, NetworkStartupError, cleanup_native_credentials,
+    initialize_native_network, repair_native_credentials,
+};
+pub use repair::{CredentialRepair, cleanup_retired, repair, repair_fingerprint};
 
 /// Why a local credential cannot be enrolled or loaded.
 #[derive(Debug, thiserror::Error)]
@@ -43,6 +49,12 @@ pub enum CredentialError {
     /// The public enrollment marker could not be read or committed.
     #[error("device credential database failed: {0}")]
     Database(String),
+    /// Explicit repair lost its compare-and-swap or the retired-key queue is full.
+    #[error("device credential repair was refused; refresh the enrollment and cleanup state")]
+    RepairRefused,
+    /// Another process or thread is writing or retiring an identity secret.
+    #[error("another device credential operation is still running")]
+    OperationBusy,
     /// The protected secret store refused an operation.
     #[error("device credential secret store failed: {0}")]
     Secret(SecretError),
@@ -63,6 +75,18 @@ pub fn enroll(
     now_seconds: u64,
 ) -> Result<DeviceCredentials, CredentialError> {
     persistent(secrets)?;
+    let operation = operation::acquire(db)?;
+    let result = enroll_locked(db, secrets, device_id, now_seconds);
+    drop(operation);
+    result
+}
+
+fn enroll_locked(
+    db: &Mutex<SynraDb>,
+    secrets: &dyn SecretBackend,
+    device_id: DeviceId,
+    now_seconds: u64,
+) -> Result<DeviceCredentials, CredentialError> {
     if marker(db, device_id)?.is_some() {
         return load(db, secrets, device_id, now_seconds);
     }

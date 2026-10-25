@@ -126,6 +126,39 @@ fn authenticated_hello_builds_business_links_that_exchange_envelopes_and_chunks(
 }
 
 #[test]
+fn explicit_identity_repair_revokes_live_links_and_requires_new_mutual_pairing() {
+    let mut left = Device::new();
+    let right = Device::new();
+    let _ = pair(&left, &right);
+    let (mut old_link, _remote_link) = links(&left, &right);
+    let previous = left.db.lock().device_credential().unwrap().unwrap();
+    let repaired = device_credentials::repair(
+        &left.db,
+        &TestSecrets(MemoryBackend::new()),
+        left.id(),
+        &device_credentials::repair_fingerprint(previous.certificate()),
+        u64::try_from(left.now_ms / 1000).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(repaired.cleanup.unwrap(), 0);
+    left.credentials = repaired.credentials;
+    assert!(left.approvals().is_empty());
+    assert_eq!(old_link.ping(), Err(LinkError::Unauthorized));
+    assert_eq!(
+        old_link.send_chunk(0, b"old authority"),
+        Err(LinkError::Unauthorized)
+    );
+    right.unpair(&left);
+    let _ = pair(&left, &right);
+    assert_eq!(old_link.ping(), Err(LinkError::Unauthorized));
+    let (mut fresh, mut remote) = links(&left, &right);
+    fresh
+        .send(&envelope(left.id(), right.id(), "device.repaired"))
+        .unwrap();
+    assert_eq!(remote.receive().unwrap().event.as_str(), "device.repaired");
+}
+
+#[test]
 fn revoked_connections_refuse_every_frame_and_same_key_repair_only_opens_new_links() {
     let left = Device::new();
     let right = Device::new();

@@ -24,6 +24,8 @@
 //! which is why a new kernel feature tends to land inside an existing group rather than adding a command.
 
 use clap::{Args, Parser, Subcommand};
+mod credentials;
+pub use credentials::{CredentialAction, CredentialArgs};
 
 /// The kernel's command-line host.
 ///
@@ -70,6 +72,8 @@ pub enum Command {
     Pair(PairArgs),
     /// Show the kernel's state and its links.
     Status,
+    /// Inspect or explicitly repair this device identity and revoke its old pairings.
+    Identity(CredentialArgs),
     /// Send text or a file to a device.
     Send(SendArgs),
     /// Manage plugins.
@@ -1137,6 +1141,6 @@ mod tests {
         // Counted rather than named, so adding a command without adding it here is a failure — and the count is what
         // makes the list above (`every_documented_command_exists`) meaningful: a command that parses but is not on the
         // command surface would be one clap never dispatches to.
-        assert_eq!(Cli::command().get_subcommands().count(), 10);
+        assert_eq!(Cli::command().get_subcommands().count(), 11);
     }
 }

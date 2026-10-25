@@ -36,6 +36,8 @@ bytes.workspace = true
 # The transfer layer names its own digest implementation: a whole-object check is the thing that decides whether a file
 # arrived, so which hash computes it is a decision rather than an implementation detail.
 sha2.workspace = true
+# Cross-process exclusion for identity secret writers without holding SQLite across backend IO.
+fs2 = "=0.4.3"
 base64.workspace = true
 
 [dev-dependencies]

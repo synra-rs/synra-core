@@ -6,7 +6,7 @@ proptest! {
     /// Whatever version is recorded, the result is either a usable state with the right pending steps or a
     /// refusal. No version produces a state that claims to be usable and lists steps backwards.
     #[test]
-    fn a_recorded_version_always_yields_a_coherent_state(recorded in proptest::option::of(0u32..20)) {
+    fn a_recorded_version_always_yields_a_coherent_state(recorded in proptest::option::of(0u32..=latest_version().saturating_add(1))) {
         let state = schema_state(recorded);
         match state {
             SchemaState::Empty => {
@@ -33,7 +33,7 @@ proptest! {
     /// Applying is idempotent in the sense that matters: running it twice from the version it reached runs
     /// nothing the second time. A migration that ran twice would fail on the second device that resumed.
     #[test]
-    fn applying_twice_runs_nothing_the_second_time(from in 0u32..=5) {
+    fn applying_twice_runs_nothing_the_second_time(from in 0u32..=latest_version()) {
         let first = apply(Some(from), &mut |_| Ok(())).expect("applies");
         let mut second_count = 0usize;
         let second = apply(Some(first.version), &mut |_| {
@@ -50,7 +50,7 @@ proptest! {
     /// The statement count an application runs matches the steps it reports, so the outcome cannot claim to
     /// have applied a migration whose statements never ran.
     #[test]
-    fn the_reported_versions_match_the_statements_that_ran(from in 0u32..=5) {
+    fn the_reported_versions_match_the_statements_that_ran(from in 0u32..=latest_version()) {
         let mut count = 0usize;
         let outcome = apply(Some(from), &mut |_| {
             count += 1;

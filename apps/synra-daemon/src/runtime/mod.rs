@@ -21,6 +21,7 @@
 
 pub mod catalog;
 mod commands;
+mod credentials;
 mod devices;
 pub mod install;
 pub mod intent;

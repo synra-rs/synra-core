@@ -2684,3 +2684,5 @@ fn the_remote_wait_outlasts_a_plugins_execution_budget() {
         "a dispatched action is awaited for less time than a plugin may run"
     );
 }
+#[cfg(windows)]
+mod credential_repair;

@@ -64,3 +64,42 @@ fn native_credentials(
 ) -> Result<DeviceCredentials, NetworkStartupError> {
     Err(NetworkStartupError::UnsupportedPlatform)
 }
+/// Explicit native-key replacement; hosts must recreate their authentication context afterwards.
+/// # Errors
+/// Refuses unavailable native storage, stale confirmation, concurrent key IO and failed persistence.
+pub fn repair_native_credentials(
+    db: &Mutex<SynraDb>,
+    device: DeviceId,
+    expected_fingerprint: &str,
+    now_seconds: u64,
+) -> Result<super::CredentialRepair, NetworkStartupError> {
+    #[cfg(windows)]
+    {
+        let backend = synra_store::secrets::WindowsCredentialBackend::new(DEVICE_IDENTITY_SERVICE)
+            .map_err(super::CredentialError::Secret)?;
+        super::repair(db, &backend, device, expected_fingerprint, now_seconds)
+            .map_err(NetworkStartupError::from)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (db, device, expected_fingerprint, now_seconds);
+        Err(NetworkStartupError::UnsupportedPlatform)
+    }
+}
+
+/// Retries native old-secret cleanup independently of an already committed replacement.
+/// # Errors
+/// Refuses unavailable native storage or failed cleanup; never changes current authorizations.
+pub fn cleanup_native_credentials(db: &Mutex<SynraDb>) -> Result<usize, NetworkStartupError> {
+    #[cfg(windows)]
+    {
+        let backend = synra_store::secrets::WindowsCredentialBackend::new(DEVICE_IDENTITY_SERVICE)
+            .map_err(super::CredentialError::Secret)?;
+        super::cleanup_retired(db, &backend).map_err(NetworkStartupError::from)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = db;
+        Err(NetworkStartupError::UnsupportedPlatform)
+    }
+}

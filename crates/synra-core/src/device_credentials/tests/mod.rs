@@ -6,6 +6,7 @@ use crate::identity::Identity;
 use synra_store::secrets::{MemoryBackend, SecretBackendKind};
 
 mod recovery;
+mod repair;
 #[cfg(windows)]
 mod windows;
 
@@ -38,6 +39,7 @@ type Hook = Mutex<Option<Box<dyn FnOnce() + Send>>>;
 struct FaultBackend {
     values: MemoryBackend,
     mode: AtomicU8,
+    delete_mode: AtomicU8,
     writes: AtomicUsize,
     before_set: Hook,
     before_get: Hook,
@@ -49,6 +51,7 @@ impl Default for FaultBackend {
         Self {
             values: MemoryBackend::new(),
             mode: AtomicU8::new(NORMAL),
+            delete_mode: AtomicU8::new(NORMAL),
             writes: AtomicUsize::new(0),
             before_set: Mutex::new(None),
             before_get: Mutex::new(None),
@@ -91,7 +94,18 @@ impl SecretBackend for FaultBackend {
         Ok(())
     }
     fn delete(&self, key: &SecretKey) -> Result<(), SecretError> {
-        self.values.delete(key)
+        match self.delete_mode.load(Ordering::SeqCst) {
+            FAIL_BEFORE_WRITE => Err(SecretError::Backend("injected before deletion".to_owned())),
+            LOSE_WRITE => Ok(()),
+            mode => {
+                self.values.delete(key)?;
+                if mode == FAIL_AFTER_WRITE {
+                    Err(SecretError::Backend("injected after deletion".to_owned()))
+                } else {
+                    Ok(())
+                }
+            }
+        }
     }
     // This is a fault-injection double, not a real encrypted backend. Native persistence is tested separately.
     fn kind(&self) -> SecretBackendKind {

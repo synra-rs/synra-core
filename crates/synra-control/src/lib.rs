@@ -53,8 +53,10 @@
     )
 )]
 
+mod credentials;
 pub mod endpoint;
 mod pairing;
+pub use credentials::CredentialAction;
 pub use pairing::PairingAction;
 pub mod server;
 
@@ -136,6 +138,12 @@ pub enum Request {
 
     /// The kernel's state and its links.
     Status,
+
+    /// Explicit local identity-key repair and cleanup.
+    Credentials {
+        /// Maintenance action after the local channel handshake.
+        action: CredentialAction,
+    },
 
     /// The devices the kernel has seen.
     Devices {
@@ -432,6 +440,7 @@ impl Request {
             Self::IntentSnapshot { .. } => "intentSnapshot",
             Self::Logs { .. } => "logs",
             Self::Pairing { .. } => "pairing",
+            Self::Credentials { .. } => "credentials",
         }
     }
 

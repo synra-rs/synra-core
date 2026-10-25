@@ -81,6 +81,12 @@ pub fn question_for(
             },
             shape,
         }),
+        Command::Identity(args) => Some(Question {
+            request: Request::Credentials {
+                action: (&args.action).into(),
+            },
+            shape,
+        }),
         Command::Devices(args) => Some(Question {
             // ★ Both flags are carried, not dropped. A `--all` or a `--scan-ms` that did not arrive is a command whose
             // flag is silently ignored, and the output looks plausible either way — which is the failure mode a
