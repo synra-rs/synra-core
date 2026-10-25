@@ -132,8 +132,8 @@ impl AuthenticatedStream {
         })
     }
 
-    pub(super) fn start_budget(&mut self, timeout: Duration) -> Result<(), AuthenticationError> {
-        match &mut self.stream {
+    pub(super) fn start_budget(&self, timeout: Duration) -> Result<(), AuthenticationError> {
+        match &self.stream {
             Stream::Client(stream) => stream.sock.start_budget(timeout),
             Stream::Server(stream) => stream.sock.start_budget(timeout),
         }
@@ -144,6 +144,35 @@ impl AuthenticatedStream {
             Stream::Client(stream) => stream.sock.remaining().map(|_| ()),
             Stream::Server(stream) => stream.sock.remaining().map(|_| ()),
         }
+    }
+
+    /// Starts a total IO budget, enforced before every underlying socket operation, even inside TLS reads.
+    ///
+    /// Call [`Self::finish_io_budget`] after the bounded protocol phase; drop the stream on failure.
+    /// This does not change which peer was authenticated or permit access to the raw socket.
+    /// # Errors
+    /// Refuses zero or unrepresentable budgets.
+    pub fn start_io_budget(&self, timeout: Duration) -> Result<(), AuthenticationError> {
+        self.start_budget(timeout)
+    }
+
+    /// Checks the current total IO budget without resetting it or performing network IO.
+    /// # Errors
+    /// Refuses an expired or absent budget, including when only buffered plaintext remains.
+    pub fn check_io_budget(&self) -> Result<(), AuthenticationError> {
+        self.check_budget()
+    }
+
+    /// Checks the total budget then restores the socket timeouts captured before TLS authentication.
+    /// # Errors
+    /// Refuses an expired or absent budget and propagates socket option errors.
+    pub fn finish_io_budget(&mut self) -> Result<(), AuthenticationError> {
+        self.check_budget()?;
+        match &mut self.stream {
+            Stream::Client(stream) => stream.sock.finish(),
+            Stream::Server(stream) => stream.sock.finish(),
+        }
+        .map_err(|error| super::transport(&error))
     }
 
     /// The authenticated device id; application Hello messages must match this value.

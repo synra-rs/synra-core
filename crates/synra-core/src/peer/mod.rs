@@ -33,6 +33,7 @@
 //! are the ones that cross the wire, so a test that stubbed the transport would be a test of the stub — and the bug this
 //! layer can have is a mismatch between what one side writes and the other reads.
 
+pub mod authenticated;
 mod config;
 mod errors;
 mod host;

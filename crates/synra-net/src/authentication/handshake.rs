@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::collections::BTreeSet;
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
@@ -138,7 +139,7 @@ fn rejected(error: impl std::fmt::Display) -> AuthenticationError {
 /// the handshake indefinitely. The wrapper is also used by the completed stream after the deadline clears.
 pub(super) struct DeadlineSocket {
     socket: TcpStream,
-    deadline: Option<Instant>,
+    deadline: Cell<Option<Instant>>,
     read_timeout: Option<Duration>,
     write_timeout: Option<Duration>,
 }
@@ -158,7 +159,7 @@ impl DeadlineSocket {
             .map_err(|error| transport(&error))?;
         Ok(Self {
             socket,
-            deadline: Some(deadline),
+            deadline: Cell::new(Some(deadline)),
             read_timeout,
             write_timeout,
         })
@@ -166,13 +167,14 @@ impl DeadlineSocket {
 
     pub(super) fn remaining(&self) -> Result<Duration, AuthenticationError> {
         self.deadline
+            .get()
             .and_then(|deadline| deadline.checked_duration_since(Instant::now()))
             .filter(|remaining| !remaining.is_zero())
             .ok_or(AuthenticationError::TimedOut)
     }
 
     fn apply_deadline(&self) -> io::Result<()> {
-        if self.deadline.is_some() {
+        if self.deadline.get().is_some() {
             let remaining = self
                 .remaining()
                 .map_err(|_| io::Error::from(io::ErrorKind::TimedOut))?;
@@ -182,10 +184,10 @@ impl DeadlineSocket {
         Ok(())
     }
 
-    fn finish(&mut self) -> io::Result<()> {
+    pub(super) fn finish(&mut self) -> io::Result<()> {
         self.socket.set_read_timeout(self.read_timeout)?;
         self.socket.set_write_timeout(self.write_timeout)?;
-        self.deadline = None;
+        self.deadline.set(None);
         Ok(())
     }
 
@@ -193,15 +195,15 @@ impl DeadlineSocket {
         &self.socket
     }
 
-    pub(super) fn start_budget(&mut self, timeout: Duration) -> Result<(), AuthenticationError> {
+    pub(super) fn start_budget(&self, timeout: Duration) -> Result<(), AuthenticationError> {
         if timeout.is_zero() {
             return Err(AuthenticationError::TimedOut);
         }
-        self.deadline = Some(
+        self.deadline.set(Some(
             Instant::now()
                 .checked_add(timeout)
                 .ok_or(AuthenticationError::TimedOut)?,
-        );
+        ));
         Ok(())
     }
 }

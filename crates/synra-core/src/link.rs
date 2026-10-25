@@ -48,6 +48,15 @@ use crate::peer::{Flags, HandshakeError};
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum LinkError {
+    /// The captured authenticated authorization was revoked or does not match this link.
+    #[error("the link is no longer authorized")]
+    Unauthorized,
+    /// Authorization could not be checked; the connection must not continue.
+    #[error("the link authorization check failed: {why}")]
+    AuthorizationUnavailable {
+        /// The persistence failure, without credentials.
+        why: String,
+    },
     /// The stream failed.
     #[error("the link failed: {why}")]
     Transport {
@@ -104,9 +113,21 @@ impl From<HandshakeError> for LinkError {
             HandshakeError::Transport { why } => Self::Transport { why },
             HandshakeError::Closed => Self::Closed,
             HandshakeError::Frame(inner) => Self::Frame(inner),
-            other => Self::Envelope { why: other.to_string() },
+            other => Self::Envelope {
+                why: other.to_string(),
+            },
         }
     }
+}
+
+pub(crate) fn transport_error(error: &std::io::Error) -> LinkError {
+    error
+        .get_ref()
+        .and_then(|cause| cause.downcast_ref::<LinkError>())
+        .cloned()
+        .unwrap_or_else(|| LinkError::Transport {
+            why: error.to_string(),
+        })
 }
 
 /// What arrived on a link.
@@ -153,6 +174,16 @@ pub enum Inbound {
 /// separate `read_bytes`/`write_bytes` methods would be a second spelling of two traits that already exist and are already
 /// implemented by everything a caller might bring.
 pub trait LinkStream: Read + Write + Send + std::fmt::Debug {
+    /// Rechecks authorization for these actual link identities before delivering or sending a frame.
+    ///
+    /// Memory fixtures and legacy transports have no authority to check. Authenticated transports
+    /// must compare their captured credential generation even when a frame was already buffered.
+    /// # Errors
+    /// Refuses revoked identities and unavailable authorization storage.
+    fn authorize(&self, _local: DeviceId, _peer: DeviceId) -> Result<(), LinkError> {
+        Ok(())
+    }
+
     /// Sets the deadline one `read` call runs under.
     ///
     /// # Errors
@@ -172,12 +203,16 @@ pub trait LinkStream: Read + Write + Send + std::fmt::Debug {
 impl LinkStream for TcpStream {
     fn set_read_deadline(&self, timeout: std::time::Duration) -> Result<(), LinkError> {
         self.set_read_timeout(Some(timeout))
-            .map_err(|error| LinkError::Transport { why: error.to_string() })
+            .map_err(|error| LinkError::Transport {
+                why: error.to_string(),
+            })
     }
 
     fn set_write_deadline(&self, timeout: std::time::Duration) -> Result<(), LinkError> {
         self.set_write_timeout(Some(timeout))
-            .map_err(|error| LinkError::Transport { why: error.to_string() })
+            .map_err(|error| LinkError::Transport {
+                why: error.to_string(),
+            })
     }
 }
 
@@ -225,6 +260,11 @@ pub struct PeerLink {
 }
 
 impl PeerLink {
+    pub(crate) fn with_decoder(mut self, decoder: FrameDecoder) -> Self {
+        self.decoder = decoder;
+        self
+    }
+
     /// Wraps a completed handshake.
     ///
     /// # Why the identifiers are arguments rather than read from the socket
@@ -358,7 +398,12 @@ impl PeerLink {
         if let Some(timeout) = self.write_deadline() {
             self.stream.set_write_deadline(timeout)?;
         }
-        match self.stream.write_all(encoded).and_then(|()| self.stream.flush()) {
+        self.stream.authorize(self.local, self.peer)?;
+        match self
+            .stream
+            .write_all(encoded)
+            .and_then(|()| self.stream.flush())
+        {
             Ok(()) => Ok(()),
             // ★ A write that ran out of time is the same fact `TimedOut` already names for reads, from the other
             // end: the peer is **alive and not taking bytes**. Reporting it as `Transport` is the flattening that variant's own
@@ -366,7 +411,7 @@ impl PeerLink {
             // different actions, and the difference here is between backing off and reconnecting. A caller that saw a slow
             // peer as a dead link would tear down a working transfer to a device that was merely busy.
             Err(error) if is_a_timeout(&error) => Err(LinkError::TimedOut),
-            Err(error) => Err(LinkError::Transport { why: error.to_string() }),
+            Err(error) => Err(transport_error(&error)),
         }
     }
 
@@ -403,7 +448,10 @@ impl PeerLink {
         // is asking about. Counted after the write, because a refused write moved nothing.
         self.count_bytes(
             "bytes_sent_total",
-            envelope.payload.as_ref().map_or(0, |payload| payload.get().len()),
+            envelope
+                .payload
+                .as_ref()
+                .map_or(0, |payload| payload.get().len()),
         );
         Ok(())
     }
@@ -426,7 +474,10 @@ impl PeerLink {
         let frame = Frame {
             kind: FrameKind::Chunk,
             flags: 0,
-            body: FrameBody::Chunk(ChunkFrame { chunk_id, data: Bytes::copy_from_slice(data) }),
+            body: FrameBody::Chunk(ChunkFrame {
+                chunk_id,
+                data: Bytes::copy_from_slice(data),
+            }),
         };
         self.send_frame(&frame)?;
         self.sent = self.sent.saturating_add(1);
@@ -456,22 +507,34 @@ impl PeerLink {
                     self.count_frame("frames_received_total", envelope.event.as_str());
                     self.count_bytes(
                         "bytes_received_total",
-                        envelope.payload.as_ref().map_or(0, |payload| payload.get().len()),
+                        envelope
+                            .payload
+                            .as_ref()
+                            .map_or(0, |payload| payload.get().len()),
                     );
                     return Ok(Inbound::Envelope(Box::new(envelope)));
                 }
                 FrameKind::Chunk => {
                     let FrameBody::Chunk(chunk) = frame.body else {
-                        return Err(LinkError::Unexpected { found: format!("{:?}", frame.body) });
+                        return Err(LinkError::Unexpected {
+                            found: format!("{:?}", frame.body),
+                        });
                     };
                     self.received = self.received.saturating_add(1);
                     self.count_bytes("bytes_received_total", chunk.data.len());
-                    return Ok(Inbound::Block { chunk_id: chunk.chunk_id, data: chunk.data });
+                    return Ok(Inbound::Block {
+                        chunk_id: chunk.chunk_id,
+                        data: chunk.data,
+                    });
                 }
                 FrameKind::Ping => self.pong()?,
                 FrameKind::Pong => {}
                 FrameKind::Bye => return Err(LinkError::Closed),
-                other => return Err(LinkError::Unexpected { found: other.to_string() }),
+                other => {
+                    return Err(LinkError::Unexpected {
+                        found: other.to_string(),
+                    });
+                }
             }
         }
     }
@@ -503,7 +566,10 @@ impl PeerLink {
         self.send_frame(&Frame {
             kind: FrameKind::Bye,
             flags: 0,
-            body: FrameBody::Bye { code: 0, reason: Bytes::from(reason.to_owned().into_bytes()) },
+            body: FrameBody::Bye {
+                code: 0,
+                reason: Bytes::from(reason.to_owned().into_bytes()),
+            },
         })
     }
 
@@ -531,16 +597,18 @@ impl PeerLink {
         // it would lose part of a file.
         match self.receive_inbound()? {
             Inbound::Envelope(envelope) => Ok(*envelope),
-            Inbound::Block { .. } => {
-                Err(LinkError::Unexpected { found: "chunk".to_owned() })
-            }
+            Inbound::Block { .. } => Err(LinkError::Unexpected {
+                found: "chunk".to_owned(),
+            }),
         }
     }
 
     /// Parses and checks the envelope in a frame.
     fn parse_envelope(&self, frame: &Frame) -> Result<Envelope, LinkError> {
         let FrameBody::Envelope(bytes) = &frame.body else {
-            return Err(LinkError::Unexpected { found: format!("{:?}", frame.body) });
+            return Err(LinkError::Unexpected {
+                found: format!("{:?}", frame.body),
+            });
         };
         let text = std::str::from_utf8(bytes).map_err(|error| LinkError::Envelope {
             why: format!("the envelope is not text: {error}"),
@@ -552,9 +620,10 @@ impl PeerLink {
                 why: error.to_string(),
             })?;
 
-        let envelope = Envelope::inbound(&raw, self.local).map_err(|error| LinkError::Envelope {
-            why: error.to_string(),
-        })?;
+        let envelope =
+            Envelope::inbound(&raw, self.local).map_err(|error| LinkError::Envelope {
+                why: error.to_string(),
+            })?;
 
         // ★ The check only a link can make. The peer **is** the sender, so an envelope whose `from` is a different
         // device is a peer speaking for a device it is not — and without this, any paired device could send an intent
@@ -610,6 +679,8 @@ impl PeerLink {
 
         let mut buffer = [0u8; 8 * 1024];
         loop {
+            // This check also covers frames prefetched by Hello or an earlier read.
+            self.stream.authorize(self.local, self.peer)?;
             if let Some(frame) = self.decoder.next_frame()? {
                 return Ok(frame);
             }
@@ -624,13 +695,11 @@ impl PeerLink {
                 Err(error) if partial && is_a_timeout(&error) => continue,
                 // A timeout with nothing buffered is reported as what it is — a quiet link — rather than as a broken one.
                 Err(error) if is_a_timeout(&error) => return Err(LinkError::TimedOut),
-                Err(error) => return Err(LinkError::Transport { why: error.to_string() }),
+                Err(error) => return Err(transport_error(&error)),
             };
-            let chunk = buffer
-                .get(..read)
-                .ok_or_else(|| LinkError::Transport {
-                    why: "a read reported more bytes than the buffer".to_owned(),
-                })?;
+            let chunk = buffer.get(..read).ok_or_else(|| LinkError::Transport {
+                why: "a read reported more bytes than the buffer".to_owned(),
+            })?;
             // The result is propagated: a poisoned decoder would otherwise report "no frame yet" for ever, which is a
             // read loop that never ends rather than a refused link.
             self.decoder.push_slice(chunk)?;
@@ -646,17 +715,20 @@ impl PeerLink {
 /// silently stop working. `WouldBlock` is what a non-blocking socket reports and `TimedOut` is what a timed-out one does;
 /// both are the same situation from here.
 fn is_a_timeout(error: &std::io::Error) -> bool {
-    matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut)
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::memory::MemoryStream;
     use super::*;
+    use std::net::Ipv4Addr;
     use synra_protocol::envelope::OutboundSpec;
     use synra_protocol::event::EventName;
     use synra_protocol::ids::TraceId;
-    use std::net::Ipv4Addr;
 
     const LOCAL: &str = "11111111-1111-4111-8111-111111111111";
     const PEER: &str = "22222222-2222-4222-8222-222222222222";
@@ -693,7 +765,9 @@ mod tests {
             device(local),
             device(peer),
             agreed(),
-            Flags { timeout: Some(timeout) },
+            Flags {
+                timeout: Some(timeout),
+            },
         )
     }
 
@@ -705,13 +779,24 @@ mod tests {
         let (dialer, _peer) = connected();
         let mut link = link_with_timeout(dialer, LOCAL, PEER, std::time::Duration::from_secs(30));
 
-        assert_eq!(link.write_deadline(), Some(std::time::Duration::from_secs(30)), "the negotiated one");
+        assert_eq!(
+            link.write_deadline(),
+            Some(std::time::Duration::from_secs(30)),
+            "the negotiated one"
+        );
         link.set_write_timeout(Some(std::time::Duration::from_millis(250)));
-        assert_eq!(link.write_deadline(), Some(std::time::Duration::from_millis(250)), "the caller's");
+        assert_eq!(
+            link.write_deadline(),
+            Some(std::time::Duration::from_millis(250)),
+            "the caller's"
+        );
         // And `None` puts the negotiated one back rather than removing every deadline — the same reading
         // `set_read_timeout` has.
         link.set_write_timeout(None);
-        assert_eq!(link.write_deadline(), Some(std::time::Duration::from_secs(30)));
+        assert_eq!(
+            link.write_deadline(),
+            Some(std::time::Duration::from_secs(30))
+        );
     }
 
     // ── A peer that stops reading ─────────────────────────────────────────────────────────────────
@@ -828,7 +913,9 @@ mod tests {
         link.set_write_timeout(Some(std::time::Duration::from_millis(1)));
 
         let started = std::time::Instant::now();
-        let refused = link.send_chunk(0, &[0u8; 8 * 1024]).expect_err("the pipe holds four");
+        let refused = link
+            .send_chunk(0, &[0u8; 8 * 1024])
+            .expect_err("the pipe holds four");
 
         // ★ `TimedOut` and not `Transport`: the reader is alive and not reading, which is the distinction rounds 83 and 84
         // built. A caller backs off from this one and reconnects from the other.
@@ -864,7 +951,11 @@ mod tests {
         match receiver.receive_inbound().expect("receives") {
             Inbound::Block { chunk_id, data } => {
                 assert_eq!(chunk_id, 0);
-                assert_eq!(data.len(), 8 * 1024, "the whole block, through a pipe half its width");
+                assert_eq!(
+                    data.len(),
+                    8 * 1024,
+                    "the whole block, through a pipe half its width"
+                );
                 assert!(data.iter().all(|byte| *byte == 7));
             }
             other => panic!("expected a block, got {other:?}"),
@@ -876,11 +967,23 @@ mod tests {
 
     /// A link over anything that carries bytes.
     fn link_with_stream(stream: impl LinkStream + 'static, local: &str, peer: &str) -> PeerLink {
-        PeerLink::new(stream, device(local), device(peer), agreed(), Flags::no_timeout())
+        PeerLink::new(
+            stream,
+            device(local),
+            device(peer),
+            agreed(),
+            Flags::no_timeout(),
+        )
     }
 
     fn link(stream: TcpStream, local: &str, peer: &str) -> PeerLink {
-        PeerLink::new(stream, device(local), device(peer), agreed(), Flags::no_timeout())
+        PeerLink::new(
+            stream,
+            device(local),
+            device(peer),
+            agreed(),
+            Flags::no_timeout(),
+        )
     }
 
     /// An envelope from `from` to `target`.
@@ -908,7 +1011,9 @@ mod tests {
         let mut sender = link(a, PEER, LOCAL);
         let mut receiver = link(b, LOCAL, PEER);
 
-        sender.send(&envelope(PEER, LOCAL, "device.ping")).expect("sends");
+        sender
+            .send(&envelope(PEER, LOCAL, "device.ping"))
+            .expect("sends");
         let got = receiver.receive().expect("receives");
 
         assert_eq!(got.event.as_str(), "device.ping");
@@ -933,22 +1038,34 @@ mod tests {
 
         // The envelope helper carries no payload, so a block is what proves the counters move — and it proves it for both
         // directions, which are separate series.
-        sender.send(&envelope(PEER, LOCAL, "device.ping")).expect("sends");
+        sender
+            .send(&envelope(PEER, LOCAL, "device.ping"))
+            .expect("sends");
         let _ = receiver.receive().expect("receives");
         sender.send_chunk(0, &[1, 2, 3, 4]).expect("sends a block");
         let _ = receiver.receive_inbound().expect("receives a block");
 
-        assert_eq!(sender_metrics.snapshot().get("bytes_sent_total"), Some(&Value::Counter(4)));
-        assert_eq!(receiver_metrics.snapshot().get("bytes_received_total"), Some(&Value::Counter(4)));
+        assert_eq!(
+            sender_metrics.snapshot().get("bytes_sent_total"),
+            Some(&Value::Counter(4))
+        );
+        assert_eq!(
+            receiver_metrics.snapshot().get("bytes_received_total"),
+            Some(&Value::Counter(4))
+        );
         // ★ And the frame counters, by event: the half that used to be counted in `Host::send`/`listener`, and therefore
         // only for frames that passed through one. Both directions are asserted here because the link is now the one
         // place they are taken.
         assert_eq!(
-            sender_metrics.snapshot().get("frames_sent_total{event=device.ping}"),
+            sender_metrics
+                .snapshot()
+                .get("frames_sent_total{event=device.ping}"),
             Some(&Value::Counter(1))
         );
         assert_eq!(
-            receiver_metrics.snapshot().get("frames_received_total{event=device.ping}"),
+            receiver_metrics
+                .snapshot()
+                .get("frames_received_total{event=device.ping}"),
             Some(&Value::Counter(1))
         );
     }
@@ -965,9 +1082,19 @@ mod tests {
             sender.send(&envelope(PEER, LOCAL, event)).expect("sends");
         }
         let events: Vec<String> = (0..3)
-            .map(|_| receiver.receive().expect("receives").event.as_str().to_owned())
+            .map(|_| {
+                receiver
+                    .receive()
+                    .expect("receives")
+                    .event
+                    .as_str()
+                    .to_owned()
+            })
             .collect();
-        assert_eq!(events, vec!["device.first", "device.second", "device.third"]);
+        assert_eq!(
+            events,
+            vec!["device.first", "device.second", "device.third"]
+        );
     }
 
     #[test]
@@ -1028,8 +1155,13 @@ mod tests {
         let mut sender = link(a, PEER, LOCAL);
         let mut receiver = link(b, LOCAL, PEER);
 
-        sender.send(&envelope(PEER, OTHER, "device.ping")).expect("sends");
-        assert!(matches!(receiver.receive(), Err(LinkError::Envelope { .. })));
+        sender
+            .send(&envelope(PEER, OTHER, "device.ping"))
+            .expect("sends");
+        assert!(matches!(
+            receiver.receive(),
+            Err(LinkError::Envelope { .. })
+        ));
     }
 
     #[test]
@@ -1060,10 +1192,14 @@ mod tests {
         let mut sender = link(a, PEER, LOCAL);
         let mut receiver = link(b, LOCAL, PEER);
 
-        sender.send(&envelope(PEER, LOCAL, "file.transfer.request")).expect("sends");
+        sender
+            .send(&envelope(PEER, LOCAL, "file.transfer.request"))
+            .expect("sends");
         sender.send_chunk(0, b"first").expect("sends");
         sender.send_chunk(1, b"second").expect("sends");
-        sender.send(&envelope(PEER, LOCAL, "file.transfer.complete")).expect("sends");
+        sender
+            .send(&envelope(PEER, LOCAL, "file.transfer.complete"))
+            .expect("sends");
 
         let mut seen = Vec::new();
         for _ in 0..4 {
@@ -1072,7 +1208,10 @@ mod tests {
                     seen.push(format!("event:{}", envelope.event.as_str()));
                 }
                 Inbound::Block { chunk_id, data } => {
-                    seen.push(format!("block:{chunk_id}:{}", String::from_utf8_lossy(&data)));
+                    seen.push(format!(
+                        "block:{chunk_id}:{}",
+                        String::from_utf8_lossy(&data)
+                    ));
                 }
             }
         }
@@ -1130,7 +1269,9 @@ mod tests {
             other => panic!("expected a block, got {other:?}"),
         }
         match receiver.receive_inbound().expect("second") {
-            Inbound::Block { chunk_id, .. } => assert_eq!(chunk_id, 1, "the ping was not swallowed"),
+            Inbound::Block { chunk_id, .. } => {
+                assert_eq!(chunk_id, 1, "the ping was not swallowed")
+            }
             other => panic!("expected a block, got {other:?}"),
         }
         // Exactly the two blocks were counted; the heartbeat is not a message.
@@ -1146,8 +1287,20 @@ mod tests {
         // ★ `production()` rather than `no_timeout()`, because the timeout is the thing under test: a block larger than one
         // socket read sits in the buffer across several reads, and a timeout between two of them must not abandon it.
         let (a, b) = connected();
-        let mut sender = PeerLink::new(a, device(LOCAL), device(PEER), agreed(), Flags::production());
-        let mut receiver = PeerLink::new(b, device(PEER), device(LOCAL), agreed(), Flags::production());
+        let mut sender = PeerLink::new(
+            a,
+            device(LOCAL),
+            device(PEER),
+            agreed(),
+            Flags::production(),
+        );
+        let mut receiver = PeerLink::new(
+            b,
+            device(PEER),
+            device(LOCAL),
+            agreed(),
+            Flags::production(),
+        );
 
         let first = vec![7u8; synra_protocol::limits::MAX_CHUNK_LEN];
         let second = vec![9u8; 37_856];
@@ -1212,7 +1365,10 @@ mod tests {
             body: FrameBody::Envelope(Bytes::from_static(b"{not json")),
         };
         sender.send_frame(&frame).expect("sends");
-        assert!(matches!(receiver.receive(), Err(LinkError::Envelope { .. })));
+        assert!(matches!(
+            receiver.receive(),
+            Err(LinkError::Envelope { .. })
+        ));
     }
 
     #[test]
@@ -1245,7 +1401,9 @@ mod tests {
 
         sender.ping().expect("sends");
         // The receiver first answers the ping, then gets the envelope that follows it.
-        sender.send(&envelope(PEER, LOCAL, "device.ping")).expect("sends");
+        sender
+            .send(&envelope(PEER, LOCAL, "device.ping"))
+            .expect("sends");
 
         let got = receiver.receive().expect("receives");
         assert_eq!(got.event.as_str(), "device.ping");
@@ -1256,7 +1414,9 @@ mod tests {
         let mut decoder = FrameDecoder::new();
         let mut buffer = [0u8; 1024];
         let read = sender.stream.read(&mut buffer).expect("reads");
-        decoder.push_slice(buffer.get(..read).expect("a chunk")).expect("the frame is well formed");
+        decoder
+            .push_slice(buffer.get(..read).expect("a chunk"))
+            .expect("the frame is well formed");
         let frame = decoder.next_frame().expect("no error").expect("a frame");
         assert_eq!(frame.kind, FrameKind::Pong);
     }
@@ -1290,13 +1450,19 @@ mod tests {
 
         let first = receiver.receive();
         assert!(
-            matches!(first, Err(LinkError::Frame(_)) | Err(LinkError::Unexpected { .. })),
+            matches!(
+                first,
+                Err(LinkError::Frame(_)) | Err(LinkError::Unexpected { .. })
+            ),
             "an unknown frame kind was accepted: {first:?}"
         );
 
         // And the link does not come back: a second read is refused rather than returning whatever happens to be next.
         let second = receiver.receive();
-        assert!(second.is_err(), "the link carried on after a refused frame: {second:?}");
+        assert!(
+            second.is_err(),
+            "the link carried on after a refused frame: {second:?}"
+        );
     }
 
     #[test]
@@ -1353,11 +1519,17 @@ mod tests {
     #[test]
     fn every_error_explains_itself() {
         let errors = [
-            LinkError::Transport { why: "reset".to_owned() },
+            LinkError::Transport {
+                why: "reset".to_owned(),
+            },
             LinkError::Closed,
             LinkError::Frame(FrameError::Poisoned),
-            LinkError::Unexpected { found: "chunk".to_owned() },
-            LinkError::Envelope { why: "not for us".to_owned() },
+            LinkError::Unexpected {
+                found: "chunk".to_owned(),
+            },
+            LinkError::Envelope {
+                why: "not for us".to_owned(),
+            },
         ];
         for error in &errors {
             let text = error.to_string();
@@ -1371,10 +1543,15 @@ mod tests {
         // A handshake's transport failure and a link's are the same condition seen at different moments, so a caller does
         // not have to handle two spellings of "the connection broke".
         assert!(matches!(
-            LinkError::from(HandshakeError::Transport { why: "x".to_owned() }),
+            LinkError::from(HandshakeError::Transport {
+                why: "x".to_owned()
+            }),
             LinkError::Transport { .. }
         ));
-        assert!(matches!(LinkError::from(HandshakeError::Closed), LinkError::Closed));
+        assert!(matches!(
+            LinkError::from(HandshakeError::Closed),
+            LinkError::Closed
+        ));
         assert!(matches!(
             LinkError::from(HandshakeError::Frame(FrameError::Poisoned)),
             LinkError::Frame(_)

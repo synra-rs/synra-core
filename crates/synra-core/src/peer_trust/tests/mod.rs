@@ -8,6 +8,7 @@ use synra_store::secrets::{
     MemoryBackend, SecretBackend, SecretBackendKind, SecretBytes, SecretError, SecretKey,
 };
 
+mod business;
 mod failures;
 mod lifecycle;
 

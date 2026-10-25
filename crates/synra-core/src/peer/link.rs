@@ -2,6 +2,7 @@
 
 use std::net::{SocketAddr, TcpListener, TcpStream};
 
+use crate::link::LinkStream;
 use synra_protocol::frame::{FrameDecoder, FrameKind};
 use synra_protocol::handshake::{
     Hello, HelloAck, LinkToken, PROTOCOL_VERSION, PairingState, SessionNonce,
@@ -12,7 +13,9 @@ use super::config::Flags;
 use super::errors::HandshakeError;
 use super::host::LocalPeer;
 use super::negotiate::{Negotiated, agree};
-use super::wire::{expect, hello_ack_frame, hello_frame, json_payload, read_frame, transport, write_frame};
+use super::wire::{
+    expect, hello_ack_frame, hello_frame, json_payload, read_frame, transport, write_frame,
+};
 
 /// Dials a peer and completes the handshake.
 ///
@@ -34,6 +37,17 @@ pub fn dial(
             .map_err(|error| transport(&error))?;
     }
 
+    let (negotiated, _decoder) = dial_stream(&mut stream, ours, token, sequence, flags)?;
+    Ok((stream, negotiated))
+}
+
+pub(super) fn dial_stream(
+    stream: &mut impl LinkStream,
+    ours: &LocalPeer,
+    token: Option<LinkToken>,
+    sequence: u64,
+    flags: Flags,
+) -> Result<(Negotiated, FrameDecoder), HandshakeError> {
     // ★ A fresh nonce per attempt. It is what ties the answer to this question: an answer carrying a different one is a
     // recorded or mis-routed message, and a dialer that accepted it would build a session on a reply to somebody else's
     // attempt.
@@ -41,15 +55,17 @@ pub fn dial(
     let mut hello = ours.hello(nonce, sequence);
     hello.token = token;
 
-    write_frame(&mut stream, &hello_frame(&hello)?)?;
+    write_frame(stream, &hello_frame(&hello)?)?;
 
     let mut decoder = FrameDecoder::new();
-    let frame = read_frame(&mut stream, &mut decoder, flags)?;
+    let frame = read_frame(stream, &mut decoder, flags)?;
     expect(&frame, FrameKind::HelloAck, "HelloAck")?;
     let ack: HelloAck = json_payload(&frame, "HelloAck")?;
 
     if let Some(refusal) = ack.refusal {
-        return Err(HandshakeError::Refused { reason: format!("{refusal:?}") });
+        return Err(HandshakeError::Refused {
+            reason: format!("{refusal:?}"),
+        });
     }
     if ack.protocol != PROTOCOL_VERSION {
         return Err(HandshakeError::VersionMismatch {
@@ -60,9 +76,30 @@ pub fn dial(
     if ack.nonce != nonce {
         return Err(HandshakeError::NonceMismatch);
     }
+    ack.validate(nonce)
+        .map_err(|error| HandshakeError::Invalid {
+            why: error.to_string(),
+        })?;
+    if ack.endpoints.len() > Hello::MAX_ENDPOINTS {
+        return Err(HandshakeError::Invalid {
+            why: "too many endpoints advertised".to_owned(),
+        });
+    }
+    synra_protocol::session::PeerProfile {
+        device_id: ack.device_id,
+        display_name: ack.display_name.clone(),
+        platform: ack.platform,
+        app_version: ack.app_version.clone(),
+    }
+    .validate()
+    .map_err(|why| HandshakeError::Invalid {
+        why: why.to_owned(),
+    })?;
+    stream
+        .authorize(ours.device_id, ack.device_id)
+        .map_err(|error| super::wire::link_error(&error))?;
 
     Ok((
-        stream,
         Negotiated {
             device_id: ack.device_id,
             display_name: ack.display_name,
@@ -71,6 +108,7 @@ pub fn dial(
             agreed: agree(ours, &ack.features, &ack.requires),
             pairing: Some(ack.pairing),
         },
+        decoder,
     ))
 }
 
@@ -119,21 +157,36 @@ pub fn accept_stream(
             .map_err(|error| transport(&error))?;
     }
 
+    let (negotiated, _decoder) = accept_on(&mut stream, ours, sequence, flags, read_token)?;
+    Ok((stream, negotiated))
+}
+
+pub(super) fn accept_on(
+    stream: &mut impl LinkStream,
+    ours: &LocalPeer,
+    sequence: u64,
+    flags: Flags,
+    read_token: impl FnOnce(Option<&LinkToken>, DeviceId) -> PairingState,
+) -> Result<(Negotiated, FrameDecoder), HandshakeError> {
     let mut decoder = FrameDecoder::new();
-    let frame = read_frame(&mut stream, &mut decoder, flags)?;
+    let frame = read_frame(stream, &mut decoder, flags)?;
     expect(&frame, FrameKind::Hello, "Hello")?;
     let hello: Hello = json_payload(&frame, "Hello")?;
 
     // ★ The announcement is validated before anything is built from it. It is attacker-controlled input: an unbounded
     // endpoint list would be an unbounded amount of dialling on this device's behalf, and a display name is rendered.
-    hello.validate().map_err(|error| HandshakeError::Invalid { why: error.to_string() })?;
+    hello.validate().map_err(|error| HandshakeError::Invalid {
+        why: error.to_string(),
+    })?;
+    stream
+        .authorize(ours.device_id, hello.device_id)
+        .map_err(|error| super::wire::link_error(&error))?;
 
     let pairing = read_token(hello.token.as_ref(), hello.device_id);
     let ack = ours.hello_ack(hello.nonce, pairing, sequence);
-    write_frame(&mut stream, &hello_ack_frame(&ack)?)?;
+    write_frame(stream, &hello_ack_frame(&ack)?)?;
 
     Ok((
-        stream,
         Negotiated {
             device_id: hello.device_id,
             display_name: hello.display_name,
@@ -143,5 +196,6 @@ pub fn accept_stream(
             // The dialer presented the token, so this side has no read of it to report.
             pairing: None,
         },
+        decoder,
     ))
 }

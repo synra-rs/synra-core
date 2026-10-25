@@ -1,16 +1,12 @@
 //! The frames the exchange is made of: reading one, writing one, and the JSON a handshake message travels as.
 
-use std::io::{Read, Write};
-use std::net::TcpStream;
-
 use bytes::Bytes;
-use synra_protocol::frame::{
-    Frame, FrameBody, FrameDecoder, FrameEncoder, FrameKind,
-};
+use synra_protocol::frame::{Frame, FrameBody, FrameDecoder, FrameEncoder, FrameKind};
 use synra_protocol::handshake::{Hello, HelloAck};
 
 use super::config::Flags;
 use super::errors::HandshakeError;
+use crate::link::LinkStream;
 
 /// Reads one frame into a buffer, or reports why it could not.
 ///
@@ -21,14 +17,14 @@ use super::errors::HandshakeError;
 /// partial header anyway. So the loop reads what is there and lets the decoder decide when it has a whole frame —
 /// which is the same shape a socket always requires.
 pub(super) fn read_frame(
-    stream: &mut TcpStream,
+    stream: &mut impl LinkStream,
     decoder: &mut FrameDecoder,
     flags: Flags,
 ) -> Result<Frame, HandshakeError> {
     if let Some(timeout) = flags.timeout {
         stream
-            .set_read_timeout(Some(timeout))
-            .map_err(|error| transport(&error))?;
+            .set_read_deadline(timeout)
+            .map_err(|error| link_error(&error))?;
     }
 
     let mut buffer = [0u8; 8 * 1024];
@@ -44,9 +40,9 @@ pub(super) fn read_frame(
             Err(error) if peer_went_away(&error) => return Err(HandshakeError::Closed),
             Err(error) => return Err(transport(&error)),
         };
-        let chunk = buffer.get(..read).ok_or_else(|| transport_message(
-            "a read reported more bytes than the buffer",
-        ))?;
+        let chunk = buffer
+            .get(..read)
+            .ok_or_else(|| transport_message("a read reported more bytes than the buffer"))?;
         // ★ The result is propagated, and dropping it was the first version: a poisoned decoder then reported "no frame
         // yet" for ever, so a peer that sent a malformed frame produced a read loop that never ended rather than a
         // refused connection. `?` is what turns it into the refusal it is.
@@ -55,12 +51,29 @@ pub(super) fn read_frame(
 }
 
 /// Writes one frame.
-pub(super) fn write_frame(stream: &mut TcpStream, frame: &Frame) -> Result<(), HandshakeError> {
+pub(super) fn write_frame(
+    stream: &mut impl LinkStream,
+    frame: &Frame,
+) -> Result<(), HandshakeError> {
     let bytes = FrameEncoder::encode_to_vec(frame)?;
     stream
         .write_all(&bytes)
         .and_then(|()| stream.flush())
         .map_err(|error| transport(&error))
+}
+
+pub(super) fn link_error(error: &crate::link::LinkError) -> HandshakeError {
+    match error {
+        crate::link::LinkError::Unauthorized
+        | crate::link::LinkError::AuthorizationUnavailable { .. } => {
+            HandshakeError::Authorization {
+                why: error.to_string(),
+            }
+        }
+        _ => HandshakeError::Transport {
+            why: error.to_string(),
+        },
+    }
 }
 
 /// A `Hello` frame carrying its JSON.
@@ -73,7 +86,11 @@ pub(super) fn write_frame(stream: &mut TcpStream, frame: &Frame) -> Result<(), H
 /// allocated for every frame it intended to route.
 pub(super) fn hello_frame(hello: &Hello) -> Result<Frame, HandshakeError> {
     let bytes = encode_json(hello)?;
-    Ok(Frame { kind: FrameKind::Hello, flags: 0, body: FrameBody::Hello(Bytes::from(bytes)) })
+    Ok(Frame {
+        kind: FrameKind::Hello,
+        flags: 0,
+        body: FrameBody::Hello(Bytes::from(bytes)),
+    })
 }
 
 /// A `HelloAck` frame carrying its JSON.
@@ -121,11 +138,18 @@ pub(super) fn json_payload<T: for<'de> serde::Deserialize<'de>>(
 }
 
 /// Checks the frame is the kind the exchange expects.
-pub(super) fn expect(frame: &Frame, kind: FrameKind, expected: &'static str) -> Result<(), HandshakeError> {
+pub(super) fn expect(
+    frame: &Frame,
+    kind: FrameKind,
+    expected: &'static str,
+) -> Result<(), HandshakeError> {
     if frame.kind == kind {
         return Ok(());
     }
-    Err(HandshakeError::Unexpected { expected, found: frame.kind.to_string() })
+    Err(HandshakeError::Unexpected {
+        expected,
+        found: frame.kind.to_string(),
+    })
 }
 /// Whether an error means the peer went away rather than that something is wrong.
 ///
@@ -158,10 +182,18 @@ pub(crate) fn peer_went_away(error: &std::io::Error) -> bool {
 
 /// An operating-system error, as a transport failure.
 pub(super) fn transport(error: &std::io::Error) -> HandshakeError {
+    if let Some(cause) = error
+        .get_ref()
+        .and_then(|cause| cause.downcast_ref::<crate::link::LinkError>())
+    {
+        return link_error(cause);
+    }
     transport_message(&error.to_string())
 }
 
 /// A message, as a transport failure.
 fn transport_message(why: &str) -> HandshakeError {
-    HandshakeError::Transport { why: why.to_owned() }
+    HandshakeError::Transport {
+        why: why.to_owned(),
+    }
 }

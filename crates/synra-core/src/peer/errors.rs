@@ -4,6 +4,12 @@ use synra_protocol::frame::FrameError;
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum HandshakeError {
+    /// TLS-bound identities or the captured durable approval were refused.
+    #[error("the handshake authorization failed: {why}")]
+    Authorization {
+        /// The failed identity or authorization check, without private credentials.
+        why: String,
+    },
     /// The stream failed.
     #[error("the connection failed: {why}")]
     Transport {

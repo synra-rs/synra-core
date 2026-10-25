@@ -9,6 +9,34 @@ use super::{
 };
 
 #[test]
+fn application_io_budgets_refuse_zero_and_restore_original_socket_options() {
+    let client = identity();
+    let server = identity();
+    let peer = server.public_identity().clone();
+    let approved = client.public_identity().clone();
+    let (outgoing, incoming) = sockets();
+    let worker = std::thread::spawn(move || {
+        AuthenticatedStream::accept(incoming, &server, &[approved], IO_TIMEOUT).unwrap()
+    });
+    let mut stream = AuthenticatedStream::connect(outgoing, &client, &peer, IO_TIMEOUT).unwrap();
+    let _server = worker.join().unwrap();
+    assert!(stream.finish_io_budget().is_err());
+    assert!(stream.start_io_budget(Duration::ZERO).is_err());
+    stream.start_io_budget(IO_TIMEOUT).unwrap();
+    stream.check_io_budget().unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_millis(25)))
+        .unwrap();
+    stream
+        .set_write_timeout(Some(Duration::from_millis(25)))
+        .unwrap();
+    stream.finish_io_budget().unwrap();
+    assert_eq!(stream.read_timeout().unwrap(), Some(IO_TIMEOUT));
+    assert_eq!(stream.write_timeout().unwrap(), Some(IO_TIMEOUT));
+    assert!(stream.check_io_budget().is_err());
+}
+
+#[test]
 fn restored_credentials_reconnect_through_both_production_entry_points() {
     let client = identity();
     let server = identity();
