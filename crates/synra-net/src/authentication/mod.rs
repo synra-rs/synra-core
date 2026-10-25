@@ -6,12 +6,14 @@
 //! until the peer proves possession of the approved key, negotiates `synra/1`, and matches the exact pinned
 //! certificate. Changed credentials require explicit verification again.
 //!
-//! This module does not implement first pairing or secret storage. Store local PKCS#8 keys using the host's
+//! [`pairing`] provides a restricted out-of-band certificate and mutual consent exchange, not a durable
+//! pairing grant. Store local PKCS#8 keys using the host's
 //! protected secret backend; never place them in the ordinary configuration or peer database. Rebuild the
 //! approved peer list on revocation and close existing sessions in the owning service.
 
 mod credentials;
 mod handshake;
+pub mod pairing;
 mod stream;
 
 pub use credentials::{DeviceCredentials, PeerIdentity};

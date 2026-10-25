@@ -78,20 +78,23 @@ fn validate_peers(peers: &[PeerIdentity]) -> Result<(), AuthenticationError> {
 pub(super) fn connect(
     local: &DeviceCredentials,
     peer: &PeerIdentity,
+    alpn: &[u8],
 ) -> Result<Connection, AuthenticationError> {
-    rustls::ClientConnection::new(
-        Arc::new(client(local, peer)?),
-        server_name(peer.device_id())?,
-    )
-    .map(Connection::Client)
-    .map_err(rejected)
+    let mut config = client(local, peer)?;
+    config.alpn_protocols = vec![alpn.to_vec()];
+    rustls::ClientConnection::new(Arc::new(config), server_name(peer.device_id())?)
+        .map(Connection::Client)
+        .map_err(rejected)
 }
 
 pub(super) fn accept(
     local: &DeviceCredentials,
     peers: &[PeerIdentity],
+    alpn: &[u8],
 ) -> Result<Connection, AuthenticationError> {
-    rustls::ServerConnection::new(Arc::new(server(local, peers)?))
+    let mut config = server(local, peers)?;
+    config.alpn_protocols = vec![alpn.to_vec()];
+    rustls::ServerConnection::new(Arc::new(config))
         .map(Connection::Server)
         .map_err(rejected)
 }
@@ -100,15 +103,16 @@ pub(super) fn complete(
     connection: &mut Connection,
     socket: &mut DeadlineSocket,
     peers: &[PeerIdentity],
+    alpn: &[u8],
 ) -> Result<PeerIdentity, AuthenticationError> {
     connection.set_buffer_limit(Some(TLS_BUFFER_BYTES));
     connection
         .complete_io(socket)
         .map_err(|error| transport(&error))?;
     socket.remaining()?;
-    if connection.is_handshaking() || connection.alpn_protocol() != Some(ALPN) {
+    if connection.is_handshaking() || connection.alpn_protocol() != Some(alpn) {
         return Err(AuthenticationError::Rejected(
-            "incomplete handshake or missing synra ALPN".to_owned(),
+            "incomplete handshake or unexpected ALPN".to_owned(),
         ));
     }
     // Trust anchors may authorize signed descendants. Device approval authorizes only the exact
@@ -160,7 +164,7 @@ impl DeadlineSocket {
         })
     }
 
-    fn remaining(&self) -> Result<Duration, AuthenticationError> {
+    pub(super) fn remaining(&self) -> Result<Duration, AuthenticationError> {
         self.deadline
             .and_then(|deadline| deadline.checked_duration_since(Instant::now()))
             .filter(|remaining| !remaining.is_zero())
@@ -187,6 +191,18 @@ impl DeadlineSocket {
 
     pub(super) const fn socket(&self) -> &TcpStream {
         &self.socket
+    }
+
+    pub(super) fn start_budget(&mut self, timeout: Duration) -> Result<(), AuthenticationError> {
+        if timeout.is_zero() {
+            return Err(AuthenticationError::TimedOut);
+        }
+        self.deadline = Some(
+            Instant::now()
+                .checked_add(timeout)
+                .ok_or(AuthenticationError::TimedOut)?,
+        );
+        Ok(())
     }
 }
 

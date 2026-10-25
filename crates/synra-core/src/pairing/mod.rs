@@ -6,6 +6,10 @@
 //! a prompt appears, what it looks like, or how a user answers it — those are the interface's. And it does not write to a
 //! database: the record it needs written is handed to a writer, so this can be driven to every state in a test.
 //!
+//! Device ids, display codes and link tokens do not authenticate identities. This legacy coordination
+//! path is still used by the hosts; authenticated pairing requires out-of-band certificate verification,
+//! mutual TLS and durable identity-bound grants, as described by [`synra_net::authentication::pairing`].
+//!
 //! # The rule that shapes everything here
 //!
 //! **An acceptance is only answered after the pairing is durable.** The protocol document states it as a rule, and the
@@ -84,38 +88,13 @@ pub struct PendingPairing {
     pub expires_at_ms: i64,
 }
 
-/// The code two devices both display, for a user to compare before pairing.
+/// A legacy display correlation code derived only from two public device identifiers.
 ///
-/// # Why this is derived from the two device identifiers
-///
-/// Because both ends must arrive at the same string without exchanging anything further, and both already know both
-/// identifiers: the dialer knows who it is and who it dialled, and the acceptor learns the dialer's identity from the
-/// `Hello` that carried the request. Deriving it means there is no extra message to lose, no version of the protocol
-/// where one side shows a code and the other shows nothing.
-///
-/// # Why the two identifiers are ordered before hashing
-///
-/// Because the derivation must not know which of the two is asking. The dialer computes this with `(peer, self)` and the
-/// acceptor with `(self, peer)`, so a derivation that labelled the arguments by role produced two different codes for the
-/// same honest pair. A check that always disagrees is one users learn to ignore, which is the same as having no check —
-/// and the test comparing both ends caught exactly that mistake in the first version of this function.
-///
-/// # What it proves, and what it does not
-///
-/// It proves that **the device asking is the device the user thinks it is**. A device on the same network that asks to
-/// pair while claiming somebody else's identifier produces a code that does not match the one on the other screen, and
-/// the user sees it. That is the threat the prompt exists for: a request arriving from an address the user cannot
-/// interpret, answered by a name the requester chose.
-///
-/// It does **not** prove possession of a secret, because it is not one: anyone who knows both identifiers can compute it.
-/// It is a check a person performs, not a signature, and it is deliberately not a substitute for the token — the token is
-/// what a later link is trusted by, and it never leaves the two devices.
-///
-/// # Why it is six characters
-///
-/// Long enough that a wrong device is unlikely to collide by accident, short enough to read aloud and compare at a
-/// glance. The first character is forced to be a letter, because a code made only of digits can be misread as a quantity
-/// and a leading `0` is the case people drop.
+/// Anyone who knows the identifiers can reproduce this code, including an impostor using the same
+/// identifiers. It is neither a cryptographic short authentication string nor proof of the user's
+/// intended peer, key possession or a particular session; link tokens do not supply those proofs either.
+/// Authenticated pairing uses out-of-band certificate verification and the restricted mTLS consent
+/// channel in [`synra_net::authentication::pairing`], followed by durable identity-bound approval.
 #[must_use]
 pub fn verification_code(first: DeviceId, second: DeviceId) -> String {
     use sha2::{Digest, Sha256};
@@ -126,7 +105,11 @@ pub fn verification_code(first: DeviceId, second: DeviceId) -> String {
     let (low, high) = {
         let low = first.to_string();
         let high = second.to_string();
-        if low <= high { (low, high) } else { (high, low) }
+        if low <= high {
+            (low, high)
+        } else {
+            (high, low)
+        }
     };
 
     let mut hasher = Sha256::new();
@@ -152,4 +135,3 @@ pub fn verification_code(first: DeviceId, second: DeviceId) -> String {
     out.extend(characters);
     out
 }
-

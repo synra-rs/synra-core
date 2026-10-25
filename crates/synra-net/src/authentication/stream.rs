@@ -6,7 +6,7 @@ use rustls::{ClientConnection, Connection, ServerConnection, StreamOwned};
 use synra_protocol::DeviceId;
 
 use super::handshake::{self, DeadlineSocket};
-use super::{AuthenticationError, DeviceCredentials, PeerIdentity};
+use super::{ALPN, AuthenticationError, DeviceCredentials, PeerIdentity};
 
 enum Stream {
     Client(Box<StreamOwned<ClientConnection, DeadlineSocket>>),
@@ -36,9 +36,19 @@ impl AuthenticatedStream {
         peer: &PeerIdentity,
         timeout: Duration,
     ) -> Result<Self, AuthenticationError> {
+        Self::connect_for(socket, local, peer, timeout, ALPN)
+    }
+
+    pub(super) fn connect_for(
+        socket: TcpStream,
+        local: &DeviceCredentials,
+        peer: &PeerIdentity,
+        timeout: Duration,
+        alpn: &[u8],
+    ) -> Result<Self, AuthenticationError> {
         let socket = DeadlineSocket::new(socket, timeout)?;
-        let connection = handshake::connect(local, peer)?;
-        Self::establish(socket, connection, std::slice::from_ref(peer))
+        let connection = handshake::connect(local, peer, alpn)?;
+        Self::establish(socket, connection, std::slice::from_ref(peer), alpn)
     }
 
     /// Authenticates an incoming connected socket against a bounded snapshot of approved peers.
@@ -55,17 +65,28 @@ impl AuthenticatedStream {
         peers: &[PeerIdentity],
         timeout: Duration,
     ) -> Result<Self, AuthenticationError> {
+        Self::accept_for(socket, local, peers, timeout, ALPN)
+    }
+
+    pub(super) fn accept_for(
+        socket: TcpStream,
+        local: &DeviceCredentials,
+        peers: &[PeerIdentity],
+        timeout: Duration,
+        alpn: &[u8],
+    ) -> Result<Self, AuthenticationError> {
         let socket = DeadlineSocket::new(socket, timeout)?;
-        let connection = handshake::accept(local, peers)?;
-        Self::establish(socket, connection, peers)
+        let connection = handshake::accept(local, peers, alpn)?;
+        Self::establish(socket, connection, peers, alpn)
     }
 
     fn establish(
         mut socket: DeadlineSocket,
         mut connection: Connection,
         peers: &[PeerIdentity],
+        alpn: &[u8],
     ) -> Result<Self, AuthenticationError> {
-        let peer = handshake::complete(&mut connection, &mut socket, peers)?;
+        let peer = handshake::complete(&mut connection, &mut socket, peers, alpn)?;
         let stream = match connection {
             Connection::Client(connection) => {
                 Stream::Client(Box::new(StreamOwned::new(connection, socket)))
@@ -75,6 +96,36 @@ impl AuthenticatedStream {
             }
         };
         Ok(Self { stream, peer })
+    }
+
+    pub(super) fn channel_binding(&self) -> Result<[u8; 32], AuthenticationError> {
+        // RFC 9266 section 2: the registered label, empty context and exactly 32 bytes.
+        let label = b"EXPORTER-Channel-Binding";
+        let result = match &self.stream {
+            Stream::Client(stream) => stream
+                .conn
+                .export_keying_material([0; 32], label, Some(&[])),
+            Stream::Server(stream) => stream
+                .conn
+                .export_keying_material([0; 32], label, Some(&[])),
+        };
+        result.map_err(|_| {
+            AuthenticationError::Rejected("TLS channel binding unavailable".to_owned())
+        })
+    }
+
+    pub(super) fn start_budget(&mut self, timeout: Duration) -> Result<(), AuthenticationError> {
+        match &mut self.stream {
+            Stream::Client(stream) => stream.sock.start_budget(timeout),
+            Stream::Server(stream) => stream.sock.start_budget(timeout),
+        }
+    }
+
+    pub(super) fn check_budget(&self) -> Result<(), AuthenticationError> {
+        match &self.stream {
+            Stream::Client(stream) => stream.sock.remaining().map(|_| ()),
+            Stream::Server(stream) => stream.sock.remaining().map(|_| ()),
+        }
     }
 
     /// The authenticated device id; application Hello messages must match this value.

@@ -9,6 +9,7 @@ use synra_protocol::DeviceId;
 use super::{AuthenticatedStream, AuthenticationError, DeviceCredentials, PeerIdentity};
 
 mod credentials;
+mod pairing;
 mod pins;
 mod rejection;
 mod transport;
