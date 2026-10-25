@@ -8,6 +8,7 @@ use super::{AuthenticatedStream, MAX_CONSENT_BYTES, PairingError, PeerIdentity};
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Message {
+    stage: Stage,
     version: u8,
     from: DeviceId,
     target: DeviceId,
@@ -15,13 +16,22 @@ struct Message {
     confirmed: bool,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) enum Stage {
+    Consent,
+    Stored,
+}
+
 pub(super) fn exchange(
     stream: &mut AuthenticatedStream,
     local: &PeerIdentity,
     binding: [u8; 32],
     approved: bool,
+    stage: Stage,
 ) -> Result<(), PairingError> {
     let outgoing = Message {
+        stage,
         version: 1,
         from: local.device_id(),
         target: stream.peer_device_id(),
@@ -41,7 +51,10 @@ pub(super) fn exchange(
     stream.write_all(&bytes).map_err(|error| io_error(&error))?;
     stream.flush().map_err(|error| io_error(&error))?;
     if !approved {
-        return Err(PairingError::LocalDeclined);
+        return Err(match stage {
+            Stage::Consent => PairingError::LocalDeclined,
+            Stage::Stored => PairingError::LocalPersistenceRefused,
+        });
     }
     let mut header = [0; 4];
     stream
@@ -58,7 +71,8 @@ pub(super) fn exchange(
         .map_err(|error| io_error(&error))?;
     let message: Message = serde_json::from_slice(&bytes)
         .map_err(|_| PairingError::Rejected("invalid consent record"))?;
-    if message.version != 1
+    if message.stage != stage
+        || message.version != 1
         || message.from != stream.peer_device_id()
         || message.target != local.device_id()
         || message.binding != binding
@@ -68,7 +82,10 @@ pub(super) fn exchange(
         ));
     }
     if !message.confirmed {
-        return Err(PairingError::PeerDeclined);
+        return Err(match stage {
+            Stage::Consent => PairingError::PeerDeclined,
+            Stage::Stored => PairingError::PeerPersistenceRefused,
+        });
     }
     Ok(())
 }

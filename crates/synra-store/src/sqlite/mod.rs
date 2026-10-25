@@ -39,6 +39,8 @@ pub use credentials::DeviceCredentialRecord;
 mod intents;
 mod migrations;
 mod pairing;
+mod peer_trust;
+pub use peer_trust::{PeerTrustAttempt, TrustedPeerRecord};
 mod replacement;
 mod retries;
 pub use replacement::PluginReplacement;

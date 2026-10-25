@@ -70,6 +70,7 @@ pub mod messaging;
 pub mod network;
 pub mod pairing;
 pub mod peer;
+pub mod peer_trust;
 pub mod plugin;
 pub mod plugin_sync;
 pub mod plugin_updates;

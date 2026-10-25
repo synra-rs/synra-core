@@ -2253,6 +2253,7 @@ dependencies = [
  "serde",
  "serde_json",
  "synra-protocol",
+ "tempfile",
  "thiserror",
  "zip",
 ]

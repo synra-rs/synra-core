@@ -6,8 +6,8 @@
 //! until the peer proves possession of the approved key, negotiates `synra/1`, and matches the exact pinned
 //! certificate. Changed credentials require explicit verification again.
 //!
-//! [`pairing`] provides a restricted out-of-band certificate and mutual consent exchange, not a durable
-//! pairing grant. Store local PKCS#8 keys using the host's
+//! [`pairing`] provides a restricted out-of-band certificate, consent and durable-receipt exchange.
+//! The shared service must persist and recheck authorization separately. Store local PKCS#8 keys using the host's
 //! protected secret backend; never place them in the ordinary configuration or peer database. Rebuild the
 //! approved peer list on revocation and close existing sessions in the owning service.
 

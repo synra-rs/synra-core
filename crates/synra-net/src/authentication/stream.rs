@@ -20,6 +20,7 @@ enum Stream {
 pub struct AuthenticatedStream {
     stream: Stream,
     peer: PeerIdentity,
+    local: PeerIdentity,
 }
 
 impl AuthenticatedStream {
@@ -48,7 +49,13 @@ impl AuthenticatedStream {
     ) -> Result<Self, AuthenticationError> {
         let socket = DeadlineSocket::new(socket, timeout)?;
         let connection = handshake::connect(local, peer, alpn)?;
-        Self::establish(socket, connection, std::slice::from_ref(peer), alpn)
+        Self::establish(
+            socket,
+            connection,
+            std::slice::from_ref(peer),
+            alpn,
+            local.public_identity().clone(),
+        )
     }
 
     /// Authenticates an incoming connected socket against a bounded snapshot of approved peers.
@@ -77,7 +84,13 @@ impl AuthenticatedStream {
     ) -> Result<Self, AuthenticationError> {
         let socket = DeadlineSocket::new(socket, timeout)?;
         let connection = handshake::accept(local, peers, alpn)?;
-        Self::establish(socket, connection, peers, alpn)
+        Self::establish(
+            socket,
+            connection,
+            peers,
+            alpn,
+            local.public_identity().clone(),
+        )
     }
 
     fn establish(
@@ -85,6 +98,7 @@ impl AuthenticatedStream {
         mut connection: Connection,
         peers: &[PeerIdentity],
         alpn: &[u8],
+        local: PeerIdentity,
     ) -> Result<Self, AuthenticationError> {
         let peer = handshake::complete(&mut connection, &mut socket, peers, alpn)?;
         let stream = match connection {
@@ -95,7 +109,11 @@ impl AuthenticatedStream {
                 Stream::Server(Box::new(StreamOwned::new(connection, socket)))
             }
         };
-        Ok(Self { stream, peer })
+        Ok(Self {
+            stream,
+            peer,
+            local,
+        })
     }
 
     pub(super) fn channel_binding(&self) -> Result<[u8; 32], AuthenticationError> {
@@ -138,6 +156,12 @@ impl AuthenticatedStream {
     #[must_use]
     pub const fn peer_identity(&self) -> &PeerIdentity {
         &self.peer
+    }
+
+    /// The exact local credential used in this handshake, for authorization-generation checks.
+    #[must_use]
+    pub const fn local_identity(&self) -> &PeerIdentity {
+        &self.local
     }
 
     /// Changes the application read timeout without exposing the raw socket.

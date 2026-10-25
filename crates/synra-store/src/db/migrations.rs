@@ -435,6 +435,32 @@ pub const MIGRATIONS: &[Migration] = &[
                 ready INTEGER NOT NULL DEFAULT 0 CHECK (ready IN (0, 1))
             )"],
     },
+    Migration {
+        version: 19,
+        name: "peer-trust",
+        statements: &[
+            "CREATE TABLE pairing_attempt (
+                id INTEGER PRIMARY KEY CHECK (id = 1) REFERENCES identity(id) ON DELETE CASCADE,
+                request_id TEXT NOT NULL,
+                local_id TEXT NOT NULL,
+                local_certificate BLOB NOT NULL CHECK (length(local_certificate) BETWEEN 1 AND 16384),
+                peer_id TEXT NOT NULL,
+                peer_certificate BLOB NOT NULL CHECK (length(peer_certificate) BETWEEN 1 AND 16384),
+                binding BLOB NOT NULL CHECK (length(binding) = 32),
+                expires_at_ms INTEGER NOT NULL,
+                phase INTEGER NOT NULL DEFAULT 0 CHECK (phase IN (0, 1, 2, 3))
+            )",
+            "CREATE TABLE peer_trust (
+                peer_id TEXT PRIMARY KEY,
+                local_id TEXT NOT NULL,
+                local_certificate BLOB NOT NULL CHECK (length(local_certificate) BETWEEN 1 AND 16384),
+                peer_certificate BLOB NOT NULL CHECK (length(peer_certificate) BETWEEN 1 AND 16384),
+                generation TEXT NOT NULL,
+                binding BLOB NOT NULL CHECK (length(binding) = 32),
+                confirmed_at_ms INTEGER NOT NULL
+            )",
+        ],
+    },
 ];
 
 /// The schema version this build expects.
@@ -455,9 +481,9 @@ pub const PRAGMAS: &[(&str, &str)] = &[
     // Write-ahead logging: readers do not block the writer, which matters because the interface reads the
     // audit and metrics tables while the kernel writes them.
     ("journal_mode", "WAL"),
-    // Safe with WAL, and much faster than FULL. The risk FULL removes is losing the last transactions on a
-    // power cut, and WAL's own recovery covers that.
-    ("synchronous", "NORMAL"),
+    // Trust receipts and revocations must not acknowledge commits that can disappear on a power cut.
+    // WAL recovery preserves consistency with NORMAL, but only FULL syncs the WAL at every commit.
+    ("synchronous", "FULL"),
     // Off by default in SQLite, and the kernel's schema relies on cascades: without this, deleting a plugin
     // leaves its versions, grants and dependencies behind forever.
     ("foreign_keys", "ON"),

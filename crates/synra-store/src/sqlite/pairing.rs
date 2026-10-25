@@ -80,7 +80,9 @@ impl SynraDb {
                         paired.paired_at_ms,
                     ],
                 )
-                .map_err(|error| DbError::Statement { why: error.to_string() })?;
+                .map_err(|error| DbError::Statement {
+                    why: error.to_string(),
+                })?;
             Ok(())
         })
     }
@@ -100,17 +102,25 @@ impl SynraDb {
         let mut statement = self
             .connection
             .prepare("SELECT link_token FROM paired_devices WHERE device_id = ?1")
-            .map_err(|error| DbError::Statement { why: error.to_string() })?;
+            .map_err(|error| DbError::Statement {
+                why: error.to_string(),
+            })?;
         let mut rows = statement
             .query(params![device_id])
-            .map_err(|error| DbError::Statement { why: error.to_string() })?;
+            .map_err(|error| DbError::Statement {
+                why: error.to_string(),
+            })?;
         match rows.next() {
             // No row is an answer, not a failure: it means this device was never paired with that one.
             Ok(None) => Ok(None),
             Ok(Some(row)) => row
                 .get::<_, Option<String>>(0)
-                .map_err(|error| DbError::Statement { why: error.to_string() }),
-            Err(error) => Err(DbError::Statement { why: error.to_string() }),
+                .map_err(|error| DbError::Statement {
+                    why: error.to_string(),
+                }),
+            Err(error) => Err(DbError::Statement {
+                why: error.to_string(),
+            }),
         }
     }
 
@@ -129,26 +139,41 @@ impl SynraDb {
             .map(|()| true)
             .or_else(|error| match error {
                 rusqlite::Error::QueryReturnedNoRows => Ok(false),
-                other => Err(DbError::Statement { why: other.to_string() }),
+                other => Err(DbError::Statement {
+                    why: other.to_string(),
+                }),
             })
     }
 
-    /// Removes a pairing, and the token that belonged to it.
+    /// Atomically removes device metadata, its token and credential grant, and cancels pending pairing.
     ///
     /// # Returns
     ///
-    /// Whether a row was removed, so a caller can tell "unpaired" from "was not paired".
+    /// Whether any metadata, grant or pending task was revoked.
     ///
     /// # Errors
     ///
     /// [`DbError::Statement`] when the delete cannot run.
     pub fn unpair_device(&self, device_id: &str) -> Result<bool, DbError> {
         timed_write!(self, "pairing", {
-            let removed = self
-                .connection
-                .execute("DELETE FROM paired_devices WHERE device_id = ?1", params![device_id])
-                .map_err(|error| DbError::Statement { why: error.to_string() })?;
-            Ok(removed > 0)
+            let operation = || -> rusqlite::Result<bool> {
+                let transaction = self.connection.unchecked_transaction()?;
+                let grants = transaction
+                    .execute("DELETE FROM peer_trust WHERE peer_id = ?1", [device_id])?;
+                let pending = transaction.execute(
+                    "UPDATE pairing_attempt SET phase = 3 WHERE peer_id = ?1 AND phase IN (0, 1)",
+                    [device_id],
+                )?;
+                let paired = transaction.execute(
+                    "DELETE FROM paired_devices WHERE device_id = ?1",
+                    [device_id],
+                )?;
+                transaction.commit()?;
+                Ok(grants + pending + paired > 0)
+            };
+            operation().map_err(|error| DbError::Statement {
+                why: error.to_string(),
+            })
         })
     }
 }

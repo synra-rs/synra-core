@@ -10,7 +10,7 @@ type RawClient = StreamOwned<ClientConnection, TcpStream>;
 fn raw_exchange(
     timeout: Duration,
     send: impl FnOnce(&mut RawClient, Value, &std::sync::mpsc::Receiver<()>),
-) -> Result<MutualConsent, PairingError> {
+) -> Result<DurableConfirmation, PairingError> {
     let client = identity();
     let server = identity();
     let local_id = client.public_identity().device_id();
@@ -20,7 +20,8 @@ fn raw_exchange(
     let (finished, stop) = std::sync::mpsc::channel();
     let worker = std::thread::spawn(move || {
         let result = PairingChannel::accept(incoming, &server, &approved, IO_TIMEOUT)
-            .and_then(|channel| channel.confirm(true, timeout));
+            .and_then(|channel| channel.confirm(true, timeout))
+            .and_then(|exchange| exchange.complete(true, timeout));
         let _ = finished.send(());
         result
     });
@@ -49,7 +50,7 @@ fn raw_exchange(
     send(
         &mut raw,
         json!({
-            "version": 1, "from": local_id, "target": peer.device_id(),
+            "stage": "consent", "version": 1, "from": local_id, "target": peer.device_id(),
             "binding": binding, "confirmed": true,
         }),
         &stop,
@@ -65,6 +66,68 @@ fn write_message(client: &mut RawClient, message: &Value) {
         .expect("prefix");
     client.write_all(&bytes).expect("body");
     client.flush().expect("flush");
+}
+
+fn read_receipt(client: &mut RawClient) {
+    let mut header = [0; 4];
+    client.read_exact(&mut header).unwrap();
+    let len = usize::try_from(u32::from_be_bytes(header)).unwrap();
+    assert!(len <= crate::authentication::pairing::MAX_CONSENT_BYTES);
+    let mut bytes = vec![0; len];
+    client.read_exact(&mut bytes).unwrap();
+    let receipt: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(receipt["stage"], json!("stored"));
+}
+
+#[test]
+fn durable_receipts_check_stage_identity_version_binding_and_schema_again() {
+    for field in [
+        "stage",
+        "from",
+        "target",
+        "version",
+        "binding",
+        "unexpected",
+    ] {
+        let result = raw_exchange(IO_TIMEOUT, |client, mut message, _| {
+            write_message(client, &message);
+            read_receipt(client);
+            message["stage"] = json!("stored");
+            message[field] = match field {
+                "stage" => json!("consent"),
+                "from" | "target" => json!(DeviceId::new()),
+                "binding" => json!(vec![0; 32]),
+                _ => json!(2),
+            };
+            write_message(client, &message);
+        });
+        assert!(matches!(result, Err(PairingError::Rejected(_))), "{field}");
+    }
+}
+
+#[test]
+fn a_received_negative_durable_receipt_refuses_completion() {
+    let result = raw_exchange(IO_TIMEOUT, |client, mut message, _| {
+        write_message(client, &message);
+        read_receipt(client);
+        message["stage"] = json!("stored");
+        message["confirmed"] = json!(false);
+        write_message(client, &message);
+    });
+    assert!(matches!(result, Err(PairingError::PeerPersistenceRefused)));
+}
+
+#[test]
+fn missing_durable_receipt_has_a_total_deadline_and_never_completes() {
+    let result = raw_exchange(Duration::from_millis(100), |client, message, stopped| {
+        write_message(client, &message);
+        read_receipt(client);
+        stopped.recv_timeout(IO_TIMEOUT).unwrap();
+    });
+    assert!(matches!(
+        result,
+        Err(PairingError::Authentication(AuthenticationError::TimedOut))
+    ));
 }
 
 #[test]
@@ -86,7 +149,7 @@ fn consent_from_a_previous_real_tls_session_cannot_be_replayed() {
     let (client, server) = channels(&identity(), &identity());
     let (previous, _) = consent(client, server);
     let result = raw_exchange(IO_TIMEOUT, |client, mut message, _| {
-        message["binding"] = json!(previous.session_binding());
+        message["binding"] = json!(previous.consent().session_binding());
         write_message(client, &message);
     });
     assert!(matches!(result, Err(PairingError::Rejected(_))));
@@ -105,6 +168,19 @@ fn a_received_negative_record_reports_peer_decline_without_evidence() {
 fn successful_consent_closes_the_pairing_connection_instead_of_exposing_business_io() {
     let result = raw_exchange(IO_TIMEOUT, |client, message, stop| {
         write_message(client, &message);
+        let mut header = [0; 4];
+        client
+            .read_exact(&mut header)
+            .expect("stored receipt prefix");
+        let len = usize::try_from(u32::from_be_bytes(header)).expect("receipt length");
+        assert!(len <= crate::authentication::pairing::MAX_CONSENT_BYTES);
+        let mut bytes = vec![0; len];
+        client.read_exact(&mut bytes).expect("stored receipt");
+        let receipt: Value = serde_json::from_slice(&bytes).expect("stored JSON");
+        assert_eq!(receipt["stage"], json!("stored"));
+        let mut stored = message;
+        stored["stage"] = json!("stored");
+        write_message(client, &stored);
         stop.recv_timeout(IO_TIMEOUT)
             .expect("production peer finished");
         let read = client.read(&mut [0; 1]);

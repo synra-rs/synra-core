@@ -1,6 +1,6 @@
 use super::*;
 use crate::authentication::pairing::{
-    MAX_INVITATION_BYTES, MutualConsent, PairingChannel, PairingError, decode_invitation,
+    DurableConfirmation, MAX_INVITATION_BYTES, PairingChannel, PairingError, decode_invitation,
     encode_invitation,
 };
 
@@ -33,9 +33,20 @@ fn channels(
     })
 }
 
-fn consent(left: PairingChannel, right: PairingChannel) -> (MutualConsent, MutualConsent) {
-    let server = std::thread::spawn(move || right.confirm(true, IO_TIMEOUT));
-    let left = left.confirm(true, IO_TIMEOUT).expect("local consent");
+fn consent(
+    left: PairingChannel,
+    right: PairingChannel,
+) -> (DurableConfirmation, DurableConfirmation) {
+    let server = std::thread::spawn(move || {
+        right
+            .confirm(true, IO_TIMEOUT)
+            .and_then(|exchange| exchange.complete(true, IO_TIMEOUT))
+    });
+    let left = left
+        .confirm(true, IO_TIMEOUT)
+        .expect("local consent")
+        .complete(true, IO_TIMEOUT)
+        .expect("durable receipt");
     let right = server.join().expect("server").expect("remote consent");
     (left, right)
 }
@@ -82,12 +93,15 @@ fn both_users_consent_on_the_same_tls_session_and_both_identities_are_preserved(
     assert_eq!(client.peer_identity(), right.public_identity());
     assert_eq!(server.peer_identity(), left.public_identity());
     let (local, remote) = consent(client, server);
-    assert_eq!(local.local_identity(), left.public_identity());
-    assert_eq!(local.peer_identity(), right.public_identity());
-    assert_eq!(remote.local_identity(), right.public_identity());
-    assert_eq!(remote.peer_identity(), left.public_identity());
-    assert_eq!(local.session_binding(), remote.session_binding());
-    assert_ne!(local.session_binding(), &[0; 32]);
+    assert_eq!(local.consent().local_identity(), left.public_identity());
+    assert_eq!(local.consent().peer_identity(), right.public_identity());
+    assert_eq!(remote.consent().local_identity(), right.public_identity());
+    assert_eq!(remote.consent().peer_identity(), left.public_identity());
+    assert_eq!(
+        local.consent().session_binding(),
+        remote.consent().session_binding()
+    );
+    assert_ne!(local.consent().session_binding(), &[0; 32]);
 }
 
 #[test]
@@ -98,7 +112,10 @@ fn a_reconnect_with_the_same_keys_has_a_different_consent_binding() {
     let (first, _) = consent(first, other);
     let (second, other) = channels(&left, &right);
     let (second, _) = consent(second, other);
-    assert_ne!(first.session_binding(), second.session_binding());
+    assert_ne!(
+        first.consent().session_binding(),
+        second.consent().session_binding()
+    );
 }
 
 #[test]
@@ -216,4 +233,41 @@ fn a_valid_certificate_too_large_for_an_invitation_is_not_truncated() {
         encode_invitation(&peer),
         Err(PairingError::InvalidInvitation(_))
     ));
+}
+
+#[test]
+fn failure_to_persist_closes_the_pairing_without_a_durable_confirmation() {
+    let (client, server) = channels(&identity(), &identity());
+    let (client, server) = std::thread::scope(|scope| {
+        let worker = scope.spawn(|| server.confirm(true, IO_TIMEOUT).unwrap());
+        let client = client.confirm(true, IO_TIMEOUT).unwrap();
+        (client, worker.join().unwrap())
+    });
+    let worker = std::thread::spawn(move || server.complete(true, IO_TIMEOUT));
+    assert!(matches!(
+        client.complete(false, IO_TIMEOUT),
+        Err(PairingError::LocalPersistenceRefused)
+    ));
+    assert!(worker.join().unwrap().is_err());
+}
+
+#[test]
+fn a_zero_or_expired_persistence_budget_cannot_complete_after_user_consent() {
+    for expire in [false, true] {
+        let (client, server) = channels(&identity(), &identity());
+        let (mut client, server) = std::thread::scope(|scope| {
+            let worker = scope.spawn(|| server.confirm(true, IO_TIMEOUT).unwrap());
+            let client = client.confirm(true, IO_TIMEOUT).unwrap();
+            (client, worker.join().unwrap())
+        });
+        if expire {
+            client.expire_for_test();
+        }
+        let budget = if expire { IO_TIMEOUT } else { Duration::ZERO };
+        assert!(matches!(
+            client.complete(true, budget),
+            Err(PairingError::Authentication(AuthenticationError::TimedOut))
+        ));
+        assert!(server.complete(true, IO_TIMEOUT).is_err());
+    }
 }
