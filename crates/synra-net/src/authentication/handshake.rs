@@ -142,10 +142,15 @@ pub(super) struct DeadlineSocket {
     deadline: Cell<Option<Instant>>,
     read_timeout: Option<Duration>,
     write_timeout: Option<Duration>,
+    cancelled: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl DeadlineSocket {
-    pub(super) fn new(socket: TcpStream, timeout: Duration) -> Result<Self, AuthenticationError> {
+    pub(super) fn new(
+        socket: TcpStream,
+        timeout: Duration,
+        cancelled: Option<Arc<std::sync::atomic::AtomicBool>>,
+    ) -> Result<Self, AuthenticationError> {
         if timeout.is_zero() {
             return Err(AuthenticationError::TimedOut);
         }
@@ -162,6 +167,7 @@ impl DeadlineSocket {
             deadline: Cell::new(Some(deadline)),
             read_timeout,
             write_timeout,
+            cancelled,
         })
     }
 
@@ -174,10 +180,23 @@ impl DeadlineSocket {
     }
 
     fn apply_deadline(&self) -> io::Result<()> {
+        if self
+            .cancelled
+            .as_ref()
+            .is_some_and(|signal| signal.load(std::sync::atomic::Ordering::Acquire))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::ConnectionAborted,
+                "pairing operation cancelled",
+            ));
+        }
         if self.deadline.get().is_some() {
-            let remaining = self
+            let mut remaining = self
                 .remaining()
                 .map_err(|_| io::Error::from(io::ErrorKind::TimedOut))?;
+            if self.cancelled.is_some() {
+                remaining = remaining.min(Duration::from_millis(100));
+            }
             self.socket.set_read_timeout(Some(remaining))?;
             self.socket.set_write_timeout(Some(remaining))?;
         }
@@ -210,15 +229,35 @@ impl DeadlineSocket {
 
 impl Read for DeadlineSocket {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        self.apply_deadline()?;
-        self.socket.read(buffer)
+        loop {
+            self.apply_deadline()?;
+            match self.socket.read(buffer) {
+                Err(error)
+                    if self.cancelled.is_some()
+                        && matches!(
+                            error.kind(),
+                            io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+                        ) => {}
+                result => return result,
+            }
+        }
     }
 }
 
 impl Write for DeadlineSocket {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        self.apply_deadline()?;
-        self.socket.write(buffer)
+        loop {
+            self.apply_deadline()?;
+            match self.socket.write(buffer) {
+                Err(error)
+                    if self.cancelled.is_some()
+                        && matches!(
+                            error.kind(),
+                            io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+                        ) => {}
+                result => return result,
+            }
+        }
     }
 
     fn flush(&mut self) -> io::Result<()> {

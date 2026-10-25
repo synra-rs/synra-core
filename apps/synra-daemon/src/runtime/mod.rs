@@ -25,18 +25,22 @@ mod devices;
 pub mod install;
 pub mod intent;
 pub(crate) mod intents;
+mod pairing;
 pub(crate) mod plugin_host;
-mod plugins;
 mod plugin_settings;
+mod plugins;
 mod publishers;
 mod refusals;
 mod registry_install;
 mod reports;
 pub(crate) mod retry;
-pub(crate) mod updates;
 mod state;
+pub(crate) mod updates;
 
-pub use install::{InstallRefusal, Installed, from_directory as install_from_directory, from_package as install_from_package};
+pub use install::{
+    InstallRefusal, Installed, from_directory as install_from_directory,
+    from_package as install_from_package,
+};
 pub use plugins::{
     Discovered, LoadedSummary, Refused, build_set, load_installed, load_installed_with_config,
     record_discovered_plugins,

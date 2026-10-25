@@ -30,7 +30,6 @@
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
-
 // Test code is exempt from the no-panic rules; see `synra-protocol` for the reasoning.
 #![cfg_attr(
     test,
@@ -50,9 +49,12 @@ pub mod doctor;
 pub mod session;
 
 pub use args::{
-    Cli, Command, DbAction, DbArgs, DevicesArgs, DoctorArgs, IntentArgs, IntentAction, LogsArgs, ShareArgs, OutputFormat, PairArgs,
-    Payload, PayloadError, PluginAction, PluginArgs, PublisherAction, SendArgs,
+    Cli, Command, DbAction, DbArgs, DevicesArgs, DoctorArgs, IntentAction, IntentArgs, LogsArgs,
+    OutputFormat, PairAction, PairArgs, Payload, PayloadError, PluginAction, PluginArgs,
+    PublisherAction, SendArgs, ShareArgs,
 };
 pub use channel::{Question, Shape, ask, outcome_of, question_for, transport_failure};
 pub use doctor::{DoctorReport, HostSummary, ProbeLine};
-pub use session::{CommandOutcome, DATA_DIR_VAR, data_root, data_root_from, dispatch, follow, follow_in};
+pub use session::{
+    CommandOutcome, DATA_DIR_VAR, data_root, data_root_from, dispatch, follow, follow_in,
+};

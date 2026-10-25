@@ -37,7 +37,7 @@ impl AuthenticatedStream {
         peer: &PeerIdentity,
         timeout: Duration,
     ) -> Result<Self, AuthenticationError> {
-        Self::connect_for(socket, local, peer, timeout, ALPN)
+        Self::connect_for(socket, local, peer, timeout, ALPN, None)
     }
 
     pub(super) fn connect_for(
@@ -46,8 +46,9 @@ impl AuthenticatedStream {
         peer: &PeerIdentity,
         timeout: Duration,
         alpn: &[u8],
+        cancelled: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     ) -> Result<Self, AuthenticationError> {
-        let socket = DeadlineSocket::new(socket, timeout)?;
+        let socket = DeadlineSocket::new(socket, timeout, cancelled)?;
         let connection = handshake::connect(local, peer, alpn)?;
         Self::establish(
             socket,
@@ -72,7 +73,7 @@ impl AuthenticatedStream {
         peers: &[PeerIdentity],
         timeout: Duration,
     ) -> Result<Self, AuthenticationError> {
-        Self::accept_for(socket, local, peers, timeout, ALPN)
+        Self::accept_for(socket, local, peers, timeout, ALPN, None)
     }
 
     pub(super) fn accept_for(
@@ -81,8 +82,9 @@ impl AuthenticatedStream {
         peers: &[PeerIdentity],
         timeout: Duration,
         alpn: &[u8],
+        cancelled: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     ) -> Result<Self, AuthenticationError> {
-        let socket = DeadlineSocket::new(socket, timeout)?;
+        let socket = DeadlineSocket::new(socket, timeout, cancelled)?;
         let connection = handshake::accept(local, peers, alpn)?;
         Self::establish(
             socket,

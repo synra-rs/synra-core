@@ -11,6 +11,7 @@ use synra_store::secrets::{
 mod business;
 mod failures;
 mod lifecycle;
+mod service;
 
 const TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -121,10 +122,12 @@ fn tasks(left: &Device, right: &Device) -> (PairingTask, PairingTask) {
     let approved_right = invitation(right);
     let (client, server) = std::thread::scope(|scope| {
         let server = scope.spawn(|| {
-            PairingChannel::accept(incoming, &right.credentials, &approved_left, TIMEOUT).unwrap()
+            PairingChannel::accept(incoming, &right.credentials, &approved_left, TIMEOUT, None)
+                .unwrap()
         });
         let client =
-            PairingChannel::connect(outgoing, &left.credentials, &approved_right, TIMEOUT).unwrap();
+            PairingChannel::connect(outgoing, &left.credentials, &approved_right, TIMEOUT, None)
+                .unwrap();
         (client, server.join().unwrap())
     });
     (

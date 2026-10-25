@@ -47,6 +47,7 @@ pub struct AuthenticatedPeer {
     db: Arc<Mutex<SynraDb>>,
     credentials: Arc<DeviceCredentials>,
     profile: LocalPeer,
+    pairing: Arc<crate::peer_trust::PairingService>,
 }
 
 impl AuthenticatedPeer {
@@ -54,7 +55,16 @@ impl AuthenticatedPeer {
     /// # Errors
     /// Refuses invalid profiles and changes to the credential's device id.
     pub fn for_profile(&self, profile: LocalPeer) -> Result<Self, SecurePeerError> {
-        Self::new(Arc::clone(&self.db), Arc::clone(&self.credentials), profile)
+        let mut configured =
+            Self::new(Arc::clone(&self.db), Arc::clone(&self.credentials), profile)?;
+        configured.pairing = Arc::clone(&self.pairing);
+        Ok(configured)
+    }
+
+    /// Restricted first-pairing service sharing this host's enrolled credential and task slot.
+    #[must_use]
+    pub fn pairing(&self) -> Arc<crate::peer_trust::PairingService> {
+        Arc::clone(&self.pairing)
     }
 
     /// Finds the requested durable approval before opening TCP, then completes TLS and Hello.
@@ -106,6 +116,11 @@ impl AuthenticatedPeer {
             .validate()
             .map_err(|error| SecurePeerError::LocalProfile(error.to_string()))?;
         Ok(Self {
+            pairing: Arc::new(crate::peer_trust::PairingService::new(
+                Arc::clone(&db),
+                Arc::clone(&credentials),
+                Arc::new(synra_store::sqlite::now_ms),
+            )),
             db,
             credentials,
             profile,

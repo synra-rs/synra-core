@@ -161,7 +161,7 @@ impl SynraDb {
                 let grants = transaction
                     .execute("DELETE FROM peer_trust WHERE peer_id = ?1", [device_id])?;
                 let pending = transaction.execute(
-                    "UPDATE pairing_attempt SET phase = 3 WHERE peer_id = ?1 AND phase IN (0, 1)",
+                    "UPDATE pairing_attempt SET phase = 3 WHERE peer_id = ?1 AND phase IN (-1, 0, 1)",
                     [device_id],
                 )?;
                 let paired = transaction.execute(

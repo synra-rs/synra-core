@@ -88,31 +88,11 @@ impl NetworkFixture {
     /// # Errors
     /// Refuses invalid identities, failed migration, enrollment or grant persistence.
     pub fn new(local: DeviceId, peer: DeviceId, name: &str) -> Result<Self, FixtureError> {
-        let directory = tempfile::tempdir()?;
-        let path = directory.path().join(synra_store::DB_FILE_NAME);
-        let mut database = SynraDb::open(&path)?;
-        database.migrate()?;
-        let now_ms = synra_store::sqlite::now_ms();
-        let identity = IdentityRow::from_columns(
-            Some(&local.to_string()),
-            Some(name),
-            Some("test"),
-            Some(now_ms),
-        )?;
-        database.create_identity_if_absent(&identity)?;
-        let credentials = credentials_for(local)?;
+        let fixture = Self::unpaired(local, name)?;
+        let database = &fixture.database;
+        let credentials = &fixture.credentials;
         let other = credentials_for(peer)?;
-        if !database.claim_device_credential(
-            &local.to_string(),
-            credentials.public_identity().certificate_der(),
-            "test-fixture",
-        )? {
-            return Err(FixtureError::Refused);
-        }
-        let marker = database.device_credential()?.ok_or(FixtureError::Refused)?;
-        if !database.finish_device_credential(&marker)? {
-            return Err(FixtureError::Refused);
-        }
+        let now_ms = i64::try_from(fixture.now_ms).map_err(|_| FixtureError::Refused)?;
         let attempt = PeerTrustAttempt {
             request_id: RequestId::new().to_string(),
             local_id: local.to_string(),
@@ -126,6 +106,38 @@ impl NetworkFixture {
             || !database.store_peer_consent(&attempt, now_ms)?
             || !database.activate_peer_trust(&attempt, now_ms)?
         {
+            return Err(FixtureError::Refused);
+        }
+        Ok(fixture)
+    }
+
+    /// Creates only a ready local enrollment; no peer has ever been approved in this database.
+    /// This is a credential fixture, not evidence of a native secret backend.
+    /// # Errors
+    /// Refuses failed migration, local enrollment or credential generation.
+    pub fn unpaired(local: DeviceId, name: &str) -> Result<Self, FixtureError> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join(synra_store::DB_FILE_NAME);
+        let mut database = SynraDb::open(&path)?;
+        database.migrate()?;
+        let now_ms = synra_store::sqlite::now_ms();
+        let identity = IdentityRow::from_columns(
+            Some(&local.to_string()),
+            Some(name),
+            Some("test"),
+            Some(now_ms),
+        )?;
+        database.create_identity_if_absent(&identity)?;
+        let credentials = credentials_for(local)?;
+        if !database.claim_device_credential(
+            &local.to_string(),
+            credentials.public_identity().certificate_der(),
+            "test-fixture",
+        )? {
+            return Err(FixtureError::Refused);
+        }
+        let marker = database.device_credential()?.ok_or(FixtureError::Refused)?;
+        if !database.finish_device_credential(&marker)? {
             return Err(FixtureError::Refused);
         }
         let shared_db = Arc::new(Mutex::new(SynraDb::open(&path)?));

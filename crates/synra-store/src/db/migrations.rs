@@ -461,6 +461,25 @@ pub const MIGRATIONS: &[Migration] = &[
             )",
         ],
     },
+    Migration {
+        version: 20,
+        name: "pairing-reservations",
+        statements: &[
+            "DROP TABLE pairing_attempt",
+            "CREATE TABLE pairing_attempt (
+                id INTEGER PRIMARY KEY CHECK (id = 1) REFERENCES identity(id) ON DELETE CASCADE,
+                request_id TEXT NOT NULL,
+                local_id TEXT NOT NULL,
+                local_certificate BLOB NOT NULL CHECK (length(local_certificate) BETWEEN 1 AND 16384),
+                peer_id TEXT NOT NULL,
+                peer_certificate BLOB NOT NULL CHECK (length(peer_certificate) BETWEEN 1 AND 16384),
+                binding BLOB CHECK (binding IS NULL OR length(binding) = 32),
+                expires_at_ms INTEGER NOT NULL,
+                phase INTEGER NOT NULL CHECK (phase IN (-1, 0, 1, 2, 3)),
+                CHECK (binding IS NOT NULL OR phase IN (-1, 3))
+            )",
+        ],
+    },
 ];
 
 /// The schema version this build expects.

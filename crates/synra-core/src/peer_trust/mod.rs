@@ -6,6 +6,7 @@
 //! metadata and bearer tokens never grant permission through this service.
 
 mod approval;
+mod service;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -15,9 +16,10 @@ use synra_net::authentication::pairing::{MutualConsent, PairingChannel, PairingE
 use synra_net::authentication::{MAX_APPROVED_PEERS, PeerIdentity};
 use synra_protocol::RequestId;
 use synra_store::SynraDb;
-use synra_store::sqlite::PeerTrustAttempt;
+use synra_store::sqlite::{PeerTrustAttempt, PeerTrustReservation};
 
 pub use approval::{PeerApproval, approved_peers};
+pub use service::{PairingClock, PairingService, PairingServiceError};
 
 /// A refused or interrupted identity-bound pairing operation.
 #[derive(Debug, thiserror::Error)]
@@ -49,9 +51,61 @@ pub struct PairingTask {
     attempt: PeerTrustAttempt,
     channel: Option<PairingChannel>,
     completed: bool,
+    deadline: std::time::Instant,
 }
 
 impl PairingTask {
+    /// Attaches the proven TLS channel to a pre-existing host operation generation.
+    /// # Errors
+    /// Refuses any changed identity, reservation, expiry, cancellation or revocation before binding.
+    pub fn begin_reserved(
+        db: Arc<Mutex<SynraDb>>,
+        channel: PairingChannel,
+        reservation: &PeerTrustReservation,
+        now_ms: i64,
+    ) -> Result<Self, TrustError> {
+        let sampled = std::time::Instant::now();
+        let remaining = channel.remaining_window().ok_or(TrustError::Stale)?;
+        let deadline = sampled.checked_add(remaining).ok_or(TrustError::Stale)?;
+        let local = channel.local_identity();
+        let peer = channel.peer_identity();
+        if local.device_id().to_string() != reservation.local_id
+            || local.certificate_der() != reservation.local_certificate
+            || peer.device_id().to_string() != reservation.peer_id
+            || peer.certificate_der() != reservation.peer_certificate
+            || channel.remaining_window().is_none()
+        {
+            return Err(TrustError::Stale);
+        }
+        let attempt = PeerTrustAttempt {
+            request_id: reservation.request_id.clone(),
+            local_id: reservation.local_id.clone(),
+            local_certificate: reservation.local_certificate.clone(),
+            peer_id: reservation.peer_id.clone(),
+            peer_certificate: reservation.peer_certificate.clone(),
+            binding: channel.session_binding()?,
+            expires_at_ms: reservation.expires_at_ms,
+        };
+        let bound = {
+            let db = db.lock();
+            if std::time::Instant::now() >= deadline {
+                return Err(TrustError::Stale);
+            }
+            db.bind_peer_trust(&attempt, now_ms)
+                .map_err(|error| TrustError::Database(error.to_string()))?
+        };
+        if !bound {
+            return Err(TrustError::Stale);
+        }
+        Ok(Self {
+            db,
+            attempt,
+            channel: Some(channel),
+            completed: false,
+            deadline,
+        })
+    }
+
     /// Claims a bounded task for this exact TLS instance before showing the local user a prompt.
     /// # Errors
     /// Refuses expired channels, changed local enrollment, an occupied slot, existing trust or capacity.
@@ -60,7 +114,9 @@ impl PairingTask {
         channel: PairingChannel,
         now_ms: i64,
     ) -> Result<Self, TrustError> {
+        let sampled = std::time::Instant::now();
         let remaining = channel.remaining_window().ok_or(TrustError::Stale)?;
+        let deadline = sampled.checked_add(remaining).ok_or(TrustError::Stale)?;
         let remaining_ms = i64::try_from(remaining.as_millis()).map_err(|_| TrustError::Stale)?;
         let expires_at_ms = now_ms.checked_add(remaining_ms).ok_or(TrustError::Stale)?;
         let attempt = PeerTrustAttempt {
@@ -84,6 +140,7 @@ impl PairingTask {
             attempt,
             channel: Some(channel),
             completed: false,
+            deadline,
         })
     }
 
@@ -106,11 +163,14 @@ impl PairingTask {
         clock: impl Fn() -> i64,
     ) -> Result<PeerApproval, TrustError> {
         let now_ms = clock();
-        let current = self
-            .db
-            .lock()
-            .peer_attempt_current(&self.attempt, now_ms)
-            .map_err(|error| TrustError::Database(error.to_string()))?;
+        let current = {
+            let db = self.db.lock();
+            if std::time::Instant::now() >= self.deadline {
+                return Err(TrustError::Stale);
+            }
+            db.peer_attempt_current(&self.attempt, now_ms)
+                .map_err(|error| TrustError::Database(error.to_string()))?
+        };
         if !current {
             return Err(TrustError::Stale);
         }
@@ -121,7 +181,13 @@ impl PairingTask {
             .confirm(approved, timeout)?;
         let now_ms = clock();
         validate(exchange.consent(), &self.attempt, now_ms)?;
-        let stored = self.db.lock().store_peer_consent(&self.attempt, now_ms);
+        let stored = {
+            let db = self.db.lock();
+            if std::time::Instant::now() >= self.deadline {
+                return Err(TrustError::Stale);
+            }
+            db.store_peer_consent(&self.attempt, now_ms)
+        };
         let failure = match stored {
             Ok(true) => None,
             Ok(false) => Some(TrustError::Stale),
@@ -135,11 +201,14 @@ impl PairingTask {
         let now_ms = clock();
         validate(receipt.consent(), &self.attempt, now_ms)?;
         let approval = approval::from_consent(receipt.consent(), &self.attempt.request_id)?;
-        let active = self
-            .db
-            .lock()
-            .activate_peer_trust(&self.attempt, now_ms)
-            .map_err(|error| TrustError::Database(error.to_string()))?;
+        let active = {
+            let db = self.db.lock();
+            if std::time::Instant::now() >= self.deadline {
+                return Err(TrustError::Stale);
+            }
+            db.activate_peer_trust_until(&self.attempt, now_ms, self.deadline)
+                .map_err(|error| TrustError::Database(error.to_string()))?
+        };
         if !active {
             return Err(TrustError::Stale);
         }

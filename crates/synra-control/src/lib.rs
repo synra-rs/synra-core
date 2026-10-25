@@ -41,7 +41,6 @@
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
-
 // Test code is exempt from the no-panic rules; see `synra-protocol` for the reasoning.
 #![cfg_attr(
     test,
@@ -55,6 +54,8 @@
 )]
 
 pub mod endpoint;
+mod pairing;
+pub use pairing::PairingAction;
 pub mod server;
 
 use serde::{Deserialize, Serialize};
@@ -395,43 +396,10 @@ pub enum Request {
         trace: Option<String>,
     },
 
-    /// Asks a device to pair.
-    ///
-    /// # Why this is separate from [`Request::PairAnswer`]
-    ///
-    /// Because they are two different people's actions. Answering is the device that was asked, deciding; this is the
-    /// device that wants to pair, asking. A single "pair" command with a flag would make the two indistinguishable in a
-    /// log line, and the two produce completely different states: one waits for someone else, one decides.
-    ///
-    /// # Why this blocks
-    ///
-    /// Because the answer is a person on another device, and the caller's next step depends on it. The kernel waits no
-    /// longer than the session's pairing window, so a caller is bounded by the same clock both ends agreed — see
-    /// [`Kernel::pair`].
-    Pair {
-        /// The device to ask, by identifier, display name, or `host:port`.
-        device: String,
-    },
-
-    /// Answers a pairing request a device is waiting on.
-    ///
-    /// # Why this is a command rather than something the transport decides
-    ///
-    /// Because pairing is a decision only a person can make, and the person is not on the connection that asked. The
-    /// transport holds the socket; this channel holds the user. Without a request like this the prompt exists and the
-    /// dialer waits out its own window for an answer nothing in the kernel can give.
-    ///
-    /// # Why the request id and not the device id
-    ///
-    /// Because a client answers the prompt it was shown, and the prompt identifies itself by the request. A device
-    /// identifier would also work and would let a client answer a request it never saw — including one that had already
-    /// expired and been replaced.
-    PairAnswer {
-        /// Which request, as the prompt reported it.
-        request_id: String,
-        /// Whether the user accepted. A refusal is an answer, not an error, and it does not end the requesting device's
-        /// link, so it may ask again.
-        accepted: bool,
+    /// Runs an explicit out-of-band pairing action over this authenticated local control channel.
+    Pairing {
+        /// The complete action and its bounded operands.
+        action: PairingAction,
     },
 }
 
@@ -452,19 +420,18 @@ impl Request {
             Self::PluginUpdatePolicy { .. } => "pluginUpdatePolicy",
             Self::PluginCheckUpdates { .. } => "pluginCheckUpdates",
             Self::PluginUpdate { .. } => "pluginUpdate",
-                Self::IntentDispatch { .. } => "intentDispatch",
-                Self::CatalogSearch { .. } => "catalogSearch",
-        Self::PluginSetEnabled { .. } => "pluginSetEnabled",
+            Self::IntentDispatch { .. } => "intentDispatch",
+            Self::CatalogSearch { .. } => "catalogSearch",
+            Self::PluginSetEnabled { .. } => "pluginSetEnabled",
             Self::PluginInstall { .. } => "pluginInstall",
             Self::PluginInstallPackage { .. } => "pluginInstallPackage",
             Self::PluginConsent { .. } => "pluginConsent",
             Self::PluginRemove { .. } => "pluginRemove",
-                Self::IntentCancel { .. } => "intentCancel",
-                Self::IntentDecide { .. } => "intentDecide",
-                Self::IntentSnapshot { .. } => "intentSnapshot",
+            Self::IntentCancel { .. } => "intentCancel",
+            Self::IntentDecide { .. } => "intentDecide",
+            Self::IntentSnapshot { .. } => "intentSnapshot",
             Self::Logs { .. } => "logs",
-            Self::Pair { .. } => "pair",
-            Self::PairAnswer { .. } => "pairAnswer",
+            Self::Pairing { .. } => "pairing",
         }
     }
 
@@ -532,7 +499,11 @@ impl Response {
     /// A refusal.
     #[must_use]
     pub fn failed(code: &str, message: impl Into<String>, retryable: bool) -> Self {
-        Self::Failed { code: code.to_owned(), message: message.into(), retryable }
+        Self::Failed {
+            code: code.to_owned(),
+            message: message.into(),
+            retryable,
+        }
     }
 
     /// Whether this is a success.
@@ -618,7 +589,9 @@ impl Decoder {
     ///
     /// [`ChannelError::TooLong`] for a length beyond the ceiling, and [`ChannelError::Malformed`] for a body that is
     /// not the expected JSON. Both poison the decoder.
-    pub fn next_message<T: for<'de> Deserialize<'de>>(&mut self) -> Result<Option<T>, ChannelError> {
+    pub fn next_message<T: for<'de> Deserialize<'de>>(
+        &mut self,
+    ) -> Result<Option<T>, ChannelError> {
         if let Some(error) = &self.poisoned {
             return Err(error.clone());
         }
@@ -630,13 +603,20 @@ impl Decoder {
         // `get` rather than a slice: the workspace denies `indexing_slicing` because a slice may panic, and the length
         // was checked one statement earlier — a check the compiler cannot see through, which is exactly why the rule is
         // "no slicing" rather than "slice only when you are sure".
-        let Some(header) = self.buffer.get(..HEADER_LEN).and_then(|bytes| bytes.try_into().ok()) else {
+        let Some(header) = self
+            .buffer
+            .get(..HEADER_LEN)
+            .and_then(|bytes| bytes.try_into().ok())
+        else {
             return Ok(None);
         };
         let len = u32::from_be_bytes(header) as usize;
 
         if len > MAX_MESSAGE_LEN {
-            let error = ChannelError::TooLong { len, max: MAX_MESSAGE_LEN };
+            let error = ChannelError::TooLong {
+                len,
+                max: MAX_MESSAGE_LEN,
+            };
             self.poisoned = Some(error.clone());
             return Err(error);
         }
@@ -645,7 +625,11 @@ impl Decoder {
             return Ok(None);
         }
 
-        let Some(body) = self.buffer.get(HEADER_LEN..HEADER_LEN + len).map(<[u8]>::to_vec) else {
+        let Some(body) = self
+            .buffer
+            .get(HEADER_LEN..HEADER_LEN + len)
+            .map(<[u8]>::to_vec)
+        else {
             return Ok(None);
         };
         self.buffer.drain(..HEADER_LEN + len);
@@ -653,7 +637,9 @@ impl Decoder {
         match serde_json::from_slice(&body) {
             Ok(message) => Ok(Some(message)),
             Err(error) => {
-                let failure = ChannelError::Malformed { why: error.to_string() };
+                let failure = ChannelError::Malformed {
+                    why: error.to_string(),
+                };
                 self.poisoned = Some(failure.clone());
                 Err(failure)
             }
@@ -673,7 +659,10 @@ pub fn encode<T: Serialize>(message: &T) -> Result<Vec<u8>, ChannelError> {
         why: error.to_string(),
     })?;
     if body.len() > MAX_MESSAGE_LEN {
-        return Err(ChannelError::TooLong { len: body.len(), max: MAX_MESSAGE_LEN });
+        return Err(ChannelError::TooLong {
+            len: body.len(),
+            max: MAX_MESSAGE_LEN,
+        });
     }
 
     let len = u32::try_from(body.len()).map_err(|_| ChannelError::TooLong {
@@ -697,7 +686,10 @@ pub const fn check_version(client: u16) -> Result<(), ChannelError> {
     if client == PROTOCOL_VERSION {
         return Ok(());
     }
-    Err(ChannelError::VersionMismatch { client, kernel: PROTOCOL_VERSION })
+    Err(ChannelError::VersionMismatch {
+        client,
+        kernel: PROTOCOL_VERSION,
+    })
 }
 
 #[cfg(test)]
@@ -711,14 +703,20 @@ mod tests {
         let bytes = encode(message).expect("encodes");
         let mut decoder = Decoder::new();
         decoder.push(&bytes);
-        decoder.next_message().expect("no error").expect("a message")
+        decoder
+            .next_message()
+            .expect("no error")
+            .expect("a message")
     }
 
     // ── Framing ───────────────────────────────────────────────────────────────────────────────────
 
     #[test]
     fn a_message_round_trips() {
-        let request = Request::Devices { include_unpaired: true, scan_ms: None };
+        let request = Request::Devices {
+            include_unpaired: true,
+            scan_ms: None,
+        };
         assert_eq!(round_trip(&request), request);
     }
 
@@ -727,14 +725,32 @@ mod tests {
         // Each variant, because a `deny_unknown_fields` on the wrong side of a rename is a variant that decodes to
         // nothing — and the failure appears only for the one request a user happened to send.
         let requests = [
-            Request::Hello { version: PROTOCOL_VERSION },
+            Request::Hello {
+                version: PROTOCOL_VERSION,
+            },
             Request::Status,
-            Request::Devices { include_unpaired: false, scan_ms: None },
-            Request::SendText { to: "dev_a".to_owned(), text: "hi".to_owned() },
-            Request::SendFile { to: "dev_a".to_owned(), path: "/tmp/a".to_owned() },
+            Request::Devices {
+                include_unpaired: false,
+                scan_ms: None,
+            },
+            Request::SendText {
+                to: "dev_a".to_owned(),
+                text: "hi".to_owned(),
+            },
+            Request::SendFile {
+                to: "dev_a".to_owned(),
+                path: "/tmp/a".to_owned(),
+            },
             Request::Plugins,
-            Request::PluginRemove { plugin_id: "@acme/x".to_owned(), remove_data: true },
-            Request::Logs { lines: 50, verbose: true, trace: None },
+            Request::PluginRemove {
+                plugin_id: "@acme/x".to_owned(),
+                remove_data: true,
+            },
+            Request::Logs {
+                lines: 50,
+                verbose: true,
+                trace: None,
+            },
         ];
         for request in requests {
             assert_eq!(round_trip(&request), request, "{}", request.kind());
@@ -744,7 +760,10 @@ mod tests {
     #[test]
     fn every_response_round_trips() {
         let responses = [
-            Response::Hello { version: PROTOCOL_VERSION, kernel: "0.1.0".to_owned() },
+            Response::Hello {
+                version: PROTOCOL_VERSION,
+                kernel: "0.1.0".to_owned(),
+            },
             Response::ok(serde_json::json!({"devices": []})),
             Response::failed("device_offline", "the device is not reachable", true),
         ];
@@ -776,24 +795,47 @@ mod tests {
         let mut decoder = Decoder::new();
         for byte in &bytes[..HEADER_LEN - 1] {
             decoder.push(&[*byte]);
-            assert!(decoder.next_message::<Request>().expect("no error").is_none());
+            assert!(
+                decoder
+                    .next_message::<Request>()
+                    .expect("no error")
+                    .is_none()
+            );
         }
         decoder.push(&bytes[HEADER_LEN - 1..]);
-        assert!(decoder.next_message::<Request>().expect("no error").is_some());
+        assert!(
+            decoder
+                .next_message::<Request>()
+                .expect("no error")
+                .is_some()
+        );
     }
 
     #[test]
     fn a_partial_body_is_waited_for() {
         // The same, one layer in: the header arrives and the body does not. The length is known and the bytes are not,
         // which is the ordinary state of a connection mid-message.
-        let bytes = encode(&Request::SendText { to: "a".to_owned(), text: "b".to_owned() })
-            .expect("encodes");
+        let bytes = encode(&Request::SendText {
+            to: "a".to_owned(),
+            text: "b".to_owned(),
+        })
+        .expect("encodes");
         let split = HEADER_LEN + 3;
         let mut decoder = Decoder::new();
         decoder.push(&bytes[..split]);
-        assert!(decoder.next_message::<Request>().expect("no error").is_none());
+        assert!(
+            decoder
+                .next_message::<Request>()
+                .expect("no error")
+                .is_none()
+        );
         decoder.push(&bytes[split..]);
-        assert!(decoder.next_message::<Request>().expect("no error").is_some());
+        assert!(
+            decoder
+                .next_message::<Request>()
+                .expect("no error")
+                .is_some()
+        );
     }
 
     #[test]
@@ -806,15 +848,31 @@ mod tests {
 
         let mut decoder = Decoder::new();
         decoder.push(&bytes);
-        assert_eq!(decoder.next_message::<Request>().expect("no error"), Some(Request::Status));
-        assert_eq!(decoder.next_message::<Request>().expect("no error"), Some(Request::Plugins));
-        assert!(decoder.next_message::<Request>().expect("no error").is_none());
+        assert_eq!(
+            decoder.next_message::<Request>().expect("no error"),
+            Some(Request::Status)
+        );
+        assert_eq!(
+            decoder.next_message::<Request>().expect("no error"),
+            Some(Request::Plugins)
+        );
+        assert!(
+            decoder
+                .next_message::<Request>()
+                .expect("no error")
+                .is_none()
+        );
         assert_eq!(decoder.buffered(), 0);
     }
 
     #[test]
     fn a_message_split_across_three_reads_is_assembled() {
-        let bytes = encode(&Request::Logs { lines: 10, verbose: false, trace: None }).expect("encodes");
+        let bytes = encode(&Request::Logs {
+            lines: 10,
+            verbose: false,
+            trace: None,
+        })
+        .expect("encodes");
         let third = bytes.len() / 3;
         let mut decoder = Decoder::new();
         decoder.push(&bytes[..third]);
@@ -822,7 +880,11 @@ mod tests {
         decoder.push(&bytes[third * 2..]);
         assert_eq!(
             decoder.next_message::<Request>().expect("no error"),
-            Some(Request::Logs { lines: 10, verbose: false, trace: None })
+            Some(Request::Logs {
+                lines: 10,
+                verbose: false,
+                trace: None
+            })
         );
     }
 
@@ -861,13 +923,25 @@ mod tests {
         .expect("encodes")
         .len();
         let payload = "x".repeat(MAX_MESSAGE_LEN - overhead);
-        let request = Request::SendText { to: "a".to_owned(), text: payload };
+        let request = Request::SendText {
+            to: "a".to_owned(),
+            text: payload,
+        };
         let bytes = encode(&request).expect("encodes");
-        assert!(bytes.len() <= MAX_MESSAGE_LEN + HEADER_LEN, "{} bytes", bytes.len());
+        assert!(
+            bytes.len() <= MAX_MESSAGE_LEN + HEADER_LEN,
+            "{} bytes",
+            bytes.len()
+        );
 
         let mut decoder = Decoder::new();
         decoder.push(&bytes);
-        assert!(decoder.next_message::<Request>().expect("no error").is_some());
+        assert!(
+            decoder
+                .next_message::<Request>()
+                .expect("no error")
+                .is_some()
+        );
     }
 
     #[test]
@@ -875,8 +949,14 @@ mod tests {
         // The other end of the same rule: a server that produced an oversized answer would otherwise write a length the
         // client refuses, and the client would report a framing error for a message that was fine.
         let payload = "x".repeat(MAX_MESSAGE_LEN);
-        let request = Request::SendText { to: "a".to_owned(), text: payload };
-        assert!(matches!(encode(&request), Err(ChannelError::TooLong { .. })));
+        let request = Request::SendText {
+            to: "a".to_owned(),
+            text: payload,
+        };
+        assert!(matches!(
+            encode(&request),
+            Err(ChannelError::TooLong { .. })
+        ));
     }
 
     // ── Poisoning ─────────────────────────────────────────────────────────────────────────────────
@@ -892,7 +972,10 @@ mod tests {
         decoder.push(&len.to_be_bytes());
         decoder.push(body);
 
-        assert!(matches!(decoder.next_message::<Request>(), Err(ChannelError::Malformed { .. })));
+        assert!(matches!(
+            decoder.next_message::<Request>(),
+            Err(ChannelError::Malformed { .. })
+        ));
         assert!(decoder.is_poisoned());
         // And it keeps refusing, rather than recovering into a stream position nobody can vouch for.
         assert!(decoder.next_message::<Request>().is_err());
@@ -918,7 +1001,10 @@ mod tests {
         // forever for a body that was never promised.
         let mut decoder = Decoder::new();
         decoder.push(&0u32.to_be_bytes());
-        assert!(matches!(decoder.next_message::<Request>(), Err(ChannelError::Malformed { .. })));
+        assert!(matches!(
+            decoder.next_message::<Request>(),
+            Err(ChannelError::Malformed { .. })
+        ));
     }
 
     #[test]
@@ -930,7 +1016,10 @@ mod tests {
         let mut decoder = Decoder::new();
         decoder.push(&len.to_be_bytes());
         decoder.push(body);
-        assert!(matches!(decoder.next_message::<Request>(), Err(ChannelError::Malformed { .. })));
+        assert!(matches!(
+            decoder.next_message::<Request>(),
+            Err(ChannelError::Malformed { .. })
+        ));
     }
 
     // ── Versions ──────────────────────────────────────────────────────────────────────────────────
@@ -964,9 +1053,16 @@ mod tests {
         assert!(Request::Hello { version: 99 }.is_handshake());
         for request in [
             Request::Status,
-            Request::Devices { include_unpaired: false, scan_ms: None },
+            Request::Devices {
+                include_unpaired: false,
+                scan_ms: None,
+            },
             Request::Plugins,
-            Request::Logs { lines: 1, verbose: false, trace: None },
+            Request::Logs {
+                lines: 1,
+                verbose: false,
+                trace: None,
+            },
         ] {
             assert!(!request.is_handshake(), "{}", request.kind());
         }
@@ -978,11 +1074,24 @@ mod tests {
         let requests = [
             Request::Hello { version: 1 },
             Request::Status,
-            Request::Devices { include_unpaired: false, scan_ms: None },
-            Request::SendText { to: String::new(), text: String::new() },
-            Request::SendFile { to: String::new(), path: String::new() },
+            Request::Devices {
+                include_unpaired: false,
+                scan_ms: None,
+            },
+            Request::SendText {
+                to: String::new(),
+                text: String::new(),
+            },
+            Request::SendFile {
+                to: String::new(),
+                path: String::new(),
+            },
             Request::Plugins,
-            Request::Logs { lines: 1, verbose: false, trace: None },
+            Request::Logs {
+                lines: 1,
+                verbose: false,
+                trace: None,
+            },
         ];
         let mut names: Vec<&str> = requests.iter().map(Request::kind).collect();
         names.sort_unstable();
@@ -996,7 +1105,14 @@ mod tests {
         let failed = Response::failed("timeout", "it timed out", true);
         assert!(!failed.is_ok());
         assert_eq!(failed.error_code(), Some("timeout"));
-        assert_eq!(Response::Hello { version: 1, kernel: "k".to_owned() }.error_code(), None);
+        assert_eq!(
+            Response::Hello {
+                version: 1,
+                kernel: "k".to_owned()
+            }
+            .error_code(),
+            None
+        );
     }
 
     #[test]
@@ -1006,7 +1122,11 @@ mod tests {
         // script match on prose.
         let failed = Response::failed("device_offline", "the device is not reachable", true);
         match failed {
-            Response::Failed { code, message, retryable } => {
+            Response::Failed {
+                code,
+                message,
+                retryable,
+            } => {
                 assert_eq!(code, "device_offline");
                 assert!(message.contains("reachable"));
                 assert!(retryable);
@@ -1018,9 +1138,17 @@ mod tests {
     #[test]
     fn every_error_explains_itself() {
         let errors = [
-            ChannelError::TooLong { len: 5_000_000, max: MAX_MESSAGE_LEN },
-            ChannelError::Malformed { why: "expected value".to_owned() },
-            ChannelError::VersionMismatch { client: 2, kernel: 1 },
+            ChannelError::TooLong {
+                len: 5_000_000,
+                max: MAX_MESSAGE_LEN,
+            },
+            ChannelError::Malformed {
+                why: "expected value".to_owned(),
+            },
+            ChannelError::VersionMismatch {
+                client: 2,
+                kernel: 1,
+            },
         ];
         for error in &errors {
             let text = error.to_string();

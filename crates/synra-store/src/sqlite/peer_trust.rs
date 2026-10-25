@@ -4,6 +4,23 @@ use rusqlite::{OptionalExtension, params};
 
 use super::{DbError, SynraDb};
 
+/// A durable, non-authorizing reservation before opening the restricted TLS connection.
+#[derive(Debug, Clone)]
+pub struct PeerTrustReservation {
+    /// Unique local operation generation.
+    pub request_id: String,
+    /// Enrolled local device id.
+    pub local_id: String,
+    /// Exact enrolled local certificate.
+    pub local_certificate: Vec<u8>,
+    /// Explicitly approved remote device id.
+    pub peer_id: String,
+    /// Certificate imported over the trusted out-of-band path.
+    pub peer_certificate: Vec<u8>,
+    /// Wall-clock operation deadline, shared with the later TLS-bound attempt.
+    pub expires_at_ms: i64,
+}
+
 /// Snapshot of one pairing instance, captured before waiting for the user or external IO.
 #[derive(Debug, Clone)]
 pub struct PeerTrustAttempt {
@@ -42,6 +59,58 @@ const CURRENT: &str = "request_id = ?1 AND local_id = ?2 AND local_certificate =
         WHERE c.id = 1 AND c.ready = 1 AND c.device_id = ?2 AND i.device_id = ?2 AND c.certificate = ?3)";
 
 impl SynraDb {
+    /// Claims the bounded task slot before TLS so cancellation and revocation cover connection waits.
+    /// A NULL binding is deliberate: no TLS instance or consent has been established yet.
+    /// # Errors
+    /// Refuses non-durable storage and failed persistence; `false` refuses occupied or invalid claims.
+    pub fn reserve_peer_trust(
+        &self,
+        task: &PeerTrustReservation,
+        now_ms: i64,
+        capacity: usize,
+    ) -> Result<bool, DbError> {
+        self.require_durable_trust()?;
+        let capacity = i64::try_from(capacity).unwrap_or(i64::MAX);
+        timed_write!(self, "peer-trust-reserve", {
+            self.connection.execute(
+                "INSERT INTO pairing_attempt (id, request_id, local_id, local_certificate, peer_id, peer_certificate, binding, expires_at_ms, phase)
+                 SELECT 1, ?1, ?2, ?3, ?4, ?5, NULL, ?6, -1
+                 WHERE ?6 > ?7 AND ?2 != ?4 AND EXISTS (
+                     SELECT 1 FROM device_credentials c JOIN identity i ON i.id = c.id
+                     WHERE c.id = 1 AND c.ready = 1 AND c.device_id = ?2 AND i.device_id = ?2 AND c.certificate = ?3)
+                 AND NOT EXISTS (SELECT 1 FROM peer_trust WHERE peer_id = ?4)
+                 AND (SELECT count(*) FROM peer_trust) < ?8
+                 ON CONFLICT(id) DO UPDATE SET request_id = excluded.request_id, local_id = excluded.local_id,
+                    local_certificate = excluded.local_certificate, peer_id = excluded.peer_id, peer_certificate = excluded.peer_certificate,
+                    binding = NULL, expires_at_ms = excluded.expires_at_ms, phase = -1
+                 WHERE pairing_attempt.phase IN (2, 3) OR pairing_attempt.expires_at_ms <= ?7",
+                params![task.request_id, task.local_id, task.local_certificate, task.peer_id, task.peer_certificate, task.expires_at_ms, now_ms, capacity],
+            ).map(|changed| changed == 1).map_err(|error| statement(&error))
+        })
+    }
+
+    /// Binds exactly the existing reservation to the proven TLS instance without creating a new task.
+    /// # Errors
+    /// Refuses changed, cancelled, revoked or expired reservations and failed persistence.
+    pub fn bind_peer_trust(
+        &self,
+        attempt: &PeerTrustAttempt,
+        now_ms: i64,
+    ) -> Result<bool, DbError> {
+        self.require_durable_trust()?;
+        timed_write!(self, "peer-trust-bind", {
+            self.connection.execute(
+                "UPDATE pairing_attempt SET binding = ?6, phase = 0 WHERE id = 1 AND phase = -1 AND binding IS NULL
+                 AND request_id = ?1 AND local_id = ?2 AND local_certificate = ?3 AND peer_id = ?4 AND peer_certificate = ?5
+                 AND expires_at_ms = ?7 AND expires_at_ms > ?8 AND EXISTS (
+                     SELECT 1 FROM device_credentials c JOIN identity i ON i.id = c.id
+                     WHERE c.id = 1 AND c.ready = 1 AND c.device_id = ?2 AND i.device_id = ?2 AND c.certificate = ?3)",
+                params![attempt.request_id, attempt.local_id, attempt.local_certificate, attempt.peer_id, attempt.peer_certificate,
+                    attempt.binding.as_slice(), attempt.expires_at_ms, now_ms],
+            ).map(|changed| changed == 1).map_err(|error| statement(&error))
+        })
+    }
+
     /// Atomically claims the sole live pairing slot, refusing an already authorized peer or full list.
     ///
     /// Terminal or expired tasks may be replaced; their old snapshots can never commit the new task.
@@ -129,10 +198,34 @@ impl SynraDb {
         attempt: &PeerTrustAttempt,
         now_ms: i64,
     ) -> Result<bool, DbError> {
+        self.activate_peer_trust_with_deadline(attempt, now_ms, None)
+    }
+
+    /// Rejects activation if mutex or SQLite writer waits exhausted the host's monotonic budget.
+    /// # Errors
+    /// Returns failed persistence; deadline expiry rolls back the grant and listing together.
+    pub fn activate_peer_trust_until(
+        &self,
+        attempt: &PeerTrustAttempt,
+        now_ms: i64,
+        deadline: std::time::Instant,
+    ) -> Result<bool, DbError> {
+        self.activate_peer_trust_with_deadline(attempt, now_ms, Some(deadline))
+    }
+
+    fn activate_peer_trust_with_deadline(
+        &self,
+        attempt: &PeerTrustAttempt,
+        now_ms: i64,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<bool, DbError> {
         self.require_durable_trust()?;
         timed_write!(self, "peer-trust-activate", {
             let operation = || -> rusqlite::Result<bool> {
                 let transaction = self.connection.unchecked_transaction()?;
+                if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+                    return Ok(false);
+                }
                 let changed = transaction.execute(
                     &format!("UPDATE pairing_attempt SET phase = 2 WHERE id = 1 AND phase = 1 AND {CURRENT}"),
                     params![attempt.request_id, attempt.local_id, attempt.local_certificate, attempt.peer_id, attempt.peer_certificate, attempt.binding.as_slice(), attempt.expires_at_ms, now_ms],
@@ -146,6 +239,23 @@ impl SynraDb {
                      FROM pairing_attempt WHERE id = 1 AND request_id = ?1 AND phase = 2",
                     params![attempt.request_id, now_ms],
                 )?;
+                // Listing metadata is committed with the actual grant, never before durable receipts.
+                // Discovery supplies labels and routes only; none of these columns authorizes a peer.
+                transaction.execute(
+                    "INSERT INTO paired_devices (device_id, display_name, platform, features, link_token,
+                        last_address, paired_at_ms, last_seen_ms, blocked)
+                     VALUES (?1, COALESCE((SELECT display_name FROM devices_seen WHERE device_id = ?1), ?1),
+                        COALESCE((SELECT platform FROM devices_seen WHERE device_id = ?1), 'unknown'), '[]', '',
+                        (SELECT source FROM devices_seen WHERE device_id = ?1), ?2, ?2, 0)
+                     ON CONFLICT(device_id) DO UPDATE SET display_name = excluded.display_name,
+                        platform = excluded.platform, features = excluded.features, link_token = '',
+                        last_address = excluded.last_address, paired_at_ms = excluded.paired_at_ms,
+                        last_seen_ms = excluded.last_seen_ms, blocked = 0",
+                    params![attempt.peer_id, now_ms],
+                )?;
+                if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+                    return Ok(false);
+                }
                 transaction.commit()?;
                 Ok(true)
             };
@@ -158,7 +268,7 @@ impl SynraDb {
     /// Returns a database error if cancellation cannot be persisted.
     pub fn cancel_peer_attempt(&self, request_id: &str) -> Result<bool, DbError> {
         timed_write!(self, "peer-trust-cancel", {
-            self.connection.execute("UPDATE pairing_attempt SET phase = 3 WHERE id = 1 AND request_id = ?1 AND phase IN (0, 1)", [request_id])
+            self.connection.execute("UPDATE pairing_attempt SET phase = 3 WHERE id = 1 AND request_id = ?1 AND phase IN (-1, 0, 1)", [request_id])
                 .map(|changed| changed == 1).map_err(|error| statement(&error))
         })
     }

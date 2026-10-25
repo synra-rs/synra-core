@@ -75,9 +75,17 @@ impl PairingChannel {
         local: &DeviceCredentials,
         peer: &PeerIdentity,
         timeout: Duration,
+        cancelled: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     ) -> Result<Self, PairingError> {
         distinct(local, peer)?;
-        let stream = AuthenticatedStream::connect_for(socket, local, peer, timeout, PAIRING_ALPN)?;
+        let stream = AuthenticatedStream::connect_for(
+            socket,
+            local,
+            peer,
+            timeout,
+            PAIRING_ALPN,
+            cancelled,
+        )?;
         Self::new(stream, local.public_identity().clone())
     }
 
@@ -90,6 +98,7 @@ impl PairingChannel {
         local: &DeviceCredentials,
         peer: &PeerIdentity,
         timeout: Duration,
+        cancelled: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     ) -> Result<Self, PairingError> {
         distinct(local, peer)?;
         let stream = AuthenticatedStream::accept_for(
@@ -98,6 +107,7 @@ impl PairingChannel {
             std::slice::from_ref(peer),
             timeout,
             PAIRING_ALPN,
+            cancelled,
         )?;
         Self::new(stream, local.public_identity().clone())
     }
@@ -144,6 +154,11 @@ impl PairingChannel {
         self.expires
             .checked_duration_since(Instant::now())
             .filter(|left| !left.is_zero())
+    }
+
+    /// Narrows this instance to a host operation's existing deadline; it can never extend consent.
+    pub fn restrict_deadline(&mut self, deadline: Instant) {
+        self.expires = self.expires.min(deadline);
     }
 
     /// Exchanges explicit local user consent and advances into the persistence stage.

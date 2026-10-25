@@ -224,19 +224,25 @@ impl Listener {
         check_bindable(&path)?;
 
         #[cfg(unix)]
-        let name = path.as_path().to_fs_name::<GenericFilePath>().map_err(|error| SocketError::Bind {
-            path: path.clone(),
-            why: error.to_string(),
-        })?;
+        let name = path
+            .as_path()
+            .to_fs_name::<GenericFilePath>()
+            .map_err(|error| SocketError::Bind {
+                path: path.clone(),
+                why: error.to_string(),
+            })?;
         // The owned name is kept in a binding, because the `Name` a conversion produces borrows from it — and a
         // temporary would be dropped at the end of the statement that made it.
         #[cfg(windows)]
         let owned = namespaced_name(&path);
         #[cfg(windows)]
-        let name = owned.as_str().to_ns_name::<GenericNamespaced>().map_err(|error| SocketError::Bind {
-            path: path.clone(),
-            why: error.to_string(),
-        })?;
+        let name = owned
+            .as_str()
+            .to_ns_name::<GenericNamespaced>()
+            .map_err(|error| SocketError::Bind {
+                path: path.clone(),
+                why: error.to_string(),
+            })?;
 
         let listener = ListenerOptions::new()
             .name(name)
@@ -245,7 +251,10 @@ impl Listener {
             .reclaim_name(true)
             .try_overwrite(true)
             .create_sync()
-            .map_err(|error| SocketError::Bind { path: path.clone(), why: error.to_string() })?;
+            .map_err(|error| SocketError::Bind {
+                path: path.clone(),
+                why: error.to_string(),
+            })?;
 
         Ok(Self { listener, path })
     }
@@ -270,7 +279,9 @@ impl Listener {
     pub fn accept(&self) -> Result<Stream, SocketError> {
         self.listener
             .accept()
-            .map_err(|error| SocketError::Transport { why: error.to_string() })
+            .map_err(|error| SocketError::Transport {
+                why: error.to_string(),
+            })
     }
 
     /// Accepts one client and serves it until it disconnects.
@@ -309,7 +320,11 @@ pub fn serve_stream(mut stream: Stream, kernel: &impl crate::Kernel) -> Result<(
             {
                 return Ok(());
             }
-            Err(error) => return Err(SocketError::Transport { why: error.to_string() }),
+            Err(error) => {
+                return Err(SocketError::Transport {
+                    why: error.to_string(),
+                });
+            }
         };
 
         // `get` rather than a slice: the read count is what the operating system returned, and a slice would be an index
@@ -326,7 +341,9 @@ pub fn serve_stream(mut stream: Stream, kernel: &impl crate::Kernel) -> Result<(
             stream
                 .write_all(&out)
                 .and_then(|()| stream.flush())
-                .map_err(|error| SocketError::Transport { why: error.to_string() })?;
+                .map_err(|error| SocketError::Transport {
+                    why: error.to_string(),
+                })?;
         }
         if state == SessionState::Close {
             return Ok(());
@@ -352,17 +369,23 @@ impl Client {
     pub fn connect(data_dir: &Path) -> Result<Self, SocketError> {
         let path = socket_path(data_dir);
         #[cfg(unix)]
-        let name = path.as_path().to_fs_name::<GenericFilePath>().map_err(|error| SocketError::Connect {
-            path: path.clone(),
-            why: error.to_string(),
-        })?;
+        let name = path
+            .as_path()
+            .to_fs_name::<GenericFilePath>()
+            .map_err(|error| SocketError::Connect {
+                path: path.clone(),
+                why: error.to_string(),
+            })?;
         #[cfg(windows)]
         let owned = namespaced_name(&path);
         #[cfg(windows)]
-        let name = owned.as_str().to_ns_name::<GenericNamespaced>().map_err(|error| SocketError::Connect {
-            path: path.clone(),
-            why: error.to_string(),
-        })?;
+        let name = owned
+            .as_str()
+            .to_ns_name::<GenericNamespaced>()
+            .map_err(|error| SocketError::Connect {
+                path: path.clone(),
+                why: error.to_string(),
+            })?;
         let stream = Stream::connect(name).map_err(|error| SocketError::Connect {
             path: path.clone(),
             why: error.to_string(),
@@ -380,7 +403,11 @@ impl Client {
         // would see if the platform could express one.
         let _ = stream.set_recv_timeout(Some(REPLY_TIMEOUT));
 
-        Ok(Self { stream, decoder: Decoder::new(), buffer: vec![0u8; 8 * 1024] })
+        Ok(Self {
+            stream,
+            decoder: Decoder::new(),
+            buffer: vec![0u8; 8 * 1024],
+        })
     }
 
     /// Sends one request and waits for its answer.
@@ -393,7 +420,9 @@ impl Client {
         self.stream
             .write_all(&bytes)
             .and_then(|()| self.stream.flush())
-            .map_err(|error| SocketError::Transport { why: error.to_string() })?;
+            .map_err(|error| SocketError::Transport {
+                why: error.to_string(),
+            })?;
         self.read_one()
     }
 
@@ -421,9 +450,15 @@ impl Client {
                         std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
                     ) =>
                 {
-                    return Err(SocketError::TimedOut { timeout: REPLY_TIMEOUT });
+                    return Err(SocketError::TimedOut {
+                        timeout: REPLY_TIMEOUT,
+                    });
                 }
-                Err(error) => return Err(SocketError::Transport { why: error.to_string() }),
+                Err(error) => {
+                    return Err(SocketError::Transport {
+                        why: error.to_string(),
+                    });
+                }
             };
 
             let Some(chunk) = self.buffer.get(..read) else {
@@ -442,9 +477,13 @@ impl Client {
     /// [`SocketError::Transport`] when the kernel refused the version, carrying the kernel's own sentence. The client
     /// does not continue: it has been told the two cannot talk.
     pub fn handshake(&mut self) -> Result<Response, SocketError> {
-        let response = self.ask(&Request::Hello { version: crate::PROTOCOL_VERSION })?;
+        let response = self.ask(&Request::Hello {
+            version: crate::PROTOCOL_VERSION,
+        })?;
         if let Response::Failed { message, .. } = &response {
-            return Err(SocketError::Transport { why: message.clone() });
+            return Err(SocketError::Transport {
+                why: message.clone(),
+            });
         }
         Ok(response)
     }
@@ -464,11 +503,17 @@ mod tests {
 
     impl Fake {
         fn new() -> Self {
-            Self { asked: RefCell::new(Vec::new()), fail: None }
+            Self {
+                asked: RefCell::new(Vec::new()),
+                fail: None,
+            }
         }
 
         fn refusing(code: ErrorCode) -> Self {
-            Self { asked: RefCell::new(Vec::new()), fail: Some(code) }
+            Self {
+                asked: RefCell::new(Vec::new()),
+                fail: Some(code),
+            }
         }
 
         fn answer(&self, kind: &str) -> Result<serde_json::Value, Refusal> {
@@ -487,7 +532,11 @@ mod tests {
         fn status(&self) -> Result<serde_json::Value, Refusal> {
             self.answer("status")
         }
-        fn devices(&self, _include_unpaired: bool, _scan_ms: Option<u64>) -> Result<serde_json::Value, Refusal> {
+        fn devices(
+            &self,
+            _include_unpaired: bool,
+            _scan_ms: Option<u64>,
+        ) -> Result<serde_json::Value, Refusal> {
             self.answer("devices")
         }
         fn send_text(&self, _to: &str, _text: &str) -> Result<serde_json::Value, Refusal> {
@@ -497,48 +546,55 @@ mod tests {
             self.answer("sendFile")
         }
         /// Refused: this double answers nothing about routing.
-    ///
-    /// ★ A double that returned an empty candidate list would be worse than this: "nothing can handle it" and "this is
-    /// not implemented here" are different facts, and a test that could not tell them apart would be asserting about the
-    /// double rather than about the code.
-    fn intent_snapshot(&self, _intent: &str) -> Result<serde_json::Value, Refusal> {
-        Err(Refusal::new(
-            ErrorCode::Internal,
-            "this kernel does not route intents",
-        ))
-    }
+        ///
+        /// ★ A double that returned an empty candidate list would be worse than this: "nothing can handle it" and "this is
+        /// not implemented here" are different facts, and a test that could not tell them apart would be asserting about the
+        /// double rather than about the code.
+        fn intent_snapshot(&self, _intent: &str) -> Result<serde_json::Value, Refusal> {
+            Err(Refusal::new(
+                ErrorCode::Internal,
+                "this kernel does not route intents",
+            ))
+        }
 
-    fn intent_decide(
-        &self,
-        _intent: &str,
-        _plugin_id: Option<&str>,
-        _target: Option<&str>,
-    ) -> Result<serde_json::Value, Refusal> {
-        Err(Refusal::new(
-            ErrorCode::Internal,
-            "this kernel does not route intents",
-        ))
-    }
+        fn intent_decide(
+            &self,
+            _intent: &str,
+            _plugin_id: Option<&str>,
+            _target: Option<&str>,
+        ) -> Result<serde_json::Value, Refusal> {
+            Err(Refusal::new(
+                ErrorCode::Internal,
+                "this kernel does not route intents",
+            ))
+        }
 
-    fn intent_cancel(&self, _intent: &str) -> Result<serde_json::Value, Refusal> {
-        Err(Refusal::new(
-            ErrorCode::Internal,
-            "this kernel does not route intents",
-        ))
-    }
+        fn intent_cancel(&self, _intent: &str) -> Result<serde_json::Value, Refusal> {
+            Err(Refusal::new(
+                ErrorCode::Internal,
+                "this kernel does not route intents",
+            ))
+        }
 
-    fn intent_dispatch(&self, _mime: &str, _text: &str) -> Result<serde_json::Value, Refusal> {
-        Err(Refusal::new(
-            ErrorCode::Internal,
-            "this kernel does not route intents",
-        ))
-    }
+        fn intent_dispatch(&self, _mime: &str, _text: &str) -> Result<serde_json::Value, Refusal> {
+            Err(Refusal::new(
+                ErrorCode::Internal,
+                "this kernel does not route intents",
+            ))
+        }
 
-    fn plugin_set_enabled(&self, _plugin_id: &str, _enabled: bool) -> Result<serde_json::Value, Refusal> {
-        Err(Refusal::new(ErrorCode::Internal, "this kernel keeps no plugin records"))
-    }
+        fn plugin_set_enabled(
+            &self,
+            _plugin_id: &str,
+            _enabled: bool,
+        ) -> Result<serde_json::Value, Refusal> {
+            Err(Refusal::new(
+                ErrorCode::Internal,
+                "this kernel keeps no plugin records",
+            ))
+        }
 
-    fn plugins(&self) -> Result<serde_json::Value, Refusal> {
+        fn plugins(&self) -> Result<serde_json::Value, Refusal> {
             self.answer("plugins")
         }
         fn logs(
@@ -549,11 +605,8 @@ mod tests {
         ) -> Result<serde_json::Value, Refusal> {
             self.answer("logs")
         }
-        fn pair(&self, _device: &str) -> Result<serde_json::Value, Refusal> {
-            self.answer("pair")
-        }
-        fn pair_answer(&self, _request_id: &str, _accepted: bool) -> Result<serde_json::Value, Refusal> {
-            self.answer("pairAnswer")
+        fn pairing(&self, _action: &crate::PairingAction) -> Result<serde_json::Value, Refusal> {
+            self.answer("pairing")
         }
     }
 
@@ -569,8 +622,7 @@ mod tests {
 
     impl TempDir {
         fn new(name: &str) -> Self {
-            let path = std::env::temp_dir()
-                .join(format!("synra-{name}-{}", std::process::id()));
+            let path = std::env::temp_dir().join(format!("synra-{name}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&path);
             std::fs::create_dir_all(&path).expect("a temporary directory");
             Self(path)
@@ -650,11 +702,23 @@ mod tests {
     #[test]
     fn every_socket_error_explains_itself() {
         let errors = [
-            SocketError::Bind { path: PathBuf::from("/tmp/x"), why: "in use".to_owned() },
-            SocketError::Connect { path: PathBuf::from("/tmp/x"), why: "no such file".to_owned() },
-            SocketError::Transport { why: "reset".to_owned() },
-            SocketError::TimedOut { timeout: REPLY_TIMEOUT },
-            SocketError::Channel(ChannelError::Malformed { why: "x".to_owned() }),
+            SocketError::Bind {
+                path: PathBuf::from("/tmp/x"),
+                why: "in use".to_owned(),
+            },
+            SocketError::Connect {
+                path: PathBuf::from("/tmp/x"),
+                why: "no such file".to_owned(),
+            },
+            SocketError::Transport {
+                why: "reset".to_owned(),
+            },
+            SocketError::TimedOut {
+                timeout: REPLY_TIMEOUT,
+            },
+            SocketError::Channel(ChannelError::Malformed {
+                why: "x".to_owned(),
+            }),
         ];
         for error in &errors {
             let text = error.to_string();
@@ -707,9 +771,22 @@ mod tests {
         client.handshake().expect("handshakes");
         for (request, kind) in [
             (Request::Status, "status"),
-            (Request::Devices { include_unpaired: true, scan_ms: None }, "devices"),
+            (
+                Request::Devices {
+                    include_unpaired: true,
+                    scan_ms: None,
+                },
+                "devices",
+            ),
             (Request::Plugins, "plugins"),
-            (Request::Logs { lines: 5, verbose: false, trace: None }, "logs"),
+            (
+                Request::Logs {
+                    lines: 5,
+                    verbose: false,
+                    trace: None,
+                },
+                "logs",
+            ),
         ] {
             assert_eq!(
                 client.ask(&request).expect("asks"),
@@ -760,7 +837,11 @@ mod tests {
         let _ = path;
 
         let second = Listener::bind(dir.path());
-        assert!(second.is_ok(), "a stale socket stopped the bind: {:?}", second.err());
+        assert!(
+            second.is_ok(),
+            "a stale socket stopped the bind: {:?}",
+            second.err()
+        );
     }
 
     #[test]
@@ -819,7 +900,10 @@ mod tests {
         drop(client);
 
         let result = serving.join().expect("the thread finished");
-        assert!(result.is_ok(), "an interrupted client was reported as a failure: {result:?}");
+        assert!(
+            result.is_ok(),
+            "an interrupted client was reported as a failure: {result:?}"
+        );
     }
 
     #[test]
@@ -832,7 +916,10 @@ mod tests {
 
         let mut client = Client::connect(dir.path()).expect("connects");
         let response = client.ask(&Request::Status).expect("asks");
-        assert_eq!(response.error_code(), Some(ErrorCode::InvalidArgument.as_str()));
+        assert_eq!(
+            response.error_code(),
+            Some(ErrorCode::InvalidArgument.as_str())
+        );
 
         drop(client);
         assert!(serving.join().expect("the thread finished").is_ok());
@@ -846,7 +933,9 @@ mod tests {
 
         let mut client = Client::connect(dir.path()).expect("connects");
         let response = client
-            .ask(&Request::Hello { version: crate::PROTOCOL_VERSION + 1 })
+            .ask(&Request::Hello {
+                version: crate::PROTOCOL_VERSION + 1,
+            })
             .expect("asks");
         assert_eq!(
             response.error_code(),

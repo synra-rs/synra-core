@@ -19,7 +19,7 @@ fn raw_exchange(
     let (outgoing, incoming) = sockets();
     let (finished, stop) = std::sync::mpsc::channel();
     let worker = std::thread::spawn(move || {
-        let result = PairingChannel::accept(incoming, &server, &approved, IO_TIMEOUT)
+        let result = PairingChannel::accept(incoming, &server, &approved, IO_TIMEOUT, None)
             .and_then(|channel| channel.confirm(true, timeout))
             .and_then(|exchange| exchange.complete(true, timeout));
         let _ = finished.send(());

@@ -68,6 +68,50 @@ fn activation_failure_rolls_back_both_task_phase_and_grant() {
 }
 
 #[test]
+fn listing_failure_cannot_leave_an_authorized_peer_without_its_committed_pairing() {
+    let (_directory, db, attempt) = fixture();
+    assert!(db.claim_peer_trust(&attempt, 1, 1).unwrap());
+    assert!(db.store_peer_consent(&attempt, 1).unwrap());
+    db.connection.execute_batch(
+        "CREATE TRIGGER fail_listing BEFORE INSERT ON paired_devices BEGIN SELECT RAISE(ABORT, 'injected listing failure'); END;",
+    ).unwrap();
+    assert!(db.activate_peer_trust(&attempt, 1).is_err());
+    assert!(db.trusted_peer_records("local", &[1]).unwrap().is_empty());
+    assert!(db.paired_devices().unwrap().is_empty());
+    let phase: i64 = db
+        .connection
+        .query_row("SELECT phase FROM pairing_attempt", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(phase, 1);
+    db.connection
+        .execute_batch("DROP TRIGGER fail_listing")
+        .unwrap();
+    assert!(db.activate_peer_trust(&attempt, 1).unwrap());
+    assert_eq!(
+        db.paired_devices().unwrap().first().unwrap().device_id,
+        attempt.peer_id
+    );
+}
+
+#[test]
+fn an_expired_monotonic_commit_budget_rolls_back_an_otherwise_current_attempt() {
+    let (_directory, db, attempt) = fixture();
+    assert!(db.claim_peer_trust(&attempt, 1, 1).unwrap());
+    assert!(db.store_peer_consent(&attempt, 1).unwrap());
+    assert!(
+        !db.activate_peer_trust_until(&attempt, 1, std::time::Instant::now())
+            .unwrap()
+    );
+    assert!(db.trusted_peer_records("local", &[1]).unwrap().is_empty());
+    assert!(db.paired_devices().unwrap().is_empty());
+    let phase: i64 = db
+        .connection
+        .query_row("SELECT phase FROM pairing_attempt", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(phase, 1);
+}
+
+#[test]
 fn capacity_and_existing_grants_refuse_overwrite_until_explicit_revocation() {
     let (_directory, db, mut attempt) = fixture();
     assert!(!db.claim_peer_trust(&attempt, 1, 0).unwrap());

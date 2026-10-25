@@ -50,6 +50,18 @@ impl std::fmt::Debug for Host {
 }
 
 impl Host {
+    /// Copies the restricted pairing service without performing network IO under the host lock.
+    /// # Errors
+    /// Refuses when persistent authenticated networking could not be initialized.
+    pub fn pairing_service(
+        &self,
+    ) -> Result<std::sync::Arc<crate::peer_trust::PairingService>, HostError> {
+        self.network
+            .as_ref()
+            .map(crate::peer::authenticated::AuthenticatedPeer::pairing)
+            .map_err(|why| HostError::NetworkUnavailable { why: why.clone() })
+    }
+
     /// A host that is not listening.
     #[must_use]
     pub fn new(identity: Identity, local: LocalPeer) -> Self {

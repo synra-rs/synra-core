@@ -2024,115 +2024,6 @@ fn the_wall_clock_is_a_plausible_epoch_reading() {
     assert!(now < 4_102_444_800_000, "{now}");
 }
 
-// ── Answering a pairing prompt ────────────────────────────────────────────────────────────────
-
-#[test]
-fn answering_a_prompt_records_the_pairing_and_releases_the_waiting_link() {
-    // The closed loop: a peer's request is on the desk and its connection is blocked on a channel; the user's decision
-    // arrives on the *control* channel, which is a different thread with no access to that socket. This asserts that the
-    // decision reaches the waiter and the record reaches the database — the two halves that make pairing work at all.
-    let dir = TempDir::new("pair-answer");
-    let runtime = runtime(dir.path());
-    let dialer: synra_protocol::ids::DeviceId = "01a139a9-8f3c-72ce-9c96-2b2c81f14552"
-        .parse()
-        .expect("a valid device id");
-    let request_id = synra_protocol::ids::RequestId::new();
-
-    let request = synra_protocol::session::PairRequest {
-        profile: synra_protocol::session::PeerProfile {
-            device_id: dialer,
-            display_name: "Laptop".to_owned(),
-            platform: synra_protocol::session::PlatformKind::Desktop,
-            app_version: "0.1.0".to_owned(),
-        },
-        user_hint: None,
-    };
-    let synra_core::pairing::Offer::Waiting(waiter) =
-        runtime
-            .pairing
-            .offer(request_id, request, "127.0.0.1:5000", 1_000)
-    else {
-        panic!("a first request waits for a user");
-    };
-
-    let answer = Kernel::pair_answer(&runtime, &request_id.to_string(), true).expect("answered");
-    assert_eq!(answer["accepted"], serde_json::json!(true), "{answer}");
-
-    // The connection blocked on the socket is released by that same decision.
-    let delivered = waiter.wait(std::time::Duration::from_millis(50));
-    assert!(delivered.accepted);
-
-    // And the record is durable, so the next link from that device is trusted rather than asked to pair again.
-    let state = crate::pairing::state_for(
-        &runtime.db(),
-        dialer,
-        synra_protocol::handshake::LinkToken::from_hex(
-            delivered
-                .issued_token()
-                .expect("an acceptance issues a token"),
-        )
-        .ok()
-        .as_ref(),
-    );
-    assert_eq!(state, synra_protocol::handshake::PairingState::Current);
-}
-
-#[test]
-fn declining_a_prompt_writes_nothing_and_releases_the_link() {
-    let dir = TempDir::new("pair-answer");
-    let runtime = runtime(dir.path());
-    let dialer: synra_protocol::ids::DeviceId = "01a139a9-8f3c-72ce-9c96-2b2c81f14553"
-        .parse()
-        .expect("a valid device id");
-    let request_id = synra_protocol::ids::RequestId::new();
-    let request = synra_protocol::session::PairRequest {
-        profile: synra_protocol::session::PeerProfile {
-            device_id: dialer,
-            display_name: "Phone".to_owned(),
-            platform: synra_protocol::session::PlatformKind::Android,
-            app_version: "0.1.0".to_owned(),
-        },
-        user_hint: None,
-    };
-    let synra_core::pairing::Offer::Waiting(waiter) =
-        runtime
-            .pairing
-            .offer(request_id, request, "127.0.0.1:5000", 1_000)
-    else {
-        panic!("a first request waits for a user");
-    };
-
-    let answer = Kernel::pair_answer(&runtime, &request_id.to_string(), false).expect("answered");
-    assert_eq!(answer["accepted"], serde_json::json!(false));
-
-    let delivered = waiter.wait(std::time::Duration::from_millis(50));
-    assert!(!delivered.accepted);
-    assert!(
-        runtime.db().paired_devices().expect("reads").is_empty(),
-        "a refusal records nothing"
-    );
-}
-
-#[test]
-fn answering_a_request_nobody_made_is_refused_with_a_reason() {
-    // Expired while the user was deciding, or answered twice. Either way the caller must not be told the pairing
-    // happened, because the device it was about has already been released.
-    let dir = TempDir::new("pair-answer");
-    let runtime = runtime(dir.path());
-    let error = Kernel::pair_answer(&runtime, "01a139a9-8f3c-72ce-9c96-2b2c81f14551", true)
-        .expect_err("nothing is waiting under that request");
-    assert!(error.message.contains("no pairing request"), "{error:?}");
-}
-
-#[test]
-fn a_request_id_that_is_not_one_is_refused_before_anything_is_looked_up() {
-    let dir = TempDir::new("pair-answer");
-    let runtime = runtime(dir.path());
-    let error = Kernel::pair_answer(&runtime, "not-a-request-id", true)
-        .expect_err("that is not a request id");
-    assert!(error.message.contains("not a request id"), "{error:?}");
-}
-
 #[test]
 fn enabling_a_plugin_writes_the_flag_and_says_so() {
     // ★ The write that had no caller.
@@ -2737,6 +2628,7 @@ fn a_share_nothing_can_answer_is_counted_as_refused() {
 }
 
 mod authenticated_transfers;
+mod first_pairing;
 
 #[test]
 fn a_store_write_is_counted_with_its_kind() {

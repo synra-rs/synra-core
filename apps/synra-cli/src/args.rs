@@ -179,15 +179,59 @@ pub struct DevicesArgs {
 /// Options for `pair`.
 #[derive(Debug, Args)]
 pub struct PairArgs {
-    /// The device to ask. A device id, a display name if it is unambiguous, or `host:port`.
-    ///
-    /// # Why this blocks
-    ///
-    /// Because the answer is a person on the other device deciding, and there is nothing to print until they have. The
-    /// wait is bounded by the kernel's pairing window — the same one the other side shows a countdown for — so this
-    /// cannot hang for ever, and the kernel clears its own waiting state when the window closes.
-    #[arg(value_name = "DEVICE")]
-    pub device: String,
+    /// Export, explicitly approve an invitation, inspect progress, or cancel one bounded task.
+    #[command(subcommand)]
+    pub action: PairAction,
+}
+
+/// Actions for a two-way trusted out-of-band invitation exchange.
+#[derive(Debug, Subcommand)]
+pub enum PairAction {
+    /// Export this device's public invitation for the intended peer.
+    Invite,
+    /// Approve an invitation copied from the intended device and return a temporary response.
+    Listen {
+        /// Intended peer id or unambiguous discovery name.
+        device: String,
+        /// Invitation obtained through a trusted out-of-band path.
+        #[arg(long)]
+        invitation: String,
+    },
+    /// Approve the peer's response copied back through a trusted out-of-band path.
+    Connect {
+        /// Intended peer id or unambiguous discovery name.
+        device: String,
+        /// Public responder invitation.
+        #[arg(long)]
+        reply: String,
+    },
+    /// Inspect the current or last pairing task; this does not grant trust.
+    Status,
+    /// Cancel one task before its durable authorization commits.
+    Cancel {
+        /// Local task generation returned by listen or connect.
+        request_id: synra_protocol::RequestId,
+    },
+}
+
+impl From<&PairAction> for synra_control::PairingAction {
+    fn from(action: &PairAction) -> Self {
+        match action {
+            PairAction::Invite => Self::Invite,
+            PairAction::Listen { device, invitation } => Self::Listen {
+                device: device.clone(),
+                invitation: invitation.clone(),
+            },
+            PairAction::Connect { device, reply } => Self::Connect {
+                device: device.clone(),
+                reply: reply.clone(),
+            },
+            PairAction::Status => Self::Status,
+            PairAction::Cancel { request_id } => Self::Cancel {
+                request_id: *request_id,
+            },
+        }
+    }
 }
 
 /// Options for `send`.
@@ -531,7 +575,30 @@ mod tests {
         for args in [
             vec!["synra", "devices"],
             vec!["synra", "status"],
-            vec!["synra", "pair", "dev_a"],
+            vec!["synra", "pair", "invite"],
+            vec![
+                "synra",
+                "pair",
+                "listen",
+                "dev_a",
+                "--invitation",
+                "public invitation",
+            ],
+            vec![
+                "synra",
+                "pair",
+                "connect",
+                "dev_a",
+                "--reply",
+                "public responder invitation",
+            ],
+            vec!["synra", "pair", "status"],
+            vec![
+                "synra",
+                "pair",
+                "cancel",
+                "01a140ce-0000-7000-8000-000000000000",
+            ],
             vec!["synra", "send", "--to", "dev_a", "--text", "hi"],
             vec!["synra", "send", "--to", "dev_a", "--file", "a.txt"],
             vec!["synra", "plugin", "list"],
@@ -542,8 +609,13 @@ mod tests {
             vec!["synra", "logs"],
             vec!["synra", "doctor"],
             vec!["synra", "db", "dump"],
-                vec!["synra", "share", "https://example.com"],
-                vec!["synra", "intent", "show", "01a140ce-0000-7000-8000-000000000000"],
+            vec!["synra", "share", "https://example.com"],
+            vec![
+                "synra",
+                "intent",
+                "show",
+                "01a140ce-0000-7000-8000-000000000000",
+            ],
         ] {
             assert!(parse(&args).is_ok(), "{args:?} should parse");
         }
@@ -555,8 +627,14 @@ mod tests {
         // `pair` is a real command now, so it is refused for a different reason: it needs a device to ask. The two are
         // distinct failures and both belong here, because a user who types a bare `pair` should be told what is missing
         // rather than that the command does not exist.
-        assert!(parse(&["synra", "pair"]).is_err(), "pairing needs a device");
-        assert!(parse(&["synra"]).is_err(), "a bare invocation needs a subcommand");
+        assert!(
+            parse(&["synra", "pair"]).is_err(),
+            "pairing needs an explicit action"
+        );
+        assert!(
+            parse(&["synra"]).is_err(),
+            "a bare invocation needs a subcommand"
+        );
     }
 
     #[test]
@@ -564,9 +642,15 @@ mod tests {
         // `clap` adds a `help` subcommand by default, and it collides with a future command of that name while
         // shadowing the flag. The flag is what a user already reaches for.
         let command = Cli::command();
-        let names: Vec<&str> = command.get_subcommands().map(|sub| sub.get_name()).collect();
+        let names: Vec<&str> = command
+            .get_subcommands()
+            .map(|sub| sub.get_name())
+            .collect();
         assert!(!names.contains(&"help"), "{names:?}");
-        assert!(parse(&["synra", "--help"]).is_err(), "`--help` exits rather than parsing");
+        assert!(
+            parse(&["synra", "--help"]).is_err(),
+            "`--help` exits rather than parsing"
+        );
     }
 
     // ── Output format ─────────────────────────────────────────────────────────────────────────────
@@ -576,9 +660,18 @@ mod tests {
         // Global so it can go before or after the subcommand: a user who types it in the wrong place should not have
         // to be told where it goes.
         assert!(parsed(&["synra", "status"]).output.is_none());
-        assert_eq!(parsed(&["synra", "--output", "json", "status"]).output, Some(OutputFormat::Json));
-        assert_eq!(parsed(&["synra", "status", "--output", "json"]).output, Some(OutputFormat::Json));
-        assert_eq!(parsed(&["synra", "--output", "text", "status"]).output, Some(OutputFormat::Text));
+        assert_eq!(
+            parsed(&["synra", "--output", "json", "status"]).output,
+            Some(OutputFormat::Json)
+        );
+        assert_eq!(
+            parsed(&["synra", "status", "--output", "json"]).output,
+            Some(OutputFormat::Json)
+        );
+        assert_eq!(
+            parsed(&["synra", "--output", "text", "status"]).output,
+            Some(OutputFormat::Text)
+        );
     }
 
     #[test]
@@ -605,7 +698,8 @@ mod tests {
     #[test]
     fn devices_accepts_a_scan_and_a_cache_read_but_not_both() {
         // Scanning and reading the cache are opposite requests. Accepting both would mean one of them silently losing.
-        let Command::Devices(scan) = parsed(&["synra", "devices", "--scan-ms", "2500"]).command else {
+        let Command::Devices(scan) = parsed(&["synra", "devices", "--scan-ms", "2500"]).command
+        else {
             panic!("expected devices");
         };
         assert_eq!(scan.scan_ms, Some(2_500));
@@ -625,7 +719,10 @@ mod tests {
         // Both are required, and they are required in different places: the target by `clap`, because "which device"
         // is a flag a user plainly has to give, and the payload by `SendArgs::payload`, because "one of two flags"
         // with a sentence naming both is a better message than a usage line.
-        assert!(parse(&["synra", "send", "--text", "hi"]).is_err(), "no target");
+        assert!(
+            parse(&["synra", "send", "--text", "hi"]).is_err(),
+            "no target"
+        );
         assert!(
             parse(&["synra", "send", "--to", "dev_a"]).is_ok(),
             "the parser accepts it, and `payload` is what refuses it"
@@ -640,8 +737,10 @@ mod tests {
     fn send_refuses_both_payloads_at_the_parser() {
         // Not "one of them wins": a user who typed both meant one thing, and guessing produces a message that goes
         // somewhere they did not intend.
-        let error = parse(&["synra", "send", "--to", "dev_a", "--text", "hi", "--file", "a.txt"])
-            .expect_err("should be refused");
+        let error = parse(&[
+            "synra", "send", "--to", "dev_a", "--text", "hi", "--file", "a.txt",
+        ])
+        .expect_err("should be refused");
         let text = error.to_string();
         assert!(text.contains("text"), "{text}");
         assert!(text.contains("file"), "{text}");
@@ -649,7 +748,9 @@ mod tests {
 
     #[test]
     fn send_carries_text() {
-        let Command::Send(args) = parsed(&["synra", "send", "--to", "dev_a", "--text", "hi"]).command else {
+        let Command::Send(args) =
+            parsed(&["synra", "send", "--to", "dev_a", "--text", "hi"]).command
+        else {
             panic!("expected send");
         };
         assert_eq!(args.to, "dev_a");
@@ -658,7 +759,9 @@ mod tests {
 
     #[test]
     fn send_carries_a_file() {
-        let Command::Send(args) = parsed(&["synra", "send", "--to", "dev_a", "--file", "a.txt"]).command else {
+        let Command::Send(args) =
+            parsed(&["synra", "send", "--to", "dev_a", "--file", "a.txt"]).command
+        else {
             panic!("expected send");
         };
         assert_eq!(args.payload(), Ok(Payload::File("a.txt")));
@@ -688,7 +791,14 @@ mod tests {
     #[test]
     fn send_accepts_a_context() {
         let Command::Send(args) = parsed(&[
-            "synra", "send", "--to", "dev_a", "--text", "hi", "--context", "c1",
+            "synra",
+            "send",
+            "--to",
+            "dev_a",
+            "--text",
+            "hi",
+            "--context",
+            "c1",
         ])
         .command
         else {
@@ -701,7 +811,8 @@ mod tests {
     fn an_empty_payload_is_text_rather_than_nothing() {
         // `--text ""` is a user sending an empty message, which is a thing people do. Treating it as "no payload"
         // would refuse a valid invocation.
-        let Command::Send(args) = parsed(&["synra", "send", "--to", "dev_a", "--text", ""]).command else {
+        let Command::Send(args) = parsed(&["synra", "send", "--to", "dev_a", "--text", ""]).command
+        else {
             panic!("expected send");
         };
         assert_eq!(args.payload(), Ok(Payload::Text("")));
@@ -717,12 +828,16 @@ mod tests {
         let PluginAction::List { all } = args.action else {
             panic!("expected list");
         };
-        assert!(!all, "a disabled plugin is not one the user is looking for by default");
+        assert!(
+            !all,
+            "a disabled plugin is not one the user is looking for by default"
+        );
     }
 
     #[test]
     fn plugin_install_takes_a_path_or_a_registry_name() {
-        let Command::Plugin(args) = parsed(&["synra", "plugin", "install", "./chat.synra"]).command else {
+        let Command::Plugin(args) = parsed(&["synra", "plugin", "install", "./chat.synra"]).command
+        else {
             panic!("expected plugin");
         };
         let PluginAction::Install { source, version } = args.action else {
@@ -731,8 +846,15 @@ mod tests {
         assert_eq!(source, "./chat.synra");
         assert_eq!(version, None);
 
-        let Command::Plugin(args) =
-            parsed(&["synra", "plugin", "install", "@synra-plugin/chat", "--version", "1.0.0"]).command
+        let Command::Plugin(args) = parsed(&[
+            "synra",
+            "plugin",
+            "install",
+            "@synra-plugin/chat",
+            "--version",
+            "1.0.0",
+        ])
+        .command
         else {
             panic!("expected plugin");
         };
@@ -760,7 +882,9 @@ mod tests {
     fn plugin_remove_keeps_the_data_unless_asked() {
         // Removing a plugin the user may reinstall should keep its settings; one they do not trust is what the flag is
         // for.
-        let Command::Plugin(args) = parsed(&["synra", "plugin", "remove", "@synra-plugin/chat"]).command else {
+        let Command::Plugin(args) =
+            parsed(&["synra", "plugin", "remove", "@synra-plugin/chat"]).command
+        else {
             panic!("expected plugin");
         };
         let PluginAction::Remove { data, .. } = args.action else {
@@ -801,8 +925,17 @@ mod tests {
 
     #[test]
     fn logs_follows_and_filters() {
-        let Command::Logs(args) =
-            parsed(&["synra", "logs", "--follow", "--trace", "t1", "--lines", "10", "--verbose"]).command
+        let Command::Logs(args) = parsed(&[
+            "synra",
+            "logs",
+            "--follow",
+            "--trace",
+            "t1",
+            "--lines",
+            "10",
+            "--verbose",
+        ])
+        .command
         else {
             panic!("expected logs");
         };
@@ -841,8 +974,14 @@ mod tests {
 
     #[test]
     fn doctor_can_write_a_bundle_and_be_quiet() {
-        let Command::Doctor(args) =
-            parsed(&["synra", "doctor", "--failures-only", "--bundle", "/tmp/d.json"]).command
+        let Command::Doctor(args) = parsed(&[
+            "synra",
+            "doctor",
+            "--failures-only",
+            "--bundle",
+            "/tmp/d.json",
+        ])
+        .command
         else {
             panic!("expected doctor");
         };
@@ -860,7 +999,8 @@ mod tests {
         };
         assert_eq!(table, None);
 
-        let Command::Db(args) = parsed(&["synra", "db", "dump", "--table", "plugins"]).command else {
+        let Command::Db(args) = parsed(&["synra", "db", "dump", "--table", "plugins"]).command
+        else {
             panic!("expected db");
         };
         let DbAction::Dump { table } = args.action else {
@@ -902,7 +1042,8 @@ mod tests {
         // ★ The two are opposites and the difference is the whole feature: `send` names a device and delivers to it,
         // `share` names nothing and asks every plugin which one can handle it. A `share` that quietly became a `send`
         // would look identical from the command line and do something else entirely.
-        let Command::Share(args) = parsed(&["synra", "share", "https://example.com"]).command else {
+        let Command::Share(args) = parsed(&["synra", "share", "https://example.com"]).command
+        else {
             panic!("share is a command");
         };
         assert_eq!(args.text, "https://example.com");
@@ -910,8 +1051,14 @@ mod tests {
         // so rather than the kernel guessing from the contents.
         assert_eq!(args.mime, "text/plain");
 
-        let Command::Share(args) =
-            parsed(&["synra", "share", "--mime", "text/uri-list", "https://example.com"]).command
+        let Command::Share(args) = parsed(&[
+            "synra",
+            "share",
+            "--mime",
+            "text/uri-list",
+            "https://example.com",
+        ])
+        .command
         else {
             panic!("share is a command");
         };
@@ -922,8 +1069,13 @@ mod tests {
     fn the_three_answers_to_a_prompt_each_parse() {
         // ★ `share` prints an identifier and these are the commands that spend it. Before them, routing could be
         // started from the command line and never finished there — the identifier was a value with no second command.
-        let Command::Intent(args) =
-            parsed(&["synra", "intent", "show", "01a140ce-0000-7000-8000-000000000000"]).command
+        let Command::Intent(args) = parsed(&[
+            "synra",
+            "intent",
+            "show",
+            "01a140ce-0000-7000-8000-000000000000",
+        ])
+        .command
         else {
             panic!("intent is a command");
         };
@@ -935,7 +1087,11 @@ mod tests {
         // Both optional: omitting them is the ordinary case — one plugin claimed the share and named where to run it.
         assert!(matches!(
             args.action,
-            IntentAction::Decide { plugin: None, target: None, .. }
+            IntentAction::Decide {
+                plugin: None,
+                target: None,
+                ..
+            }
         ));
 
         // And naming them is how a user answers a share that left either open.
@@ -956,7 +1112,10 @@ mod tests {
         match args.action {
             IntentAction::Decide { plugin, target, .. } => {
                 assert_eq!(plugin.as_deref(), Some("@acme/opener"));
-                assert_eq!(target.as_deref(), Some("0e5a1c34-0000-4000-8000-000000000001"));
+                assert_eq!(
+                    target.as_deref(),
+                    Some("0e5a1c34-0000-4000-8000-000000000001")
+                );
             }
             other => panic!("expected decide, got {other:?}"),
         }

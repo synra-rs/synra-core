@@ -24,10 +24,10 @@ fn channels(
     .expect("verify remote invitation");
     std::thread::scope(|scope| {
         let server = scope.spawn(move || {
-            PairingChannel::accept(incoming, right, &approved_left, IO_TIMEOUT)
+            PairingChannel::accept(incoming, right, &approved_left, IO_TIMEOUT, None)
                 .expect("pairing server")
         });
-        let client = PairingChannel::connect(outgoing, left, &approved_right, IO_TIMEOUT)
+        let client = PairingChannel::connect(outgoing, left, &approved_right, IO_TIMEOUT, None)
             .expect("pairing client");
         (client, server.join().expect("server"))
     })
@@ -174,10 +174,10 @@ fn a_changed_key_in_the_same_device_id_cannot_produce_mutual_consent() {
     let approved = original.public_identity().clone();
     let (outgoing, incoming) = sockets();
     let server = std::thread::spawn(move || {
-        PairingChannel::accept(incoming, &right, &approved, IO_TIMEOUT)
+        PairingChannel::accept(incoming, &right, &approved, IO_TIMEOUT, None)
             .and_then(|channel| channel.confirm(true, IO_TIMEOUT))
     });
-    let result = PairingChannel::connect(outgoing, &replacement, &peer, IO_TIMEOUT)
+    let result = PairingChannel::connect(outgoing, &replacement, &peer, IO_TIMEOUT, None)
         .and_then(|channel| channel.confirm(true, IO_TIMEOUT));
     assert!(result.is_err());
     assert!(server.join().expect("server").is_err());
@@ -188,7 +188,7 @@ fn self_pairing_is_refused_and_the_consumed_raw_socket_is_closed() {
     let local = identity();
     let (outgoing, mut incoming) = sockets();
     assert!(matches!(
-        PairingChannel::connect(outgoing, &local, local.public_identity(), IO_TIMEOUT),
+        PairingChannel::connect(outgoing, &local, local.public_identity(), IO_TIMEOUT, None),
         Err(PairingError::Rejected(_))
     ));
     assert_eq!(incoming.read(&mut [0; 1]).expect("closed"), 0);
@@ -204,7 +204,7 @@ fn business_and_pairing_alpn_cannot_be_substituted_in_either_direction() {
         let (outgoing, incoming) = sockets();
         let server = std::thread::spawn(move || {
             if pairing_server {
-                PairingChannel::accept(incoming, &right, &approved, IO_TIMEOUT).is_err()
+                PairingChannel::accept(incoming, &right, &approved, IO_TIMEOUT, None).is_err()
             } else {
                 AuthenticatedStream::accept(incoming, &right, &[approved], IO_TIMEOUT).is_err()
             }
@@ -212,7 +212,7 @@ fn business_and_pairing_alpn_cannot_be_substituted_in_either_direction() {
         let refused = if pairing_server {
             AuthenticatedStream::connect(outgoing, &left, &peer, IO_TIMEOUT).is_err()
         } else {
-            PairingChannel::connect(outgoing, &left, &peer, IO_TIMEOUT).is_err()
+            PairingChannel::connect(outgoing, &left, &peer, IO_TIMEOUT, None).is_err()
         };
         assert!(refused);
         assert!(server.join().expect("server"));

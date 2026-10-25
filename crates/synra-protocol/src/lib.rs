@@ -46,7 +46,6 @@
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
-
 // Test code is exempt from the no-panic rules, and the exemption is deliberate rather than a
 // convenience.
 //
@@ -77,6 +76,7 @@ pub mod handshake;
 pub mod ids;
 pub mod inbound;
 pub mod limits;
+pub mod pairing;
 pub mod session;
 
 pub use error::{ErrorCode, SynraError, UserVisibility};
