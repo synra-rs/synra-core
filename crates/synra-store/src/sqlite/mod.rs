@@ -32,13 +32,15 @@ use crate::db::{Health, PRAGMAS, latest_version};
 use crate::records::RowError;
 
 mod audit;
+mod credentials;
 mod devices;
 mod identities;
+pub use credentials::DeviceCredentialRecord;
 mod intents;
 mod migrations;
 mod pairing;
-mod retries;
 mod replacement;
+mod retries;
 pub use replacement::PluginReplacement;
 mod updates;
 pub use updates::PluginUpdateCheck;
@@ -46,12 +48,12 @@ mod sync;
 pub use retries::IntentRetryRow;
 mod versions;
 pub use versions::PluginVersionRecord;
-mod sync_log;
 mod plugins;
-mod storage;
-mod settings;
 mod publishers;
 mod restore;
+mod settings;
+mod storage;
+mod sync_log;
 
 pub use migrations::migration_versions;
 pub use pairing::Paired;
@@ -169,9 +171,15 @@ impl SynraDb {
                 | OpenFlags::SQLITE_OPEN_CREATE
                 | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )
-        .map_err(|error| DbError::Open { path: path.to_path_buf(), why: error.to_string() })?;
+        .map_err(|error| DbError::Open {
+            path: path.to_path_buf(),
+            why: error.to_string(),
+        })?;
 
-        let db = Self { connection, write_observer: None };
+        let db = Self {
+            connection,
+            write_observer: None,
+        };
         db.apply_pragmas()?;
         db.refuse_a_future_schema()?;
         Ok(db)
@@ -197,8 +205,14 @@ impl SynraDb {
             path,
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )
-        .map_err(|error| DbError::Open { path: path.to_path_buf(), why: error.to_string() })?;
-        let db = Self { connection, write_observer: None };
+        .map_err(|error| DbError::Open {
+            path: path.to_path_buf(),
+            why: error.to_string(),
+        })?;
+        let db = Self {
+            connection,
+            write_observer: None,
+        };
         db.refuse_a_future_schema()?;
         Ok(db)
     }
@@ -213,7 +227,10 @@ impl SynraDb {
             path: std::path::PathBuf::from(":memory:"),
             why: error.to_string(),
         })?;
-        let db = Self { connection, write_observer: None };
+        let db = Self {
+            connection,
+            write_observer: None,
+        };
         db.apply_pragmas()?;
         Ok(db)
     }
@@ -248,12 +265,18 @@ impl SynraDb {
         let mut statement = self
             .connection
             .prepare("PRAGMA integrity_check")
-            .map_err(|error| DbError::Statement { why: error.to_string() })?;
+            .map_err(|error| DbError::Statement {
+                why: error.to_string(),
+            })?;
         let rows: Vec<String> = statement
             .query_map([], |row| row.get::<_, String>(0))
-            .map_err(|error| DbError::Statement { why: error.to_string() })?
+            .map_err(|error| DbError::Statement {
+                why: error.to_string(),
+            })?
             .collect::<Result<Vec<String>, _>>()
-            .map_err(|error| DbError::Statement { why: error.to_string() })?;
+            .map_err(|error| DbError::Statement {
+                why: error.to_string(),
+            })?;
         Ok(crate::db::interpret_integrity(&rows))
     }
 
@@ -292,7 +315,9 @@ impl SynraDb {
             // allowed here.
             self.connection
                 .execute("VACUUM INTO ?1", [destination.to_string_lossy().as_ref()])
-                .map_err(|error| DbError::Statement { why: error.to_string() })?;
+                .map_err(|error| DbError::Statement {
+                    why: error.to_string(),
+                })?;
             Ok(())
         })
     }
@@ -315,7 +340,10 @@ impl SynraDb {
             return Ok(());
         };
         if recorded > latest_version() {
-            return Err(DbError::FromTheFuture { found: recorded, known: latest_version() });
+            return Err(DbError::FromTheFuture {
+                found: recorded,
+                known: latest_version(),
+            });
         }
         Ok(())
     }
@@ -332,5 +360,7 @@ impl SynraDb {
 pub fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| i64::try_from(since.as_millis()).unwrap_or(i64::MAX))
+        .map_or(0, |since| {
+            i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
+        })
 }

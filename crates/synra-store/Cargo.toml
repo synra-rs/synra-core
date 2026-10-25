@@ -21,6 +21,10 @@ thiserror.workspace = true
 parking_lot.workspace = true
 zip.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+# Explicit native credentials; never use keyring's default or mock credential builder.
+keyring = { version = "=3.6.3", default-features = false, features = ["windows-native"] }
+
 [dev-dependencies]
 proptest.workspace = true
 rstest.workspace = true

@@ -1,7 +1,7 @@
 //! The secret storage's property tests.
 
-use super::*;
 use super::kind::sanitise_account;
+use super::*;
 use proptest::prelude::*;
 proptest! {
     /// Two distinct plugins never produce the same account name, whatever they call their secrets. A
@@ -39,7 +39,7 @@ proptest! {
         name in "[a-zA-Z0-9._/-]{1,30}",
     ) {
         let account = SecretKey::plugin(&plugin, &name).account();
-        prop_assert_ne!(&account, &SecretKey::DeviceIdentity.account());
+        prop_assert_ne!(&account, &SecretKey::device_identity([0; 32]).account());
         prop_assert!(account.starts_with("plugin/"));
     }
     /// A secret's `Debug` output never contains its bytes, whatever they are. The output is what reaches a

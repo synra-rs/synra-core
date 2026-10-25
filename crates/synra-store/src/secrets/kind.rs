@@ -104,7 +104,10 @@ impl SecretStrength {
 #[non_exhaustive]
 pub enum SecretKey {
     /// This device's identity key.
-    DeviceIdentity,
+    DeviceIdentity {
+        /// SHA-256 of the public certificate; each enrollment has a separate secret slot.
+        fingerprint: [u8; 32],
+    },
     /// One plugin's secure value, under a name the plugin chose.
     PluginSecret {
         /// The plugin.
@@ -115,10 +118,19 @@ pub enum SecretKey {
 }
 
 impl SecretKey {
+    /// A device private key under its public certificate fingerprint.
+    #[must_use]
+    pub const fn device_identity(fingerprint: [u8; 32]) -> Self {
+        Self::DeviceIdentity { fingerprint }
+    }
+
     /// A plugin's secret.
     #[must_use]
     pub fn plugin(plugin_id: impl Into<String>, name: impl Into<String>) -> Self {
-        Self::PluginSecret { plugin_id: plugin_id.into(), name: name.into() }
+        Self::PluginSecret {
+            plugin_id: plugin_id.into(),
+            name: name.into(),
+        }
     }
 
     /// The account name a keychain entry is filed under.
@@ -128,9 +140,19 @@ impl SecretKey {
     #[must_use]
     pub fn account(&self) -> String {
         match self {
-            Self::DeviceIdentity => "device-identity".to_owned(),
+            Self::DeviceIdentity { fingerprint } => {
+                let hex: String = fingerprint
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect();
+                format!("device-identity/{hex}")
+            }
             Self::PluginSecret { plugin_id, name } => {
-                format!("plugin/{}/{}", sanitise_account(plugin_id), sanitise_account(name))
+                format!(
+                    "plugin/{}/{}",
+                    sanitise_account(plugin_id),
+                    sanitise_account(name)
+                )
             }
         }
     }
@@ -139,8 +161,10 @@ impl SecretKey {
     #[must_use]
     pub fn belongs_to(&self, plugin_id: &str) -> bool {
         match self {
-            Self::DeviceIdentity => false,
-            Self::PluginSecret { plugin_id: owner, .. } => owner == plugin_id,
+            Self::DeviceIdentity { .. } => false,
+            Self::PluginSecret {
+                plugin_id: owner, ..
+            } => owner == plugin_id,
         }
     }
 }
@@ -154,8 +178,7 @@ pub(crate) fn sanitise_account(text: &str) -> String {
     for ch in text.chars() {
         if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.' {
             out.push(ch);
-        }
-        else {
+        } else {
             out.push('_');
         }
     }

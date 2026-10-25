@@ -8,10 +8,20 @@ fn plugin_key(name: &str) -> SecretKey {
 
 #[test]
 fn a_plugin_secret_is_namespaced_under_its_plugin() {
-    assert_eq!(plugin_key("token").account(), "plugin/_synra-plugin_chat/token");
+    assert_eq!(
+        plugin_key("token").account(),
+        "plugin/_synra-plugin_chat/token"
+    );
     // And the device identity is in its own namespace, which a plugin cannot spell because the account has
     // no `plugin/` prefix.
-    assert_eq!(SecretKey::DeviceIdentity.account(), "device-identity");
+    assert_eq!(
+        SecretKey::device_identity([0; 32]).account(),
+        format!("device-identity/{}", "00".repeat(32))
+    );
+    assert_ne!(
+        SecretKey::device_identity([0; 32]).account(),
+        SecretKey::device_identity([1; 32]).account()
+    );
 }
 
 #[test]
@@ -21,7 +31,10 @@ fn a_plugin_cannot_name_a_secret_into_another_namespace() {
     let sneaky = SecretKey::plugin("@synra-plugin/chat", "../../device-identity");
     let account = sneaky.account();
     assert!(!account.contains(".."), "{account}");
-    assert!(account.starts_with("plugin/_synra-plugin_chat/"), "{account}");
+    assert!(
+        account.starts_with("plugin/_synra-plugin_chat/"),
+        "{account}"
+    );
 
     // Two different plugins cannot collide on the same account however they spell their names.
     let other = SecretKey::plugin("@synra-plugin/notes", "../../device-identity");
@@ -44,7 +57,7 @@ fn an_empty_name_still_produces_a_usable_account() {
 fn a_key_knows_which_plugin_it_belongs_to() {
     assert!(plugin_key("token").belongs_to("@synra-plugin/chat"));
     assert!(!plugin_key("token").belongs_to("@synra-plugin/notes"));
-    assert!(!SecretKey::DeviceIdentity.belongs_to("@synra-plugin/chat"));
+    assert!(!SecretKey::device_identity([0; 32]).belongs_to("@synra-plugin/chat"));
 }
 
 #[test]
@@ -55,7 +68,10 @@ fn a_secret_never_prints_its_value() {
     let debug = format!("{secret:?}");
     assert!(!debug.contains("ghp"), "{debug}");
     assert!(!debug.contains("supersecret"), "{debug}");
-    assert!(debug.contains(&format!("{} bytes", secret.len())), "{debug}");
+    assert!(
+        debug.contains(&format!("{} bytes", secret.len())),
+        "{debug}"
+    );
 }
 
 #[test]
@@ -90,7 +106,10 @@ fn backend_kinds_report_their_strength() {
         assert!(kind.is_operating_system());
     }
     // The fallback stops a stolen disk and not a process running as this user.
-    assert_eq!(SecretBackendKind::EncryptedFile.strength(), SecretStrength::AtRestOnly);
+    assert_eq!(
+        SecretBackendKind::EncryptedFile.strength(),
+        SecretStrength::AtRestOnly
+    );
     assert!(!SecretBackendKind::EncryptedFile.is_operating_system());
     assert_eq!(SecretBackendKind::Memory.strength(), SecretStrength::None);
 }
@@ -135,8 +154,12 @@ fn a_memory_backend_stores_and_returns_a_value() {
 fn writing_the_same_key_replaces_the_value() {
     let backend = MemoryBackend::new();
     let key = plugin_key("token");
-    backend.set(&key, &SecretBytes::new(b"first".to_vec())).expect("writes");
-    backend.set(&key, &SecretBytes::new(b"second".to_vec())).expect("writes");
+    backend
+        .set(&key, &SecretBytes::new(b"first".to_vec()))
+        .expect("writes");
+    backend
+        .set(&key, &SecretBytes::new(b"second".to_vec()))
+        .expect("writes");
 
     assert_eq!(backend.len(), 1);
     assert_eq!(
@@ -150,7 +173,9 @@ fn deleting_removes_the_value_and_is_not_an_error_twice() {
     // Removing something that is not there is not an error: the caller wanted it gone and it is gone.
     let backend = MemoryBackend::new();
     let key = plugin_key("token");
-    backend.set(&key, &SecretBytes::new(b"x".to_vec())).expect("writes");
+    backend
+        .set(&key, &SecretBytes::new(b"x".to_vec()))
+        .expect("writes");
 
     backend.delete(&key).expect("deletes");
     assert_eq!(backend.get(&key).expect("reads"), None);
@@ -165,12 +190,20 @@ fn two_plugins_do_not_share_a_value() {
     let chat = SecretKey::plugin("@synra-plugin/chat", "token");
     let notes = SecretKey::plugin("@synra-plugin/notes", "token");
 
-    backend.set(&chat, &SecretBytes::new(b"chat-token".to_vec())).expect("writes");
+    backend
+        .set(&chat, &SecretBytes::new(b"chat-token".to_vec()))
+        .expect("writes");
     assert_eq!(backend.get(&notes).expect("reads"), None);
 
-    backend.set(&notes, &SecretBytes::new(b"notes-token".to_vec())).expect("writes");
+    backend
+        .set(&notes, &SecretBytes::new(b"notes-token".to_vec()))
+        .expect("writes");
     assert_eq!(
-        backend.get(&chat).expect("reads").expect("present").expose(),
+        backend
+            .get(&chat)
+            .expect("reads")
+            .expect("present")
+            .expose(),
         b"chat-token"
     );
 }
@@ -215,7 +248,10 @@ fn choosing_a_backend_prefers_the_operating_system() {
 fn choosing_from_nothing_is_no_backend_rather_than_a_silent_fallback() {
     // A silent fallback to memory would store the user's token in a place that forgets it at exit, and the
     // user would find out when they were asked to sign in again.
-    assert!(matches!(choose_backend(Vec::new()), Err(SecretError::NoBackend)));
+    assert!(matches!(
+        choose_backend(Vec::new()),
+        Err(SecretError::NoBackend)
+    ));
 }
 
 #[test]
@@ -257,7 +293,9 @@ fn secret_errors_explain_themselves() {
         SecretError::Backend("x".to_owned()),
         SecretError::Corrupt("x".to_owned()),
         SecretError::KeyUnavailable("x".to_owned()),
-        SecretError::NotFound { account: "a".to_owned() },
+        SecretError::NotFound {
+            account: "a".to_owned(),
+        },
         SecretError::TooLarge { len: 1, max: 0 },
     ];
     for error in errors {
@@ -287,7 +325,7 @@ fn backend_names_round_trip_through_json() {
 
 #[test]
 fn a_secret_key_round_trips_through_json() {
-    for key in [SecretKey::DeviceIdentity, plugin_key("token")] {
+    for key in [SecretKey::device_identity([0; 32]), plugin_key("token")] {
         let json = serde_json::to_string(&key).expect("serialises");
         let back: SecretKey = serde_json::from_str(&json).expect("deserialises");
         assert_eq!(back, key);

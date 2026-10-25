@@ -424,6 +424,17 @@ pub const MIGRATIONS: &[Migration] = &[
             "ALTER TABLE plugin_update_checks ADD COLUMN retry_at_ms INTEGER",
         ],
     },
+    Migration {
+        version: 18,
+        name: "device-credentials",
+        statements: &["CREATE TABLE device_credentials (
+                id INTEGER PRIMARY KEY CHECK (id = 1) REFERENCES identity(id) ON DELETE CASCADE,
+                device_id TEXT NOT NULL,
+                certificate BLOB NOT NULL CHECK (length(certificate) BETWEEN 1 AND 16384),
+                backend TEXT NOT NULL,
+                ready INTEGER NOT NULL DEFAULT 0 CHECK (ready IN (0, 1))
+            )"],
+    },
 ];
 
 /// The schema version this build expects.

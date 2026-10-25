@@ -32,13 +32,12 @@
 //!
 //! # What is deliberately not here
 //!
-//! No runtime, no sockets, no database handles. The kernel's pieces are pure decisions over values a caller supplies,
-//! so the tests need neither a network nor a disk — and the parts that get the answers wrong are the decisions, not the
-//! plumbing.
+//! No async runtime or GUI. Domain state machines make decisions over supplied values; shared services accept
+//! host-owned database handles and external capabilities. Those services release database locks before external IO,
+//! and their integration tests exercise real persistence and transport where the contract crosses those boundaries.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
-
 // Test code is exempt from the no-panic rules; see `synra-protocol` for the reasoning.
 #![cfg_attr(
     test,
@@ -55,6 +54,7 @@ pub mod admission;
 pub mod bus;
 pub mod config;
 pub mod consent;
+pub mod device_credentials;
 pub mod discovery;
 pub mod dispatch;
 pub mod host;
@@ -86,57 +86,52 @@ pub mod worker;
 pub use admission::{
     AdmissionContext, AdmissionRefusal, AdmissionStep, PluginKey, admit, check, host_requirement,
 };
+pub use host::{Attached, Host, HostError, SharedHost, millis_reading, reading_millis, shared};
 pub use session::{
-    Message, Receiving, Received, SessionError, SessionEvent, abort, classify, complete, propose,
+    Message, Received, Receiving, SessionError, SessionEvent, abort, classify, complete, propose,
     report_progress, send_blocks, send_bundle, send_file,
 };
+pub use socket::{DiscoverySocket, SocketError, absorb, broadcast_addresses, is_about};
 pub use transfer::{
-    Absorbed as BlockAbsorbed, Block, DEFAULT_CHUNK_SIZE, MAX_CHUNK_SIZE, ObjectDigest, TransferError,
-    TransferReceiver, TransferSender, plan_blocks,
+    Absorbed as BlockAbsorbed, Block, DEFAULT_CHUNK_SIZE, MAX_CHUNK_SIZE, ObjectDigest,
+    TransferError, TransferReceiver, TransferSender, plan_blocks,
 };
 pub use worker::{DiscoveryService, QUERY_INTERVAL, Ticked, is_visible, run};
-pub use socket::{
-    DiscoverySocket, SocketError, absorb, broadcast_addresses, is_about,
-};
-pub use host::{Attached, Host, HostError, SharedHost, millis_reading, reading_millis, shared};
 // The two halves of a dial, so a caller can perform the handshake **outside** whatever lock it holds on the host.
-pub use host::{Dialled, dial_peer};
+pub use bus::{
+    Delivery, EventBus, Judgement, SUBSCRIBER_QUEUE_CAPACITY, SequenceTracker, SubscriberId,
+    SubscriberReport,
+};
+pub use config::{Catalog, Config, ConfigError, ConfigSnapshot, Setting, SettingKey, SettingKind};
 pub use discovery::{
     Absorbed, CANDIDATE_TTL, Candidate, DiscoveryTable, UNUSABLE_NAME, announced_address,
 };
+pub use host::{Dialled, dial_peer};
+pub use identity::{
+    DEFAULT_DISPLAY_NAME, Identity, MAX_DISPLAY_NAME_LEN, NameError, RenameError,
+    check_display_name, platform_of_os,
+};
+pub use kernel::{Kernel, KernelConfig, KernelError, KernelEvent, KernelSnapshot, NodeRole};
+pub use link::{Inbound, LinkError, PeerLink};
 pub use messaging::{
     ClipboardText, MessageError, TEXT_MIME, pair_request, pair_response, text_from, text_to,
 };
-pub use link::{Inbound, LinkError, PeerLink};
-pub use peer::{
-    Flags, HandshakeError, LocalPeer, Negotiated, accept, agree, dial,
-};
-pub use kernel::{
-    Kernel, KernelConfig, KernelError, KernelEvent, KernelSnapshot, NodeRole,
-};
-pub use identity::{
-    DEFAULT_DISPLAY_NAME, Identity, MAX_DISPLAY_NAME_LEN, NameError, RenameError, check_display_name,
-    platform_of_os,
-};
-pub use config::{
-    Catalog, Config, ConfigError, ConfigSnapshot, Setting, SettingKey, SettingKind,
-};
-pub use bus::{
-    Delivery, EventBus, Judgement, SequenceTracker, SubscriberId, SubscriberReport,
-    SUBSCRIBER_QUEUE_CAPACITY,
-};
-pub use routing::{EventId, EventRegistry, RouteOutcome, RouterError};pub use sessions::{
-    ClosureReason, LinkState, PeerSession, RegistryError, RegistryEvent, SessionKey, SessionRegistry,
-};
-pub use supervisor::{
-    Cancellation, Criticality, Decision, RestartPolicy, ShutdownReport, StopReason, Supervisor, SupervisorError,
-    TaskId, TaskRecord, TaskSpec, WhyNot, run_task,
-};
+pub use peer::{Flags, HandshakeError, LocalPeer, Negotiated, accept, agree, dial};
 pub use plugin::{
     INSTANCE_LIMIT, LoadedSummary, Refused, activation_config, deactivate, load_installed,
     load_installed_with_config, load_plugin, load_plugin_with_config, migrate, reactivate_loaded,
 };
 pub use plugin_sync::{
-    ConflictPolicy, ReceiverDuty, RemoteState, SyncAction, SyncError, SyncOutcome, SyncRecord, SyncSession,
-    SyncInbox, SyncSessionId, SyncTable, compare_versions as compare_plugin_versions, decide as decide_sync,
+    ConflictPolicy, ReceiverDuty, RemoteState, SyncAction, SyncError, SyncInbox, SyncOutcome,
+    SyncRecord, SyncSession, SyncSessionId, SyncTable, compare_versions as compare_plugin_versions,
+    decide as decide_sync,
+};
+pub use routing::{EventId, EventRegistry, RouteOutcome, RouterError};
+pub use sessions::{
+    ClosureReason, LinkState, PeerSession, RegistryError, RegistryEvent, SessionKey,
+    SessionRegistry,
+};
+pub use supervisor::{
+    Cancellation, Criticality, Decision, RestartPolicy, ShutdownReport, StopReason, Supervisor,
+    SupervisorError, TaskId, TaskRecord, TaskSpec, WhyNot, run_task,
 };

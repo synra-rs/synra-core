@@ -5,9 +5,8 @@ use super::kind::{SecretBackendKind, SecretKey};
 
 /// The largest secret that may be stored.
 ///
-/// Keychains have their own limits and they differ; this is well below all of them and far above any token. A
-/// larger value is a file, and calling it a secret would put it somewhere with a size limit that fails at an
-/// unpredictable moment.
+/// Application-wide ceiling. Native backends also enforce their platform's smaller limit before writing;
+/// Windows generic credentials, for example, accept at most 2560 bytes.
 pub const MAX_SECRET_BYTES: usize = 64 * 1024;
 
 /// Where secrets are kept.
@@ -108,7 +107,10 @@ impl SecretBackend for MemoryBackend {
 /// Rejects a value the store will not accept.
 const fn check_size(value: &SecretBytes) -> Result<(), SecretError> {
     if value.len() > MAX_SECRET_BYTES {
-        return Err(SecretError::TooLarge { len: value.len(), max: MAX_SECRET_BYTES });
+        return Err(SecretError::TooLarge {
+            len: value.len(),
+            max: MAX_SECRET_BYTES,
+        });
     }
     Ok(())
 }

@@ -42,6 +42,7 @@ base64.workspace = true
 ed25519-dalek.workspace = true
 proptest.workspace = true
 rstest.workspace = true
+tempfile = "3"
 # The hot-path assertions reach across the workspace — a frame decoder, a capability match, the gate, the router — so
 # they live in the crate that already depends on all of them rather than in a crate that would have to gain four
 # dependencies to host one test file.

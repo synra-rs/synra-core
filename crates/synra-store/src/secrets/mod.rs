@@ -13,10 +13,15 @@
 //! | `backend` | the trait a backend implements, the memory backend, and how one is chosen |
 //! | `report` | what a settings screen shows about a secret |
 
-mod kind;
-mod bytes;
 mod backend;
+mod bytes;
+mod kind;
 mod report;
+
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+pub use windows::{MAX_WINDOWS_SECRET_BYTES, WindowsCredentialBackend};
 
 #[cfg(test)]
 mod tests;
@@ -28,4 +33,3 @@ pub use backend::{MAX_SECRET_BYTES, MemoryBackend, SecretBackend, choose_backend
 pub use bytes::{SecretBytes, SecretError};
 pub use kind::{SecretBackendKind, SecretKey, SecretStrength};
 pub use report::SecretStorageReport;
-
