@@ -119,3 +119,45 @@ fn cleanup_capacity_refuses_more_replacements_without_changing_the_current_ident
         MAX_RETIRED_DEVICE_CREDENTIALS as usize
     );
 }
+
+#[test]
+fn maintenance_reads_never_mix_a_certificate_with_another_replacements_cleanup_count() {
+    let (directory, db, _) = fixture();
+    let writer = SynraDb::open(&directory.path().join("identity.sqlite")).unwrap();
+    let done = std::sync::atomic::AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        let finished = &done;
+        scope.spawn(move || {
+            for index in 0..MAX_RETIRED_DEVICE_CREDENTIALS {
+                let expected = writer.device_credential().unwrap().unwrap();
+                assert!(
+                    writer
+                        .replace_device_credential(
+                            &expected,
+                            format!("generation-{index}").as_bytes(),
+                            "test"
+                        )
+                        .unwrap()
+                );
+            }
+            finished.store(true, std::sync::atomic::Ordering::Release);
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let state = db.device_credential_state().unwrap().unwrap();
+            let record = state.enrollment.unwrap();
+            let certificate = std::str::from_utf8(record.certificate()).unwrap();
+            let expected = certificate
+                .strip_prefix("generation-")
+                .map_or(0, |number| number.parse::<u32>().unwrap() + 1);
+            assert_eq!(state.retired_keys, expected);
+            if done.load(std::sync::atomic::Ordering::Acquire) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "writer did not finish"
+            );
+        }
+    });
+}

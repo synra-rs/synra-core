@@ -12,6 +12,8 @@ use synra_store::SynraDb;
 use synra_store::secrets::{SecretBackend, SecretBytes, SecretError, SecretKey, SecretStrength};
 use synra_store::sqlite::DeviceCredentialRecord;
 
+mod maintenance;
+pub use maintenance::{cleanup_native_identity, credential_snapshot, repair_native_identity};
 mod network;
 mod operation;
 mod repair;

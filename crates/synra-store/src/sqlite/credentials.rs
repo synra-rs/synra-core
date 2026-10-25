@@ -13,6 +13,17 @@ pub struct DeviceCredentialRecord {
     ready: bool,
 }
 
+/// Consistent public identity-maintenance facts from one SQLite read statement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceCredentialState {
+    /// Persisted local device id.
+    pub device_id: String,
+    /// Enrollment may be absent for a newly created identity.
+    pub enrollment: Option<DeviceCredentialRecord>,
+    /// Number of old secret slots still recorded for cleanup.
+    pub retired_keys: u32,
+}
+
 impl DeviceCredentialRecord {
     /// Device id this enrollment belongs to.
     #[must_use]
@@ -40,6 +51,39 @@ impl DeviceCredentialRecord {
 }
 
 impl SynraDb {
+    /// Reads identity, enrollment and cleanup count from one database snapshot.
+    /// # Errors
+    /// Refuses unreadable rows; an absent local identity returns None.
+    pub fn device_credential_state(&self) -> Result<Option<DeviceCredentialState>, DbError> {
+        self.connection
+            .query_row(
+                "SELECT i.device_id, c.device_id, c.certificate, c.backend, c.ready,
+                (SELECT COUNT(*) FROM retired_device_credentials)
+             FROM identity i LEFT JOIN device_credentials c ON c.id = i.id WHERE i.id = 1",
+                [],
+                |row| {
+                    let enrolled: Option<String> = row.get(1)?;
+                    let enrollment = enrolled
+                        .map(|device_id| -> rusqlite::Result<DeviceCredentialRecord> {
+                            Ok(DeviceCredentialRecord {
+                                device_id,
+                                certificate: row.get(2)?,
+                                backend: row.get(3)?,
+                                ready: row.get(4)?,
+                            })
+                        })
+                        .transpose()?;
+                    Ok(DeviceCredentialState {
+                        device_id: row.get(0)?,
+                        enrollment,
+                        retired_keys: row.get(5)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|error| statement(&error))
+    }
+
     /// Reads the public enrollment marker, including incomplete enrollments.
     ///
     /// # Errors

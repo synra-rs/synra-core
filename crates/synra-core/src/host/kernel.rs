@@ -50,6 +50,15 @@ impl std::fmt::Debug for Host {
 }
 
 impl Host {
+    /// Captured runtime identity, copied before maintenance reads or native backend IO.
+    #[must_use]
+    pub fn credential_fingerprint(&self) -> Option<[u8; 32]> {
+        self.network
+            .as_ref()
+            .ok()
+            .map(crate::peer::authenticated::AuthenticatedPeer::credential_fingerprint)
+    }
+
     /// Copies the restricted pairing service without performing network IO under the host lock.
     /// # Errors
     /// Refuses when persistent authenticated networking could not be initialized.

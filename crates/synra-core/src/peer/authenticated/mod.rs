@@ -51,6 +51,12 @@ pub struct AuthenticatedPeer {
 }
 
 impl AuthenticatedPeer {
+    /// Public certificate captured by this context; no secret-backend or database IO.
+    #[must_use]
+    pub fn credential_fingerprint(&self) -> [u8; 32] {
+        *self.credentials.public_identity().fingerprint()
+    }
+
     /// Rebuilds local announcement metadata while retaining the same credential and approval database.
     /// # Errors
     /// Refuses invalid profiles and changes to the credential's device id.

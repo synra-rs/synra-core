@@ -37,7 +37,7 @@ mod credentials;
 pub use credential_repair::{MAX_RETIRED_DEVICE_CREDENTIALS, RetiredDeviceCredential};
 mod devices;
 mod identities;
-pub use credentials::DeviceCredentialRecord;
+pub use credentials::{DeviceCredentialRecord, DeviceCredentialState};
 mod intents;
 mod migrations;
 mod pairing;

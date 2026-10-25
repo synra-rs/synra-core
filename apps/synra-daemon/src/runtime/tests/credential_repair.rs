@@ -49,7 +49,7 @@ fn production_native_repair_requires_displayed_confirmation_and_restarts_with_th
         })
         .unwrap();
     assert_eq!(repaired["restartRequired"], true);
-    assert_eq!(repaired["previousPairingsRevoked"], true);
+    assert!(runtime.db().paired_devices().unwrap().is_empty());
     assert_ne!(repaired["fingerprint"], fingerprint);
     let reopened = Arc::new(parking_lot::Mutex::new(fixture.open_connection().unwrap()));
     let profile = synra_core::LocalPeer::new(

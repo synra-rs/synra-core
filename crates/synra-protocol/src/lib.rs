@@ -67,6 +67,7 @@
     )
 )]
 
+pub mod credentials;
 pub mod discovery;
 pub mod envelope;
 pub mod error;

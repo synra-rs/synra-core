@@ -207,6 +207,9 @@ commands! {
     // ── identity ──
     "identity_get" => Identity, Host, One, false;
     "identity_set_display_name" => Identity, Host, Unit, true;
+    "identity_credentials" => Identity, Host, One, false;
+    "identity_repair" => Identity, Host, One, true;
+    "identity_cleanup" => Identity, Host, One, true;
 
     // ── devices ──
     "devices_snapshot" => Devices, Host, One, false;
@@ -505,6 +508,9 @@ mod tests {
             // identity
             "identity_get",
             "identity_set_display_name",
+            "identity_credentials",
+            "identity_repair",
+            "identity_cleanup",
             // devices
             "devices_snapshot",
             "devices_scan_start",
