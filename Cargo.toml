@@ -32,7 +32,7 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.88.0"
 license = "MIT"
 repository = "https://github.com/synra-rs/synra-core"
 authors = ["imba97 <mail@imba97.cn>"]

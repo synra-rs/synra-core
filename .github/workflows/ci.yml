@@ -51,8 +51,10 @@ jobs:
           repository: synra-rs/synra-app
           path: synra-rust-app
 
-      - name: Add clippy
-        run: rustup component add clippy
+      # Read the repository toolchain file, including its clippy and rustfmt components.
+      - name: Install the development toolchain
+        working-directory: synra-rust-core
+        run: rustup toolchain install --no-self-update
 
       - name: Cache
         uses: Swatinem/rust-cache@v2
@@ -63,17 +65,17 @@ jobs:
 
       - name: Clippy
         working-directory: synra-rust-core
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
       - name: Test the workspace
         working-directory: synra-rust-core
-        run: cargo test --workspace
+        run: cargo test --locked --workspace
 
       # ★ A second run, because `wasm-runtime` is off by default: without this step the only tests that compile and
       # instantiate a real component never run, and "the sandbox works" would be a claim about a scripted backend.
       - name: Test the real engine
         working-directory: synra-rust-core
-        run: cargo test -p synra-plugin-host --features wasm-runtime
+        run: cargo test --locked -p synra-plugin-host --features wasm-runtime
 
   msrv:
     name: declared MSRV
@@ -86,8 +88,13 @@ jobs:
 
       # ★ Pinned to the number in `Cargo.toml`, not to `stable`. `rust-version` is a promise to a downstream user with
       # an older compiler, and the only way a promise like that stays true is being run.
-      - name: Install the MSRV toolchain
-        run: rustup toolchain install 1.88.0 --profile minimal
+      - name: Install the declared MSRV
+        id: msrv
+        working-directory: synra-rust-core
+        run: |
+          msrv="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["rust-version"])')"
+          echo "toolchain=$msrv" >> "$GITHUB_OUTPUT"
+          rustup toolchain install "$msrv" --profile minimal --no-self-update
 
       - name: Cache
         uses: Swatinem/rust-cache@v2
@@ -97,7 +104,9 @@ jobs:
 
       - name: Check on the MSRV
         working-directory: synra-rust-core
-        run: cargo +1.88.0 check --workspace --all-targets
+        env:
+          MSRV: ${{ steps.msrv.outputs.toolchain }}
+        run: cargo "+$MSRV" check --locked --workspace --all-targets
 
   guards:
     name: guards and matrix
@@ -132,13 +141,24 @@ jobs:
           path: docs
 
       # ★ Guards run the MSRV check itself, so the toolchain it shells out to has to exist in this job too.
-      - name: Install the MSRV toolchain
-        run: rustup toolchain install 1.88.0 --profile minimal
+      # Read the repository toolchain file, including its clippy and rustfmt components.
+      - name: Install the development toolchain
+        working-directory: synra-rust-core
+        run: rustup toolchain install --no-self-update
+
+      - name: Install the declared MSRV
+        id: msrv
+        working-directory: synra-rust-core
+        run: |
+          msrv="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["rust-version"])')"
+          echo "toolchain=$msrv" >> "$GITHUB_OUTPUT"
+          rustup toolchain install "$msrv" --profile minimal --no-self-update
 
       # ★ The matrix's Android rows are `cargo check` against this target. The target's std is a download; the C
       # toolchain for sqlite and wasmtime is not, so those rows classify themselves as SKIP with the NDK named as the
       # remedy — which is the tool's designed answer, not a failure.
       - name: Add the Android target
+        working-directory: synra-rust-core
         run: rustup target add aarch64-linux-android
 
       - name: Cache

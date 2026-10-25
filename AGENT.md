@@ -35,6 +35,10 @@ From `Cargo.toml` at the root — read it rather than trusting this list if they
 | Author | `imba97 <mail@imba97.cn>` |
 | Profile | `panic = "unwind"` — a plugin panic must be catchable |
 
+Development rustc, Cargo, rustfmt and Clippy come from `rust-toolchain.toml`; run Rust commands from this repository.
+CI installs that file from the repository directory. MSRV checks read `Cargo.toml` and select it explicitly with `cargo +<msrv>`.
+Changing the development compiler is a reviewed configuration change, not a side effect of updating global `stable`.
+
 Twenty-five workspace members. `crates/synra-protocol`, `crates/synra-capability` and `crates/synra-plugin-api` are
 **Stable**: a breaking change there needs a major version, an ADR and a migration note. `STABILITY.md` names the tier of
 every crate and what enforces it.

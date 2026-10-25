@@ -18,6 +18,13 @@
 
 ---
 
+## 开发工具链
+
+开发版本与 rustfmt、Clippy 由 [rust-toolchain.toml](./rust-toolchain.toml) 固定。
+在仓库内执行 `rustup toolchain install --no-self-update` 安装后，照常运行 Cargo 命令；
+最低支持版本仍由 Cargo.toml 声明，验证时显式使用 `cargo +<msrv>`，不会改变默认开发版本。
+交叉编译目标按需要另行安装，工具链升级与对应检查结果一起审阅。
+
 ## 这个仓库将装什么
 
 ```
