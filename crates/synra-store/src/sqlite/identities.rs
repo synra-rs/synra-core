@@ -5,6 +5,31 @@ use crate::records::IdentityRow;
 use super::{DbError, SynraDb};
 
 impl SynraDb {
+    /// Creates the initial identity only if no other connection has already created one.
+    ///
+    /// # Errors
+    /// Returns a database error if the insert fails; `false` preserves the existing identity unchanged.
+    pub fn create_identity_if_absent(&self, identity: &IdentityRow) -> Result<bool, DbError> {
+        timed_write!(self, "identity-create", {
+            let changed = self
+                .connection
+                .execute(
+                    "INSERT INTO identity (id, device_id, display_name, platform, created_at_ms)
+                 VALUES (1, ?1, ?2, ?3, ?4) ON CONFLICT(id) DO NOTHING",
+                    params![
+                        identity.device_id,
+                        identity.display_name,
+                        identity.platform,
+                        identity.created_at_ms
+                    ],
+                )
+                .map_err(|error| DbError::Statement {
+                    why: error.to_string(),
+                })?;
+            Ok(changed == 1)
+        })
+    }
+
     /// This device's identity, if it has one.
     ///
     /// # Errors
@@ -32,7 +57,9 @@ impl SynraDb {
                 ))
             })
             .optional()
-            .map_err(|error| DbError::Statement { why: error.to_string() })?;
+            .map_err(|error| DbError::Statement {
+                why: error.to_string(),
+            })?;
 
         match row {
             Some(Ok(identity)) => Ok(Some(identity)),
@@ -69,8 +96,33 @@ impl SynraDb {
                         identity.created_at_ms
                     ],
                 )
-                .map_err(|error| DbError::Statement { why: error.to_string() })?;
+                .map_err(|error| DbError::Statement {
+                    why: error.to_string(),
+                })?;
             Ok(())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_losing_initial_identity_claim_preserves_the_winner() {
+        let mut db = SynraDb::open_in_memory().expect("database");
+        db.migrate().expect("migrate");
+        let winner =
+            IdentityRow::from_columns(Some("winner"), Some("First"), Some("windows"), Some(1))
+                .expect("row");
+        let loser =
+            IdentityRow::from_columns(Some("loser"), Some("Second"), Some("android"), Some(2))
+                .expect("row");
+        assert!(
+            db.create_identity_if_absent(&winner)
+                .expect("initial claim")
+        );
+        assert!(!db.create_identity_if_absent(&loser).expect("losing claim"));
+        assert_eq!(db.identity().expect("read"), Some(winner));
     }
 }

@@ -97,17 +97,7 @@ impl Identity {
             // ★ The identifier is read, not regenerated. This is the line the whole module is about: a device that made
             // a new id here would appear to every peer as a new device on every start, and every pairing would be lost —
             // silently, because a new device is a legitimate thing for the kernel to see.
-            let device_id = existing.device_id.parse().map_err(|error| {
-                DbError::Statement {
-                    why: format!("the stored device id is not a UUID: {error}"),
-                }
-            })?;
-            return Ok(Self {
-                device_id,
-                display_name: existing.display_name,
-                platform: existing.platform,
-                created_at_ms: existing.created_at_ms,
-            });
+            return Self::from_row(existing);
         }
 
         let device_id = DeviceId::new();
@@ -117,8 +107,33 @@ impl Identity {
             platform: platform.to_owned(),
             created_at_ms: now_ms,
         };
-        identity.store(db, now_ms)?;
-        Ok(identity)
+        db.create_identity_if_absent(&IdentityRow {
+            device_id: identity.device_id.to_string(),
+            display_name: identity.display_name,
+            platform: identity.platform,
+            created_at_ms: identity.created_at_ms,
+        })?;
+        // A different connection may have won after our initial read. Return the persisted winner,
+        // never upsert our candidate over an identity whose credentials may already be enrolled.
+        let stored = db.identity()?.ok_or_else(|| DbError::Statement {
+            why: "local identity disappeared during creation".to_owned(),
+        })?;
+        Self::from_row(stored)
+    }
+
+    fn from_row(existing: IdentityRow) -> Result<Self, DbError> {
+        let device_id = existing
+            .device_id
+            .parse()
+            .map_err(|error| DbError::Statement {
+                why: format!("the stored device id is not a UUID: {error}"),
+            })?;
+        Ok(Self {
+            device_id,
+            display_name: existing.display_name,
+            platform: existing.platform,
+            created_at_ms: existing.created_at_ms,
+        })
     }
 
     /// Writes this identity, or reports that it is not there yet.
@@ -132,7 +147,11 @@ impl Identity {
             device_id: self.device_id.to_string(),
             display_name: self.display_name.clone(),
             platform: self.platform.clone(),
-            created_at_ms: if self.created_at_ms == 0 { now_ms } else { self.created_at_ms },
+            created_at_ms: if self.created_at_ms == 0 {
+                now_ms
+            } else {
+                self.created_at_ms
+            },
         })
     }
 
@@ -205,8 +224,10 @@ pub fn platform_of_os(os: &str) -> synra_protocol::session::PlatformKind {
         "ios" => PlatformKind::Ios,
         // Every desktop operating system Rust names, listed rather than matched by a catch-all so that adding a phone
         // platform above cannot be silently shadowed by a fallback that was never meant to see it.
-        "windows" | "macos" | "linux" | "freebsd" | "netbsd" | "openbsd" | "dragonfly" | "solaris" | "illumos"
-        | "aix" | "hurd" | "redox" | "fuchsia" | "haiku" | "vxworks" => PlatformKind::Desktop,
+        "windows" | "macos" | "linux" | "freebsd" | "netbsd" | "openbsd" | "dragonfly"
+        | "solaris" | "illumos" | "aix" | "hurd" | "redox" | "fuchsia" | "haiku" | "vxworks" => {
+            PlatformKind::Desktop
+        }
         _ => PlatformKind::Desktop,
     }
 }
@@ -283,7 +304,9 @@ mod tests {
         let db = db();
         let mut identity = Identity::load(&db, "windows", 1_000).expect("loads");
         let original_id = identity.device_id;
-        identity.rename(&db, "Lena's laptop", 2_000).expect("renames");
+        identity
+            .rename(&db, "Lena's laptop", 2_000)
+            .expect("renames");
 
         let reloaded = Identity::load(&db, "windows", 3_000).expect("loads again");
         assert_eq!(reloaded.device_id, original_id);
@@ -328,7 +351,10 @@ mod tests {
         let mut identity = Identity::load(&db, "windows", 1_000).expect("loads");
         identity.rename(&db, "Laptop", 2_000).expect("renames");
         assert_eq!(identity.display_name(), "Laptop");
-        assert_eq!(db.identity().expect("reads").expect("a row").display_name, "Laptop");
+        assert_eq!(
+            db.identity().expect("reads").expect("a row").display_name,
+            "Laptop"
+        );
     }
 
     #[test]
@@ -342,7 +368,10 @@ mod tests {
         let refused = identity.rename(&db, "  ", 3_000);
         assert!(matches!(refused, Err(RenameError::Name(NameError::Empty))));
         assert_eq!(identity.display_name, "Laptop");
-        assert_eq!(db.identity().expect("reads").expect("a row").display_name, "Laptop");
+        assert_eq!(
+            db.identity().expect("reads").expect("a row").display_name,
+            "Laptop"
+        );
     }
 
     #[test]
@@ -391,7 +420,11 @@ mod tests {
         // Stripping them would produce a name the user did not choose, and the peer would keep sending the original — so
         // the refusal is what makes the sender fix it.
         for name in ["a\nb", "a\rb", "a\tb", "a\u{0}b", "a\u{1b}[31mb"] {
-            assert_eq!(check_display_name(name), Err(NameError::Control), "{name:?}");
+            assert_eq!(
+                check_display_name(name),
+                Err(NameError::Control),
+                "{name:?}"
+            );
         }
     }
 
@@ -417,7 +450,9 @@ mod tests {
             RenameError::Name(NameError::Empty),
             RenameError::Name(NameError::TooLong { len: 100 }),
             RenameError::Name(NameError::Control),
-            RenameError::Db(DbError::Statement { why: "x".to_owned() }),
+            RenameError::Db(DbError::Statement {
+                why: "x".to_owned(),
+            }),
         ];
         for error in &errors {
             let text = error.to_string();
@@ -444,8 +479,14 @@ mod tests {
 
     #[test]
     fn the_two_phone_platforms_are_named_exactly() {
-        assert_eq!(platform_of_os("android"), synra_protocol::session::PlatformKind::Android);
-        assert_eq!(platform_of_os("ios"), synra_protocol::session::PlatformKind::Ios);
+        assert_eq!(
+            platform_of_os("android"),
+            synra_protocol::session::PlatformKind::Android
+        );
+        assert_eq!(
+            platform_of_os("ios"),
+            synra_protocol::session::PlatformKind::Ios
+        );
     }
 
     #[test]
@@ -453,7 +494,16 @@ mod tests {
         // ★ Calling a machine a phone is a worse default than calling a phone a desktop: an interface that hides a
         // desktop feature from a phone is a *missing* feature, and one that offers a phone a desktop-only one is a
         // broken control.
-        for os in ["windows", "macos", "linux", "freebsd", "solaris", "plan9", "", "somewhere-new"] {
+        for os in [
+            "windows",
+            "macos",
+            "linux",
+            "freebsd",
+            "solaris",
+            "plan9",
+            "",
+            "somewhere-new",
+        ] {
             assert_eq!(
                 platform_of_os(os),
                 synra_protocol::session::PlatformKind::Desktop,
