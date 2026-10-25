@@ -217,8 +217,10 @@ commands! {
     "devices_forget" => Devices, Host, Unit, true;
 
     // ── pairing ──
-    "pairing_request" => Pairing, Host, One, true;
-    "pairing_respond" => Pairing, Host, Unit, true;
+    "pairing_invite" => Pairing, Host, One, false;
+    "pairing_listen" => Pairing, Host, One, true;
+    "pairing_connect" => Pairing, Host, One, true;
+    "pairing_status" => Pairing, Host, Maybe, false;
     "pairing_cancel" => Pairing, Host, Unit, true;
 
     // ── intent ──
@@ -364,13 +366,19 @@ impl CommandRegistry {
     /// Every command in a domain.
     #[must_use]
     pub fn in_domain(domain: Domain) -> Vec<&'static CommandDescriptor> {
-        COMMANDS.iter().filter(|command| command.domain == domain).collect()
+        COMMANDS
+            .iter()
+            .filter(|command| command.domain == domain)
+            .collect()
     }
 
     /// Every command an interface may call.
     #[must_use]
     pub fn for_interface(interface: Interface) -> Vec<&'static CommandDescriptor> {
-        COMMANDS.iter().filter(|command| command.interface == interface).collect()
+        COMMANDS
+            .iter()
+            .filter(|command| command.interface == interface)
+            .collect()
     }
 
     /// How many commands exist.
@@ -390,7 +398,9 @@ impl CommandRegistry {
 
         for command in COMMANDS {
             if seen.contains(&command.name) {
-                return Err(RegistryError::Duplicate { name: command.name.to_owned() });
+                return Err(RegistryError::Duplicate {
+                    name: command.name.to_owned(),
+                });
             }
             seen.push(command.name);
 
@@ -403,7 +413,9 @@ impl CommandRegistry {
             }
 
             if !is_snake_case_with_one_separator(command.name) {
-                return Err(RegistryError::BadName { name: command.name.to_owned() });
+                return Err(RegistryError::BadName {
+                    name: command.name.to_owned(),
+                });
             }
         }
         Ok(())
@@ -501,8 +513,10 @@ mod tests {
             "devices_disconnect",
             "devices_forget",
             // pairing
-            "pairing_request",
-            "pairing_respond",
+            "pairing_invite",
+            "pairing_listen",
+            "pairing_connect",
+            "pairing_status",
             "pairing_cancel",
             // intent
             "intent_dispatch",
@@ -557,9 +571,16 @@ mod tests {
         ];
 
         for name in documented {
-            assert!(CommandRegistry::find(name).is_some(), "{name} is documented and missing");
+            assert!(
+                CommandRegistry::find(name).is_some(),
+                "{name} is documented and missing"
+            );
         }
-        assert_eq!(documented.len(), CommandRegistry::len(), "the registry has commands the document does not");
+        assert_eq!(
+            documented.len(),
+            CommandRegistry::len(),
+            "the registry has commands the document does not"
+        );
     }
 
     #[test]
@@ -590,7 +611,11 @@ mod tests {
             .iter()
             .map(|domain| CommandRegistry::in_domain(*domain).len())
             .sum();
-        assert_eq!(total, CommandRegistry::len(), "some command is in no domain");
+        assert_eq!(
+            total,
+            CommandRegistry::len(),
+            "some command is in no domain"
+        );
     }
 
     #[test]
@@ -611,7 +636,12 @@ mod tests {
         // The prefixes are what the front end organises its modules by, and a command whose prefix disagrees with
         // its group ends up in the wrong file.
         for command in COMMANDS {
-            assert!(command.prefix_matches(), "{} vs {:?}", command.name, command.domain);
+            assert!(
+                command.prefix_matches(),
+                "{} vs {:?}",
+                command.name,
+                command.domain
+            );
         }
     }
 
@@ -629,11 +659,26 @@ mod tests {
     #[test]
     fn a_name_that_is_not_the_convention_is_refused() {
         // The check has to actually reject the shapes that would break the front end's grouping.
-        for bad in ["", "get", "Get_thing", "get__thing", "get-Thing", "get thing", "_x", "x_"] {
-            assert!(!is_snake_case_with_one_separator(bad), "{bad:?} was accepted");
+        for bad in [
+            "",
+            "get",
+            "Get_thing",
+            "get__thing",
+            "get-Thing",
+            "get thing",
+            "_x",
+            "x_",
+        ] {
+            assert!(
+                !is_snake_case_with_one_separator(bad),
+                "{bad:?} was accepted"
+            );
         }
         for good in ["devices_snapshot", "plugin_ui_rpc", "diag_logs_tail", "a_b"] {
-            assert!(is_snake_case_with_one_separator(good), "{good:?} was refused");
+            assert!(
+                is_snake_case_with_one_separator(good),
+                "{good:?} was refused"
+            );
         }
     }
 
@@ -646,7 +691,8 @@ mod tests {
             for second in &Domain::ALL[index + 1..] {
                 assert_ne!(first.prefix(), second.prefix(), "{first:?} and {second:?}");
                 assert!(
-                    !first.prefix().starts_with(second.prefix()) && !second.prefix().starts_with(first.prefix()),
+                    !first.prefix().starts_with(second.prefix())
+                        && !second.prefix().starts_with(first.prefix()),
                     "{first:?} and {second:?} are prefixes of each other"
                 );
             }
@@ -661,7 +707,11 @@ mod tests {
         // as the host's screens, so without this a plugin could call `plugins_uninstall`.
         for command in COMMANDS {
             if command.interface == Interface::Host {
-                assert!(!command.callable_by(Interface::Plugin), "{} is reachable from a plugin", command.name);
+                assert!(
+                    !command.callable_by(Interface::Plugin),
+                    "{} is reachable from a plugin",
+                    command.name
+                );
             }
         }
     }
@@ -672,7 +722,11 @@ mod tests {
         // bridge, and a command that expects a plugin's session token would fail in a way that reads as a bug.
         for command in COMMANDS {
             if command.interface == Interface::Plugin {
-                assert!(!command.callable_by(Interface::Host), "{} is reachable from the host bridge", command.name);
+                assert!(
+                    !command.callable_by(Interface::Host),
+                    "{} is reachable from the host bridge",
+                    command.name
+                );
             }
         }
     }
@@ -707,7 +761,10 @@ mod tests {
         ];
         let allowed = CommandRegistry::plugin_allow_list();
         for name in dangerous {
-            assert!(!allowed.contains(&name), "{name} is reachable from a plugin page");
+            assert!(
+                !allowed.contains(&name),
+                "{name} is reachable from a plugin page"
+            );
         }
     }
 
@@ -736,7 +793,7 @@ mod tests {
     // ── Return shapes ─────────────────────────────────────────────────────────────────────────────
 
     #[test]
-    fn only_one_command_returns_something_optional() {
+    fn absent_tasks_and_updates_return_optional_values() {
         // `plugins_check_update`: "no update" is not an error, and a command that returned one would make the
         // interface handle a failure on the common path.
         let optional: Vec<&str> = COMMANDS
@@ -744,15 +801,24 @@ mod tests {
             .filter(|command| command.returns == ReturnShape::Maybe)
             .map(|command| command.name)
             .collect();
-        assert_eq!(optional, vec!["plugins_check_update"]);
+        assert_eq!(optional, vec!["pairing_status", "plugins_check_update"]);
     }
 
     #[test]
     fn a_list_returning_command_is_marked_as_such() {
         // The front end types a list differently from a single value, so the distinction has to be in the
         // descriptor rather than inferred.
-        for name in ["transfer_list", "plugins_list", "plugins_audit", "diag_logs_tail"] {
-            assert_eq!(CommandRegistry::find(name).expect("exists").returns, ReturnShape::Many, "{name}");
+        for name in [
+            "transfer_list",
+            "plugins_list",
+            "plugins_audit",
+            "diag_logs_tail",
+        ] {
+            assert_eq!(
+                CommandRegistry::find(name).expect("exists").returns,
+                ReturnShape::Many,
+                "{name}"
+            );
         }
     }
 
@@ -769,7 +835,10 @@ mod tests {
             "config_get",
             "diag_metrics",
         ] {
-            assert!(!CommandRegistry::find(name).expect("exists").mutates, "{name}");
+            assert!(
+                !CommandRegistry::find(name).expect("exists").mutates,
+                "{name}"
+            );
         }
     }
 
@@ -819,9 +888,15 @@ mod tests {
                 domain: "devices",
                 prefix: "devices_",
             },
-            RegistryError::Duplicate { name: "devices_snapshot".to_owned() },
-            RegistryError::BadName { name: "DevicesSnapshot".to_owned() },
-            RegistryError::MutatingInPluginInterface { name: "plugins_uninstall".to_owned() },
+            RegistryError::Duplicate {
+                name: "devices_snapshot".to_owned(),
+            },
+            RegistryError::BadName {
+                name: "DevicesSnapshot".to_owned(),
+            },
+            RegistryError::MutatingInPluginInterface {
+                name: "plugins_uninstall".to_owned(),
+            },
         ];
         for error in errors {
             let text = error.to_string();

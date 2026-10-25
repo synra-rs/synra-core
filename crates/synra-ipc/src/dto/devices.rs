@@ -116,30 +116,3 @@ pub struct ScanOptions {
     /// devices without spending a scan budget.
     pub cached_only: bool,
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Pairing
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// A pairing request waiting on a decision.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PairingPrompt {
-    /// The request, for the response.
-    pub request_id: String,
-    /// The device asking.
-    pub device_id: DeviceId,
-    /// The name it claims.
-    pub display_name: String,
-    /// Its platform.
-    pub platform: String,
-    /// Its address, so the user can recognise a machine they have not paired with.
-    pub address: String,
-    /// The code both sides show, for the user to compare.
-    ///
-    /// The whole point of the prompt: a comparison the user makes is what stops a device on the same network from
-    /// asking to pair in place of the one the user meant.
-    pub verification_code: String,
-    /// When the request stops being valid, in milliseconds since the epoch.
-    pub expires_at_ms: i64,
-}

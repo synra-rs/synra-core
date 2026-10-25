@@ -41,7 +41,7 @@ use serde::{Deserialize, Serialize};
 use crate::dto::{
     DeviceCard, IntentSnapshot, PluginSnapshot, ScanState, TransferSnapshot, UpdateInfo,
 };
-use synra_protocol::{DeviceId, IntentId, PluginId, RequestId, TransferId};
+use synra_protocol::{DeviceId, IntentId, PluginId, TransferId};
 
 /// A change the interface should apply.
 ///
@@ -64,13 +64,8 @@ pub enum KernelEvent {
     ScanUpdated(Box<ScanState>),
 
     // ── Pairing ──
-    /// A device is asking to pair.
-    PairingRequested(Box<crate::dto::PairingPrompt>),
-    /// A request is no longer pending, because it was answered or it expired.
-    PairingResolved {
-        /// Which request.
-        request_id: RequestId,
-    },
+    /// Progress of the shared restricted first-pairing task, never an authorization grant.
+    PairingUpdated(Box<synra_protocol::pairing::PairingSnapshot>),
 
     // ── Intent ──
     /// An intent's state changed, including its candidates becoming available.
@@ -99,7 +94,8 @@ pub enum KernelEvent {
 
     // ── Plugins ──
     /// A plugin was installed, removed, enabled, disabled or faulted.
-    PluginUpdated(Box<PluginSnapshot>),    /// A plugin is being installed, and this much of it has arrived.
+    PluginUpdated(Box<PluginSnapshot>),
+    /// A plugin is being installed, and this much of it has arrived.
     PluginInstallProgress {
         /// Which plugin.
         plugin_id: PluginId,
@@ -165,8 +161,7 @@ impl KernelEvent {
             Self::DeviceCardUpdated(_) => "deviceCardUpdated",
             Self::DeviceRemoved { .. } => "deviceRemoved",
             Self::ScanUpdated(_) => "scanUpdated",
-            Self::PairingRequested(_) => "pairingRequested",
-            Self::PairingResolved { .. } => "pairingResolved",
+            Self::PairingUpdated(_) => "pairingUpdated",
             Self::IntentUpdated(_) => "intentUpdated",
             Self::IntentFinished { .. } => "intentFinished",
             Self::ConfigUpdated(_) => "configUpdated",
@@ -259,7 +254,11 @@ impl SequenceTracker {
     /// A tracker that has seen nothing.
     #[must_use]
     pub const fn new() -> Self {
-        Self { last: None, gaps: 0, stale: false }
+        Self {
+            last: None,
+            gaps: 0,
+            stale: false,
+        }
     }
 
     /// The last sequence number applied.
@@ -298,13 +297,16 @@ impl SequenceTracker {
                 let expected = last.saturating_add(1);
                 if seq == expected {
                     EventVerdict::Apply
-                }
-                else {
+                } else {
                     // A gap of a few is worth counting; a jump of thousands is not, because the count would be a
                     // number nobody reads and the arithmetic could overflow on a hostile value.
                     let missed = seq.saturating_sub(expected);
                     EventVerdict::RefreshSnapshot {
-                        missed: if missed <= MAX_COUNTED_GAP { Some(missed) } else { None },
+                        missed: if missed <= MAX_COUNTED_GAP {
+                            Some(missed)
+                        } else {
+                            None
+                        },
                     }
                 }
             }
@@ -346,7 +348,10 @@ impl SequenceTracker {
     /// A snapshot of the tracker, for a diagnostic report.
     #[must_use]
     pub const fn report(&self) -> SequenceReport {
-        SequenceReport { last: self.last, gaps: self.gaps }
+        SequenceReport {
+            last: self.last,
+            gaps: self.gaps,
+        }
     }
 }
 
@@ -511,7 +516,8 @@ mod tests {
         // `#[serde(tag = "type", content = "payload")]` is what makes the interface's switch possible: an externally
         // tagged enum would arrive as `{ "DeviceCardUpdated": { … } }`, and a variant name is not a stable wire
         // format.
-        let event = KernelEvent::DeviceCardUpdated(Box::new(card("018f2b40-0000-7000-8000-000000000001")));
+        let event =
+            KernelEvent::DeviceCardUpdated(Box::new(card("018f2b40-0000-7000-8000-000000000001")));
         let json = serde_json::to_string(&event).expect("serialises");
         assert!(json.contains("\"type\":\"deviceCardUpdated\""), "{json}");
         assert!(json.contains("\"payload\""), "{json}");
@@ -523,7 +529,8 @@ mod tests {
     #[test]
     fn an_event_with_no_payload_carries_only_its_type() {
         let event = KernelEvent::DeviceRemoved {
-            device_id: DeviceId::from_str("018f2b40-0000-7000-8000-000000000001").expect("a valid uuid"),
+            device_id: DeviceId::from_str("018f2b40-0000-7000-8000-000000000001")
+                .expect("a valid uuid"),
         };
         let json = serde_json::to_string(&event).expect("serialises");
         let back: KernelEvent = serde_json::from_str(&json).expect("deserialises");
@@ -535,7 +542,8 @@ mod tests {
         for event in [
             KernelEvent::DeviceCardUpdated(Box::new(card("018f2b40-0000-7000-8000-000000000001"))),
             KernelEvent::DeviceRemoved {
-                device_id: DeviceId::from_str("018f2b40-0000-7000-8000-000000000001").expect("a valid uuid"),
+                device_id: DeviceId::from_str("018f2b40-0000-7000-8000-000000000001")
+                    .expect("a valid uuid"),
             },
             KernelEvent::ScanUpdated(Box::new(ScanState {
                 scan_id: "s1".to_owned(),
@@ -543,9 +551,21 @@ mod tests {
                 total_ms: 2_500,
                 found: 3,
             })),
-            KernelEvent::PairingResolved { request_id: RequestId::new() },
-            KernelEvent::TransferFinished { transfer_id: TransferId::new() },
-            KernelEvent::IntentFinished { intent_id: IntentId::new() },
+            KernelEvent::PairingUpdated(Box::new(synra_protocol::pairing::PairingSnapshot {
+                request_id: synra_protocol::RequestId::new(),
+                peer_id: DeviceId::new(),
+                phase: synra_protocol::pairing::PairingPhase::Cancelled,
+                expires_at_ms: 0,
+                reply: None,
+                error_code: None,
+                detail: None,
+            })),
+            KernelEvent::TransferFinished {
+                transfer_id: TransferId::new(),
+            },
+            KernelEvent::IntentFinished {
+                intent_id: IntentId::new(),
+            },
             KernelEvent::PluginInstallProgress {
                 plugin_id: PluginId::parse("@synra-plugin/chat").expect("valid"),
                 progress: 0.5,
@@ -562,7 +582,10 @@ mod tests {
                 capabilities: vec!["log:*".to_owned()],
                 manifest_digest: "d".to_owned(),
             },
-            KernelEvent::LogLine { level: "warn".to_owned(), line: "x".to_owned() },
+            KernelEvent::LogLine {
+                level: "warn".to_owned(),
+                line: "x".to_owned(),
+            },
             KernelEvent::Notice {
                 message: "notice.something".to_owned(),
                 params: serde_json::json!({}),
@@ -604,7 +627,8 @@ mod tests {
     fn an_event_an_older_interface_does_not_know_still_has_a_readable_type() {
         // The interface reads the tag before it parses the payload, so an unknown type is a *known* unknown rather
         // than a syntax error — which is what lets the `default` branch tell "newer kernel" from "corrupt channel".
-        let json: serde_json::Value = serde_json::from_str(r#"{ "type": "somethingNew" }"#).expect("valid json");
+        let json: serde_json::Value =
+            serde_json::from_str(r#"{ "type": "somethingNew" }"#).expect("valid json");
         assert_eq!(json["type"], "somethingNew");
     }
 
@@ -617,7 +641,8 @@ mod tests {
             seq: 1,
             at: 1_000,
             event: KernelEvent::DeviceRemoved {
-                device_id: DeviceId::from_str("018f2b40-0000-7000-8000-000000000001").expect("a valid uuid"),
+                device_id: DeviceId::from_str("018f2b40-0000-7000-8000-000000000001")
+                    .expect("a valid uuid"),
             },
         };
         let json = serde_json::to_string(&envelope).expect("serialises");
@@ -635,11 +660,17 @@ mod tests {
         let envelope = KernelEventEnvelope {
             seq: 9,
             at: 0,
-            event: KernelEvent::LogLine { level: "info".to_owned(), line: "x".to_owned() },
+            event: KernelEvent::LogLine {
+                level: "info".to_owned(),
+                line: "x".to_owned(),
+            },
         };
         let mut tracker = SequenceTracker::new();
         tracker.observe(1);
-        assert!(matches!(tracker.observe(envelope.seq), EventVerdict::RefreshSnapshot { .. }));
+        assert!(matches!(
+            tracker.observe(envelope.seq),
+            EventVerdict::RefreshSnapshot { .. }
+        ));
     }
 
     #[test]
@@ -660,7 +691,8 @@ mod tests {
         // The identity is part of the devices snapshot, not a thing that changes on its own — and an event for it
         // would be a second way for the interface to learn the same fact.
         let snapshot = IdentitySnapshot {
-            device_id: DeviceId::from_str("018f2b40-0000-7000-8000-000000000001").expect("a valid uuid"),
+            device_id: DeviceId::from_str("018f2b40-0000-7000-8000-000000000001")
+                .expect("a valid uuid"),
             display_name: "Laptop".to_owned(),
             platform: "linux".to_owned(),
             kernel_version: "0".to_owned(),

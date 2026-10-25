@@ -42,18 +42,21 @@ mod plugin;
 mod transfer;
 
 pub use config::{
-    ConfigPatch, ConfigSnapshot, DiagExportOptions, DiagExportResult, ProbeReportDto, ProbeResultDto,
+    ConfigPatch, ConfigSnapshot, DiagExportOptions, DiagExportResult, ProbeReportDto,
+    ProbeResultDto,
 };
-pub use devices::{
-    DeviceCard, DevicesSnapshot, IdentitySnapshot, PairingPrompt, ScanOptions, ScanState,
+pub use devices::{DeviceCard, DevicesSnapshot, IdentitySnapshot, ScanOptions, ScanState};
+pub use intent::{
+    IntentCandidate, IntentDecisionDto, IntentPrompt, IntentRetry, IntentSnapshot, IntentSourceDto,
 };
-pub use intent::{IntentCandidate, IntentDecisionDto, IntentPrompt, IntentRetry, IntentSnapshot, IntentSourceDto};
 pub use plugin::{
-    AuditEntryDto, CatalogItem, CatalogQuery, CatalogSort, InstallPreviewDto, InstallReport, InstallSourceDto,
-    PluginHealthDto, PluginSnapshot, PublisherDto, RemoveOptionsDto, RemoveReport, SyncFailure, SyncPlanDto,
-    SyncReport, SyncTarget, UpdateInfo,
+    AuditEntryDto, CatalogItem, CatalogQuery, CatalogSort, InstallPreviewDto, InstallReport,
+    InstallSourceDto, PluginHealthDto, PluginSnapshot, PublisherDto, RemoveOptionsDto,
+    RemoveReport, SyncFailure, SyncPlanDto, SyncReport, SyncTarget, UpdateInfo,
 };
-pub use transfer::{ReceivedFile, SendFileRequest, SendTextRequest, TransferSnapshot, TransferSummary};
+pub use transfer::{
+    ReceivedFile, SendFileRequest, SendTextRequest, TransferSnapshot, TransferSummary,
+};
 
 #[cfg(test)]
 mod tests;
