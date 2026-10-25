@@ -128,6 +128,7 @@ fn a_file_that_reaches_the_other_side_is_measured() {
     let inbox = TempDir::new("send-file-inbox");
     let (listener, address, _receiver_fixture) =
         listening("11111111-1111-4111-8111-111111111111", "Laptop");
+    let sending_host = std::sync::Arc::clone(&runtime.host);
     let served = std::thread::spawn(move || {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
@@ -136,7 +137,19 @@ fn a_file_that_reaches_the_other_side_is_measured() {
             let taken = listener.lock().try_accept();
             match taken {
                 Ok(Some(stream)) => {
-                    return synra_core::listener::handle_within(
+                    let offer: std::sync::Arc<synra_core::inbound::OfferCallback> =
+                        std::sync::Arc::new(move |_| {
+                            assert!(
+                                sending_host.try_lock().is_some(),
+                                "file IO must not hold the sender host lock"
+                            );
+                            synra_core::inbound::OfferDecision::Accept
+                        });
+                    let progress: std::sync::Arc<synra_core::listener::ProgressCallback> =
+                        std::sync::Arc::new(|_| {});
+                    let cancel: std::sync::Arc<synra_core::listener::CancelCallback> =
+                        std::sync::Arc::new(|_| false);
+                    return synra_core::listener::handle_within_with(
                         &listener,
                         stream,
                         inbox.path(),
@@ -144,6 +157,10 @@ fn a_file_that_reaches_the_other_side_is_measured() {
                         &test_desk(),
                         &test_router(),
                         &synra_core::listener::no_answer(),
+                        &progress,
+                        &offer,
+                        &cancel,
+                        &synra_core::listener::no_kernel_events(),
                     );
                 }
                 Ok(None) => {}

@@ -75,9 +75,10 @@ impl TransferSender {
 
         // `u32` rather than `usize`: the bitmap counts blocks, and a block count is what the protocol's field is.
         let total = u32::try_from(blocks.len()).unwrap_or(u32::MAX);
-        let file_name = path
-            .file_name()
-            .map_or_else(|| "file".to_owned(), |name| name.to_string_lossy().into_owned());
+        let file_name = path.file_name().map_or_else(
+            || "file".to_owned(),
+            |name| name.to_string_lossy().into_owned(),
+        );
 
         Ok(Self {
             transfer_id: TransferId::new(),
@@ -178,15 +179,17 @@ impl TransferSender {
             path: self.path.clone(),
             why: error.to_string(),
         })?;
-        file.seek(SeekFrom::Start(block.offset)).map_err(|error| TransferError::Read {
-            path: self.path.clone(),
-            why: error.to_string(),
-        })?;
+        file.seek(SeekFrom::Start(block.offset))
+            .map_err(|error| TransferError::Read {
+                path: self.path.clone(),
+                why: error.to_string(),
+            })?;
         let mut buffer = vec![0u8; block.len as usize];
-        file.read_exact(&mut buffer).map_err(|error| TransferError::Read {
-            path: self.path.clone(),
-            why: error.to_string(),
-        })?;
+        file.read_exact(&mut buffer)
+            .map_err(|error| TransferError::Read {
+                path: self.path.clone(),
+                why: error.to_string(),
+            })?;
         Ok(buffer)
     }
 
@@ -207,6 +210,16 @@ impl TransferSender {
     #[must_use]
     pub fn has_sent(&self, index: u32) -> bool {
         self.sent.contains(index)
+    }
+
+    /// Checks an acknowledgement without scanning individual blocks or allocating a missing list.
+    pub(crate) fn acknowledges_only_sent(&self, bitmap: &ProgressBitmap) -> bool {
+        bitmap.total_blocks() == self.sent.total_blocks()
+            && bitmap
+                .as_bytes()
+                .iter()
+                .zip(self.sent.as_bytes())
+                .all(|(received, sent)| received & !sent == 0)
     }
 
     /// Replaces what this sender believes has arrived with what the receiver reported.
@@ -239,16 +252,16 @@ impl TransferSender {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     /// A real temporary file: `open` reads it and hashes it, so this cannot be faked.
-    fn a_file() -> PathBuf {
-        let path = std::env::temp_dir().join(format!("synra-sender-{}.wasm", std::process::id()));
+    fn a_file() -> (tempfile::TempDir, PathBuf) {
+        let root = tempfile::tempdir().expect("a unique directory per test");
+        let path = root.path().join("artifact.wasm");
         std::fs::write(&path, b"\0asm\x01\0\0\0the artifact").expect("writes");
-        path
+        (root, path)
     }
 
     #[test]
@@ -256,7 +269,7 @@ mod tests {
         // ★ 在这一轮之前，`request()` 把 `kind` 与 `meta` 硬编码成附件 ——
         // 于是一个插件包会以一张截图的身份到达，而接收端**正是**据此决定它落在哪里、以及它是什么
         // （第 139 轮的 `bundle` 字段、第 151 轮的安装）。
-        let path = a_file();
+        let (_root, path) = a_file();
         let plugin_id =
             synra_protocol::ids::PluginId::try_from("@acme/chat".to_owned()).expect("an id");
         let round = crate::plugin_sync::SyncRound {
@@ -276,23 +289,24 @@ mod tests {
             "the round did not travel with the request"
         );
         match request.meta {
-            TransferMeta::PluginBundle { plugin_id: announced, version } => {
+            TransferMeta::PluginBundle {
+                plugin_id: announced,
+                version,
+            } => {
                 assert_eq!(announced, plugin_id);
                 assert_eq!(version, "1.2.0");
             }
             other => panic!("a bundle was announced as {other:?}"),
         }
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn an_ordinary_file_is_still_an_attachment() {
         // 另一半。没有这一条，把默认值改错会让每一次普通发送都变成插件包 ——
         // 而那样的错在接收端看起来完全正常。
-        let path = a_file();
+        let (_root, path) = a_file();
         let sender = TransferSender::open(&path, 4).expect("opens");
 
         assert_eq!(sender.request().kind, TransferKind::Attachment);
-        let _ = std::fs::remove_file(&path);
     }
 }

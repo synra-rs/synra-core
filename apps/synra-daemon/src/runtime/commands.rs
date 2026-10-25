@@ -1116,6 +1116,7 @@ impl Runtime {
         // end, so an address that turned out to belong to a different device is reported as *that* device rather than as
         // the one that was expected.
         let device_id = link.peer();
+        drop(host);
 
         // ★ The transfer runs with a deadline, because a peer that stops reading would otherwise hold this thread for ever.
         // The protocol's own scan budget is not the right figure — a file takes as long as it takes — so this is a ceiling
@@ -1148,8 +1149,6 @@ impl Runtime {
             ),
         }
         .map_err(|error| Refusal::new(error_code_for_session(&error), error.to_string()))?;
-        drop(host);
-
         let bytes = std::fs::metadata(&source)
             .map(|meta| meta.len())
             .unwrap_or(0);

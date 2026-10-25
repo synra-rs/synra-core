@@ -51,7 +51,7 @@ pub enum SessionEvent {
     /// ★ **Why this is an event rather than a return value.** It arrives *after* the confirmation, on the same link,
     /// and a list of events is how everything else on this link is described.
     ///
-    /// ★ And it has to be **read**: `await_confirmation` stops at the receiver's `Complete`, so a result left in the
+    /// The shared sender reads this after the receiver's `Complete`, because a result left in the
     /// stream would be the next reader's message about a round that is already over. A reply nobody reads is not an
     /// unanswered question — it is a wrong answer to the next one.
     SyncResult {
@@ -71,6 +71,21 @@ pub enum SessionEvent {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum SessionError {
+    /// The caller cancelled before the receiver confirmed the object.
+    #[error("the transfer was cancelled")]
+    Cancelled,
+
+    /// The total or idle budget expired before confirmation.
+    #[error("the transfer deadline expired before confirmation")]
+    TimedOut,
+
+    /// The peer explicitly refused this transfer.
+    #[error("the peer aborted the transfer: {reason:?}")]
+    Aborted {
+        /// The peer's structured reason.
+        reason: TransferAbortReason,
+    },
+
     /// The link failed.
     #[error(transparent)]
     Link(#[from] LinkError),

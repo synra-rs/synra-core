@@ -89,8 +89,8 @@ pub use admission::{
 };
 pub use host::{Attached, Host, HostError, SharedHost, millis_reading, reading_millis, shared};
 pub use session::{
-    Message, Received, Receiving, SessionError, SessionEvent, abort, classify, complete, propose,
-    report_progress, send_blocks, send_bundle, send_file,
+    Message, Received, Receiving, SendOptions, SessionError, SessionEvent, abort, classify,
+    complete, propose, report_progress, send_blocks, send_bundle, send_file, send_prepared,
 };
 pub use socket::{DiscoverySocket, SocketError, absorb, broadcast_addresses, is_about};
 pub use transfer::{

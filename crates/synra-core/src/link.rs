@@ -498,8 +498,12 @@ impl PeerLink {
     ///
     /// As [`PeerLink::receive`], minus the refusal of a block.
     pub fn receive_inbound(&mut self) -> Result<Inbound, LinkError> {
+        let deadline = self
+            .read_timeout_override
+            .or(self.flags.timeout)
+            .and_then(|timeout| std::time::Instant::now().checked_add(timeout));
         loop {
-            let frame = self.read_frame()?;
+            let frame = self.read_frame(deadline)?;
             match frame.kind {
                 FrameKind::Envelope => {
                     let envelope = self.parse_envelope(&frame)?;
@@ -527,7 +531,21 @@ impl PeerLink {
                         data: chunk.data,
                     });
                 }
-                FrameKind::Ping => self.pong()?,
+                FrameKind::Ping => {
+                    let previous = self.write_timeout_override;
+                    if let Some(deadline) = deadline {
+                        let remaining =
+                            deadline.saturating_duration_since(std::time::Instant::now());
+                        if remaining.is_zero() {
+                            return Err(LinkError::TimedOut);
+                        }
+                        self.write_timeout_override =
+                            Some(remaining.min(self.write_deadline().unwrap_or(remaining)));
+                    }
+                    let result = self.pong();
+                    self.write_timeout_override = previous;
+                    result?;
+                }
                 FrameKind::Pong => {}
                 FrameKind::Bye => return Err(LinkError::Closed),
                 other => {
@@ -659,6 +677,13 @@ impl PeerLink {
         self.write_timeout_override = timeout;
     }
 
+    /// Saves caller overrides while a bounded business operation temporarily narrows them.
+    pub(crate) const fn timeout_overrides(
+        &self,
+    ) -> (Option<std::time::Duration>, Option<std::time::Duration>) {
+        (self.read_timeout_override, self.write_timeout_override)
+    }
+
     /// Reads one frame.
     ///
     /// # Why a read timeout does not abandon a half-read frame
@@ -672,7 +697,7 @@ impl PeerLink {
     /// So a timeout while a frame is **partly** buffered is retried rather than reported: the peer is mid-frame, which is
     /// not the same as a peer that has gone quiet. A timeout with nothing buffered is reported as [`LinkError::TimedOut`],
     /// which is a quiet link rather than a broken one.
-    fn read_frame(&mut self) -> Result<Frame, LinkError> {
+    fn read_frame(&mut self, deadline: Option<std::time::Instant>) -> Result<Frame, LinkError> {
         if let Some(timeout) = self.read_timeout_override.or(self.flags.timeout) {
             self.stream.set_read_deadline(timeout)?;
         }
@@ -681,6 +706,13 @@ impl PeerLink {
         loop {
             // This check also covers frames prefetched by Hello or an earlier read.
             self.stream.authorize(self.local, self.peer)?;
+            if let Some(deadline) = deadline {
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                if remaining.is_zero() {
+                    return Err(LinkError::TimedOut);
+                }
+                self.stream.set_read_deadline(remaining)?;
+            }
             if let Some(frame) = self.decoder.next_frame()? {
                 return Ok(frame);
             }
@@ -1000,6 +1032,57 @@ mod tests {
             None::<&serde_json::Value>,
         )
         .expect("builds")
+    }
+
+    #[test]
+    fn a_partial_frame_obeys_the_read_budget_and_resumes_without_losing_bytes() {
+        use std::io::Write as _;
+        let (near, mut far) = MemoryStream::pair();
+        let mut receiving = link_with_stream(near, LOCAL, PEER);
+        receiving.set_read_timeout(Some(std::time::Duration::from_millis(30)));
+        let frame = Frame {
+            kind: FrameKind::Envelope,
+            flags: 0,
+            body: FrameBody::Envelope(Bytes::from(
+                serde_json::to_vec(&envelope(PEER, LOCAL, "_synra.clipboard.received")).unwrap(),
+            )),
+        };
+        let encoded = FrameEncoder::encode_to_vec(&frame).unwrap();
+        let (prefix, rest) = encoded.split_at(7);
+        far.write_all(prefix).unwrap();
+        let started = std::time::Instant::now();
+        assert_eq!(
+            receiving.receive_inbound().unwrap_err(),
+            LinkError::TimedOut
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        far.write_all(rest).unwrap();
+        assert_eq!(
+            receiving.receive().unwrap().event.as_str(),
+            "_synra.clipboard.received"
+        );
+    }
+
+    #[test]
+    fn answering_a_ping_cannot_extend_the_callers_read_budget() {
+        use std::io::Write as _;
+        let (near, mut far) = MemoryStream::pair_with_capacity(128);
+        let mut receiving = link_with_stream(near, LOCAL, PEER);
+        receiving.set_read_timeout(Some(std::time::Duration::from_millis(30)));
+        receiving.set_write_timeout(Some(std::time::Duration::from_secs(2)));
+        receiving.stream.write_all(&[0; 128]).unwrap();
+        far.write_all(&FrameEncoder::encode_to_vec(&Frame::empty(FrameKind::Ping)).unwrap())
+            .unwrap();
+        let started = std::time::Instant::now();
+        assert_eq!(
+            receiving.receive_inbound().unwrap_err(),
+            LinkError::TimedOut
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        assert_eq!(
+            receiving.write_deadline(),
+            Some(std::time::Duration::from_secs(2))
+        );
     }
 
     // ── Envelopes in both directions ──────────────────────────────────────────────────────────────

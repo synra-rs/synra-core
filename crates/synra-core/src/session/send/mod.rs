@@ -11,16 +11,19 @@
 //! | `blocks` | the window the sender keeps in flight, the proposal, and the blocks |
 //! | `transfer` | reporting progress, completing, and aborting |
 //! | `control` | what the receiver sends back, and how the sender reads it |
-//! | `awaiting` | waiting for confirmation, sending a whole file, and describing a digest |
+//! | `awaiting` | file and bundle preparation entry points |
+//! | `prepared` | complete workflow, cancellation, deadlines and confirmation |
 
-mod blocks;
-mod transfer;
-mod control;
 mod awaiting;
+mod blocks;
+mod control;
+mod prepared;
+mod transfer;
 
-pub use awaiting::{await_confirmation, await_result, describe, send_bundle, send_file};
+pub use awaiting::{describe, send_bundle, send_file};
 pub use blocks::{WINDOW_BLOCKS, propose, send_blocks};
+pub use prepared::{SendOptions, send_prepared};
 pub use transfer::{abort, complete, report_progress};
 
-// The control reader is crate-visible: the receive half and the tests use it, but it is not part of this module's
-// surface.
+#[cfg(test)]
+mod tests;

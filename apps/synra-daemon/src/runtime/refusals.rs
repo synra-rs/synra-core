@@ -63,6 +63,14 @@ pub(super) const fn error_code_for(error: &synra_core::MessageError) -> ErrorCod
 /// unable to say anything but the sentence the kernel wrote.
 pub(super) const fn error_code_for_session(error: &synra_core::SessionError) -> ErrorCode {
     match error {
+        synra_core::SessionError::Cancelled => ErrorCode::TransferFailed,
+        synra_core::SessionError::TimedOut => ErrorCode::TransferFailed,
+        synra_core::SessionError::Aborted { reason } => match reason {
+            synra_protocol::session::TransferAbortReason::DigestMismatch => {
+                ErrorCode::IntegrityMismatch
+            }
+            _ => ErrorCode::TransferFailed,
+        },
         // A transfer that did not verify is the code the protocol has for exactly this, and a client can act on it: the
         // partial file is discarded and a retry starts again.
         synra_core::SessionError::Transfer(synra_core::TransferError::DigestMismatch {

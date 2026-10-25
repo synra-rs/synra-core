@@ -51,10 +51,10 @@ pub mod send;
 pub mod types;
 pub mod wire;
 
-pub use receive::{InboundProgress, Receiving, Received};
+pub use receive::{InboundProgress, Received, Receiving};
 pub use send::{
-    abort, await_confirmation, complete, propose, report_progress, send_blocks, send_bundle, send_file,
-    WINDOW_BLOCKS,
+    SendOptions, WINDOW_BLOCKS, abort, complete, propose, report_progress, send_blocks,
+    send_bundle, send_file, send_prepared,
 };
 pub use types::{SessionError, SessionEvent};
 pub use wire::{Message, classify};
