@@ -3,7 +3,8 @@
 use super::{CredentialError, NetworkStartupError};
 use parking_lot::Mutex;
 use synra_protocol::credentials::{
-    CredentialCleanupReport, CredentialEnrollment, CredentialRepairReport, CredentialSnapshot,
+    CredentialCleanupReport, CredentialEnrollment, CredentialRecovery, CredentialRepairReport,
+    CredentialSnapshot,
 };
 use synra_protocol::{DeviceId, ErrorCode};
 use synra_store::SynraDb;
@@ -29,6 +30,13 @@ pub fn credential_snapshot(
     {
         return Err(CredentialError::IdentityChanged);
     }
+    if state.enrollment.is_none() && state.recovery_enrollment.is_none() && !state.lineage_present {
+        return Err(CredentialError::MissingRegistration);
+    }
+    let recovery = state.recovery_enrollment.map(|record| CredentialRecovery {
+        fingerprint: super::repair_fingerprint(record.certificate()),
+        backend: record.backend().to_owned(),
+    });
     let marker = state.enrollment;
     let runtime = runtime_fingerprint.map(|value| {
         value
@@ -48,6 +56,7 @@ pub fn credential_snapshot(
     Ok(CredentialSnapshot {
         device_id: device,
         enrollment,
+        recovery,
         retired_keys: state.retired_keys,
         runtime_ready,
         restart_required,

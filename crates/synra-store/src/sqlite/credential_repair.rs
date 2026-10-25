@@ -51,19 +51,45 @@ impl SynraDb {
                 .connection
                 .unchecked_transaction()
                 .map_err(|error| statement(&error))?;
-            let changed = transaction.execute(
-                "UPDATE device_credentials SET certificate = ?5, backend = ?6, ready = 0
-                 WHERE id = 1 AND device_id = ?1 AND certificate = ?2 AND backend = ?3 AND ready = ?4
+            // A surviving active registration can explicitly rebuild lost non-authorizing history.
+            transaction.execute(
+                "INSERT INTO device_identity_history (id, device_id, certificate, backend)
+                 SELECT 1, ?1, ?2, ?3 WHERE EXISTS (SELECT 1 FROM device_credentials
+                     WHERE id = 1 AND device_id = ?1 AND certificate = ?2 AND backend = ?3 AND ready = ?4)
+                 ON CONFLICT(id) DO NOTHING",
+                params![expected.device_id(), expected.certificate(), expected.backend(), expected.ready()],
+            ).map_err(|error| statement(&error))?;
+            let changed = transaction
+                .execute(
+                    "UPDATE device_identity_history SET certificate = ?5, backend = ?6
+                 WHERE id = 1 AND device_id = ?1 AND certificate = ?2 AND backend = ?3
                  AND EXISTS (SELECT 1 FROM identity WHERE id = 1 AND device_id = ?1)
+                 AND (NOT EXISTS (SELECT 1 FROM device_credentials) OR EXISTS
+                    (SELECT 1 FROM device_credentials WHERE id = 1 AND device_id = ?1
+                     AND certificate = ?2 AND backend = ?3 AND ready = ?4))
                  AND certificate != ?5
                  AND NOT EXISTS (SELECT 1 FROM retired_device_credentials WHERE certificate = ?5)
                  AND (SELECT COUNT(*) FROM retired_device_credentials) < ?7",
-                params![expected.device_id(), expected.certificate(), expected.backend(), expected.ready(),
-                    certificate, backend, MAX_RETIRED_DEVICE_CREDENTIALS],
-            ).map_err(|error| statement(&error))?;
+                    params![
+                        expected.device_id(),
+                        expected.certificate(),
+                        expected.backend(),
+                        expected.ready(),
+                        certificate,
+                        backend,
+                        MAX_RETIRED_DEVICE_CREDENTIALS
+                    ],
+                )
+                .map_err(|error| statement(&error))?;
             if changed != 1 {
                 return Ok(false);
             }
+            transaction.execute(
+                "INSERT INTO device_credentials (id, device_id, certificate, backend, ready) VALUES (1, ?1, ?2, ?3, 0)
+                 ON CONFLICT(id) DO UPDATE SET device_id = excluded.device_id, certificate = excluded.certificate,
+                    backend = excluded.backend, ready = 0",
+                params![expected.device_id(), certificate, backend],
+            ).map_err(|error| statement(&error))?;
             transaction
                 .execute(
                     "INSERT INTO retired_device_credentials (certificate, backend) VALUES (?1, ?2)",
@@ -112,7 +138,8 @@ impl SynraDb {
     ) -> Result<bool, DbError> {
         self.connection.query_row(
             "SELECT 1 FROM retired_device_credentials WHERE certificate = ?1 AND backend = ?2
-             AND NOT EXISTS (SELECT 1 FROM device_credentials WHERE certificate = ?1 AND backend = ?2)",
+             AND NOT EXISTS (SELECT 1 FROM device_credentials WHERE certificate = ?1 AND backend = ?2)
+             AND NOT EXISTS (SELECT 1 FROM device_identity_history WHERE certificate = ?1 AND backend = ?2)",
             params![record.certificate, record.backend], |_| Ok(true),
         ).optional().map(|found| found.unwrap_or(false)).map_err(|error| statement(&error))
     }
@@ -126,7 +153,8 @@ impl SynraDb {
     ) -> Result<(), DbError> {
         self.connection.execute(
             "DELETE FROM retired_device_credentials WHERE certificate = ?1 AND backend = ?2
-             AND NOT EXISTS (SELECT 1 FROM device_credentials WHERE certificate = ?1 AND backend = ?2)",
+             AND NOT EXISTS (SELECT 1 FROM device_credentials WHERE certificate = ?1 AND backend = ?2)
+             AND NOT EXISTS (SELECT 1 FROM device_identity_history WHERE certificate = ?1 AND backend = ?2)",
             params![record.certificate, record.backend],
         ).map_err(|error| statement(&error))?;
         Ok(())

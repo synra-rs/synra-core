@@ -27,8 +27,13 @@ impl Drop for Cleanup {
 }
 
 #[test]
-fn production_native_repair_requires_displayed_confirmation_and_restarts_with_the_new_key() {
-    let fixture = NetworkFixture::unpaired(synra_protocol::DeviceId::new(), "Repair").unwrap();
+fn production_native_recovery_requires_confirmation_and_restarts_with_the_new_key() {
+    let fixture = NetworkFixture::new(
+        synra_protocol::DeviceId::new(),
+        synra_protocol::DeviceId::new(),
+        "Repair",
+    )
+    .unwrap();
     let runtime = runtime_over(fixture.root(), Arc::clone(&fixture.shared_db));
     let _cleanup = Cleanup(Arc::clone(&fixture.shared_db));
     let before = runtime.credentials(&CredentialAction::Status).unwrap();
@@ -36,6 +41,21 @@ fn production_native_repair_requires_displayed_confirmation_and_restarts_with_th
         .as_str()
         .unwrap()
         .to_owned();
+    let connection =
+        rusqlite::Connection::open(fixture.root().join(synra_store::DB_FILE_NAME)).unwrap();
+    connection
+        .pragma_update(None, "foreign_keys", true)
+        .unwrap();
+    connection.execute("DELETE FROM identity", []).unwrap();
+    let runtime = runtime_over(fixture.root(), Arc::clone(&fixture.shared_db));
+    assert_eq!(
+        runtime.identity.device_id,
+        fixture.credentials.public_identity().device_id()
+    );
+    let lost = runtime.credentials(&CredentialAction::Status).unwrap();
+    assert!(lost["enrollment"].is_null());
+    assert_eq!(lost["recovery"]["fingerprint"], fingerprint);
+    assert_eq!(lost["runtimeReady"], false);
     assert!(
         runtime
             .credentials(&CredentialAction::Repair {

@@ -491,6 +491,35 @@ pub const MIGRATIONS: &[Migration] = &[
             )",
         ],
     },
+    Migration {
+        version: 22,
+        name: "device-identity-history",
+        statements: &[
+            "CREATE TABLE identity_bootstrap (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                initialized INTEGER NOT NULL CHECK (initialized IN (0, 1))
+            )",
+            "INSERT INTO identity_bootstrap SELECT 1,
+                EXISTS (SELECT 1 FROM identity) OR EXISTS (SELECT 1 FROM device_credentials)
+                OR EXISTS (SELECT 1 FROM peer_trust) OR EXISTS (SELECT 1 FROM paired_devices)
+                OR EXISTS (SELECT 1 FROM pairing_attempt) OR EXISTS (SELECT 1 FROM retired_device_credentials)",
+            "CREATE TABLE device_identity_history (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                device_id TEXT NOT NULL,
+                certificate BLOB CHECK (certificate IS NULL OR length(certificate) BETWEEN 1 AND 16384),
+                backend TEXT,
+                CHECK ((certificate IS NULL) = (backend IS NULL))
+            )",
+            "INSERT INTO device_identity_history
+                SELECT i.id, i.device_id, c.certificate, c.backend FROM identity i
+                LEFT JOIN device_credentials c ON c.id = i.id AND c.device_id = i.device_id",
+            "CREATE TRIGGER identity_bootstrap_no_delete BEFORE DELETE ON identity_bootstrap
+                BEGIN SELECT RAISE(ABORT, 'identity initialization cannot be forgotten'); END",
+            "CREATE TRIGGER identity_bootstrap_no_reset BEFORE UPDATE OF initialized ON identity_bootstrap
+                WHEN OLD.initialized = 1 AND NEW.initialized != 1
+                BEGIN SELECT RAISE(ABORT, 'identity initialization cannot be reset'); END",
+        ],
+    },
 ];
 
 /// The schema version this build expects.

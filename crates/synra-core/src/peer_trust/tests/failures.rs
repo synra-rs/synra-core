@@ -122,10 +122,13 @@ fn changing_the_local_identity_during_consent_denies_commit() {
         let result = client.finish(true, TIMEOUT, || {
             samples.set(samples.get() + 1);
             if samples.get() == 2 {
-                let db = left.db.lock();
-                let mut identity = db.identity().unwrap().unwrap();
-                identity.device_id = DeviceId::new().to_string();
-                db.write_identity(&identity).unwrap();
+                let connection = rusqlite::Connection::open(&left.path).unwrap();
+                connection
+                    .execute(
+                        "UPDATE identity SET device_id = ?1",
+                        [DeviceId::new().to_string()],
+                    )
+                    .unwrap();
             }
             left.now_ms
         });

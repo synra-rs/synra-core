@@ -38,6 +38,8 @@ serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+# Independent SQLite corruption for production recovery tests.
+rusqlite = { version = "0.40", features = ["bundled"] }
 synra-net = { path = "../../crates/synra-net" }
 synra-testkit = { path = "../../crates/synra-testkit" }
 # A UI half is a `ui.zip`, so the install test has to be able to make one.

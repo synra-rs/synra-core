@@ -161,3 +161,105 @@ fn maintenance_reads_never_mix_a_certificate_with_another_replacements_cleanup_c
         }
     });
 }
+#[test]
+fn missing_registration_requires_explicit_repair_and_revokes_surviving_authority() {
+    let (_directory, db, expected) = fixture();
+    seed_authority(&db);
+    db.connection
+        .execute("DELETE FROM device_credentials", [])
+        .unwrap();
+    assert!(
+        !db.claim_device_credential("local", b"silent", "test")
+            .unwrap()
+    );
+    let state = db.device_credential_state().unwrap().unwrap();
+    assert!(state.enrollment.is_none());
+    let recovery = state.recovery_enrollment.unwrap();
+    assert_eq!(recovery.certificate(), expected.certificate());
+    assert!(!recovery.ready());
+    assert!(
+        db.replace_device_credential(&recovery, b"new", "test")
+            .unwrap()
+    );
+    for table in ["peer_trust", "paired_devices", "pairing_attempt"] {
+        assert_eq!(count(&db, table), 0);
+    }
+    assert!(
+        !db.replace_device_credential(&recovery, b"stale", "test")
+            .unwrap()
+    );
+    assert_eq!(
+        db.device_credential().unwrap().unwrap().certificate(),
+        b"new"
+    );
+}
+
+#[test]
+fn surviving_registration_can_explicitly_rebuild_lost_history_but_cannot_silently_claim() {
+    let (_directory, db, expected) = fixture();
+    db.connection
+        .execute("DELETE FROM device_identity_history", [])
+        .unwrap();
+    assert!(
+        !db.claim_device_credential("local", b"silent", "test")
+            .unwrap()
+    );
+    assert!(
+        db.replace_device_credential(&expected, b"replacement", "test")
+            .unwrap()
+    );
+    db.connection
+        .execute("DELETE FROM device_credentials", [])
+        .unwrap();
+    let state = db.device_credential_state().unwrap().unwrap();
+    assert_eq!(
+        state.recovery_enrollment.unwrap().certificate(),
+        b"replacement"
+    );
+}
+
+#[test]
+fn cleanup_never_deletes_a_slot_referenced_only_by_recovery_history() {
+    let (_directory, db, expected) = fixture();
+    db.connection
+        .execute("DELETE FROM device_credentials", [])
+        .unwrap();
+    db.connection
+        .execute(
+            "INSERT INTO retired_device_credentials VALUES (?1, ?2)",
+            params![expected.certificate(), expected.backend()],
+        )
+        .unwrap();
+    let retired = db.retired_device_credentials().unwrap().remove(0);
+    assert!(!db.device_credential_retired(&retired).unwrap());
+    db.finish_retired_device_credential(&retired).unwrap();
+    assert_eq!(db.retired_device_credentials().unwrap().len(), 1);
+}
+
+#[test]
+fn recovery_failure_rolls_back_history_and_cannot_promote_a_new_registration() {
+    let (_directory, db, _) = fixture();
+    seed_authority(&db);
+    db.connection
+        .execute_batch(
+            "DELETE FROM device_credentials;
+         CREATE TRIGGER reject_recovery BEFORE DELETE ON peer_trust
+         BEGIN SELECT RAISE(ABORT, 'injected recovery failure'); END;",
+        )
+        .unwrap();
+    let expected = db
+        .device_credential_state()
+        .unwrap()
+        .unwrap()
+        .recovery_enrollment
+        .unwrap();
+    assert!(
+        db.replace_device_credential(&expected, b"new", "test")
+            .is_err()
+    );
+    let state = db.device_credential_state().unwrap().unwrap();
+    assert!(state.enrollment.is_none());
+    assert_eq!(state.recovery_enrollment.unwrap(), expected);
+    assert!(db.retired_device_credentials().unwrap().is_empty());
+    assert_eq!(count(&db, "peer_trust"), 1);
+}

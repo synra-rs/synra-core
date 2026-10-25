@@ -41,6 +41,8 @@ fs2 = "=0.4.3"
 base64.workspace = true
 
 [dev-dependencies]
+# Fault injection removes metadata through a second real SQLite connection.
+rusqlite = { version = "0.40", features = ["bundled"] }
 synra-testkit = { path = "../synra-testkit" }
 ed25519-dalek.workspace = true
 proptest.workspace = true

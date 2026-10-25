@@ -486,9 +486,17 @@ mod tests {
     fn host(id: &str, name: &str) -> Host {
         let mut db = synra_store::SynraDb::open_in_memory().expect("opens");
         db.migrate().expect("migrates");
-        let mut identity = Identity::load(&db, "test", 1_000).expect("an identity");
-        identity.device_id = device(id);
-        identity.rename(&db, name, 1_000).expect("renames");
+        db.create_identity_if_absent(
+            &synra_store::IdentityRow::from_columns(
+                Some(id),
+                Some(name),
+                Some("test"),
+                Some(1_000),
+            )
+            .expect("identity row"),
+        )
+        .expect("initial identity");
+        let identity = Identity::load(&db, "test", 1_000).expect("an identity");
         let local = LocalPeer::new(
             identity.device_id,
             identity.display_name.clone(),

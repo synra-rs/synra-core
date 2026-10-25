@@ -20,6 +20,10 @@ pub struct DeviceCredentialState {
     pub device_id: String,
     /// Enrollment may be absent for a newly created identity.
     pub enrollment: Option<DeviceCredentialRecord>,
+    /// Non-authorizing retained public credential when the active registration is missing.
+    pub recovery_enrollment: Option<DeviceCredentialRecord>,
+    /// Whether the permanent identity lineage still identifies this local device.
+    pub lineage_present: bool,
     /// Number of old secret slots still recorded for cleanup.
     pub retired_keys: u32,
 }
@@ -58,8 +62,9 @@ impl SynraDb {
         self.connection
             .query_row(
                 "SELECT i.device_id, c.device_id, c.certificate, c.backend, c.ready,
-                (SELECT COUNT(*) FROM retired_device_credentials)
-             FROM identity i LEFT JOIN device_credentials c ON c.id = i.id WHERE i.id = 1",
+                (SELECT COUNT(*) FROM retired_device_credentials), h.device_id, h.certificate, h.backend
+             FROM identity i LEFT JOIN device_credentials c ON c.id = i.id
+             LEFT JOIN device_identity_history h ON h.id = i.id AND h.device_id = i.device_id WHERE i.id = 1",
                 [],
                 |row| {
                     let enrolled: Option<String> = row.get(1)?;
@@ -73,9 +78,18 @@ impl SynraDb {
                             })
                         })
                         .transpose()?;
+                    let history_id: Option<String> = row.get(6)?;
+                    let recovery_enrollment = if enrollment.is_none() {
+                        let history_certificate: Option<Vec<u8>> = row.get(7)?;
+                        history_certificate.map(|certificate| -> rusqlite::Result<DeviceCredentialRecord> {
+                            Ok(DeviceCredentialRecord { device_id: row.get(6)?, certificate, backend: row.get(8)?, ready: false })
+                        }).transpose()?
+                    } else { None };
                     Ok(DeviceCredentialState {
                         device_id: row.get(0)?,
                         enrollment,
+                        recovery_enrollment,
+                        lineage_present: history_id.is_some(),
                         retired_keys: row.get(5)?,
                     })
                 },
@@ -110,14 +124,31 @@ impl SynraDb {
         backend: &str,
     ) -> Result<bool, DbError> {
         timed_write!(self, "device-credential-claim", {
-            let changed = self.connection.execute(
-            "INSERT INTO device_credentials (id, device_id, certificate, backend, ready)
-             SELECT 1, ?1, ?2, ?3, 0 WHERE EXISTS (SELECT 1 FROM identity WHERE id = 1 AND device_id = ?1)
-             AND NOT EXISTS (SELECT 1 FROM paired_devices)
-             ON CONFLICT(id) DO NOTHING",
-            params![device_id, certificate, backend],
-        ).map_err(|error| statement(&error))?;
-            Ok(changed == 1)
+            let transaction = self
+                .connection
+                .unchecked_transaction()
+                .map_err(|error| statement(&error))?;
+            let changed = transaction.execute(
+                "INSERT INTO device_credentials (id, device_id, certificate, backend, ready)
+                 SELECT 1, ?1, ?2, ?3, 0
+                 WHERE EXISTS (SELECT 1 FROM identity i JOIN device_identity_history h ON h.id = i.id
+                     WHERE i.id = 1 AND i.device_id = ?1 AND h.device_id = ?1 AND h.certificate IS NULL)
+                 AND NOT EXISTS (SELECT 1 FROM paired_devices)
+                 AND NOT EXISTS (SELECT 1 FROM peer_trust)
+                 AND NOT EXISTS (SELECT 1 FROM pairing_attempt)
+                 AND NOT EXISTS (SELECT 1 FROM retired_device_credentials)
+                 ON CONFLICT(id) DO NOTHING",
+                params![device_id, certificate, backend],
+            ).map_err(|error| statement(&error))?;
+            if changed != 1 {
+                return Ok(false);
+            }
+            transaction.execute(
+                "UPDATE device_identity_history SET certificate = ?2, backend = ?3 WHERE id = 1 AND device_id = ?1",
+                params![device_id, certificate, backend],
+            ).map_err(|error| statement(&error))?;
+            transaction.commit().map_err(|error| statement(&error))?;
+            Ok(true)
         })
     }
 
@@ -157,19 +188,20 @@ mod tests {
     use super::*;
     use crate::IdentityRow;
 
-    fn database() -> SynraDb {
-        let mut db = SynraDb::open_in_memory().expect("database");
+    fn database() -> (tempfile::TempDir, SynraDb) {
+        let directory = tempfile::tempdir().expect("directory");
+        let mut db = SynraDb::open(&directory.path().join("identity.sqlite")).expect("database");
         db.migrate().expect("migrate");
         let identity =
             IdentityRow::from_columns(Some("local"), Some("Local"), Some("windows"), Some(1))
                 .expect("identity");
         db.create_identity_if_absent(&identity).expect("create");
-        db
+        (directory, db)
     }
 
     #[test]
     fn certificate_size_limits_are_enforced_by_sqlite() {
-        let db = database();
+        let (_directory, db) = database();
         for certificate in [Vec::new(), vec![0; 16_385]] {
             assert!(
                 db.claim_device_credential("local", &certificate, "windows")
@@ -185,7 +217,7 @@ mod tests {
 
     #[test]
     fn a_replaced_public_marker_cannot_commit_an_old_readback() {
-        let db = database();
+        let (_directory, db) = database();
         assert!(
             db.claim_device_credential("local", b"first certificate", "windows")
                 .expect("claim")
@@ -195,8 +227,12 @@ mod tests {
             .execute("DELETE FROM device_credentials", [])
             .expect("explicit repair");
         assert!(
-            db.claim_device_credential("local", b"replacement certificate", "windows")
-                .expect("replacement")
+            !db.claim_device_credential("local", b"silent replacement", "windows")
+                .expect("refuse")
+        );
+        assert!(
+            db.replace_device_credential(&stale, b"replacement certificate", "windows")
+                .expect("explicit repair")
         );
         assert!(!db.finish_device_credential(&stale).expect("stale commit"));
         let current = db.device_credential().expect("read").expect("current");

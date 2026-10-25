@@ -95,12 +95,16 @@ fn a_local_identity_change_during_secret_io_cannot_commit_a_stale_credential() {
     let fixture = Fixture::new();
     let backend = FaultBackend::default();
     let original = enroll(&fixture.db, &backend, fixture.id, NOW).expect("enroll");
-    let db = Arc::clone(&fixture.db);
+    let path = fixture.path.clone();
     let changed_id = DeviceId::new();
     *backend.before_get.lock() = Some(Box::new(move || {
-        let mut identity = Identity::load(&db.lock(), "test", 1).expect("identity");
-        identity.device_id = changed_id;
-        identity.store(&db.lock(), 1).expect("replace local id");
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection
+            .execute(
+                "UPDATE identity SET device_id = ?1",
+                [changed_id.to_string()],
+            )
+            .unwrap();
     }));
     assert!(matches!(
         load(&fixture.db, &backend, fixture.id, NOW),

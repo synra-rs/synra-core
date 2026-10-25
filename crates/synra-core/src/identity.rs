@@ -136,12 +136,12 @@ impl Identity {
         })
     }
 
-    /// Writes this identity, or reports that it is not there yet.
+    /// Persists metadata for this device, using retained history if its identity row must be restored.
     ///
     /// # Errors
     ///
-    /// [`DbError::Statement`] when the row is not there: an update rather than an insert, because the schema's
-    /// `CHECK (id = 1)` is what makes "this device's identity" a single answer, and an insert would be a second row.
+    /// [`DbError::Statement`] if another device id is already present, recovery history is missing,
+    /// or persistence fails; metadata writes cannot replace the stable device id.
     pub fn store(&self, db: &SynraDb, now_ms: i64) -> Result<(), DbError> {
         db.write_identity(&IdentityRow {
             device_id: self.device_id.to_string(),

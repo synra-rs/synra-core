@@ -40,7 +40,26 @@ pub fn repair(
 ) -> Result<CredentialRepair, CredentialError> {
     super::persistent(secrets)?;
     let operation = super::operation::acquire(db)?;
-    let expected = super::marker(db, device_id)?.ok_or(CredentialError::NotEnrolled)?;
+    let state = db
+        .lock()
+        .device_credential_state()
+        .map_err(|error| database(&error))?
+        .ok_or(CredentialError::IdentityChanged)?;
+    if state.device_id != device_id.to_string() {
+        return Err(CredentialError::IdentityChanged);
+    }
+    let expected =
+        state
+            .enrollment
+            .or(state.recovery_enrollment)
+            .ok_or(if state.lineage_present {
+                CredentialError::NotEnrolled
+            } else {
+                CredentialError::MissingRegistration
+            })?;
+    if expected.device_id() != device_id.to_string() {
+        return Err(CredentialError::IdentityChanged);
+    }
     if expected_fingerprint != repair_fingerprint(expected.certificate()) {
         return Err(CredentialError::RepairRefused);
     }

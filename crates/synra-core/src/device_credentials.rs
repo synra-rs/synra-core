@@ -42,6 +42,11 @@ pub enum CredentialError {
     /// Loading cannot silently move a key to a different backend.
     #[error("the device credential secret backend changed")]
     BackendChanged,
+    /// Previously initialized identity has lost its public registration; never enroll automatically.
+    #[error(
+        "device registration is missing; confirm the retained fingerprint for explicit repair or restore a trusted database backup"
+    )]
+    MissingRegistration,
     /// An enrollment has no private key; automatic key replacement is forbidden.
     #[error("device private key is missing; explicit identity repair is required")]
     MissingKey,
@@ -176,27 +181,24 @@ fn marker(
     db: &Mutex<SynraDb>,
     device_id: DeviceId,
 ) -> Result<Option<DeviceCredentialRecord>, CredentialError> {
-    let db = db.lock();
-    let identity = db
-        .identity()
-        .map_err(|error| CredentialError::Database(error.to_string()))?;
-    if identity
-        .as_ref()
-        .is_none_or(|identity| identity.device_id != device_id.to_string())
+    let state = db
+        .lock()
+        .device_credential_state()
+        .map_err(|error| CredentialError::Database(error.to_string()))?
+        .ok_or(CredentialError::IdentityChanged)?;
+    if state.device_id != device_id.to_string()
+        || state
+            .enrollment
+            .as_ref()
+            .is_some_and(|record| record.device_id() != device_id.to_string())
     {
         return Err(CredentialError::IdentityChanged);
     }
-    let record = db
-        .device_credential()
-        .map_err(|error| CredentialError::Database(error.to_string()))?;
-    drop(db);
-    if record
-        .as_ref()
-        .is_some_and(|record| record.device_id() != device_id.to_string())
+    if state.enrollment.is_none() && (state.recovery_enrollment.is_some() || !state.lineage_present)
     {
-        return Err(CredentialError::IdentityChanged);
+        return Err(CredentialError::MissingRegistration);
     }
-    Ok(record)
+    Ok(state.enrollment)
 }
 
 #[cfg(test)]

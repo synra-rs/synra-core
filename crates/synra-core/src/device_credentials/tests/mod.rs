@@ -6,6 +6,7 @@ use crate::identity::Identity;
 use synra_store::secrets::{MemoryBackend, SecretBackendKind};
 
 mod recovery;
+mod registration;
 mod repair;
 #[cfg(windows)]
 mod windows;
@@ -153,6 +154,10 @@ fn load_never_implicitly_enrolls_and_memory_backend_is_refused() {
     let backend = FaultBackend::default();
     assert!(matches!(
         load(&fixture.db, &backend, fixture.id, NOW),
+        Err(CredentialError::NotEnrolled)
+    ));
+    assert!(matches!(
+        repair(&fixture.db, &backend, fixture.id, "never enrolled", NOW),
         Err(CredentialError::NotEnrolled)
     ));
     for result in [

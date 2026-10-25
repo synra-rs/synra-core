@@ -15,6 +15,16 @@ pub struct CredentialEnrollment {
     pub ready: bool,
 }
 
+/// Retained public certificate used only for explicit recovery after registration loss.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CredentialRecovery {
+    /// Fingerprint of the last registered certificate; does not grant authority.
+    pub fingerprint: String,
+    /// Backend containing the last registered secret slot.
+    pub backend: String,
+}
+
 /// Enrollment and runtime identity facts read together without secret-backend IO.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -23,6 +33,8 @@ pub struct CredentialSnapshot {
     pub device_id: DeviceId,
     /// Current public enrollment, or explicit null when none exists.
     pub enrollment: Option<CredentialEnrollment>,
+    /// Retained public recovery metadata when registration is missing, otherwise explicit null.
+    pub recovery: Option<CredentialRecovery>,
     /// Number of old secret slots still awaiting cleanup.
     pub retired_keys: u32,
     /// Whether the process captured the same ready certificate as the current enrollment.
@@ -66,11 +78,17 @@ mod tests {
         let snapshot = CredentialSnapshot {
             device_id: DeviceId::new(),
             enrollment: None,
+            recovery: None,
             retired_keys: 0,
             runtime_ready: false,
             restart_required: false,
         };
         let mut value = serde_json::to_value(snapshot).unwrap();
+        assert!(
+            value
+                .get("recovery")
+                .is_some_and(serde_json::Value::is_null)
+        );
         assert!(
             value
                 .get("enrollment")
