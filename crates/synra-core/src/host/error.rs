@@ -9,6 +9,18 @@ use crate::peer::HandshakeError;
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum HostError {
+    /// Persistent network credentials could not be initialized; local operations can continue.
+    #[error("authenticated networking is unavailable: {why}")]
+    NetworkUnavailable {
+        /// The local initialization failure without private credentials.
+        why: String,
+    },
+    /// Mutual authentication, a current approval or the profile binding was refused.
+    #[error("peer authentication was refused: {why}")]
+    Authentication {
+        /// The initialization or connection failure without private credentials.
+        why: String,
+    },
     /// The listener could not be bound.
     #[error("could not listen on {address}: {why}")]
     Bind {

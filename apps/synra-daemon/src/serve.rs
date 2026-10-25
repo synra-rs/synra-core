@@ -18,6 +18,8 @@ use synra_control::Listener;
 use crate::args::{ClaimFile, refresh_claim};
 use crate::runtime::{Runtime, now_ms};
 
+mod network;
+
 /// How often the claim is refreshed.
 ///
 /// Read from the daemon's own constant rather than written here, because the stale-after window and the interval are two
@@ -397,7 +399,11 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
 
     // ★ The identity is read (or created) here, once — after the claim and before the socket. Reading it per request is
     // how a device ends up with a second identity, because the read creates one when the row is absent.
-    let identity = match synra_core::Identity::load(&db, std::env::consts::OS, synra_store::sqlite::now_ms()) {
+    let identity = match synra_core::Identity::load(
+        &db,
+        std::env::consts::OS,
+        synra_store::sqlite::now_ms(),
+    ) {
         Ok(identity) => identity,
         Err(error) => {
             eprintln!("synra-daemon: {error}");
@@ -424,7 +430,7 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
     // ★ The transport listener is what makes this device *reachable*. `dial` can only make outbound links, so without
     // this a device could send and never receive — and the announcement above would name a port nothing is listening on.
     // Bound here rather than in the library so the port is the one the announcement carries.
-    let (host, transport) = {
+    let (mut host, transport) = {
         let mut host = host;
         match crate::transport::bind(&mut host, plan.listen_port) {
             Ok(address) => {
@@ -522,9 +528,7 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
     let log_verbosity = _log.as_ref().map(|guard| guard.verbosity());
     // And the counters, from the same guard: `synra logs` reports what the writer dropped or failed to write, which is
     // the difference between "no lines" and "lines were lost".
-    let log_stats = _log
-        .as_ref()
-        .map(synra_observe::logging::stats_of);
+    let log_stats = _log.as_ref().map(synra_observe::logging::stats_of);
     // And a handle that can wait for the writer: `synra logs` must answer with what was just written, not with what
     // happened to be flushed already.
     let log_flush = _log
@@ -537,6 +541,7 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
     // interface was configured with — so the handle has to exist first. It used to be wrapped much later, which is part
     // of why the host had nothing to be built from and no session was ever installed.
     let shared_db = Arc::new(Mutex::new(db));
+    network::configure(&mut host, Arc::clone(&shared_db), local_peer);
     // ★ A second handle, because the first one does not survive to where the history is written: `shared_db` is
     // cloned into `remembered` further down and that holder outlives this function's own use of it. Two `Arc`s to
     // one database is the ordinary way to say "two owners".
@@ -583,7 +588,11 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
         match std::fs::read_to_string(&path) {
             Ok(text) => match synra_plugin_api::revocation::RevocationList::parse(&text) {
                 Ok(list) => {
-                    eprintln!("synra-daemon: {} revocation entries read from {}", list.len(), path.display());
+                    eprintln!(
+                        "synra-daemon: {} revocation entries read from {}",
+                        list.len(),
+                        path.display()
+                    );
                     list
                 }
                 Err(error) => {
@@ -617,9 +626,15 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
                 // Printed rather than skipped: a directory that looks like a plugin and is not one is the difference
                 // between "nothing is installed" and "the installation is half-copied", and only one needs acting on.
                 Some(problem) => {
-                    eprintln!("synra-daemon: {} was not recorded: {problem}", discovered.plugin_id);
+                    eprintln!(
+                        "synra-daemon: {} was not recorded: {problem}",
+                        discovered.plugin_id
+                    );
                 }
-                None => println!("synra-daemon: {} is installed and switched off", discovered.plugin_id),
+                None => println!(
+                    "synra-daemon: {} is installed and switched off",
+                    discovered.plugin_id
+                ),
             }
         }
 
@@ -658,7 +673,10 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
         // ★ Printed, because a plugin that failed to load is invisible otherwise and a silent skip is how a broken
         // plugin becomes a support question months later.
         for refused in &summary.refused {
-            eprintln!("synra-daemon: {} was not loaded: {}", refused.plugin_id, refused.reason);
+            eprintln!(
+                "synra-daemon: {} was not loaded: {}",
+                refused.plugin_id, refused.reason
+            );
         }
         // ★ And safe mode is printed for the same reason, louder: the user is looking at a daemon with no plugins and
         // needs to know it was a decision rather than a failed install.
@@ -735,13 +753,17 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
     // The second is smaller and was a real bug waiting: the flag was named `stop` and meant "keep running", and the first
     // version of the listener read `while !stop.load(..)` — so it exited on its first check and silently refused every
     // connection. A cancellation token is one-way, so that polarity cannot be got wrong.
-    let supervisor = Arc::new(synra_core::supervisor::Supervisor::new(synra_store::sqlite::now_ms()));
+    let supervisor = Arc::new(synra_core::supervisor::Supervisor::new(
+        synra_store::sqlite::now_ms(),
+    ));
     let update_worker = crate::runtime::updates::start(&runtime, &supervisor)
-        .map_err(|error| eprintln!("synra-daemon: plugin update checks did not start: {error}")).ok();
+        .map_err(|error| eprintln!("synra-daemon: plugin update checks did not start: {error}"))
+        .ok();
     for service in ["transport.accept", "discovery.udp", "intent.retry"] {
         // Reported rather than fatal: `TaskSpec::service` is `Ordinary` criticality, so a task that will not register is a
         // capability this run does not have, not a reason to refuse to serve.
-        if let Err(error) = supervisor.register(synra_core::supervisor::TaskSpec::service(service)) {
+        if let Err(error) = supervisor.register(synra_core::supervisor::TaskSpec::service(service))
+        {
             eprintln!("synra-daemon: {service} could not be registered: {error}");
         }
     }
@@ -798,33 +820,32 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
                                 format!("{}: {}", refusal.stage, refusal.reason),
                             )),
                         }
-                    }
-                    else {
+                    } else {
                         synra_core::plugin_sync::record_received(&db, transfer)
                     }
                 })
             };
-    // ★ A kernel event is run here, on the connection that asked, because the answer is a reply. The listener owns the
-    // link and this host owns the plugins and the board; the callback is the seam between them — and without it an
-    // `INTENT_INVOKE` arrived, was counted and was dropped: the sender waited for an outcome that no side produced.
-    let on_kernel_events: Arc<synra_core::listener::KernelEventCallback> = {
-        let plugins = Arc::clone(&receive_plugins);
-        let board = Arc::clone(&receive_board);
-        let local = local_device;
-        Arc::new(move |envelope: &synra_protocol::envelope::Envelope| {
-            let now = synra_store::sqlite::now_ms();
-            crate::runtime::intent::handle_event(&plugins, &board, local, envelope, now)
-        })
-    };
-    synra_core::listener::serve(
-        &peers,
-        token,
-        &data_dir,
-        &desk,
-        &router,
-        &on_finished,
-        &on_kernel_events,
-    );
+            // ★ A kernel event is run here, on the connection that asked, because the answer is a reply. The listener owns the
+            // link and this host owns the plugins and the board; the callback is the seam between them — and without it an
+            // `INTENT_INVOKE` arrived, was counted and was dropped: the sender waited for an outcome that no side produced.
+            let on_kernel_events: Arc<synra_core::listener::KernelEventCallback> = {
+                let plugins = Arc::clone(&receive_plugins);
+                let board = Arc::clone(&receive_board);
+                let local = local_device;
+                Arc::new(move |envelope: &synra_protocol::envelope::Envelope| {
+                    let now = synra_store::sqlite::now_ms();
+                    crate::runtime::intent::handle_event(&plugins, &board, local, envelope, now)
+                })
+            };
+            synra_core::listener::serve(
+                &peers,
+                token,
+                &data_dir,
+                &desk,
+                &router,
+                &on_finished,
+                &on_kernel_events,
+            );
             Ok(())
         }) {
             eprintln!("synra-daemon: the transport listener did not start: {error}");
@@ -858,7 +879,12 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
                             display_name: candidate.display_name.clone(),
                             // The announcement's platform is an enum; the column is a string, and the enum's own name is
                             // the string the device-card test compares against.
-                            platform: format!("{:?}", candidate.platform.unwrap_or(synra_protocol::session::PlatformKind::Desktop)),
+                            platform: format!(
+                                "{:?}",
+                                candidate
+                                    .platform
+                                    .unwrap_or(synra_protocol::session::PlatformKind::Desktop)
+                            ),
                             seen_at_ms: candidate.last_seen_ms,
                             source: candidate.address.to_string(),
                         };
@@ -866,7 +892,10 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
                         // is reported once rather than on every scan of the same device.
                         let written = remembered.lock().record_seen_device(&sighting);
                         if let Err(error) = written {
-                            eprintln!("synra-daemon: could not remember {}: {error}", sighting.device_id);
+                            eprintln!(
+                                "synra-daemon: could not remember {}: {error}",
+                                sighting.device_id
+                            );
                         }
                     }
                 },
@@ -942,11 +971,12 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
     // ★ Asked through the supervisor rather than by setting a flag, so the two services stop the way they were started:
     // the token they were given is cancelled, and the stop order is the reverse of registration.
     let _ = supervisor.begin_shutdown();
-    if let Some(worker) = update_worker { let _ = worker.join(); }
+    if let Some(worker) = update_worker {
+        let _ = worker.join();
+    }
     join_loops(loops);
     code
 }
-
 
 /// Refreshes the claim on an interval until asked to stop.
 ///
@@ -965,7 +995,10 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
 /// The file is the source of truth, and a copy held in memory would go stale the moment anything else touched it — which
 /// is exactly the condition this loop exists to notice. Re-reading costs one small file per interval and makes "does
 /// this process still own the directory" a question about the directory rather than about a copy of it.
-fn heartbeat_loop(supervisor: &Arc<synra_core::supervisor::Supervisor>, lock_path: &std::path::Path) {
+fn heartbeat_loop(
+    supervisor: &Arc<synra_core::supervisor::Supervisor>,
+    lock_path: &std::path::Path,
+) {
     while !supervisor.is_shutting_down() {
         std::thread::sleep(Duration::from_millis(HEARTBEAT_MS));
 
@@ -1012,7 +1045,10 @@ mod tests {
     use super::{collect_loop, sleep_until_shutdown};
 
     /// A migrated database, and a supervisor that is not shutting down.
-    fn world() -> (Arc<Mutex<synra_store::SynraDb>>, Arc<synra_core::supervisor::Supervisor>) {
+    fn world() -> (
+        Arc<Mutex<synra_store::SynraDb>>,
+        Arc<synra_core::supervisor::Supervisor>,
+    ) {
         let mut db = synra_store::SynraDb::open_in_memory().expect("opens");
         db.migrate().expect("migrates");
         (
@@ -1042,7 +1078,9 @@ mod tests {
         // ★ The epoch, which is older than any retention window. The first version of this used a large *positive* number
         // hoping it read as "long ago" — it is 2.1e12, which is **after** now, so the intent was in the future and the
         // sweep was right to keep it.
-        db.lock().save_intent(&stored("finished", "succeeded", 0)).expect("stored");
+        db.lock()
+            .save_intent(&stored("finished", "succeeded", 0))
+            .expect("stored");
 
         let running = {
             let db = Arc::clone(&db);
@@ -1054,7 +1092,11 @@ mod tests {
 
         // Give it long enough for the first delay and at least one interval.
         std::thread::sleep(Duration::from_millis(120));
-        assert_eq!(db.lock().intent_count().expect("counted"), 0, "the old one went");
+        assert_eq!(
+            db.lock().intent_count().expect("counted"),
+            0,
+            "the old one went"
+        );
 
         let _ = supervisor.begin_shutdown();
         assert!(running.join().is_ok(), "and the loop returned");
@@ -1078,7 +1120,10 @@ mod tests {
         let elapsed = started.elapsed();
 
         assert!(!waited, "the wait was cut short");
-        assert!(elapsed < Duration::from_secs(5), "and it did not wait out the thirty seconds: {elapsed:?}");
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "and it did not wait out the thirty seconds: {elapsed:?}"
+        );
         assert!(shutdown.join().is_ok());
     }
 
@@ -1125,7 +1170,9 @@ mod tests {
         let (db, supervisor) = world();
         // `now_ms` is already an `i64`, which the first version of this did not notice.
         let recent = synra_store::sqlite::now_ms();
-        db.lock().save_intent(&stored("recent", "succeeded", recent)).expect("stored");
+        db.lock()
+            .save_intent(&stored("recent", "succeeded", recent))
+            .expect("stored");
 
         let running = {
             let db = Arc::clone(&db);
@@ -1136,7 +1183,11 @@ mod tests {
         };
 
         std::thread::sleep(Duration::from_millis(60));
-        assert_eq!(db.lock().intent_count().expect("counted"), 1, "nothing was old enough");
+        assert_eq!(
+            db.lock().intent_count().expect("counted"),
+            1,
+            "nothing was old enough"
+        );
 
         let _ = supervisor.begin_shutdown();
         assert!(running.join().is_ok());

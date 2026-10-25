@@ -115,3 +115,41 @@ fn native_key_and_database_restart_restore_the_same_authenticated_identity() {
         Err(CredentialError::MissingKey)
     ));
 }
+
+#[test]
+fn production_network_startup_reuses_native_enrollment_and_refuses_a_lost_key() {
+    let fixture = Fixture::new();
+    let _cleanup = NativeCleanup {
+        path: fixture.path.clone(),
+        service: DEVICE_IDENTITY_SERVICE.to_owned(),
+    };
+    let profile = crate::peer::LocalPeer::new(
+        fixture.id,
+        "Native startup",
+        synra_protocol::session::PlatformKind::Desktop,
+        "0.1.0",
+    );
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let _first = initialize_native_network(Arc::clone(&fixture.db), profile.clone(), now).unwrap();
+    let first = fixture.record();
+    assert!(first.ready());
+    let _second = initialize_native_network(Arc::clone(&fixture.db), profile.clone(), now).unwrap();
+    assert_eq!(fixture.record(), first);
+    let backend = WindowsCredentialBackend::new(DEVICE_IDENTITY_SERVICE).unwrap();
+    let fingerprint: [u8; 32] = Sha256::digest(first.certificate()).into();
+    backend
+        .delete(&SecretKey::device_identity(fingerprint))
+        .unwrap();
+    assert!(matches!(
+        initialize_native_network(Arc::clone(&fixture.db), profile, now),
+        Err(NetworkStartupError::Credential(CredentialError::MissingKey))
+    ));
+    assert_eq!(
+        fixture.record(),
+        first,
+        "startup must not replace lost identity keys"
+    );
+}

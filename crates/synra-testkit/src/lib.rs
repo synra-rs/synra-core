@@ -2,7 +2,7 @@
 //!
 //! # Why these live together rather than in each crate's `tests/`
 //!
-//! Four things are needed by more than one crate's tests, and each of them is a *design decision* the kernel makes
+//! These fixtures are needed by more than one crate's tests, and each is a *design decision* the kernel makes
 //! rather than a convenience:
 //!
 //! * [`clock`] — the `Clock` trait and a mock. The kernel takes a clock rather than reading one, so a timeout can be
@@ -14,6 +14,7 @@
 //! * [`transport`] — an in-memory transport, so two kernels can be linked in one process with no sockets. This is
 //!   what makes the end-to-end tests of §4.3 possible without a network.
 //! * [`pair`] — two kernels wired together and already paired, which is the starting point of every integration test.
+//! * [`authentication`] — real device credentials and file-backed trust facts for authenticated host integration tests.
 //!
 //! # The crate is not published
 //!
@@ -29,7 +30,6 @@
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
-
 // Test code is exempt from the no-panic rules; see `synra-protocol` for the reasoning. This crate consists almost
 // entirely of test code, so the relaxation covers most of it — which is worth stating, because a fixture that
 // panicked only under a condition nobody tests would be a fixture that fails mysteriously.
@@ -44,15 +44,16 @@
     )
 )]
 
+pub mod authentication;
 pub mod clock;
 pub mod pair;
 pub mod transport;
 
 // The allocation counter lives in its own crate, because it is the workspace's only `unsafe` code and `forbid` cannot
 // be relaxed locally. Re-exported here so a test that uses the fixture has one import.
+pub use clock::{Clock, ClockError, Deadline, MockClock, SystemClock};
+pub use pair::{ExpectationError, KernelPair, PairedKernel};
 pub use synra_testkit_alloc::{
     AllocationBudget, AllocationCount, CounterGuard, SeededRng, record_allocation, record_free,
 };
-pub use clock::{Clock, ClockError, Deadline, MockClock, SystemClock};
-pub use pair::{ExpectationError, KernelPair, PairedKernel};
 pub use transport::{MemoryTransport, MemoryTransportLink, TransportError};

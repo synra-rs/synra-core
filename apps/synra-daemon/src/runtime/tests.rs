@@ -38,7 +38,12 @@ pub(super) fn runtime(dir: &Path) -> Runtime {
 }
 
 /// A runtime and the database it was built over, so a test can build a **second** one over the same store.
-fn runtime_shared(dir: &Path) -> (Runtime, std::sync::Arc<parking_lot::Mutex<synra_store::SynraDb>>) {
+fn runtime_shared(
+    dir: &Path,
+) -> (
+    Runtime,
+    std::sync::Arc<parking_lot::Mutex<synra_store::SynraDb>>,
+) {
     let mut db = synra_store::SynraDb::open_in_memory().expect("opens");
     db.migrate().expect("migrates");
     let shared = std::sync::Arc::new(parking_lot::Mutex::new(db));
@@ -50,7 +55,10 @@ fn runtime_shared(dir: &Path) -> (Runtime, std::sync::Arc<parking_lot::Mutex<syn
 /// ★ Why this exists: two runtimes over one store is what a **restart** is, and there is no other way to test that what a
 /// daemon wrote down is what the next daemon reads. A fixture that built its own database every time could only ever test
 /// a daemon against an empty one.
-fn runtime_over(dir: &Path, shared_db: std::sync::Arc<parking_lot::Mutex<synra_store::SynraDb>>) -> Runtime {
+fn runtime_over(
+    dir: &Path,
+    shared_db: std::sync::Arc<parking_lot::Mutex<synra_store::SynraDb>>,
+) -> Runtime {
     let identity = Identity::load(&shared_db.lock(), "windows", 1_000).expect("an identity");
     let local_peer = synra_core::LocalPeer::new(
         identity.device_id,
@@ -87,15 +95,19 @@ fn runtime_over(dir: &Path, shared_db: std::sync::Arc<parking_lot::Mutex<synra_s
         )),
         // A scripted engine rather than a real one: these tests are about what the daemon *reports*, and a unit test
         // that compiles Wasmtime to assert a JSON field would be a slower version of the same test.
-        plugins: std::sync::Arc::new(parking_lot::Mutex::new(synra_core::dispatch::PluginSet::new(
-            synra_plugin_host::Backend::new(std::sync::Arc::new(synra_plugin_host::ScriptedBackend::new())),
-            // ★ The daemon's own host, not a stub. The fixture exists to answer questions about what the daemon
-            // reports, and a stub here would make every question about a plugin's authority answer the same thing.
-            std::sync::Arc::new(crate::runtime::plugin_host::KernelHost::new(
-                std::sync::Arc::clone(&shared_db),
-                "0.1.0-test",
-            )),
-        ))),
+        plugins: std::sync::Arc::new(parking_lot::Mutex::new(
+            synra_core::dispatch::PluginSet::new(
+                synra_plugin_host::Backend::new(std::sync::Arc::new(
+                    synra_plugin_host::ScriptedBackend::new(),
+                )),
+                // ★ The daemon's own host, not a stub. The fixture exists to answer questions about what the daemon
+                // reports, and a stub here would make every question about a plugin's authority answer the same thing.
+                std::sync::Arc::new(crate::runtime::plugin_host::KernelHost::new(
+                    std::sync::Arc::clone(&shared_db),
+                    "0.1.0-test",
+                )),
+            ),
+        )),
         metrics: std::sync::Arc::new(synra_observe::metrics::RingRecorder::new()),
         plugin_loads: std::sync::Arc::new(parking_lot::Mutex::new(
             crate::runtime::LoadedSummary::default(),
@@ -148,14 +160,23 @@ fn a_catalogue_search_answers_from_the_cache_when_no_registry_can() {
         .store("@acme/chat", packument, 0)
         .expect("a cached packument");
 
-    let answer = crate::runtime::catalog::search(&runtime, "@acme/chat").expect("the cached answer");
+    let answer =
+        crate::runtime::catalog::search(&runtime, "@acme/chat").expect("the cached answer");
 
     assert_eq!(answer["package"], "@acme/chat");
     assert_eq!(answer["latest"], "1.2.3");
     // The origin, which is the half that makes an offline answer honest.
     assert_eq!(answer["origin"]["source"], "cache");
-    assert!(answer["origin"]["ageMs"].as_i64().is_some_and(|age| age > 0), "{answer}");
-    assert_eq!(answer["origin"]["stale"], true, "an entry fetched at the epoch: {answer}");
+    assert!(
+        answer["origin"]["ageMs"]
+            .as_i64()
+            .is_some_and(|age| age > 0),
+        "{answer}"
+    );
+    assert_eq!(
+        answer["origin"]["stale"], true,
+        "an entry fetched at the epoch: {answer}"
+    );
 }
 
 #[test]
@@ -165,11 +186,16 @@ fn a_catalogue_search_that_cannot_reach_anything_says_so_rather_than_answering_e
     let dir = TempDir::new("catalog-offline");
     let runtime = runtime(dir.path());
 
-    let refused = crate::runtime::catalog::search(&runtime, "@acme/chat").expect_err("nothing to answer with");
+    let refused = crate::runtime::catalog::search(&runtime, "@acme/chat")
+        .expect_err("nothing to answer with");
 
     assert_eq!(refused.code, ErrorCode::DeviceOffline, "{refused:?}");
     // And the reason names every mirror that was tried, because "the registry is unreachable" is not actionable.
-    assert!(refused.message.contains("@acme/chat"), "{}", refused.message);
+    assert!(
+        refused.message.contains("@acme/chat"),
+        "{}",
+        refused.message
+    );
 }
 
 #[test]
@@ -187,9 +213,15 @@ fn the_sweep_takes_only_what_it_is_for() {
     db.migrate().expect("the schema");
 
     // Everything with a public writer, so every table the sweep must not touch has a row to lose.
-    db.insert_plugin("@acme/notes", true, true, "enabled", 1_000, 1_000).expect("a plugin");
-    db.record_grants("@acme/notes", &[("device:list".to_owned(), true)], 1_000, "digest")
-        .expect("grants");
+    db.insert_plugin("@acme/notes", true, true, "enabled", 1_000, 1_000)
+        .expect("a plugin");
+    db.record_grants(
+        "@acme/notes",
+        &[("device:list".to_owned(), true)],
+        1_000,
+        "digest",
+    )
+    .expect("grants");
     db.pair_device(&Paired {
         device_id: "01a139a9-8f3c-72ce-9c96-2b2c81f14551".to_owned(),
         display_name: "Laptop".to_owned(),
@@ -200,7 +232,8 @@ fn the_sweep_takes_only_what_it_is_for() {
         paired_at_ms: 1_000,
     })
     .expect("a pairing");
-    db.set_config("theme", &serde_json::json!("dark"), 1_000).expect("a setting");
+    db.set_config("theme", &serde_json::json!("dark"), 1_000)
+        .expect("a setting");
 
     // And one row in each table the sweep **is** for, all old enough to be collectable.
     db.record_seen_device(&Seen {
@@ -242,7 +275,10 @@ fn the_sweep_takes_only_what_it_is_for() {
     // sweep has the maximum opportunity to take something it should not.
     let collected = crate::runtime::intents::sweep(
         &db,
-        crate::runtime::intents::Retention { intents_ms: 0, audit_ms: 0 },
+        crate::runtime::intents::Retention {
+            intents_ms: 0,
+            audit_ms: 0,
+        },
     );
 
     let after: std::collections::BTreeMap<String, i64> = db
@@ -305,8 +341,10 @@ fn status_reports_the_gates_counters() {
     let runtime = runtime(dir.path());
 
     // A refused call, made the way the gate makes one.
-    let refused =
-        synra_plugin_host::host_calls::CallError::denied("device:send:*", &synra_capability::CapabilitySet::new());
+    let refused = synra_plugin_host::host_calls::CallError::denied(
+        "device:send:*",
+        &synra_capability::CapabilitySet::new(),
+    );
     assert!(!refused.message.is_empty());
     let key = synra_observe::metrics::SeriesKey::new(
         "gate_denied_total",
@@ -315,7 +353,9 @@ fn status_reports_the_gates_counters() {
     runtime.metrics.counter_inc(&key);
 
     let value = runtime.status().expect("status");
-    let series = value["metrics"]["values"].as_array().expect("the series list");
+    let series = value["metrics"]["values"]
+        .as_array()
+        .expect("the series list");
     let refused_series = series
         .iter()
         .find(|entry| entry["key"]["name"] == "gate_denied_total")
@@ -327,7 +367,9 @@ fn status_reports_the_gates_counters() {
     // for and not have" — the question the design's `gate_*` metrics exist for.
     let labels = refused_series["key"]["labels"].as_array().expect("labels");
     assert!(
-        labels.iter().any(|pair| pair[0] == "capability" && pair[1] == "device:send:*"),
+        labels
+            .iter()
+            .any(|pair| pair[0] == "capability" && pair[1] == "device:send:*"),
         "{refused_series}"
     );
 }
@@ -340,16 +382,25 @@ fn status_names_the_layers_that_are_not_built() {
     let dir = TempDir::new("status-missing");
     let value = runtime(dir.path()).status().expect("status");
     let missing = value["notImplemented"].as_array().expect("a list");
-    let names: Vec<&str> = missing.iter().filter_map(serde_json::Value::as_str).collect();
+    let names: Vec<&str> = missing
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
 
     // ★ The exact contents, and today that is nothing. The list held `session` long after `send --text` and
     // `send --file` both moved real bytes — so it was telling a user that a working feature was missing, which is
     // precisely the failure this assertion exists to catch. An assertion of a *superset* would have passed.
-    assert!(names.is_empty(), "a layer that is not missing is named: {names:?}");
+    assert!(
+        names.is_empty(),
+        "a layer that is not missing is named: {names:?}"
+    );
 
     // And the layers that are real are certainly not in it, each having been removed when it started working.
     for built in ["database", "discovery", "session"] {
-        assert!(!names.contains(&built), "{built} is listed and is real: {names:?}");
+        assert!(
+            !names.contains(&built),
+            "{built} is listed and is real: {names:?}"
+        );
     }
 }
 
@@ -375,7 +426,11 @@ fn asking_for_devices_reports_where_each_part_came_from() {
     // This device, from the stored identity.
     assert_eq!(value["self"]["displayName"], "This device");
     assert_eq!(value["self"]["platform"], "windows");
-    assert!(value["self"]["deviceId"].as_str().is_some_and(|id| !id.is_empty()));
+    assert!(
+        value["self"]["deviceId"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty())
+    );
     // And two empty lists, each from a real source: an empty `paired_devices` table and an empty discovery table.
     assert_eq!(value["paired"].as_array().map(Vec::len), Some(0));
     assert_eq!(value["found"].as_array().map(Vec::len), Some(0));
@@ -390,13 +445,23 @@ fn a_scan_request_expires_on_its_own_and_is_capped_by_the_protocol() {
     // broadcast for ever. A deadline is the property that matters when the process that asked is no longer there.
     let dir = TempDir::new("scan-request");
     let runtime = runtime(dir.path());
-    assert_eq!(runtime.scan_until_ms.load(std::sync::atomic::Ordering::Relaxed), 0);
+    assert_eq!(
+        runtime
+            .scan_until_ms
+            .load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
 
     // No discovery socket in this fixture, so `scan` returns without publishing anything — and the call still has to
     // be harmless, because a kernel with no network is a state the code has to handle.
     assert!(runtime.discovery.is_none());
     let _ = runtime.devices(true, Some(10)).expect("devices");
-    assert_eq!(runtime.scan_until_ms.load(std::sync::atomic::Ordering::Relaxed), 0);
+    assert_eq!(
+        runtime
+            .scan_until_ms
+            .load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
 }
 
 #[test]
@@ -407,7 +472,12 @@ fn a_zero_or_absent_scan_budget_does_not_scan() {
     let runtime = runtime(dir.path());
     assert!(runtime.devices(true, None).is_ok());
     assert!(runtime.devices(true, Some(0)).is_ok());
-    assert_eq!(runtime.scan_until_ms.load(std::sync::atomic::Ordering::Relaxed), 0);
+    assert_eq!(
+        runtime
+            .scan_until_ms
+            .load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
 }
 
 #[test]
@@ -429,7 +499,9 @@ fn a_device_the_kernel_heard_on_the_network_appears_under_its_own_key() {
     let dir = TempDir::new("devices-found");
     let runtime = runtime(dir.path());
     let announcement = synra_protocol::discovery::DeviceAnnouncement {
-        device_id: "33333333-3333-4333-8333-333333333333".parse().expect("a device id"),
+        device_id: "33333333-3333-4333-8333-333333333333"
+            .parse()
+            .expect("a device id"),
         display_name: "Phone".to_owned(),
         protocol: synra_protocol::handshake::PROTOCOL_VERSION,
         port: 47100,
@@ -457,13 +529,22 @@ fn a_device_the_kernel_heard_on_the_network_appears_under_its_own_key() {
     );
 
     let value = runtime.devices(true, None).expect("devices");
-    assert_eq!(value["paired"].as_array().map(Vec::len), Some(0), "nothing is paired");
+    assert_eq!(
+        value["paired"].as_array().map(Vec::len),
+        Some(0),
+        "nothing is paired"
+    );
     let found = value["found"].as_array().expect("a list");
     assert_eq!(found.len(), 1);
     assert_eq!(found[0]["displayName"], "Phone");
     assert_eq!(found[0]["trust"], "Handshaked");
     // And the port is the one it listens on for connections, not the ephemeral one it sent from.
-    assert!(found[0]["address"].as_str().is_some_and(|a| a.ends_with(":47100")), "{found:?}");
+    assert!(
+        found[0]["address"]
+            .as_str()
+            .is_some_and(|a| a.ends_with(":47100")),
+        "{found:?}"
+    );
 }
 
 #[test]
@@ -523,7 +604,11 @@ fn file_sending_checks_the_file_before_it_looks_for_the_device() {
     match runtime.send_file("nobody", "/definitely/not/here.bin") {
         Err(refusal) => {
             assert_eq!(refusal.code, ErrorCode::InvalidArgument);
-            assert!(refusal.message.contains("not/here.bin"), "{}", refusal.message);
+            assert!(
+                refusal.message.contains("not/here.bin"),
+                "{}",
+                refusal.message
+            );
         }
         Ok(value) => panic!("expected a refusal, got {value}"),
     }
@@ -576,8 +661,6 @@ fn a_missing_argument_is_not_retryable() {
     }
 }
 
-
-
 // ── Plugins ───────────────────────────────────────────────────────────────────────────────────
 
 #[test]
@@ -595,11 +678,19 @@ fn removing_a_plugin_takes_the_row_and_the_artifacts_and_reports_the_bytes() {
     std::fs::create_dir_all(&data).expect("the sandbox");
     std::fs::write(data.join("cache.bin"), b"123").expect("a data file");
 
-    let report = runtime.plugin_remove("@acme/hello", false).expect("removes");
+    let report = runtime
+        .plugin_remove("@acme/hello", false)
+        .expect("removes");
 
-    assert_eq!(report["bytesFreed"], 5, "the artifact's bytes, not the sandbox's");
+    assert_eq!(
+        report["bytesFreed"], 5,
+        "the artifact's bytes, not the sandbox's"
+    );
     assert_eq!(report["dataKept"], true);
-    assert!(runtime.db().plugins().expect("rows").is_empty(), "the row is gone");
+    assert!(
+        runtime.db().plugins().expect("rows").is_empty(),
+        "the row is gone"
+    );
     assert!(!artifacts.exists(), "and the artifacts with it");
     assert!(data.exists(), "the data stays unless asked");
 }
@@ -639,7 +730,11 @@ fn listing_plugins_sets_the_installed_and_active_gauges() {
 
     let snapshot = runtime.metrics.snapshot();
     assert_eq!(snapshot.get("plugins_installed"), Some(&Value::Gauge(2)));
-    assert_eq!(snapshot.get("plugins_active"), Some(&Value::Gauge(1)), "only the enabled one");
+    assert_eq!(
+        snapshot.get("plugins_active"),
+        Some(&Value::Gauge(1)),
+        "only the enabled one"
+    );
 }
 
 /// Inserts a plugin row, which is what the database is the source of truth for.
@@ -669,11 +764,21 @@ fn consent(runtime: &Runtime, id: &str, granted: &[&str]) {
     let decisions: Vec<(String, bool)> = manifest
         .capabilities
         .iter()
-        .map(|declared| (declared.cap.clone(), granted.contains(&declared.cap.as_str())))
+        .map(|declared| {
+            (
+                declared.cap.clone(),
+                granted.contains(&declared.cap.as_str()),
+            )
+        })
         .collect();
     runtime
         .db()
-        .record_grants(id, &decisions, 200, &synra_plugin_api::manifest_digest(&text))
+        .record_grants(
+            id,
+            &decisions,
+            200,
+            &synra_plugin_api::manifest_digest(&text),
+        )
         .expect("the decisions");
 }
 
@@ -686,7 +791,11 @@ fn a_plugin_directory_the_database_has_never_seen_is_recorded_and_left_off() {
     // directory and the daemon would never know it existed.
     let dir = TempDir::new("discover-new");
     let runtime = runtime(dir.path());
-    write_plugin(&runtime.plugins_dir, "@acme/hello", r#"{"cap": "log:info"}"#);
+    write_plugin(
+        &runtime.plugins_dir,
+        "@acme/hello",
+        r#"{"cap": "log:info"}"#,
+    );
 
     let found = crate::runtime::record_discovered_plugins(&runtime.db(), &runtime.plugins_dir, 500);
 
@@ -721,7 +830,10 @@ fn a_plugin_directory_that_is_not_a_plugin_is_reported_rather_than_ignored() {
     let reported = found.first().expect("one entry");
     assert_eq!(reported.plugin_id, "half-copied");
     assert!(
-        reported.problem.as_deref().is_some_and(|why| why.contains("manifest")),
+        reported
+            .problem
+            .as_deref()
+            .is_some_and(|why| why.contains("manifest")),
         "the reason should name the manifest: {reported:?}"
     );
     // Nothing was recorded for it, so it cannot be enabled by accident later.
@@ -753,7 +865,10 @@ fn a_directory_named_differently_from_its_manifest_is_reported_rather_than_recor
     assert_eq!(found.len(), 1, "{found:?}");
     assert_eq!(found[0].plugin_id, "@acme/hello");
     let problem = found[0].problem.as_deref().expect("a reason");
-    assert!(problem.contains("acme+hello"), "the reason names the directory it needs: {problem}");
+    assert!(
+        problem.contains("acme+hello"),
+        "the reason names the directory it needs: {problem}"
+    );
     assert!(runtime.db().plugins().expect("rows").is_empty());
 }
 
@@ -763,13 +878,21 @@ fn discovering_a_plugin_twice_records_it_once() {
     // every start would be noise that hides a real problem.
     let dir = TempDir::new("discover-twice");
     let runtime = runtime(dir.path());
-    write_plugin(&runtime.plugins_dir, "@acme/hello", r#"{"cap": "log:info"}"#);
+    write_plugin(
+        &runtime.plugins_dir,
+        "@acme/hello",
+        r#"{"cap": "log:info"}"#,
+    );
 
     let first = crate::runtime::record_discovered_plugins(&runtime.db(), &runtime.plugins_dir, 500);
     assert_eq!(first.len(), 1, "the first pass records it");
 
-    let second = crate::runtime::record_discovered_plugins(&runtime.db(), &runtime.plugins_dir, 600);
-    assert!(second.is_empty(), "the second pass should find nothing new: {second:?}");
+    let second =
+        crate::runtime::record_discovered_plugins(&runtime.db(), &runtime.plugins_dir, 600);
+    assert!(
+        second.is_empty(),
+        "the second pass should find nothing new: {second:?}"
+    );
     assert_eq!(runtime.db().plugins().expect("rows").len(), 1);
 }
 
@@ -780,7 +903,11 @@ fn discovering_does_not_overwrite_a_decision_the_user_has_made() {
     // plugin on every boot, which is the kind of bug that looks like "my plugins keep turning themselves off".
     let dir = TempDir::new("discover-existing");
     let runtime = runtime(dir.path());
-    write_plugin(&runtime.plugins_dir, "@acme/hello", r#"{"cap": "log:info"}"#);
+    write_plugin(
+        &runtime.plugins_dir,
+        "@acme/hello",
+        r#"{"cap": "log:info"}"#,
+    );
     install(&runtime, "@acme/hello", 1, 1);
 
     let found = crate::runtime::record_discovered_plugins(&runtime.db(), &runtime.plugins_dir, 500);
@@ -788,7 +915,10 @@ fn discovering_does_not_overwrite_a_decision_the_user_has_made() {
     assert!(found.is_empty(), "a known plugin is not new: {found:?}");
     let rows = runtime.db().plugins().expect("rows");
     let row = rows.first().expect("the row the user's decision is in");
-    assert!(row.enabled && row.trusted, "the user's decision survived: {row:?}");
+    assert!(
+        row.enabled && row.trusted,
+        "the user's decision survived: {row:?}"
+    );
 }
 
 #[test]
@@ -803,26 +933,44 @@ fn asking_for_verbose_logs_raises_what_the_daemon_writes() {
     // debug lines in it from some earlier run".
     let dir = TempDir::new("logs-raise-verbose");
     let runtime = runtime(dir.path());
-    let verbosity = runtime.verbosity.as_ref().expect("a fixture with a logger").clone();
+    let verbosity = runtime
+        .verbosity
+        .as_ref()
+        .expect("a fixture with a logger")
+        .clone();
 
-    assert_eq!(verbosity.effective(), synra_observe::logging::LogLevel::Info, "the configured level");
+    assert_eq!(
+        verbosity.effective(),
+        synra_observe::logging::LogLevel::Info,
+        "the configured level"
+    );
     assert!(!verbosity.is_raised());
 
     // A plain read asks for nothing and must not change the level: a command that quietly made the log verbose would
     // fill a disk on a machine nobody is watching.
     let plain = runtime.logs_value(10, false, None).expect("an answer");
     assert_eq!(plain["raised"], false);
-    assert_eq!(verbosity.effective(), synra_observe::logging::LogLevel::Info, "a plain read changed nothing");
+    assert_eq!(
+        verbosity.effective(),
+        synra_observe::logging::LogLevel::Info,
+        "a plain read changed nothing"
+    );
 
     let answer = runtime.logs_value(10, true, None).expect("an answer");
-    assert_eq!(answer["raised"], true, "the raise has to be reported: {answer}");
+    assert_eq!(
+        answer["raised"], true,
+        "the raise has to be reported: {answer}"
+    );
     assert_eq!(answer["level"], "debug");
     assert_eq!(
         verbosity.effective(),
         synra_observe::logging::LogLevel::Debug,
         "the logger itself has to change, not just the answer"
     );
-    assert!(verbosity.remaining().is_some(), "and it has to lapse, or a flag left on fills the disk");
+    assert!(
+        verbosity.remaining().is_some(),
+        "and it has to lapse, or a flag left on fills the disk"
+    );
 }
 
 #[test]
@@ -842,12 +990,24 @@ fn a_trace_filter_asks_for_more_than_verbose_does() {
     // Both are bounded by the same window.
     let dir = TempDir::new("logs-raise-trace");
     let runtime = runtime(dir.path());
-    let verbosity = runtime.verbosity.as_ref().expect("a fixture with a logger").clone();
+    let verbosity = runtime
+        .verbosity
+        .as_ref()
+        .expect("a fixture with a logger")
+        .clone();
 
-    let answer = runtime.logs_value(10, false, Some("abc")).expect("an answer");
+    let answer = runtime
+        .logs_value(10, false, Some("abc"))
+        .expect("an answer");
     assert_eq!(answer["raised"], true);
-    assert_eq!(answer["level"], "trace", "a trace filter raises further than --verbose: {answer}");
-    assert_eq!(verbosity.effective(), synra_observe::logging::LogLevel::Trace);
+    assert_eq!(
+        answer["level"], "trace",
+        "a trace filter raises further than --verbose: {answer}"
+    );
+    assert_eq!(
+        verbosity.effective(),
+        synra_observe::logging::LogLevel::Trace
+    );
 }
 
 #[test]
@@ -861,7 +1021,11 @@ fn a_daemon_with_no_log_does_not_claim_to_have_raised_anything() {
 
     let answer = runtime.logs_value(10, true, None).expect("an answer");
     assert_eq!(answer["raised"], false, "{answer}");
-    assert_eq!(answer["level"], serde_json::Value::Null, "and it says it has no level to report: {answer}");
+    assert_eq!(
+        answer["level"],
+        serde_json::Value::Null,
+        "and it says it has no level to report: {answer}"
+    );
 }
 
 #[test]
@@ -953,7 +1117,11 @@ fn write_plugin(plugins_dir: &Path, id: &str, capability: &str) {
     let directory = plugin_dir(plugins_dir, id);
     std::fs::create_dir_all(&directory).expect("a plugin directory");
     let runtime = r#"{"headless": {"artifact": "plugin.wasm", "stateful": false}}"#;
-    std::fs::write(directory.join("manifest.json"), manifest_json(id, capability, runtime)).expect("a manifest");
+    std::fs::write(
+        directory.join("manifest.json"),
+        manifest_json(id, capability, runtime),
+    )
+    .expect("a manifest");
     // The bytes have the WebAssembly header, because the loader's engine refuses anything else — and a fixture that
     // dodged that check would be testing a path no plugin takes.
     std::fs::write(directory.join("plugin.wasm"), b"\0asm\x01\0\0\0").expect("an artifact");
@@ -969,9 +1137,14 @@ fn write_plugin(plugins_dir: &Path, id: &str, capability: &str) {
 pub(super) fn sign_plugin(directory: &Path, swap: bool) {
     use ed25519_dalek::Signer as _;
 
-    let manifest_text = std::fs::read_to_string(directory.join("manifest.json")).expect("a manifest");
+    let manifest_text =
+        std::fs::read_to_string(directory.join("manifest.json")).expect("a manifest");
     let wasm = std::fs::read(directory.join("plugin.wasm")).expect("the artifact");
-    let covered = if swap { b"bytes that are not here".to_vec() } else { wasm };
+    let covered = if swap {
+        b"bytes that are not here".to_vec()
+    } else {
+        wasm
+    };
     let digest = synra_core::ObjectDigest::of(&covered).as_sri().to_string();
 
     let mut artifacts = synra_plugin_api::publisher::Digests::new();
@@ -1020,7 +1193,10 @@ fn a_discovered_package_whose_signature_covers_other_bytes_is_not_recorded() {
     let problem = found[0].problem.as_deref().expect("a reason");
     assert!(problem.contains("different bytes"), "{problem}");
     assert!(problem.contains("plugin.wasm"), "{problem}");
-    assert!(!runtime.db().plugin_is_installed(plugin).expect("the table"), "it must not be recorded");
+    assert!(
+        !runtime.db().plugin_is_installed(plugin).expect("the table"),
+        "it must not be recorded"
+    );
 }
 
 #[test]
@@ -1045,20 +1221,30 @@ fn a_signature_document_that_is_not_one_is_refused_at_discovery() {
     let runtime = runtime(dir.path());
     let plugin = "@acme/broken-signature";
     write_plugin(&runtime.plugins_dir, plugin, r#"{"cap": "log:info"}"#);
-    std::fs::write(plugin_dir(&runtime.plugins_dir, plugin).join("signature.json"), "{}").expect("a file");
+    std::fs::write(
+        plugin_dir(&runtime.plugins_dir, plugin).join("signature.json"),
+        "{}",
+    )
+    .expect("a file");
 
     let found = crate::runtime::record_discovered_plugins(&runtime.db(), &runtime.plugins_dir, 500);
 
     assert_eq!(found.len(), 1, "{found:?}");
     assert!(
-        found[0].problem.as_deref().is_some_and(|reason| reason.contains("signature")),
+        found[0]
+            .problem
+            .as_deref()
+            .is_some_and(|reason| reason.contains("signature")),
         "{found:?}"
     );
     assert!(!runtime.db().plugin_is_installed(plugin).expect("the table"));
 }
 
 /// A loader over a scripted engine, so a test can load without compiling Wasmtime.
-fn loader() -> (synra_core::dispatch::PluginSet, synra_plugin_host::ScriptedBackend) {
+fn loader() -> (
+    synra_core::dispatch::PluginSet,
+    synra_plugin_host::ScriptedBackend,
+) {
     let backend = synra_plugin_host::ScriptedBackend::new();
     let set = synra_core::dispatch::PluginSet::new(
         synra_plugin_host::Backend::new(std::sync::Arc::new(backend.clone())),
@@ -1116,7 +1302,11 @@ fn revoking_one_plugin_leaves_the_others_alone() {
         .map(|row| (row.plugin_id, row.enabled))
         .collect();
 
-    assert_eq!(rows.get("@bad/plugin"), Some(&false), "the revoked one is disabled");
+    assert_eq!(
+        rows.get("@bad/plugin"),
+        Some(&false),
+        "the revoked one is disabled"
+    );
     assert_eq!(
         rows.get("@good/plugin"),
         Some(&true),
@@ -1124,7 +1314,9 @@ fn revoking_one_plugin_leaves_the_others_alone() {
     );
     // And it still loaded, which is the consequence a user would notice.
     assert_eq!(summary.len(), 1, "refused: {:?}", summary.refused);
-    assert!(summary.contains(&synra_protocol::ids::PluginId::try_from("@good/plugin".to_owned()).expect("an id")));
+    assert!(summary.contains(
+        &synra_protocol::ids::PluginId::try_from("@good/plugin".to_owned()).expect("an id")
+    ));
 }
 
 #[test]
@@ -1136,7 +1328,11 @@ fn a_revoked_installed_version_is_refused_and_disabled() {
     // * disabling the **row** without saying why leaves a user with a plugin that switched itself off.
     let dir = TempDir::new("load-revoked");
     let runtime = runtime(dir.path());
-    write_plugin(&runtime.plugins_dir, "@bad/plugin", r#"{"cap": "log:info"}"#);
+    write_plugin(
+        &runtime.plugins_dir,
+        "@bad/plugin",
+        r#"{"cap": "log:info"}"#,
+    );
     install(&runtime, "@bad/plugin", 1, 1);
     consent(&runtime, "@bad/plugin", &["log:info"]);
 
@@ -1164,11 +1360,19 @@ fn a_revoked_installed_version_is_refused_and_disabled() {
         &list,
     );
 
-    assert!(summary.is_empty(), "a revoked plugin was loaded: {:?}", summary.loaded);
+    assert!(
+        summary.is_empty(),
+        "a revoked plugin was loaded: {:?}",
+        summary.loaded
+    );
     let refused = summary.refused.first().expect("a refusal");
     assert_eq!(refused.plugin_id, "@bad/plugin");
     // The reason reaches the user, and it says the disable happened rather than only that loading was skipped.
-    assert!(refused.reason.contains("malicious code"), "{}", refused.reason);
+    assert!(
+        refused.reason.contains("malicious code"),
+        "{}",
+        refused.reason
+    );
     assert!(refused.reason.contains("disabled"), "{}", refused.reason);
 
     // ★ And the row is off, which is the half that survives a restart.
@@ -1179,7 +1383,10 @@ fn a_revoked_installed_version_is_refused_and_disabled() {
         .into_iter()
         .find(|row| row.plugin_id == "@bad/plugin")
         .expect("the row");
-    assert!(!row.enabled, "a revoked plugin is still enabled in the store");
+    assert!(
+        !row.enabled,
+        "a revoked plugin is still enabled in the store"
+    );
 }
 
 #[test]
@@ -1188,7 +1395,11 @@ fn an_enabled_and_trusted_plugin_is_actually_loaded() {
     // was no code path from a database row to a compiled component, so there was nothing here to assert.
     let dir = TempDir::new("load-one");
     let runtime = runtime(dir.path());
-    write_plugin(&runtime.plugins_dir, "@acme/hello", r#"{"cap": "log:info"}"#);
+    write_plugin(
+        &runtime.plugins_dir,
+        "@acme/hello",
+        r#"{"cap": "log:info"}"#,
+    );
     install(&runtime, "@acme/hello", 1, 1);
 
     consent(&runtime, "@acme/hello", &["log:info"]);
@@ -1201,9 +1412,20 @@ fn an_enabled_and_trusted_plugin_is_actually_loaded() {
         &synra_plugin_api::revocation::RevocationList::empty(),
     );
 
-    assert_eq!(summary.len(), 1, "the one plugin that should run did; refused: {:?}", summary.refused);
-    assert!(summary.contains(&synra_protocol::ids::PluginId::try_from("@acme/hello".to_owned()).expect("an id")));
-    assert!(summary.refused.is_empty(), "nothing was refused: {:?}", summary.refused);
+    assert_eq!(
+        summary.len(),
+        1,
+        "the one plugin that should run did; refused: {:?}",
+        summary.refused
+    );
+    assert!(summary.contains(
+        &synra_protocol::ids::PluginId::try_from("@acme/hello".to_owned()).expect("an id")
+    ));
+    assert!(
+        summary.refused.is_empty(),
+        "nothing was refused: {:?}",
+        summary.refused
+    );
 }
 
 #[test]
@@ -1215,7 +1437,11 @@ fn a_plugin_the_user_never_answered_about_is_not_loaded_even_when_it_is_trusted(
     // pre-consent build left behind, and it must not load: there is no decision behind the flag.
     let dir = TempDir::new("no-consent");
     let runtime = runtime(dir.path());
-    write_plugin(&runtime.plugins_dir, "@acme/hello", r#"{"cap": "log:info"}"#);
+    write_plugin(
+        &runtime.plugins_dir,
+        "@acme/hello",
+        r#"{"cap": "log:info"}"#,
+    );
     install(&runtime, "@acme/hello", 1, 1);
     // Deliberately no `consent`.
 
@@ -1248,13 +1474,21 @@ fn a_plugin_whose_manifest_changed_after_consent_needs_confirming_again() {
     // one thing.
     let dir = TempDir::new("stale-consent");
     let runtime = runtime(dir.path());
-    write_plugin(&runtime.plugins_dir, "@acme/hello", r#"{"cap": "log:info"}"#);
+    write_plugin(
+        &runtime.plugins_dir,
+        "@acme/hello",
+        r#"{"cap": "log:info"}"#,
+    );
     install(&runtime, "@acme/hello", 1, 1);
     consent(&runtime, "@acme/hello", &["log:info"]);
 
     // The package is replaced. Same id, same version, one more capability — a change an author can make without bumping
     // anything, which is exactly why the bytes are what is hashed.
-    write_plugin(&runtime.plugins_dir, "@acme/hello", r#"{"cap": "log:info"}, {"cap": "device:list"}"#);
+    write_plugin(
+        &runtime.plugins_dir,
+        "@acme/hello",
+        r#"{"cap": "log:info"}, {"cap": "device:list"}"#,
+    );
 
     let (mut set, _backend) = loader();
     let summary = crate::runtime::load_installed(
@@ -1268,7 +1502,9 @@ fn a_plugin_whose_manifest_changed_after_consent_needs_confirming_again() {
     assert!(summary.is_empty(), "nothing may be loaded: {summary:?}");
     let refused = summary.refused.first().expect("a refusal, not silence");
     assert!(
-        refused.reason.contains("changed since the user confirmed it"),
+        refused
+            .reason
+            .contains("changed since the user confirmed it"),
         "the reason has to say what happened: {}",
         refused.reason
     );
@@ -1283,7 +1519,11 @@ fn the_grants_a_plugin_runs_with_are_the_ones_the_user_gave_it() {
     // construction and no test could tell them apart.
     let dir = TempDir::new("granted-narrow");
     let runtime = runtime(dir.path());
-    write_plugin(&runtime.plugins_dir, "@acme/hello", r#"{"cap": "log:info"}, {"cap": "device:list"}"#);
+    write_plugin(
+        &runtime.plugins_dir,
+        "@acme/hello",
+        r#"{"cap": "log:info"}, {"cap": "device:list"}"#,
+    );
     install(&runtime, "@acme/hello", 1, 1);
     consent(&runtime, "@acme/hello", &["log:info"]);
 
@@ -1295,14 +1535,23 @@ fn the_grants_a_plugin_runs_with_are_the_ones_the_user_gave_it() {
         &synra_observe::crash::StartupVerdict::Clean,
         &synra_plugin_api::revocation::RevocationList::empty(),
     );
-    assert_eq!(summary.len(), 1, "the plugin still runs: {:?}", summary.refused);
+    assert_eq!(
+        summary.len(),
+        1,
+        "the plugin still runs: {:?}",
+        summary.refused
+    );
 
     // Read back through the set rather than the database, so this asserts what the *plugin* was given.
     let held = set
         .grants(&synra_protocol::ids::PluginId::try_from("@acme/hello".to_owned()).expect("an id"))
         .expect("the plugin is loaded");
     let held: Vec<String> = held.iter().map(ToString::to_string).collect();
-    assert_eq!(held, vec!["log:info".to_owned()], "the granted set, not the requested one: {held:?}");
+    assert_eq!(
+        held,
+        vec!["log:info".to_owned()],
+        "the granted set, not the requested one: {held:?}"
+    );
 }
 
 #[test]
@@ -1316,7 +1565,11 @@ fn safe_mode_loads_nothing_and_says_why() {
     // starts them.
     let dir = TempDir::new("safe-mode");
     let runtime = runtime(dir.path());
-    write_plugin(&runtime.plugins_dir, "@acme/hello", r#"{"cap": "log:info"}"#);
+    write_plugin(
+        &runtime.plugins_dir,
+        "@acme/hello",
+        r#"{"cap": "log:info"}"#,
+    );
     install(&runtime, "@acme/hello", 1, 1);
 
     consent(&runtime, "@acme/hello", &["log:info"]);
@@ -1356,7 +1609,11 @@ fn safe_mode_loads_nothing_and_says_why() {
         &synra_plugin_api::revocation::RevocationList::empty(),
     );
 
-    assert!(summary.is_empty(), "safe mode loaded something: {:?}", summary.loaded);
+    assert!(
+        summary.is_empty(),
+        "safe mode loaded something: {:?}",
+        summary.loaded
+    );
     // ★ Not in `refused`: this plugin did not fail, it was never examined. Reporting it as a refusal would put a plugin
     // author on a bug report for the daemon's own decision.
     assert!(
@@ -1366,8 +1623,14 @@ fn safe_mode_loads_nothing_and_says_why() {
     );
     // And the reason is carried out, so the daemon can print it rather than showing an empty list that reads as
     // "nothing is installed".
-    let why = summary.safe_mode.as_deref().expect("safe mode must explain itself");
-    assert!(why.contains("src/plugin.rs:42"), "the explanation does not name the location: {why}");
+    let why = summary
+        .safe_mode
+        .as_deref()
+        .expect("safe mode must explain itself");
+    assert!(
+        why.contains("src/plugin.rs:42"),
+        "the explanation does not name the location: {why}"
+    );
 }
 
 #[test]
@@ -1376,7 +1639,11 @@ fn a_plugin_the_user_never_trusted_is_not_loaded_and_not_refused() {
     // it as a refusal would put a plugin author on a bug report for a plugin that has not been approved for anything.
     let dir = TempDir::new("load-untrusted");
     let runtime = runtime(dir.path());
-    write_plugin(&runtime.plugins_dir, "@acme/hello", r#"{"cap": "net:fetch:*"}"#);
+    write_plugin(
+        &runtime.plugins_dir,
+        "@acme/hello",
+        r#"{"cap": "net:fetch:*"}"#,
+    );
     install(&runtime, "@acme/hello", 1, 0);
 
     let (mut set, _backend) = loader();
@@ -1389,7 +1656,11 @@ fn a_plugin_the_user_never_trusted_is_not_loaded_and_not_refused() {
     );
 
     assert!(summary.is_empty(), "an untrusted plugin is not loadable");
-    assert!(summary.refused.is_empty(), "and untrusted is not a failure: {:?}", summary.refused);
+    assert!(
+        summary.refused.is_empty(),
+        "and untrusted is not a failure: {:?}",
+        summary.refused
+    );
 }
 
 #[test]
@@ -1428,7 +1699,11 @@ fn one_broken_plugin_does_not_stop_the_others() {
     );
 
     assert_eq!(summary.len(), 1, "the working plugin loaded");
-    assert_eq!(summary.refused.len(), 1, "and the broken one is accounted for");
+    assert_eq!(
+        summary.refused.len(),
+        1,
+        "and the broken one is accounted for"
+    );
     assert_eq!(summary.refused[0].plugin_id, "@acme/broken");
     assert!(
         summary.refused[0].reason.contains("artifact"),
@@ -1447,7 +1722,11 @@ fn a_ui_only_plugin_is_refused_rather_than_loaded_because_it_has_no_headless_hal
     std::fs::create_dir_all(&directory).expect("a plugin directory");
     std::fs::write(
         directory.join("manifest.json"),
-        manifest_json("@acme/ui-only", "", r#"{"ui": {"artifact": "dist", "entry": "index.html"}}"#),
+        manifest_json(
+            "@acme/ui-only",
+            "",
+            r#"{"ui": {"artifact": "dist", "entry": "index.html"}}"#,
+        ),
     )
     .expect("a manifest");
     install(&runtime, "@acme/ui-only", 1, 1);
@@ -1463,7 +1742,11 @@ fn a_ui_only_plugin_is_refused_rather_than_loaded_because_it_has_no_headless_hal
 
     assert!(summary.is_empty());
     assert_eq!(summary.refused.len(), 1);
-    assert!(summary.refused[0].reason.contains("headless"), "{}", summary.refused[0].reason);
+    assert!(
+        summary.refused[0].reason.contains("headless"),
+        "{}",
+        summary.refused[0].reason
+    );
 }
 
 #[test]
@@ -1472,7 +1755,11 @@ fn the_report_says_what_was_loaded_and_not_a_constant() {
     // has to say so. A field that cannot change with the system's state is decoration.
     let dir = TempDir::new("load-report");
     let runtime = runtime(dir.path());
-    write_plugin(&runtime.plugins_dir, "@acme/hello", r#"{"cap": "log:info"}"#);
+    write_plugin(
+        &runtime.plugins_dir,
+        "@acme/hello",
+        r#"{"cap": "log:info"}"#,
+    );
     install(&runtime, "@acme/hello", 1, 1);
     consent(&runtime, "@acme/hello", &["log:info"]);
 
@@ -1508,14 +1795,20 @@ fn the_report_names_a_plugin_it_could_not_load() {
         &synra_observe::crash::StartupVerdict::Clean,
         &synra_plugin_api::revocation::RevocationList::empty(),
     );
-    assert_eq!(summary.refused.len(), 1, "the fixture has a row and no directory");
+    assert_eq!(
+        summary.refused.len(),
+        1,
+        "the fixture has a row and no directory"
+    );
     *runtime.plugin_loads.lock() = summary;
 
     let value = runtime.plugins().expect("plugins");
     assert_eq!(value["loaded"], false, "nothing loaded, and it says so");
     assert_eq!(value["notLoaded"][0]["id"], "@acme/absent");
     assert!(
-        value["notLoaded"][0]["reason"].as_str().is_some_and(|reason| reason.contains("manifest")),
+        value["notLoaded"][0]["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("manifest")),
         "and the reason says what is missing: {value}"
     );
 }
@@ -1616,25 +1909,39 @@ fn a_trace_filter_keeps_only_the_lines_that_mention_it() {
     .expect("a log");
 
     // A trace filter widens the level — a trace's lines are the debug ones — and then keeps only its own.
-    let only = runtime(dir.path()).logs(10, true, Some("trace-1")).expect("logs");
+    let only = runtime(dir.path())
+        .logs(10, true, Some("trace-1"))
+        .expect("logs");
     let lines: Vec<&str> = only["lines"]
         .as_array()
         .expect("a list")
         .iter()
         .filter_map(serde_json::Value::as_str)
         .collect();
-    assert_eq!(lines.len(), 2, "expected the two trace-1 lines, got {lines:?}");
-    assert!(lines.iter().all(|line| line.contains("trace-1")), "{lines:?}");
+    assert_eq!(
+        lines.len(),
+        2,
+        "expected the two trace-1 lines, got {lines:?}"
+    );
+    assert!(
+        lines.iter().all(|line| line.contains("trace-1")),
+        "{lines:?}"
+    );
 
     // The other trace is not in there, which is what makes this a filter rather than a substring coincidence.
-    assert!(!lines.iter().any(|line| line.contains("trace-2")), "{lines:?}");
+    assert!(
+        !lines.iter().any(|line| line.contains("trace-2")),
+        "{lines:?}"
+    );
 
     // ★ And the id is echoed, so a caller can tell "this trace has no lines" from "the filter was dropped on the way
     // here" — the exact confusion the discarded id produced.
     assert_eq!(only["trace"].as_str(), Some("trace-1"));
 
     // An id nothing matches is an empty list rather than every line, which is the failure the old code produced.
-    let none = runtime(dir.path()).logs(10, true, Some("trace-does-not-exist")).expect("logs");
+    let none = runtime(dir.path())
+        .logs(10, true, Some("trace-does-not-exist"))
+        .expect("logs");
     assert_eq!(none["lines"].as_array().map(Vec::len), Some(0));
 
     // And no filter still returns everything, so the field's absence is not a filter of its own.
@@ -1678,8 +1985,6 @@ fn debug_lines_are_hidden_unless_they_are_asked_for() {
     assert_eq!(lines.len(), 1, "{lines:?}");
     assert!(lines[0].contains("INFO"), "{lines:?}");
 }
-
-
 
 #[test]
 fn the_newest_log_file_is_the_one_read() {
@@ -1728,8 +2033,9 @@ fn answering_a_prompt_records_the_pairing_and_releases_the_waiting_link() {
     // decision reaches the waiter and the record reaches the database — the two halves that make pairing work at all.
     let dir = TempDir::new("pair-answer");
     let runtime = runtime(dir.path());
-    let dialer: synra_protocol::ids::DeviceId =
-        "01a139a9-8f3c-72ce-9c96-2b2c81f14552".parse().expect("a valid device id");
+    let dialer: synra_protocol::ids::DeviceId = "01a139a9-8f3c-72ce-9c96-2b2c81f14552"
+        .parse()
+        .expect("a valid device id");
     let request_id = synra_protocol::ids::RequestId::new();
 
     let request = synra_protocol::session::PairRequest {
@@ -1742,7 +2048,9 @@ fn answering_a_prompt_records_the_pairing_and_releases_the_waiting_link() {
         user_hint: None,
     };
     let synra_core::pairing::Offer::Waiting(waiter) =
-        runtime.pairing.offer(request_id, request, "127.0.0.1:5000", 1_000)
+        runtime
+            .pairing
+            .offer(request_id, request, "127.0.0.1:5000", 1_000)
     else {
         panic!("a first request waits for a user");
     };
@@ -1759,7 +2067,9 @@ fn answering_a_prompt_records_the_pairing_and_releases_the_waiting_link() {
         &runtime.db(),
         dialer,
         synra_protocol::handshake::LinkToken::from_hex(
-            delivered.issued_token().expect("an acceptance issues a token"),
+            delivered
+                .issued_token()
+                .expect("an acceptance issues a token"),
         )
         .ok()
         .as_ref(),
@@ -1771,8 +2081,9 @@ fn answering_a_prompt_records_the_pairing_and_releases_the_waiting_link() {
 fn declining_a_prompt_writes_nothing_and_releases_the_link() {
     let dir = TempDir::new("pair-answer");
     let runtime = runtime(dir.path());
-    let dialer: synra_protocol::ids::DeviceId =
-        "01a139a9-8f3c-72ce-9c96-2b2c81f14553".parse().expect("a valid device id");
+    let dialer: synra_protocol::ids::DeviceId = "01a139a9-8f3c-72ce-9c96-2b2c81f14553"
+        .parse()
+        .expect("a valid device id");
     let request_id = synra_protocol::ids::RequestId::new();
     let request = synra_protocol::session::PairRequest {
         profile: synra_protocol::session::PeerProfile {
@@ -1784,7 +2095,9 @@ fn declining_a_prompt_writes_nothing_and_releases_the_link() {
         user_hint: None,
     };
     let synra_core::pairing::Offer::Waiting(waiter) =
-        runtime.pairing.offer(request_id, request, "127.0.0.1:5000", 1_000)
+        runtime
+            .pairing
+            .offer(request_id, request, "127.0.0.1:5000", 1_000)
     else {
         panic!("a first request waits for a user");
     };
@@ -1794,7 +2107,10 @@ fn declining_a_prompt_writes_nothing_and_releases_the_link() {
 
     let delivered = waiter.wait(std::time::Duration::from_millis(50));
     assert!(!delivered.accepted);
-    assert!(runtime.db().paired_devices().expect("reads").is_empty(), "a refusal records nothing");
+    assert!(
+        runtime.db().paired_devices().expect("reads").is_empty(),
+        "a refusal records nothing"
+    );
 }
 
 #[test]
@@ -1803,12 +2119,8 @@ fn answering_a_request_nobody_made_is_refused_with_a_reason() {
     // happened, because the device it was about has already been released.
     let dir = TempDir::new("pair-answer");
     let runtime = runtime(dir.path());
-    let error = Kernel::pair_answer(
-        &runtime,
-        "01a139a9-8f3c-72ce-9c96-2b2c81f14551",
-        true,
-    )
-    .expect_err("nothing is waiting under that request");
+    let error = Kernel::pair_answer(&runtime, "01a139a9-8f3c-72ce-9c96-2b2c81f14551", true)
+        .expect_err("nothing is waiting under that request");
     assert!(error.message.contains("no pairing request"), "{error:?}");
 }
 
@@ -1820,7 +2132,6 @@ fn a_request_id_that_is_not_one_is_refused_before_anything_is_looked_up() {
         .expect_err("that is not a request id");
     assert!(error.message.contains("not a request id"), "{error:?}");
 }
-
 
 #[test]
 fn enabling_a_plugin_writes_the_flag_and_says_so() {
@@ -1870,11 +2181,21 @@ fn enabling_a_confirmed_plugin_loads_it_without_a_restart() {
     consent(&runtime, plugin, &["log:info"]);
     let id = synra_protocol::ids::PluginId::try_from(plugin.to_owned()).expect("an id");
 
-    runtime.plugin_set_enabled(plugin, true).expect("it enables and loads");
-    assert!(runtime.plugins.lock().contains(&id), "enable wrote the flag but never loaded the plugin");
+    runtime
+        .plugin_set_enabled(plugin, true)
+        .expect("it enables and loads");
+    assert!(
+        runtime.plugins.lock().contains(&id),
+        "enable wrote the flag but never loaded the plugin"
+    );
 
-    runtime.plugin_set_enabled(plugin, false).expect("it disables and unloads");
-    assert!(!runtime.plugins.lock().contains(&id), "disable left the compiled form in the set");
+    runtime
+        .plugin_set_enabled(plugin, false)
+        .expect("it disables and unloads");
+    assert!(
+        !runtime.plugins.lock().contains(&id),
+        "disable left the compiled form in the set"
+    );
 }
 
 #[test]
@@ -1908,7 +2229,11 @@ fn consent_records_one_decision_per_capability_and_unlocks_the_plugin() {
     let dir = TempDir::new("consent-records");
     let runtime = runtime(dir.path());
     let plugin = "@acme/two-caps";
-    write_plugin(&runtime.plugins_dir, plugin, r#"{"cap": "log:info"}, {"cap": "device:list"}"#);
+    write_plugin(
+        &runtime.plugins_dir,
+        plugin,
+        r#"{"cap": "log:info"}, {"cap": "device:list"}"#,
+    );
     install(&runtime, plugin, 1, 0);
 
     runtime
@@ -1916,8 +2241,10 @@ fn consent_records_one_decision_per_capability_and_unlocks_the_plugin() {
         .expect("the decision is recorded");
 
     let grants = runtime.db().plugin_grants(plugin).expect("the decisions");
-    let decisions: std::collections::BTreeMap<String, bool> =
-        grants.into_iter().map(|row| (row.capability, row.granted)).collect();
+    let decisions: std::collections::BTreeMap<String, bool> = grants
+        .into_iter()
+        .map(|row| (row.capability, row.granted))
+        .collect();
     assert_eq!(decisions.get("log:info"), Some(&true));
     // ★ A capability the user did not name is **denied**, not left absent. An absent row means "no decision", and the
     // loader would then find no digest to compare against — a plugin that cannot be loaded for a reason nobody can see.
@@ -1943,7 +2270,10 @@ fn consent_records_one_decision_per_capability_and_unlocks_the_plugin() {
         &synra_plugin_api::revocation::RevocationList::empty(),
     );
     assert!(
-        summary.loaded.iter().any(|loaded| loaded.to_string() == plugin),
+        summary
+            .loaded
+            .iter()
+            .any(|loaded| loaded.to_string() == plugin),
         "{summary:?}"
     );
 }
@@ -1956,10 +2286,16 @@ fn partial_consent_loads_the_plugin_with_only_what_was_allowed() {
     let dir = TempDir::new("consent-partial");
     let runtime = runtime(dir.path());
     let plugin = "@acme/partial";
-    write_plugin(&runtime.plugins_dir, plugin, r#"{"cap": "log:*"}, {"cap": "device:list"}"#);
+    write_plugin(
+        &runtime.plugins_dir,
+        plugin,
+        r#"{"cap": "log:*"}, {"cap": "device:list"}"#,
+    );
     install(&runtime, plugin, 1, 0);
 
-    runtime.plugin_consent(plugin, &["log:*".to_owned()]).expect("the decision is recorded");
+    runtime
+        .plugin_consent(plugin, &["log:*".to_owned()])
+        .expect("the decision is recorded");
 
     let (mut set, _backend) = loader();
     let summary = crate::runtime::load_installed(
@@ -1970,7 +2306,10 @@ fn partial_consent_loads_the_plugin_with_only_what_was_allowed() {
         &synra_plugin_api::revocation::RevocationList::empty(),
     );
     assert!(
-        summary.loaded.iter().any(|loaded| loaded.to_string() == plugin),
+        summary
+            .loaded
+            .iter()
+            .any(|loaded| loaded.to_string() == plugin),
         "{summary:?}"
     );
 
@@ -1978,7 +2317,8 @@ fn partial_consent_loads_the_plugin_with_only_what_was_allowed() {
     let grants = set.grants(&id).expect("the grants the loader built");
     assert!(grants.contains(&synra_capability::Capability::parse("log:*").expect("a capability")));
     assert!(
-        !grants.contains(&synra_capability::Capability::parse("device:list").expect("a capability")),
+        !grants
+            .contains(&synra_capability::Capability::parse("device:list").expect("a capability")),
         "the declined capability must not be in the grant set"
     );
 }
@@ -1988,7 +2328,11 @@ fn consent_for_a_capability_the_plugin_did_not_ask_for_is_refused() {
     // A typo is the common case and an attempt to widen the decision is the other one; neither should become a row.
     let dir = TempDir::new("consent-unknown");
     let runtime = runtime(dir.path());
-    write_plugin(&runtime.plugins_dir, "@acme/quiet", r#"{"cap": "log:info"}"#);
+    write_plugin(
+        &runtime.plugins_dir,
+        "@acme/quiet",
+        r#"{"cap": "log:info"}"#,
+    );
     install(&runtime, "@acme/quiet", 0, 0);
 
     let refused = runtime
@@ -1998,7 +2342,13 @@ fn consent_for_a_capability_the_plugin_did_not_ask_for_is_refused() {
     assert_eq!(refused.code, ErrorCode::InvalidArgument);
     assert!(refused.message.contains("device:list"), "{refused:?}");
     // ★ Nothing is written: a partial record would leave decisions about a document the user never decided.
-    assert!(runtime.db().plugin_grants("@acme/quiet").expect("the decisions").is_empty());
+    assert!(
+        runtime
+            .db()
+            .plugin_grants("@acme/quiet")
+            .expect("the decisions")
+            .is_empty()
+    );
 }
 
 #[test]
@@ -2022,7 +2372,9 @@ fn denying_every_capability_records_the_refusal_and_withdraws_trust() {
     write_plugin(&runtime.plugins_dir, plugin, r#"{"cap": "log:info"}"#);
     install(&runtime, plugin, 1, 1);
 
-    runtime.plugin_consent(plugin, &[]).expect("the refusal is recorded");
+    runtime
+        .plugin_consent(plugin, &[])
+        .expect("the refusal is recorded");
 
     let grants = runtime.db().plugin_grants(plugin).expect("the decisions");
     assert_eq!(grants.len(), 1);
@@ -2050,13 +2402,22 @@ fn an_intent_survives_a_restart() {
     let dir = TempDir::new("intent-restart");
     let (first, db) = runtime_shared(dir.path());
 
-    let raised = first.intent_dispatch("text/plain", "https://example.test/a").expect("raised");
+    let raised = first
+        .intent_dispatch("text/plain", "https://example.test/a")
+        .expect("raised");
     let id = raised["intent"].as_str().expect("an identifier").to_owned();
-    assert_eq!(db.lock().intent_count().expect("counted"), 1, "it was written down");
+    assert_eq!(
+        db.lock().intent_count().expect("counted"),
+        1,
+        "it was written down"
+    );
 
     let second = runtime_over(dir.path(), std::sync::Arc::clone(&db));
     assert_eq!(second.restore_intents(), 1, "and read back");
-    assert!(second.intent_snapshot(&id).is_ok(), "the board remembers the intent");
+    assert!(
+        second.intent_snapshot(&id).is_ok(),
+        "the board remembers the intent"
+    );
 }
 
 #[test]
@@ -2069,7 +2430,9 @@ fn a_restored_intent_is_the_same_intent_rather_than_a_new_one() {
     let dir = TempDir::new("intent-same");
     let (first, db) = runtime_shared(dir.path());
 
-    let raised = first.intent_dispatch("text/plain", "https://example.test/a").expect("raised");
+    let raised = first
+        .intent_dispatch("text/plain", "https://example.test/a")
+        .expect("raised");
     let id = raised["intent"].as_str().expect("an identifier").to_owned();
     let trace_before = first.intent_snapshot(&id).expect("a snapshot")["trace"].clone();
 
@@ -2077,7 +2440,11 @@ fn a_restored_intent_is_the_same_intent_rather_than_a_new_one() {
     assert_eq!(second.restore_intents(), 1);
 
     let snapshot = second.intent_snapshot(&id).expect("the same intent");
-    assert_eq!(snapshot["intent"].as_str(), Some(id.as_str()), "the same identifier");
+    assert_eq!(
+        snapshot["intent"].as_str(),
+        Some(id.as_str()),
+        "the same identifier"
+    );
     assert_eq!(snapshot["trace"], trace_before, "and the same trace");
 }
 
@@ -2087,7 +2454,9 @@ fn a_restart_does_not_bring_back_an_intent_twice() {
     // intent on the board — a duplicate would be offered to the user twice.
     let dir = TempDir::new("intent-twice");
     let (first, db) = runtime_shared(dir.path());
-    let raised = first.intent_dispatch("text/plain", "https://example.test/a").expect("raised");
+    let raised = first
+        .intent_dispatch("text/plain", "https://example.test/a")
+        .expect("raised");
     let id = raised["intent"].as_str().expect("an identifier").to_owned();
 
     let second = runtime_over(dir.path(), std::sync::Arc::clone(&db));
@@ -2113,7 +2482,9 @@ fn a_document_that_cannot_be_read_is_skipped_rather_than_fatal() {
     // starting. The alternative is losing every intent — including the ones a peer is waiting on — because of one row.
     let dir = TempDir::new("intent-bad");
     let (first, db) = runtime_shared(dir.path());
-    let raised = first.intent_dispatch("text/plain", "https://example.test/a").expect("raised");
+    let raised = first
+        .intent_dispatch("text/plain", "https://example.test/a")
+        .expect("raised");
     let id = raised["intent"].as_str().expect("an identifier").to_owned();
 
     // A second intent whose document is not an intent at all, written behind the daemon's back.
@@ -2132,7 +2503,10 @@ fn a_document_that_cannot_be_read_is_skipped_rather_than_fatal() {
 
     let second = runtime_over(dir.path(), std::sync::Arc::clone(&db));
     assert_eq!(second.restore_intents(), 1, "the readable one");
-    assert!(second.intent_snapshot(&id).is_ok(), "and the daemon started anyway");
+    assert!(
+        second.intent_snapshot(&id).is_ok(),
+        "and the daemon started anyway"
+    );
     let _ = good;
 }
 
@@ -2158,7 +2532,9 @@ fn the_sweep_forgets_a_finished_intent_that_is_old_enough() {
     let dir = TempDir::new("gc-old");
     let (runtime, db) = runtime_shared(dir.path());
     let long_ago = store_time() - (48 * 60 * 60 * 1_000);
-    db.lock().save_intent(&stored("finished", "succeeded", long_ago)).expect("stored");
+    db.lock()
+        .save_intent(&stored("finished", "succeeded", long_ago))
+        .expect("stored");
 
     let removed = runtime.collect_intents(24 * 60 * 60 * 1_000);
 
@@ -2173,11 +2549,21 @@ fn the_sweep_keeps_work_that_is_still_running() {
     let dir = TempDir::new("gc-running");
     let (runtime, db) = runtime_shared(dir.path());
     let long_ago = store_time() - (48 * 60 * 60 * 1_000);
-    db.lock().save_intent(&stored("running", "dispatching", long_ago)).expect("stored");
+    db.lock()
+        .save_intent(&stored("running", "dispatching", long_ago))
+        .expect("stored");
 
     assert_eq!(runtime.collect_intents(24 * 60 * 60 * 1_000), 0);
-    assert_eq!(runtime.board.lock().len(), 0, "and it was never on the board either");
-    assert_eq!(db.lock().intent_count().expect("counted"), 1, "still there, still running");
+    assert_eq!(
+        runtime.board.lock().len(),
+        0,
+        "and it was never on the board either"
+    );
+    assert_eq!(
+        db.lock().intent_count().expect("counted"),
+        1,
+        "still there, still running"
+    );
 }
 
 #[test]
@@ -2187,7 +2573,9 @@ fn the_sweep_keeps_an_intent_that_finished_recently() {
     let dir = TempDir::new("gc-recent");
     let (runtime, db) = runtime_shared(dir.path());
     let an_hour_ago = store_time() - (60 * 60 * 1_000);
-    db.lock().save_intent(&stored("recent", "succeeded", an_hour_ago)).expect("stored");
+    db.lock()
+        .save_intent(&stored("recent", "succeeded", an_hour_ago))
+        .expect("stored");
 
     assert_eq!(runtime.collect_intents(24 * 60 * 60 * 1_000), 0);
     assert_eq!(db.lock().intent_count().expect("counted"), 1);
@@ -2199,15 +2587,28 @@ fn the_sweep_does_not_touch_what_a_plugin_stored() {
     // live, and a sweep that reached it would destroy work the user cannot get back.
     let dir = TempDir::new("gc-storage");
     let (runtime, db) = runtime_shared(dir.path());
-    db.lock().insert_plugin("@acme/notes", true, true, "healthy", 1, 1).expect("a plugin row");
-    db.lock().storage_set("@acme/notes", "draft", "the user's words", 1_000).expect("stored");
+    db.lock()
+        .insert_plugin("@acme/notes", true, true, "healthy", 1, 1)
+        .expect("a plugin row");
+    db.lock()
+        .storage_set("@acme/notes", "draft", "the user's words", 1_000)
+        .expect("stored");
     let long_ago = store_time() - (48 * 60 * 60 * 1_000);
-    db.lock().save_intent(&stored("finished", "succeeded", long_ago)).expect("stored");
-
-    assert_eq!(runtime.collect_intents(24 * 60 * 60 * 1_000), 1, "the intent went");
+    db.lock()
+        .save_intent(&stored("finished", "succeeded", long_ago))
+        .expect("stored");
 
     assert_eq!(
-        db.lock().storage_get("@acme/notes", "draft").expect("read").as_deref(),
+        runtime.collect_intents(24 * 60 * 60 * 1_000),
+        1,
+        "the intent went"
+    );
+
+    assert_eq!(
+        db.lock()
+            .storage_get("@acme/notes", "draft")
+            .expect("read")
+            .as_deref(),
         Some("the user's words"),
         "and the plugin's data stayed"
     );
@@ -2237,10 +2638,17 @@ fn a_sweep_that_cannot_finish_says_so_rather_than_reporting_zero() {
 
     let report = crate::runtime::intents::sweep(
         &db,
-        crate::runtime::intents::Retention { intents_ms: 0, audit_ms: 0 },
+        crate::runtime::intents::Retention {
+            intents_ms: 0,
+            audit_ms: 0,
+        },
     );
 
-    assert_eq!(report.removed(), 0, "nothing could have been removed: {report:?}");
+    assert_eq!(
+        report.removed(),
+        0,
+        "nothing could have been removed: {report:?}"
+    );
     // ★ All three are named, so a reader knows which tables to look at — and three rather than one, which is what makes
     // this a report about the sweep rather than about the first thing that went wrong.
     assert_eq!(report.failures.len(), 3, "{report:?}");
@@ -2286,7 +2694,6 @@ fn the_plugin_report_carries_the_live_rung_as_well_as_the_row() {
     assert_eq!(row["liveHealth"], "good", "{row}");
 }
 
-
 // ── The intent counter ──────────────────────────────────────────────────────────────────────────
 
 #[test]
@@ -2301,7 +2708,10 @@ fn a_share_nothing_can_answer_is_counted_as_refused() {
     // 空插件集也会成功地把一个意图建立起来，返回 `Ok`。所以「路由成功」和「有人回答」是两件事，
     // 而这一条测的正是后者。
     let routed = runtime.intent_dispatch("text/plain", "hello");
-    assert!(routed.is_ok(), "an empty plugin set failed to raise an intent: {routed:?}");
+    assert!(
+        routed.is_ok(),
+        "an empty plugin set failed to raise an intent: {routed:?}"
+    );
 
     let snapshot = runtime.metrics.snapshot();
     assert_eq!(
@@ -2326,242 +2736,7 @@ fn a_share_nothing_can_answer_is_counted_as_refused() {
     }
 }
 
-
-// ── A real transfer, so the transfer metrics have evidence ──────────────────────────────────────
-
-/// A host that is listening, with the port it got.
-///
-/// Copied from `transport/tests.rs` rather than shared: twenty lines of test scaffolding in two places
-/// is cheaper than the visibility change that would share it, and a test that depends on another
-/// test module's private helper is a test whose failure points at the wrong file.
-fn listening(id: &str, name: &str) -> (std::sync::Arc<parking_lot::Mutex<Host>>, std::net::SocketAddr) {
-    let mut db = synra_store::SynraDb::open_in_memory().expect("opens");
-    db.migrate().expect("migrates");
-    let mut identity = Identity::load(&db, "test", 1_000).expect("an identity");
-    identity.device_id = id.parse().expect("a device id");
-    identity.rename(&db, name, 1_000).expect("renames");
-    let local = synra_core::peer::LocalPeer::new(
-        identity.device_id,
-        identity.display_name.clone(),
-        synra_protocol::session::PlatformKind::Desktop,
-        "0.1.0-test",
-    );
-    let mut host = Host::with_flags(identity, local, synra_core::peer::Flags::no_timeout());
-    let address = synra_core::listener::bind(&mut host, 0).expect("binds");
-    host.listen_nonblocking().expect("non-blocking");
-    (std::sync::Arc::new(parking_lot::Mutex::new(host)), address)
-}
-
-fn test_desk() -> std::sync::Arc<synra_core::pairing::PairingDesk> {
-    std::sync::Arc::new(synra_core::pairing::PairingDesk::new(
-        synra_protocol::ids::DeviceId::new(),
-        synra_protocol::session::SessionTimeouts::default().pairing,
-    ))
-}
-
-fn test_router() -> std::sync::Arc<crate::runtime::intent::Router> {
-    let mut db = synra_store::SynraDb::open_in_memory().expect("a database");
-    db.migrate().expect("migrates");
-    let set = synra_core::dispatch::PluginSet::new(
-        synra_plugin_host::Backend::new(std::sync::Arc::new(synra_plugin_host::ScriptedBackend::new())),
-        std::sync::Arc::new(crate::runtime::plugin_host::KernelHost::new(
-            std::sync::Arc::new(parking_lot::Mutex::new(db)),
-            "0.1.0-test",
-        )),
-    );
-    std::sync::Arc::new(crate::runtime::intent::Router::new(
-        std::sync::Arc::new(parking_lot::Mutex::new(set)),
-        std::sync::Arc::new(parking_lot::Mutex::new(synra_core::intent::Board::new())),
-    ))
-}
-
-#[test]
-fn a_file_that_reaches_the_other_side_is_measured() {
-    // ★ 第 144 轮接了 `transfer_bytes` 与 `transfer_duration_ms`，并写明了「没有测试」：触发成功路径
-    // 需要一次真实的传输。这一条就是那次传输 —— 一个真实的监听端、一次握手、一份文件。
-    //
-    // 而它之所以现在能写：那次接力里需要的三个 helper 已经存在于 `transport/tests.rs`，
-    // 证明这套骨架在本仓库是稳的（真 socket、真线程、5 秒截止）。
-    let dir = TempDir::new("send-file-metric");
-    let runtime = runtime(dir.path());
-    let source = dir.path().join("payload.bin");
-    std::fs::write(&source, vec![7u8; 4_096]).expect("a file to send");
-
-    // ★ The two ends must agree about deadlines. The listener below is built with `no_timeout`, and the runtime's own
-    // host is not — a client with a deadline against a server that has none (or the reverse) disagrees about when the
-    // conversation is over, which is the failure `transport/tests.rs` records in its own words.
-    runtime
-        .host
-        .lock()
-        .set_flags(synra_core::peer::Flags::no_timeout());
-    let inbox = TempDir::new("send-file-inbox");
-    let (listener, address) = listening("11111111-1111-4111-8111-111111111111", "Laptop");
-    let served = std::thread::spawn(move || {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            // The guard is dropped before the handshake: `handle_within` locks the same host, and holding it here
-            // would be one thread asking for a mutex it already holds — the failure that looks like a silent peer.
-            let taken = listener.lock().try_accept();
-            match taken {
-                Ok(Some(stream)) => {
-                    return synra_core::listener::handle_within(
-                        &listener,
-                        stream,
-                        inbox.path(),
-                        std::time::Duration::from_secs(5),
-                        &test_desk(),
-                        &test_router(),
-                        &synra_core::listener::no_answer(),
-                    );
-                }
-                Ok(None) => {}
-                Err(error) => panic!("the listener could not accept: {error}"),
-            }
-            assert!(std::time::Instant::now() < deadline, "no connection arrived");
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-    });
-
-    // ★ The address the listener bound is not always one you can dial: port 0 asks the operating system to choose, and
-    // the address it reports can be the unspecified one. Dialing that is a connection to "any address", which on
-    // Windows is not this machine — `transport/tests.rs` has a `dialable` helper for exactly this reason, and this
-    // does the same thing without depending on another test module's private function.
-    let dial_to = std::net::SocketAddr::new(
-        match address.ip() {
-            std::net::IpAddr::V4(v4) if v4.is_unspecified() => {
-                std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
-            }
-            std::net::IpAddr::V6(v6) if v6.is_unspecified() => {
-                std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)
-            }
-            other => other,
-        },
-        address.port(),
-    );
-    let answer = runtime.send_file(&dial_to.to_string(), &source.to_string_lossy());
-    assert!(answer.is_ok(), "the send failed: {answer:?}");
-    // ★ 监听端线程交回它服务过的那条连接，而这次连接上有一个真的落了地的文件 ——
-    // 第 146 轮发现「收到包的那一刻没有可写的地方」，这是把那个值送到有地方可写的人手上的第一步。
-    let served = served.join().expect("the server thread finished");
-    assert_eq!(served.finished.len(), 1, "the finished transfer was not handed back: {served:?}");
-    assert_eq!(served.finished[0].byte_length, 4_096);
-    // 而它不是插件包 —— 发送的是一份附件。
-    assert!(served.finished[0].bundle.is_none(), "{served:?}");
-    // ★ 而它带着发送方 —— 逐条带上，因为「谁发的这个文件」是关于**文件**的事实，
-    // 而 `Served::peer` 是关于**连接**的。
-    assert_eq!(served.finished[0].peer, served.peer.expect("a handshaked peer"));
-
-    let snapshot = runtime.metrics.snapshot();
-    assert!(
-        snapshot.get("transfer_bytes{kind=attachment}").is_some(),
-        "the size of a completed transfer is not recorded"
-    );
-    assert!(
-        snapshot.get("transfer_duration_ms{kind=attachment}").is_some(),
-        "the duration of a completed transfer is not recorded"
-    );
-}
-
-
-#[test]
-fn a_bundle_arrives_as_a_bundle() {
-    // ★ 这一条走的是第 153 轮的 `send_bundle` 与这一轮的 `Kernel::send_bundle` ——
-    // 而它证明的是一件具体的事：接收端**以插件包的身份**认出它（第 139 轮的 `bundle` 字段）。
-    //
-    // 在此之前，`send_file` 的请求把 kind 与 meta 写死为附件，于是一个包会以一张截图的身份到达，
-    // 而接收端据此决定它落在哪里、以及它是什么 —— 一条在接收端看起来完全正常的错。
-    let dir = TempDir::new("send-bundle");
-    let runtime = runtime(dir.path());
-    let source = dir.path().join("plugin.wasm");
-    std::fs::write(&source, b"\0asm\x01\0\0\0an artifact").expect("a file to send");
-
-    runtime
-        .host
-        .lock()
-        .set_flags(synra_core::peer::Flags::no_timeout());
-    let inbox = TempDir::new("send-bundle-inbox");
-    let (listener, address) = listening("11111111-1111-4111-8111-111111111111", "Laptop");
-    let served = std::thread::spawn(move || {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            let taken = listener.lock().try_accept();
-            match taken {
-                Ok(Some(stream)) => {
-                    return synra_core::listener::handle_within(
-                        &listener,
-                        stream,
-                        inbox.path(),
-                        std::time::Duration::from_secs(5),
-                        &test_desk(),
-                        &test_router(),
-                        &synra_core::listener::no_answer(),
-                    );
-                }
-                Ok(None) => {}
-                Err(error) => panic!("the listener could not accept: {error}"),
-            }
-            assert!(std::time::Instant::now() < deadline, "no connection arrived");
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-    });
-
-    // 端口 0 让操作系统挑地址，而它报回来的不总是能拨的。
-    let dial_to = std::net::SocketAddr::new(
-        match address.ip() {
-            std::net::IpAddr::V4(v4) if v4.is_unspecified() => {
-                std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
-            }
-            other => other,
-        },
-        address.port(),
-    );
-    let answer = runtime.send_bundle(
-        &dial_to.to_string(),
-        &source.to_string_lossy(),
-        "@acme/chat",
-        "1.2.0",
-    );
-    assert!(answer.is_ok(), "the send failed: {answer:?}");
-
-    let served = served.join().expect("the server thread finished");
-    assert_eq!(served.finished.len(), 1, "{served:?}");
-    // ★ 而它到了对端**作为插件包**，带着它的标识 —— 这是授权安装的那一步。
-    assert_eq!(
-        served.finished[0].bundle.as_ref().map(ToString::to_string),
-        Some("@acme/chat".to_owned()),
-        "a bundle arrived as something else"
-    );
-
-    // ★ And the sender files the size and duration under `bundle`, not `attachment`. This was hardcoded, so the two
-    // ends disagreed about what crossed the wire and a bundle was invisible in the attachment series.
-    let snapshot = runtime.metrics.snapshot();
-    assert!(
-        snapshot.get("transfer_bytes{kind=bundle}").is_some(),
-        "a bundle was measured as an attachment"
-    );
-    assert!(
-        snapshot.get("transfer_throughput_bps{kind=bundle}").is_some(),
-        "the throughput of a completed bundle is not recorded"
-    );
-    assert!(
-        snapshot.get("transfer_bytes{kind=attachment}").is_none(),
-        "a bundle contributed to the attachment series"
-    );
-
-    // ★ 而**发送端**也记下了「对端现在持有这个版本」—— 与接收端那一半（`sync_records`）对称。
-    // 版本在这里是 `1.2.0`，而接收端那一行是空串：接收端只知道传输的元数据里有什么，
-    // 而发送端知道它**推的是哪个版本**。两行回答的是同一个问题的两侧。
-    let held = runtime.db().sync_records().expect("reads");
-    assert_eq!(held.len(), 1, "the sender did not record what the peer holds: {held:?}");
-    assert_eq!(held[0].plugin_id, "@acme/chat");
-    assert_eq!(held[0].peer_device, "11111111-1111-4111-8111-111111111111");
-    assert_eq!(held[0].version, "1.2.0");
-    assert!(
-        !held[0].digest.is_empty(),
-        "the digest the receiver confirmed is missing"
-    );
-}
-
+mod authenticated_transfers;
 
 #[test]
 fn a_store_write_is_counted_with_its_kind() {
@@ -2574,10 +2749,17 @@ fn a_store_write_is_counted_with_its_kind() {
         crate::runtime::observe_db_writes(&mut db, &runtime.metrics);
     }
 
-    runtime.db().set_config("test.key", &serde_json::json!(1), 1).expect("the write is made");
+    runtime
+        .db()
+        .set_config("test.key", &serde_json::json!(1), 1)
+        .expect("the write is made");
 
     assert!(
-        runtime.metrics.snapshot().get("db_write_duration_us{kind=config}").is_some(),
+        runtime
+            .metrics
+            .snapshot()
+            .get("db_write_duration_us{kind=config}")
+            .is_some(),
         "the store's write was not counted by the daemon's recorder"
     );
 }

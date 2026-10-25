@@ -35,7 +35,13 @@ impl Kernel for Runtime {
         fingerprint: &str,
         trust: &str,
     ) -> Result<serde_json::Value, Refusal> {
-        super::publishers::decide(self, publisher_id, fingerprint, trust, synra_store::sqlite::now_ms())
+        super::publishers::decide(
+            self,
+            publisher_id,
+            fingerprint,
+            trust,
+            synra_store::sqlite::now_ms(),
+        )
     }
 
     fn plugin_registry(&self, urls: Option<&[String]>) -> Result<serde_json::Value, Refusal> {
@@ -50,7 +56,11 @@ impl Kernel for Runtime {
         super::updates::check_manually(self, plugin, synra_store::sqlite::now_ms())
     }
 
-    fn plugin_update(&self, plugin: &str, version: Option<&str>) -> Result<serde_json::Value, Refusal> {
+    fn plugin_update(
+        &self,
+        plugin: &str,
+        version: Option<&str>,
+    ) -> Result<serde_json::Value, Refusal> {
         super::updates::update_manually(self, plugin, version, synra_store::sqlite::now_ms())
     }
 
@@ -62,7 +72,11 @@ impl Kernel for Runtime {
         Ok(self.status_value(now_ms()))
     }
 
-    fn devices(&self, include_unpaired: bool, scan_ms: Option<u64>) -> Result<serde_json::Value, Refusal> {
+    fn devices(
+        &self,
+        include_unpaired: bool,
+        scan_ms: Option<u64>,
+    ) -> Result<serde_json::Value, Refusal> {
         // ★ The scan is done **before** the table is read, and by the worker rather than here. Only the worker owns the
         // discovery socket, and a client that slept for the duration and then asked would get exactly the table it would
         // have got without asking — the sleep would look like a scan and be a delay.
@@ -78,18 +92,25 @@ impl Kernel for Runtime {
 
         // The paired devices come from the database, which is the recorded decision.
         let paired = self.db().paired_devices().map_err(|error| {
-            Refusal::new(ErrorCode::Internal, format!("could not read the paired devices: {error}"))
+            Refusal::new(
+                ErrorCode::Internal,
+                format!("could not read the paired devices: {error}"),
+            )
         })?;
         let mut paired_list: Vec<serde_json::Value> = Vec::new();
         for row in &paired {
             // The session is the proof the device is reachable *now*, as opposed to recorded once. A user asking for
             // devices is asking what they can act on, so the two are reported together.
-            let device_id: synra_protocol::ids::DeviceId = row.device_id.parse().map_err(|error| {
-                Refusal::new(
-                    ErrorCode::Internal,
-                    format!("the stored device id {} is not a UUID: {error}", row.device_id),
-                )
-            })?;
+            let device_id: synra_protocol::ids::DeviceId =
+                row.device_id.parse().map_err(|error| {
+                    Refusal::new(
+                        ErrorCode::Internal,
+                        format!(
+                            "the stored device id {} is not a UUID: {error}",
+                            row.device_id
+                        ),
+                    )
+                })?;
             let session = host.state_of(device_id);
             paired_list.push(serde_json::json!({
                 "deviceId": row.device_id,
@@ -118,8 +139,7 @@ impl Kernel for Runtime {
                     })
                 })
                 .collect()
-        }
-        else {
+        } else {
             Vec::new()
         };
 
@@ -148,8 +168,14 @@ impl Kernel for Runtime {
         // check a device list for a mistake they made in their own sentence. The check is done by building an envelope
         // addressed to *this* device, which the protocol validates, and then throwing it away — the real one is built once
         // the device is known, so this costs one small allocation and no lock.
-        synra_core::text_to(self.identity.device_id, self.identity.device_id, text, trace_id, now)
-            .map_err(|error| Refusal::new(error_code_for(&error), error.to_string()))?;
+        synra_core::text_to(
+            self.identity.device_id,
+            self.identity.device_id,
+            text,
+            trace_id,
+            now,
+        )
+        .map_err(|error| Refusal::new(error_code_for(&error), error.to_string()))?;
 
         // ★ One critical section, and the handshake is **outside** it. `dial` blocks for as long as a connection takes,
         // and a `host` guard living across it would mean a `devices` listing waits for a network — which is exactly the
@@ -199,7 +225,7 @@ impl Kernel for Runtime {
         let dialled = synra_core::retry::with_retries(
             synra_core::retry::ATTEMPTS,
             |_| {
-                synra_core::dial_peer(&parts.0, parts.1, address, None, handshake_now)
+                synra_core::dial_peer(&parts.0, parts.1, address, device_id, handshake_now)
                     .map_err(|error| refusal_of(&error))
             },
             |attempt| {
@@ -217,7 +243,8 @@ impl Kernel for Runtime {
         drop(host);
         // ★ And the write happens holding nothing, because the session layer already writes through a link
         // without the host. Only counting it needs the host again.
-        link.send(&envelope).map_err(|error| refusal_of(&error.into()))?;
+        link.send(&envelope)
+            .map_err(|error| refusal_of(&error.into()))?;
         self.host.lock().count_sent();
 
         // The link is closed on the way out rather than kept: the daemon has nowhere to record it between requests, and a
@@ -282,7 +309,11 @@ impl Kernel for Runtime {
     /// enable` could not have worked even if the CLI had asked. Answering with the whole list rather than the one row is
     /// deliberate: enabling a plugin changes what `plugins` reports, and a caller that had to ask twice would be one
     /// showing a stale list until it did.
-    fn plugin_set_enabled(&self, plugin_id: &str, enabled: bool) -> Result<serde_json::Value, Refusal> {
+    fn plugin_set_enabled(
+        &self,
+        plugin_id: &str,
+        enabled: bool,
+    ) -> Result<serde_json::Value, Refusal> {
         let changed = self
             .db
             .lock()
@@ -343,13 +374,14 @@ impl Kernel for Runtime {
                     match outcome {
                         Ok(loaded) => self.plugin_loads.lock().record_loaded(loaded),
                         Err(reason) => {
-                            self.plugin_loads.lock().record_refused(plugin_id, reason.clone());
+                            self.plugin_loads
+                                .lock()
+                                .record_refused(plugin_id, reason.clone());
                             return Err(Refusal::new(ErrorCode::PluginTrapped, reason));
                         }
                     }
                 }
-            }
-            else {
+            } else {
                 synra_core::plugin::deactivate(&mut self.plugins.lock(), &id, now_ms());
                 self.plugin_loads.lock().record_unloaded(&id);
             }
@@ -376,8 +408,7 @@ impl Kernel for Runtime {
         let now = i64::try_from(now_ms()).unwrap_or(i64::MAX);
         let outcome = if source.is_file() {
             crate::runtime::install_from_package(&mut db, backend, &self.plugins_dir, source, now)
-        }
-        else {
+        } else {
             // The runtime's clock is `u64` and the database stamps `i64`; saturating rather than `as`, the same
             // direction as every other stamp in this host — a clock past 2262 should let the daemon run.
             crate::runtime::install_from_directory(&mut db, backend, &self.plugins_dir, source, now)
@@ -410,7 +441,11 @@ impl Kernel for Runtime {
     /// Because the last step **is** that install: the registry path differs in where the directory came from, not in what
     /// it does with it. Holding the same two locks across both means a registry install cannot interleave with a local one
     /// on the same plugin identifier.
-    fn plugin_install_package(&self, package: &str, version: Option<&str>) -> Result<serde_json::Value, Refusal> {
+    fn plugin_install_package(
+        &self,
+        package: &str,
+        version: Option<&str>,
+    ) -> Result<serde_json::Value, Refusal> {
         let plugins = self.plugins.lock();
         let backend = plugins.backend();
         let mut db = self.db.lock();
@@ -420,7 +455,10 @@ impl Kernel for Runtime {
             .unwrap_or(&self.plugins_dir)
             .join(".install-staging");
         std::fs::create_dir_all(&staging).map_err(|error| {
-            Refusal::new(ErrorCode::Internal, format!("{}: {error}", staging.display()))
+            Refusal::new(
+                ErrorCode::Internal,
+                format!("{}: {error}", staging.display()),
+            )
         })?;
         let outcome = super::registry_install::install_from_registry(
             &mut db,
@@ -455,7 +493,11 @@ impl Kernel for Runtime {
     /// ★ **What the decision means is not decided here.** `synra_core::consent` owns the rule — one row per declared
     /// capability, trusted when anything was allowed — because the shell asks the same question and the two hosts had
     /// answered it differently. This method moves that decision into the store and nothing else.
-    fn plugin_consent(&self, plugin_id: &str, granted: &[String]) -> Result<serde_json::Value, Refusal> {
+    fn plugin_consent(
+        &self,
+        plugin_id: &str,
+        granted: &[String],
+    ) -> Result<serde_json::Value, Refusal> {
         // The manifest on disk is the document the decision is about. Its digest is what makes a later edit — or an
         // update that adds a capability — visible to the loader, instead of silently inheriting the old consent.
         let text = std::fs::read_to_string(
@@ -487,7 +529,11 @@ impl Kernel for Runtime {
         self.plugins_value()
     }
 
-    fn plugin_remove(&self, plugin_id: &str, remove_data: bool) -> Result<serde_json::Value, Refusal> {
+    fn plugin_remove(
+        &self,
+        plugin_id: &str,
+        remove_data: bool,
+    ) -> Result<serde_json::Value, Refusal> {
         // ★ The row first, then the files. The store's removal reports what actually went: measuring before and calling
         // that "freed" would count a locked directory that is still on disk.
         let files = synra_store::PluginFiles::new(self.paths.clone());
@@ -514,8 +560,11 @@ impl Kernel for Runtime {
         // ★ Reported, not refused: the row is already gone, and a directory the operating system would not let go (a
         // loaded engine holds its wasm file open on Windows) is a fact the user has to see. The paths are the answer to
         // "so what is still on my disk?" — a count alone would make them go looking.
-        let leftover_paths: Vec<String> =
-            removal.leftovers.iter().map(|path| path.display().to_string()).collect();
+        let leftover_paths: Vec<String> = removal
+            .leftovers
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect();
         Ok(serde_json::json!({
             "pluginId": plugin_id,
             "bytesFreed": removal.bytes_freed,
@@ -524,7 +573,12 @@ impl Kernel for Runtime {
         }))
     }
 
-    fn logs(&self, lines: usize, verbose: bool, trace: Option<&str>) -> Result<serde_json::Value, Refusal> {
+    fn logs(
+        &self,
+        lines: usize,
+        verbose: bool,
+        trace: Option<&str>,
+    ) -> Result<serde_json::Value, Refusal> {
         self.logs_value(lines, verbose, trace)
     }
 
@@ -563,10 +617,11 @@ impl Kernel for Runtime {
                 started.elapsed().as_secs_f64() * 1_000.0,
             );
             let outcome = if routed.is_ok() { "ok" } else { "refused" };
-            self.metrics.counter_inc(&synra_observe::metrics::SeriesKey::new(
-                "intents_total",
-                [("outcome".to_owned(), outcome.to_owned())],
-            ));
+            self.metrics
+                .counter_inc(&synra_observe::metrics::SeriesKey::new(
+                    "intents_total",
+                    [("outcome".to_owned(), outcome.to_owned())],
+                ));
             // ★ 「路由成功」与「有人回答」是两件事，而测试先证明了这一点：一个**空插件集**也会成功地把意图建立
             // 起来。这正是清单里 `intent_no_handler_total` 存在的理由 —— 一个没人能处理的意图和一个被处理了的
             // 意图，对用户是两种处境，而 `intents_total{outcome=ok}` 会把它们算成一件。
@@ -579,10 +634,11 @@ impl Kernel for Runtime {
                     .and_then(serde_json::Value::as_array)
                     .is_none_or(Vec::is_empty);
                 if nobody_offered {
-                    self.metrics.counter_inc(&synra_observe::metrics::SeriesKey::new(
-                        "intent_no_handler_total",
-                        Vec::new(),
-                    ));
+                    self.metrics
+                        .counter_inc(&synra_observe::metrics::SeriesKey::new(
+                            "intent_no_handler_total",
+                            Vec::new(),
+                        ));
                 }
             }
         }
@@ -688,7 +744,6 @@ impl Kernel for Runtime {
         Ok(answer)
     }
 
-
     fn intent_cancel(&self, intent: &str) -> Result<serde_json::Value, Refusal> {
         let change = crate::runtime::intent::cancel(
             &self.board,
@@ -766,7 +821,9 @@ impl Kernel for Runtime {
             let found = host.discovery().get(device_id).map(|candidate| {
                 (
                     candidate.display_name.clone(),
-                    candidate.platform.unwrap_or(synra_protocol::session::PlatformKind::Desktop),
+                    candidate
+                        .platform
+                        .unwrap_or(synra_protocol::session::PlatformKind::Desktop),
                 )
             });
             drop(host);
@@ -779,7 +836,11 @@ impl Kernel for Runtime {
         };
 
         let (pairing_state, request) = synra_core::pairing::OutboundPairing::ask(
-            synra_core::pairing::PairingTarget { device_id, display_name: display_name.clone(), platform },
+            synra_core::pairing::PairingTarget {
+                device_id,
+                display_name: display_name.clone(),
+                platform,
+            },
             ours.clone(),
             synra_protocol::session::SessionTimeouts::default().pairing,
             now,
@@ -803,7 +864,7 @@ impl Kernel for Runtime {
         let dialled = synra_core::retry::with_retries(
             synra_core::retry::ATTEMPTS,
             |_| {
-                synra_core::dial_peer(&parts.0, parts.1, address, None, handshake_now)
+                synra_core::dial_peer(&parts.0, parts.1, address, device_id, handshake_now)
                     .map_err(|error| refusal_of(&error))
             },
             |attempt| {
@@ -828,8 +889,11 @@ impl Kernel for Runtime {
         // The window a person answers within, which is longer than a handshake's. Set on the socket rather than left at
         // the handshake's deadline: a prompt answered just inside the session's window must not fail because the read
         // gave up at `HELLO_TIMEOUT`.
-        link.set_read_timeout(Some(synra_protocol::session::SessionTimeouts::default().pairing));
-        link.send(&envelope).map_err(|error| refusal_of(&error.into()))?;
+        link.set_read_timeout(Some(
+            synra_protocol::session::SessionTimeouts::default().pairing,
+        ));
+        link.send(&envelope)
+            .map_err(|error| refusal_of(&error.into()))?;
         self.host.lock().count_sent();
 
         // A read that times out is the window closing, which the protocol makes this side's own responsibility to
@@ -872,7 +936,12 @@ impl Kernel for Runtime {
             .map_err(|error| Refusal::new(ErrorCode::Internal, error.to_string()))?;
 
         match answered {
-            synra_core::pairing::Answered::Accepted { device_id, display_name, platform, link_token } => {
+            synra_core::pairing::Answered::Accepted {
+                device_id,
+                display_name,
+                platform,
+                link_token,
+            } => {
                 self.db()
                     .pair_device(&synra_store::sqlite::Paired {
                         device_id: device_id.to_string(),
@@ -888,7 +957,10 @@ impl Kernel for Runtime {
                         paired_at_ms: now,
                     })
                     .map_err(|error| {
-                        Refusal::new(ErrorCode::Internal, format!("the pairing could not be recorded: {error}"))
+                        Refusal::new(
+                            ErrorCode::Internal,
+                            format!("the pairing could not be recorded: {error}"),
+                        )
                     })?;
                 Ok(serde_json::json!({
                     "paired": true,
@@ -923,12 +995,14 @@ impl Kernel for Runtime {
     /// something answered it twice. Reporting "answered" for either would tell a script its decision was carried out when
     /// the device it was about had already been released — and the user would believe they had paired.
     fn pair_answer(&self, request_id: &str, accepted: bool) -> Result<serde_json::Value, Refusal> {
-        let request = request_id.parse::<synra_protocol::ids::RequestId>().map_err(|error| {
-            Refusal::new(
-                ErrorCode::InvalidArgument,
-                format!("{request_id} is not a request id: {error}"),
-            )
-        })?;
+        let request = request_id
+            .parse::<synra_protocol::ids::RequestId>()
+            .map_err(|error| {
+                Refusal::new(
+                    ErrorCode::InvalidArgument,
+                    format!("{request_id} is not a request id: {error}"),
+                )
+            })?;
 
         // The desk records the pairing before it builds the response, so "durable, then answered" is a property of the
         // desk rather than a hope about the order of two calls here. The record goes to the database this runtime claimed.
@@ -967,10 +1041,8 @@ impl Kernel for Runtime {
     }
 }
 
-
 /// What this host does that the kernel trait has no place for.
 impl Runtime {
-
     fn send_a_file(
         &self,
         to: &str,
@@ -998,38 +1070,23 @@ impl Runtime {
         // ★ One critical section, a `drop` and then the failures — not an expression that returns them. `?` inside a block
         // whose guard is still alive reads, to clippy's `significant_drop_in_scrutinee`, as a drop on the early-return path
         // — which is the same pattern that has bitten this workspace before.
-        // ★ `--to` may be an address as well as a device, and the address is checked first because it is unambiguous by
-        // construction: a device identifier and a display name are both arbitrary strings that *could* look like one, and
-        // a user who typed `192.168.1.5:47100` meant the address. This is what makes a device reachable before discovery
-        // has found it — which is the state every installation is in until its first scan.
-        let address = match to.trim().parse::<std::net::SocketAddr>() {
-            Ok(address) => address,
-            Err(_) => {
-                let found = {
-                    let host = self.host.lock();
-                    match host.resolve(to) {
-                        Ok(device_id) => host.address_of(device_id).map(|address| (device_id, address)).ok_or_else(
-                            || {
-                                Refusal::new(
-                                    ErrorCode::DeviceOffline,
-                                    format!(
-                                        "{device_id} is known and has no address — it has not been seen on this network"
-                                    ),
-                                )
-                            },
-                        ),
-                        Err(error) => Err(refusal_of(&error)),
-                    }
-                };
-                // The guard is gone by now: the block above ended, which is what `significant_drop_in_scrutinee` wants to
-                // see rather than a `?` on an expression that still holds it.
-                let (device_id, address) = found?;
-                // Kept only so the report below can name the device. The handshake establishes the real identity, and the
-                // link is the authority for everything after it.
-                let _ = device_id;
-                address
+        // A route is not an identity: resolve the intended device before choosing its certificate pin.
+        let found = {
+            let host = self.host.lock();
+            match host.resolve(to) {
+                Ok(device_id) => host
+                    .address_of(device_id)
+                    .map(|address| (device_id, address))
+                    .ok_or_else(|| {
+                        Refusal::new(
+                            ErrorCode::DeviceOffline,
+                            format!("{device_id} has no known address"),
+                        )
+                    }),
+                Err(error) => Err(refusal_of(&error)),
             }
         };
+        let (device_id, address) = found?;
 
         // ★ The handshake runs **outside** the lock, so a `devices` listing does not wait for it.
         // `Host::dial` needs `&mut self` to record the session; `dial_peer` needs only a clone of this device's record,
@@ -1042,7 +1099,7 @@ impl Runtime {
         let dialled = synra_core::retry::with_retries(
             synra_core::retry::ATTEMPTS,
             |_| {
-                synra_core::dial_peer(&parts.0, parts.1, address, None, handshake_now)
+                synra_core::dial_peer(&parts.0, parts.1, address, device_id, handshake_now)
                     .map_err(|error| refusal_of(&error))
             },
             |attempt| {
@@ -1093,7 +1150,9 @@ impl Runtime {
         .map_err(|error| Refusal::new(error_code_for_session(&error), error.to_string()))?;
         drop(host);
 
-        let bytes = std::fs::metadata(&source).map(|meta| meta.len()).unwrap_or(0);
+        let bytes = std::fs::metadata(&source)
+            .map(|meta| meta.len())
+            .unwrap_or(0);
         let resends = events
             .iter()
             .filter(|event| matches!(event, synra_core::SessionEvent::Resend { .. }))
@@ -1129,7 +1188,12 @@ impl Runtime {
                     "transfer_retries_total",
                     [(
                         "kind".to_owned(),
-                        if bundle.is_some() { "bundle" } else { "attachment" }.to_owned(),
+                        if bundle.is_some() {
+                            "bundle"
+                        } else {
+                            "attachment"
+                        }
+                        .to_owned(),
                     )],
                 ),
                 resends as u64,
@@ -1146,7 +1210,11 @@ impl Runtime {
         // ★ `kind` is the same word the retry counter and the receiver use. The first version hardcoded `attachment`,
         // so a plugin bundle's size and duration were filed under the wrong kind and the two ends disagreed about what
         // crossed the wire.
-        let kind = if bundle.is_some() { "bundle" } else { "attachment" };
+        let kind = if bundle.is_some() {
+            "bundle"
+        } else {
+            "attachment"
+        };
         let elapsed_ms = started.elapsed().as_secs_f64() * 1_000.0;
         self.metrics.histogram_observe(
             &synra_observe::metrics::SeriesKey::new(
@@ -1224,48 +1292,48 @@ impl Runtime {
         }))
     }
 
-        /// Puts an intent's envelope on a link to the device it names.
-        ///
-        /// # Errors
-        ///
-        /// [`Refusal`] naming what the user can act on: the device has never been seen on this network, or the link could not
-        /// be established.
-        fn send_outbound(
-            &self,
-            outbound: &synra_core::intent::remote::Outbound,
-            wait_for_result: bool,
-        ) -> Result<Option<synra_core::intent::remote::InvokeResult>, Refusal> {
-            let Some(reply) = exchange(&self.host, outbound, wait_for_result)? else {
-                return Ok(None);
-            };
-            match synra_core::dispatch::orchestrate::apply_result(&self.board, &reply) {
-                Ok(Some(id)) => {
-                    // Written down now: the outcome is the state, and a crash before the next sweep would otherwise
-                    // persist a "dispatching" for work that has finished.
-                    self.checkpoint_intent(&id.to_string());
-                    let result = synra_core::intent::remote::result_from(&reply).ok();
-                    // ★ The remote step joins the trace: the routing and decision lines already name the action, and
-                    // without this the one step that happened on another device is the one a `synra logs --trace` cannot
-                    // show.
-                    if let Some(result) = &result {
-                        tracing::info!(
-                            trace_id = %reply.trace_id,
-                            intent = %id,
-                            ok = result.ok,
-                            "remote outcome applied"
-                        );
-                    }
-                    Ok(result)
+    /// Puts an intent's envelope on a link to the device it names.
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal`] naming what the user can act on: the device has never been seen on this network, or the link could not
+    /// be established.
+    fn send_outbound(
+        &self,
+        outbound: &synra_core::intent::remote::Outbound,
+        wait_for_result: bool,
+    ) -> Result<Option<synra_core::intent::remote::InvokeResult>, Refusal> {
+        let Some(reply) = exchange(&self.host, outbound, wait_for_result)? else {
+            return Ok(None);
+        };
+        match synra_core::dispatch::orchestrate::apply_result(&self.board, &reply) {
+            Ok(Some(id)) => {
+                // Written down now: the outcome is the state, and a crash before the next sweep would otherwise
+                // persist a "dispatching" for work that has finished.
+                self.checkpoint_intent(&id.to_string());
+                let result = synra_core::intent::remote::result_from(&reply).ok();
+                // ★ The remote step joins the trace: the routing and decision lines already name the action, and
+                // without this the one step that happened on another device is the one a `synra logs --trace` cannot
+                // show.
+                if let Some(result) = &result {
+                    tracing::info!(
+                        trace_id = %reply.trace_id,
+                        intent = %id,
+                        ok = result.ok,
+                        "remote outcome applied"
+                    );
                 }
-                // A reply this device is not waiting on. Nothing to apply, and nothing to report: the intent may have
-                // been cancelled while the answer was in flight.
-                Ok(None) => Ok(None),
-                Err(error) => {
-                    eprintln!("synra-daemon: the result could not be applied: {error}");
-                    Ok(None)
-                }
+                Ok(result)
+            }
+            // A reply this device is not waiting on. Nothing to apply, and nothing to report: the intent may have
+            // been cancelled while the answer was in flight.
+            Ok(None) => Ok(None),
+            Err(error) => {
+                eprintln!("synra-daemon: the result could not be applied: {error}");
+                Ok(None)
             }
         }
+    }
 }
 
 /// Puts one envelope on a link, and reads the one answer the same connection carries.
@@ -1318,7 +1386,7 @@ pub(super) fn exchange(
     let dialled = synra_core::retry::with_retries(
         synra_core::retry::ATTEMPTS,
         |_| {
-            synra_core::dial_peer(&parts.0, parts.1, address, None, handshake_now)
+            synra_core::dial_peer(&parts.0, parts.1, address, outbound.to, handshake_now)
                 .map_err(|error| refusal_of(&error))
         },
         |attempt| {
@@ -1328,7 +1396,9 @@ pub(super) fn exchange(
         },
     )?;
     let mut guard = host.lock();
-    let mut link = guard.adopt(dialled, handshake_now).map_err(|error| refusal_of(&error))?;
+    let mut link = guard
+        .adopt(dialled, handshake_now)
+        .map_err(|error| refusal_of(&error))?;
     // ★ The read half of the send, under the lock that is already held; the write itself needs no host.
     guard.may_send(&link).map_err(|error| refusal_of(&error))?;
     drop(guard);

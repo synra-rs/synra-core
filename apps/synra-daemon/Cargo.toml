@@ -38,6 +38,8 @@ serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+synra-net = { path = "../../crates/synra-net" }
+synra-testkit = { path = "../../crates/synra-testkit" }
 # A UI half is a `ui.zip`, so the install test has to be able to make one.
 zip = { version = "2", default-features = false, features = ["deflate"] }
 # And a registry package is a gzip'd tar, so the registry-install test has to be able to make one.

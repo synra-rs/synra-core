@@ -207,7 +207,7 @@ impl SynraDb {
     }
 
     fn require_durable_trust(&self) -> Result<(), DbError> {
-        let file = self.connection.path().is_some_and(|path| !path.is_empty());
+        let file = self.is_file_backed();
         let sync: i64 = self
             .connection
             .pragma_query_value(None, "synchronous", |row| row.get(0))

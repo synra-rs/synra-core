@@ -32,10 +32,10 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 // The types this module's own API is expressed in, re-exported so a caller can name them without reaching past it.
-pub use crate::inbound::{Decision, Inbox, PairingAnswer};
-use crate::host::Host;
-use crate::late_queue::LateQueue;
 use crate::SessionError;
+use crate::host::Host;
+pub use crate::inbound::{Decision, Inbox, PairingAnswer};
+use crate::late_queue::LateQueue;
 use crate::link::{LinkError, PeerLink};
 use synra_protocol::envelope::Envelope;
 
@@ -240,7 +240,9 @@ pub fn serve_with(
     match host.lock().listen_nonblocking() {
         Ok(()) => {}
         Err(error) => {
-            eprintln!("synra-daemon: the transport listener could not become non-blocking: {error}");
+            eprintln!(
+                "synra-daemon: the transport listener could not become non-blocking: {error}"
+            );
             return;
         }
     }
@@ -290,9 +292,10 @@ pub fn serve_with(
                         &kernel_events,
                     );
                     if let Some(ended) = &served.ended {
-                        let who = served
-                            .peer
-                            .map_or_else(|| "an unidentified peer".to_owned(), |peer| peer.to_string());
+                        let who = served.peer.map_or_else(
+                            || "an unidentified peer".to_owned(),
+                            |peer| peer.to_string(),
+                        );
                         eprintln!("synra-daemon: {who} disconnected: {ended}");
                     }
                 });
@@ -307,13 +310,10 @@ pub fn serve_with(
     }
 }
 
-/// Handshakes on a connection and reads what arrives.
+/// Authenticates an approved peer and reads business traffic with per-frame authorization checks.
 ///
-/// # Why the token check is always `Unknown`
-///
-/// Because pairing is not written yet, and `Unknown` is the protocol's own word for "this device has no record of that
-/// pairing" — which is the true answer for a build with no pairing table. It is deliberately **not** `Current`, because
-/// claiming a pairing that does not exist would tell a peer its token is still good.
+/// The host must have persistent credentials configured. This wrapper chooses default transfer
+/// callbacks; neither an unknown peer nor a legacy token can bypass the authenticated entry.
 #[must_use]
 pub fn handle(
     host: &Arc<Mutex<Host>>,
@@ -429,34 +429,29 @@ pub fn handle_within_with(
     // *observed* rather than was told: a prompt shows the name the device chose, and the address is what lets a user
     // recognise a machine they have never paired with. A socket that cannot report it yields an empty string, because a
     // prompt without an address is still a prompt and refusing to show one would be worse.
-    let peer_address = stream.peer_addr().map(|address| address.to_string()).unwrap_or_default();
+    let peer_address = stream
+        .peer_addr()
+        .map(|address| address.to_string())
+        .unwrap_or_default();
     // ★ Set on the stream before anything reads from it. A peer that connects and goes silent — a port scan, another
     // product's client — is bounded by this rather than by the process's lifetime.
     if let Err(error) = stream.set_read_timeout(Some(timeout)) {
-        return Served { peer: None, events: Vec::new(), finished: Vec::new(), ended: Some(error.to_string()) };
+        return Served {
+            peer: None,
+            events: Vec::new(),
+            finished: Vec::new(),
+            ended: Some(error.to_string()),
+        };
     }
     let now = crate::reading_millis(synra_store::sqlite::now_ms());
 
-    // ★ One critical section for the handshake, and the link is taken **out** of the host with it. The read loop below
-    // runs with no lock held at all: a peer that says nothing for an hour would otherwise hold the host for an hour, and
-    // every `devices` and `send` in that time would wait behind it.
-    //
-    // The pairing question is answered from the database, which is opened here rather than held: a connection is
-    // handshaked once, and the alternative is threading a handle through the serve loop so that every connection shares
-    // one. SQLite opens a file cheaply, and this keeps the answer next to the question.
-    let pairing = synra_store::SynraDb::open(&data_dir.join(synra_store::DB_FILE_NAME));
-    let handshake = {
-        let mut host = host.lock();
-        host.complete_handshake(stream, now, |presented, device_id| match &pairing {
-            Ok(db) => crate::inbound::pairing_state_for(db, device_id, presented),
-            Err(error) => {
-                // Named rather than silent. A daemon that cannot open its own database would otherwise refuse every peer
-                // with no way for a user to tell that apart from "nobody has paired with us".
-                eprintln!("synra-daemon: the pairing record could not be opened: {error}");
-                synra_protocol::handshake::PairingState::Stale
-            }
-        })
-    };
+    // Snapshot the credential configuration, perform TLS and Hello outside the host lock, then
+    // record only the authenticated result. Each later frame retains its own authorization check.
+    let (configuration, mut flags) = host.lock().dialling_parts();
+    flags.timeout = Some(timeout.min(flags.timeout.unwrap_or(timeout)));
+    // Authentication, database approval queries and Hello all run outside the host guard.
+    let authenticated = configuration.accept_stream(stream, flags, now);
+    let handshake = authenticated.and_then(|accepted| host.lock().adopt_with_events(accepted, now));
 
     let (mut link, _events) = match handshake {
         Ok(pair) => pair,
@@ -467,11 +462,17 @@ pub fn handle_within_with(
             // ★ Counted with a reason of its own: a port scan, a version mismatch and a peer that changed its mind all end
             // here, and none of them is a link that "closed" — there was never a link.
             host.lock().count_link_closed("handshake");
-            return Served { peer: None, events: Vec::new(), finished: Vec::new(), ended: Some(error.to_string()) };
+            return Served {
+                peer: None,
+                events: Vec::new(),
+                finished: Vec::new(),
+                ended: Some(error.to_string()),
+            };
         }
     };
 
     let peer = link.peer();
+    let pairing = synra_store::SynraDb::open(&data_dir.join(synra_store::DB_FILE_NAME));
     let mut events = Vec::new();
     // The transfers that finished on this connection, kept for the caller rather than only printed.
     let mut finished = Vec::new();
@@ -496,16 +497,31 @@ pub fn handle_within_with(
                 Ok(Some(cancelled)) => {
                     events.push(format!("cancelled {cancelled}"));
                     if let Some(progress) = last_progress.clone() {
-                        on_progress(&InboundProgressEvent { peer, progress, aborted: true });
+                        on_progress(&InboundProgressEvent {
+                            peer,
+                            progress,
+                            aborted: true,
+                        });
                     }
                 }
                 Ok(None) => {}
                 Err(error) => eprintln!("synra-daemon: the cancel could not be sent: {error}"),
             }
         }
-        match inbox.absorb_with(&mut link, synra_store::sqlite::now_ms(), PATIENCE, desk, &peer_address, offer.as_ref()) {
+        match inbox.absorb_with(
+            &mut link,
+            synra_store::sqlite::now_ms(),
+            PATIENCE,
+            desk,
+            &peer_address,
+            offer.as_ref(),
+        ) {
             Ok(decision) => match decision {
-                Decision::Delivered { event, share, request } => {
+                Decision::Delivered {
+                    event,
+                    share,
+                    request,
+                } => {
                     // ★ `frames_received_total{event}` is recorded by the link's `receive_inbound`, not here. This branch
                     // sees only the frames a listener *delivered*; an answer on a dialled link — a pairing response, a
                     // plugin list — never reaches a listener, and those were invisible. The link is the one place every
@@ -537,10 +553,9 @@ pub fn handle_within_with(
                         // ★ A kernel event that runs an action, withdraws one, or reports an outcome. It is answered
                         // **here**, on the connection that asked, because the answer is a reply: a host that ran the action
                         // and sent the result on a second connection would be answering a question nobody is listening for.
-                        None
-                            if event == synra_protocol::event::events::INTENT_INVOKE
-                                || event == synra_protocol::event::events::INTENT_CANCEL
-                                || event == synra_protocol::event::events::INTENT_RESULT =>
+                        None if event == synra_protocol::event::events::INTENT_INVOKE
+                            || event == synra_protocol::event::events::INTENT_CANCEL
+                            || event == synra_protocol::event::events::INTENT_RESULT =>
                         {
                             let Some(envelope) = request else {
                                 eprintln!(
@@ -621,7 +636,9 @@ pub fn handle_within_with(
                                 .as_ref()
                                 .and_then(PairingAnswer::take_waiter)
                                 .map(|waiter| {
-                                    waiter.wait(synra_protocol::session::SessionTimeouts::default().pairing)
+                                    waiter.wait(
+                                        synra_protocol::session::SessionTimeouts::default().pairing,
+                                    )
                                 })
                         }
                         None => None,
@@ -647,8 +664,7 @@ pub fn handle_within_with(
                                             eprintln!(
                                                 "synra-daemon: the pairing answer could not be sent: {error}"
                                             );
-                                        }
-                                        else {
+                                        } else {
                                             eprintln!(
                                                 "synra-daemon: {peer} asked to pair, and was answered"
                                             );
@@ -660,7 +676,9 @@ pub fn handle_within_with(
                                 }
                             }
                             Err(error) => {
-                                eprintln!("synra-daemon: the pairing event name is invalid: {error}");
+                                eprintln!(
+                                    "synra-daemon: the pairing event name is invalid: {error}"
+                                );
                             }
                         }
                     }
@@ -671,27 +689,45 @@ pub fn handle_within_with(
                     // The ordinary, quiet end. Counted with its own reason so a panel can tell "the peer finished and
                     // hung up" from "the peer went silent" and from a fault.
                     host.lock().count_link_closed("idle");
-                    return Served { peer: Some(peer), events, finished: finished.clone(), ended: None };
+                    return Served {
+                        peer: Some(peer),
+                        events,
+                        finished: finished.clone(),
+                        ended: None,
+                    };
                 }
-                Decision::Accepted { transfer_id, file_name } => {
+                Decision::Accepted {
+                    transfer_id,
+                    file_name,
+                } => {
                     events.push(format!("accepted {transfer_id}"));
                     println!("receiving {file_name} from {peer}");
                     // ★ The proposal is the first moment a row can exist: the sender has declared a size, and the file is
                     // being created. A reporter that waited for the first block would show nothing for a slow link.
                     last_progress = inbox.progress();
                     if let Some(progress) = &last_progress {
-                        on_progress(&InboundProgressEvent { peer, progress: progress.clone(), aborted: false });
+                        on_progress(&InboundProgressEvent {
+                            peer,
+                            progress: progress.clone(),
+                            aborted: false,
+                        });
                     }
                 }
                 Decision::Stored { index, duplicate } => {
                     // Per-block logging would be enormous for a real file, so only the interesting case is said: a block
                     // that arrived twice is a resumption working, and one that is logged is one a developer can see.
                     if duplicate {
-                        eprintln!("synra-daemon: {peer} re-sent block {index}, which was already held");
+                        eprintln!(
+                            "synra-daemon: {peer} re-sent block {index}, which was already held"
+                        );
                     }
                     last_progress = inbox.progress();
                     if let Some(progress) = &last_progress {
-                        on_progress(&InboundProgressEvent { peer, progress: progress.clone(), aborted: false });
+                        on_progress(&InboundProgressEvent {
+                            peer,
+                            progress: progress.clone(),
+                            aborted: false,
+                        });
                     }
                 }
                 Decision::Finished {
@@ -765,11 +801,21 @@ pub fn handle_within_with(
             // A `Bye` is the ordinary end, and so is a peer that hung up. Neither is a fault, and both end the loop.
             Err(SessionError::Link(LinkError::Closed)) => {
                 host.lock().count_link_closed("closed");
-                return Served { peer: Some(peer), events, finished: finished.clone(), ended: None };
+                return Served {
+                    peer: Some(peer),
+                    events,
+                    finished: finished.clone(),
+                    ended: None,
+                };
             }
             Err(error) => {
                 host.lock().count_link_closed(close_reason(&error));
-                return Served { peer: Some(peer), events, finished: Vec::new(), ended: Some(error.to_string()) };
+                return Served {
+                    peer: Some(peer),
+                    events,
+                    finished: Vec::new(),
+                    ended: Some(error.to_string()),
+                };
             }
         }
     }
@@ -842,10 +888,9 @@ fn answer_kernel_event(
 ///
 /// Returns what this pass did, so a caller that keeps metrics can record it without reading the directory.
 pub fn retry_late(host: &Arc<Mutex<Host>>, data_dir: &Path) -> crate::late_queue::RetrySummary {
-    LateQueue::in_data_dir(data_dir).retry_with(
-        synra_store::sqlite::now_ms(),
-        |envelope| deliver_late(host, envelope),
-    )
+    LateQueue::in_data_dir(data_dir).retry_with(synra_store::sqlite::now_ms(), |envelope| {
+        deliver_late(host, envelope)
+    })
 }
 
 /// Delivers an answer to the device it is addressed to, on a new connection.
@@ -873,26 +918,33 @@ fn deliver_late(host: &Arc<Mutex<Host>>, envelope: &Envelope) -> Result<(), Stri
     };
     let mut attempt_dial = |_attempt: usize| {
         let handshake = crate::reading_millis(synra_store::sqlite::now_ms());
-        let result = crate::dial_peer(&parts.0, parts.1, address, None, handshake)
+        let result = crate::dial_peer(&parts.0, parts.1, address, envelope.target, handshake)
             .map_err(|error| error.to_string());
-        host.lock().count_late_delivery(if result.is_ok() { "delivered" } else { "retry" });
+        host.lock()
+            .count_late_delivery(if result.is_ok() { "delivered" } else { "retry" });
         result
     };
-    let dialled = match crate::retry::with_retries(crate::retry::ATTEMPTS, &mut attempt_dial, |attempt| {
-        // 100 ms, then 200 ms: enough for a listener that is shutting down a previous connection to come back, short
-        // enough that a peer which is truly gone does not hold this thread.
-        std::thread::sleep(Duration::from_millis(100 * (u64::try_from(attempt).unwrap_or(0) + 1)));
-    }) {
-        Ok(dialled) => dialled,
-        Err(error) => {
-            host.lock().count_late_delivery("exhausted");
-            return Err(error);
-        }
-    };
+    let dialled =
+        match crate::retry::with_retries(crate::retry::ATTEMPTS, &mut attempt_dial, |attempt| {
+            // 100 ms, then 200 ms: enough for a listener that is shutting down a previous connection to come back, short
+            // enough that a peer which is truly gone does not hold this thread.
+            std::thread::sleep(Duration::from_millis(
+                100 * (u64::try_from(attempt).unwrap_or(0) + 1),
+            ));
+        }) {
+            Ok(dialled) => dialled,
+            Err(error) => {
+                host.lock().count_late_delivery("exhausted");
+                return Err(error);
+            }
+        };
     let mut link = host
         .lock()
         // The handshake time is taken **after** the retries: the attempt that succeeded is the one whose clock matters.
-        .adopt(dialled, crate::reading_millis(synra_store::sqlite::now_ms()))
+        .adopt(
+            dialled,
+            crate::reading_millis(synra_store::sqlite::now_ms()),
+        )
         .map_err(|error| error.to_string())?;
     link.send(envelope).map_err(|error| error.to_string())?;
     let _ = link.bye("late result");
@@ -905,11 +957,13 @@ fn deliver_late(host: &Arc<Mutex<Host>>, envelope: &Envelope) -> Result<(), Stri
 /// the decoder refused is the peer's protocol rather than the network.
 const fn close_reason(error: &SessionError) -> &'static str {
     match error {
+        SessionError::Link(LinkError::Unauthorized) => "authorization",
+        SessionError::Link(LinkError::AuthorizationUnavailable { .. }) => "authorization_storage",
         SessionError::Link(LinkError::TimedOut) => "timeout",
         SessionError::Link(LinkError::Closed) => "closed",
-        SessionError::Link(LinkError::Frame(_) | LinkError::Unexpected { .. } | LinkError::Envelope { .. }) => {
-            "protocol"
-        }
+        SessionError::Link(
+            LinkError::Frame(_) | LinkError::Unexpected { .. } | LinkError::Envelope { .. },
+        ) => "protocol",
         SessionError::Link(LinkError::Transport { .. }) => "transport",
         SessionError::Transfer(_) => "transfer",
         _ => "protocol",

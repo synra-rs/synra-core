@@ -10,6 +10,24 @@ mod recovery;
 mod windows;
 
 const NOW: u64 = 1_790_000_000;
+
+#[test]
+fn native_network_startup_refuses_an_ephemeral_database_before_enrollment() {
+    let mut db = SynraDb::open_in_memory().unwrap();
+    db.migrate().unwrap();
+    let db = Arc::new(Mutex::new(db));
+    let profile = crate::peer::LocalPeer::new(
+        DeviceId::new(),
+        "Ephemeral",
+        synra_protocol::session::PlatformKind::Desktop,
+        "0.1.0",
+    );
+    assert!(matches!(
+        initialize_native_network(Arc::clone(&db), profile, NOW),
+        Err(NetworkStartupError::EphemeralDatabase)
+    ));
+    assert!(db.lock().device_credential().unwrap().is_none());
+}
 const NORMAL: u8 = 0;
 const FAIL_BEFORE_WRITE: u8 = 1;
 const FAIL_AFTER_WRITE: u8 = 2;

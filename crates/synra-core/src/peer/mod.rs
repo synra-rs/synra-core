@@ -1,5 +1,9 @@
 //! The first conversation two devices have.
 //!
+//! Production hosts use [`authenticated::AuthenticatedPeer`] through [`crate::host::DialConfig`].
+//! The plain byte-level helpers in this module exercise protocol negotiation; they do not prove
+//! identity or authorize business traffic and are not a production fallback.
+//!
 //! # What the handshake buys
 //!
 //! Before any work crosses a link, both ends agree on four things:

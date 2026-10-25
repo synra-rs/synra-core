@@ -4,7 +4,7 @@ use std::sync::Arc;
 use synra_protocol::discovery::{DeviceAnnouncement, TrustLevel};
 use synra_protocol::envelope::{Envelope, OutboundSpec};
 use synra_protocol::event::EventName;
-use synra_protocol::handshake::{PROTOCOL_VERSION, PairingState};
+use synra_protocol::handshake::PROTOCOL_VERSION;
 use synra_protocol::ids::DeviceId;
 use synra_protocol::session::PlatformKind;
 
@@ -24,24 +24,78 @@ fn device(name: &str) -> DeviceId {
 }
 
 /// A host with an identity and a local peer, and a migrated database behind the identity.
-fn host(id: &str, name: &str) -> (Host, synra_store::SynraDb) {
-    let mut db = synra_store::SynraDb::open_in_memory().expect("opens");
-    db.migrate().expect("migrates");
-    let mut identity = Identity::load(&db, "test", 1_000).expect("an identity");
-    // The identity's generated id is a fresh UUID; the tests need known ones, so the row is rewritten.
-    identity.device_id = device(id);
-    identity.rename(&db, name, 1_000).expect("renames");
+fn host(id: &str, name: &str) -> (Host, synra_testkit::authentication::NetworkFixture) {
+    let other = if id == A { B } else { A };
+    let db = synra_testkit::authentication::NetworkFixture::new(device(id), device(other), name)
+        .expect("authenticated fixture");
+    let identity = Identity::load(&db, "test", 1_000).expect("identity");
     let local = LocalPeer::new(
         identity.device_id,
         identity.display_name.clone(),
         PlatformKind::Desktop,
         "0.1.0-test",
     );
-    (Host::with_flags(identity, local, Flags::no_timeout()), db)
+    let network = crate::peer::authenticated::AuthenticatedPeer::new(
+        Arc::clone(&db.shared_db),
+        Arc::clone(&db.credentials),
+        local.clone(),
+    )
+    .unwrap();
+    let mut host = Host::with_flags(identity, local, Flags::no_timeout());
+    host.configure_network(Ok(network));
+    (host, db)
+}
+
+fn network_now() -> u64 {
+    reading_millis(synra_store::sqlite::now_ms())
+}
+
+#[test]
+fn an_unconfigured_host_refuses_business_dial_before_opening_a_socket() {
+    let (configured, _fixture) = host(A, "Unavailable");
+    let mut unavailable = Host::new(configured.identity().clone(), configured.local.clone());
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    assert!(matches!(
+        unavailable.dial(listener.local_addr().unwrap(), device(B), network_now()),
+        Err(HostError::NetworkUnavailable { .. })
+    ));
+    assert!(
+        listener
+            .accept()
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::WouldBlock)
+    );
+    assert!(unavailable.sessions().is_empty());
+}
+
+#[test]
+fn a_configured_host_requires_a_current_credential_grant_before_connecting() {
+    let (mut client, fixture) = host(B, "Revoked");
+    assert!(fixture.unpair_device(A).unwrap());
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    assert!(
+        client
+            .dial(listener.local_addr().unwrap(), device(A), network_now())
+            .is_err()
+    );
+    assert!(
+        listener
+            .accept()
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::WouldBlock)
+    );
+    assert!(client.sessions().is_empty());
 }
 
 /// A host that is listening, with its address.
-fn listening(id: &str, name: &str) -> (Host, synra_store::SynraDb, SocketAddr) {
+fn listening(
+    id: &str,
+    name: &str,
+) -> (
+    Host,
+    synra_testkit::authentication::NetworkFixture,
+    SocketAddr,
+) {
     let (mut host, db) = host(id, name);
     let address = host
         .listen_on(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
@@ -86,8 +140,17 @@ fn an_announcement_heard_over_the_network_becomes_a_candidate() {
         app_version: Some("0.1.0".to_owned()),
         features: Vec::new(),
     };
-    let result = host.heard(&announcement, SocketAddr::from(([10, 0, 0, 5], 5_4321)), 1_000);
-    assert_eq!(result, Absorbed::New { device_id: device(B) });
+    let result = host.heard(
+        &announcement,
+        SocketAddr::from(([10, 0, 0, 5], 5_4321)),
+        1_000,
+    );
+    assert_eq!(
+        result,
+        Absorbed::New {
+            device_id: device(B)
+        }
+    );
     let candidate = host.discovery().get(device(B)).expect("a candidate");
     assert_eq!(candidate.trust, TrustLevel::Announced);
     assert_eq!(candidate.address.port(), 47100);
@@ -105,11 +168,12 @@ fn a_handshake_completes_over_a_conversation_on_two_threads() {
     let (mut server, _server_db, address) = listening(A, "Laptop");
     let (mut client, _client_db) = host(B, "Phone");
 
-    let accepting = std::thread::spawn(move || {
-        server.accept(1_000, |_, _| PairingState::Unknown).map(|(link, _)| link.peer())
-    });
+    let accepting =
+        std::thread::spawn(move || server.accept(network_now()).map(|(link, _)| link.peer()));
 
-    let dialled = client.dial(address, None, 1_000).map(|link| link.peer());
+    let dialled = client
+        .dial(address, device(A), network_now())
+        .map(|link| link.peer());
     let accepted = accepting.join().expect("the acceptor finished");
 
     assert_eq!(dialled.expect("dials"), device(A));
@@ -128,17 +192,17 @@ fn a_handshake_completes_when_both_sides_are_on_production_flags() {
     host_a.set_flags(Flags::production());
     host_b.set_flags(Flags::production());
 
-    let serving = std::thread::spawn(move || {
-        host_a
-            .accept(1_000, |_, _| PairingState::Unknown)
-            .map(|(link, _)| link.peer())
-    });
+    let serving =
+        std::thread::spawn(move || host_a.accept(network_now()).map(|(link, _)| link.peer()));
     let dialled = host_b
-        .dial(address, None, 1_000)
+        .dial(address, device(A), network_now())
         .map(|link| link.peer());
 
     assert_eq!(dialled.expect("dials with a production timeout"), device(A));
-    assert_eq!(serving.join().expect("finished").expect("accepts"), device(B));
+    assert_eq!(
+        serving.join().expect("finished").expect("accepts"),
+        device(B)
+    );
 }
 
 #[test]
@@ -170,7 +234,10 @@ fn a_non_blocking_listener_still_accepts_a_connection() {
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
             Err(other) => panic!("unexpected accept error: {other}"),
         }
-        assert!(std::time::Instant::now() < deadline, "the connection was never accepted");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the connection was never accepted"
+        );
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
 }
@@ -184,19 +251,23 @@ fn two_hosts_complete_a_handshake_and_record_a_session() {
     let (mut client, _client_db) = host(B, "Phone");
 
     let serving = std::thread::spawn(move || {
-        let (link, events) = server
-            .accept(1_000, |_, _| PairingState::Unknown)
-            .expect("accepts");
+        let (link, events) = server.accept(network_now()).expect("accepts");
         (link, events, server)
     });
 
-    let link = client.dial(address, None, 1_000).expect("dials");
+    let link = client
+        .dial(address, device(A), network_now())
+        .expect("dials");
     let (server_link, events, server) = serving.join().expect("the thread finished");
 
     // Both sides recorded a session for the other.
     assert_eq!(client.state_of(device(A)), Some(LinkState::Ready));
     assert_eq!(server.state_of(device(B)), Some(LinkState::Ready));
-    assert!(events.iter().any(|event| matches!(event, RegistryEvent::Ready(_))));
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, RegistryEvent::Ready(_)))
+    );
 
     // And both links know both identifiers and who is on the other end.
     assert_eq!(client_link_peer(&link), device(A));
@@ -223,14 +294,20 @@ fn the_trust_level_rises_only_after_the_connection_completed() {
     };
     client.heard(&announcement, address, 1_000);
     assert_eq!(
-        client.discovery().get(device(A)).expect("a candidate").trust,
+        client
+            .discovery()
+            .get(device(A))
+            .expect("a candidate")
+            .trust,
         TrustLevel::Announced
     );
 
     let serving = std::thread::spawn(move || {
-        server.accept(1_000, |_, _| PairingState::Unknown).expect("accepts");
+        server.accept(network_now()).expect("accepts");
     });
-    client.dial(address, None, 1_000).expect("dials");
+    client
+        .dial(address, device(A), network_now())
+        .expect("dials");
     serving.join().expect("finished");
 
     let candidate = client.discovery().get(device(A)).expect("a candidate");
@@ -257,12 +334,17 @@ fn the_recorded_address_is_the_one_the_connection_worked_at() {
         features: Vec::new(),
     };
     client.heard(&announcement, address, 1_000);
-    assert_eq!(client.discovery().get(device(A)).expect("c").address.port(), 1);
+    assert_eq!(
+        client.discovery().get(device(A)).expect("c").address.port(),
+        1
+    );
 
     let serving = std::thread::spawn(move || {
-        server.accept(1_000, |_, _| PairingState::Unknown).expect("accepts");
+        server.accept(network_now()).expect("accepts");
     });
-    client.dial(address, None, 1_000).expect("dials");
+    client
+        .dial(address, device(A), network_now())
+        .expect("dials");
     serving.join().expect("finished");
 
     assert_eq!(
@@ -281,12 +363,14 @@ fn an_envelope_travels_between_two_connected_hosts() {
     let mut client = client.with_metrics(Arc::clone(&recorder));
 
     let serving = std::thread::spawn(move || {
-        let (mut link, _) = server.accept(1_000, |_, _| PairingState::Unknown).expect("accepts");
+        let (mut link, _) = server.accept(network_now()).expect("accepts");
         let envelope = link.receive().expect("receives");
         (envelope, server)
     });
 
-    let mut link = client.dial(address, None, 1_000).expect("dials");
+    let mut link = client
+        .dial(address, device(A), network_now())
+        .expect("dials");
     let envelope = Envelope::outbound(
         OutboundSpec {
             event: EventName::parse("device.ping").expect("a name"),
@@ -308,7 +392,9 @@ fn an_envelope_travels_between_two_connected_hosts() {
     // ★ 而同一个事实现在也说得出**说了什么** —— `frames_sent_total{event}`。
     // `sent()` 回答「说了多少」，而排查时要问的是「说了哪一类」。
     assert_eq!(
-        recorder.snapshot().get("frames_sent_total{event=device.ping}"),
+        recorder
+            .snapshot()
+            .get("frames_sent_total{event=device.ping}"),
         Some(&synra_observe::metrics::Value::Counter(1)),
         "the frame was not counted by its event"
     );
@@ -331,9 +417,14 @@ fn text_travels_from_one_host_to_another() {
     let (mut client, _client_db) = host(B, "Phone");
 
     let serving = std::thread::spawn(move || {
-        let (mut link, _) = server.accept(1_000, |_, _| PairingState::Unknown).expect("accepts");
+        let (mut link, _) = server.accept(network_now()).expect("accepts");
         let envelope = link.receive().expect("receives");
-        let payload = envelope.payload.as_ref().expect("a payload").get().to_owned();
+        let payload = envelope
+            .payload
+            .as_ref()
+            .expect("a payload")
+            .get()
+            .to_owned();
         (envelope, payload, server)
     });
 
@@ -363,15 +454,19 @@ fn text_travels_from_one_host_to_another() {
     )
     .expect("builds");
 
-    let mut link = client.dial(address, None, 1_000).expect("dials");
+    let mut link = client
+        .dial(address, device(A), network_now())
+        .expect("dials");
     client.send(&mut link, &envelope).expect("sends");
 
     let (received, payload, _server) = serving.join().expect("finished");
-    assert_eq!(received.event.as_str(), synra_protocol::event::builtin::CLIPBOARD_RECEIVED);
+    assert_eq!(
+        received.event.as_str(),
+        synra_protocol::event::builtin::CLIPBOARD_RECEIVED
+    );
     assert_eq!(received.from, device(B));
     // And the payload is the shape the receiver's own type parses.
-    let parsed: crate::messaging::ClipboardText =
-        serde_json::from_str(&payload).expect("parses");
+    let parsed: crate::messaging::ClipboardText = serde_json::from_str(&payload).expect("parses");
     assert_eq!(parsed.text, "hello from the phone");
     assert_eq!(parsed.from_device_id, device(B));
 }
@@ -384,7 +479,10 @@ fn resolving_an_unknown_name_says_so_rather_than_dialling_nothing() {
         other => panic!("expected a refusal, got {other:?}"),
     }
     // And an empty string is not a device name either.
-    assert!(matches!(client.resolve("   "), Err(HostError::NoSuchDevice { .. })));
+    assert!(matches!(
+        client.resolve("   "),
+        Err(HostError::NoSuchDevice { .. })
+    ));
 }
 
 #[test]
@@ -455,7 +553,10 @@ fn an_identifier_wins_over_a_name_that_happens_to_match_it() {
 
     assert_eq!(client.resolve(A).expect("resolves"), device(A));
     // Case-insensitively too, because a user pasting a UUID may have a different case and nothing else it could mean.
-    assert_eq!(client.resolve(&A.to_uppercase()).expect("resolves"), device(A));
+    assert_eq!(
+        client.resolve(&A.to_uppercase()).expect("resolves"),
+        device(A)
+    );
 }
 
 #[test]
@@ -464,15 +565,14 @@ fn sending_on_a_link_the_host_has_no_session_for_is_refused() {
     // envelope to the wrong session is a mistake with no symptom until the wrong device is blamed for something.
     let (mut server, _server_db, address) = listening(A, "Laptop");
     let (mut client, _client_db) = host(B, "Phone");
-    let (mut other, _other_db) = host(
-        "33333333-3333-4333-8333-333333333333",
-        "Tablet",
-    );
+    let (mut other, _other_db) = host("33333333-3333-4333-8333-333333333333", "Tablet");
 
     let serving = std::thread::spawn(move || {
-        server.accept(1_000, |_, _| PairingState::Unknown).expect("accepts");
+        server.accept(network_now()).expect("accepts");
     });
-    let mut link = client.dial(address, None, 1_000).expect("dials");
+    let mut link = client
+        .dial(address, device(A), network_now())
+        .expect("dials");
     serving.join().expect("finished");
 
     // `other` has no session with A, so it will not send on a link that belongs to `client`.
@@ -500,7 +600,7 @@ fn a_host_that_is_not_listening_cannot_accept() {
     // An honest refusal rather than a silent hang: a caller that forgot to listen is one waiting for a connection
     // that cannot come.
     let (mut host, _db) = host(A, "Laptop");
-    match host.accept(1_000, |_, _| PairingState::Unknown) {
+    match host.accept(network_now()) {
         Err(HostError::Bind { why, .. }) => assert!(why.contains("not listening"), "{why}"),
         other => panic!("expected a refusal, got {other:?}"),
     }
@@ -542,13 +642,15 @@ fn sweeping_closes_a_session_whose_peer_went_quiet() {
     client.sessions = SessionRegistry::with_heartbeat_timeout(1_000);
 
     let serving = std::thread::spawn(move || {
-        server.accept(1_000, |_, _| PairingState::Unknown).expect("accepts");
+        server.accept(network_now()).expect("accepts");
     });
-    client.dial(address, None, 1_000).expect("dials");
+    client
+        .dial(address, device(A), network_now())
+        .expect("dials");
     serving.join().expect("finished");
 
-    // The session was opened at 1_000 with a one-second timeout, so at 5_000 it is long overdue.
-    let events = client.sweep(5_000);
+    // Advance the explicit session clock beyond its one-second timeout without sleeping.
+    let events = client.sweep(network_now() + 4_000);
     assert!(!events.is_empty(), "the sweep closed nothing");
     assert!(client.state_of(device(A)).expect("a session").is_over());
 }
@@ -599,17 +701,26 @@ fn the_two_directions_agree_on_every_reading_they_can_both_hold() {
     // A round trip is the property that matters, and it is the one a duplicated saturation rule breaks silently: two
     // copies can each look right and disagree only in the case neither was written for.
     for value in [0u64, 1, 1_000, 1_700_000_000_000, i64::MAX as u64] {
-        assert_eq!(reading_millis(millis_reading(value)), value, "round trip of {value}");
+        assert_eq!(
+            reading_millis(millis_reading(value)),
+            value,
+            "round trip of {value}"
+        );
     }
 }
 
 #[test]
 fn every_error_explains_itself() {
     let errors = [
-        HostError::Bind { address: SocketAddr::from(([0, 0, 0, 0], 0)), why: "in use".to_owned() },
+        HostError::Bind {
+            address: SocketAddr::from(([0, 0, 0, 0], 0)),
+            why: "in use".to_owned(),
+        },
         HostError::Handshake(HandshakeError::Closed),
         HostError::Link(LinkError::Closed),
-        HostError::Incompatible { missing: "[TransferResume]".to_owned() },
+        HostError::Incompatible {
+            missing: "[TransferResume]".to_owned(),
+        },
         HostError::NoSession(device(A)),
     ];
     for error in &errors {
@@ -646,8 +757,16 @@ fn a_rename_reaches_the_name_that_goes_into_a_handshake() {
 
     // Both copies, because the fault this method exists to prevent is one copy being updated and the other not — and
     // asserting on only the visible one is how that fault gets reintroduced.
-    assert_eq!(host.identity().display_name, "Kitchen tablet", "the stored identity");
-    assert_eq!(host.announced_name(), "Kitchen tablet", "the announced name");
+    assert_eq!(
+        host.identity().display_name,
+        "Kitchen tablet",
+        "the stored identity"
+    );
+    assert_eq!(
+        host.announced_name(),
+        "Kitchen tablet",
+        "the announced name"
+    );
 }
 
 #[test]
@@ -655,7 +774,11 @@ fn a_refused_rename_leaves_both_copies_untouched() {
     let (mut host, _db) = host(A, "Old name");
     let error = host.rename_self("   ").expect_err("a blank name");
     assert!(matches!(error, HostError::Unnameable { .. }));
-    assert_eq!(host.identity().display_name, "Old name", "the stored identity");
+    assert_eq!(
+        host.identity().display_name,
+        "Old name",
+        "the stored identity"
+    );
     assert_eq!(host.announced_name(), "Old name", "the announced name");
 }
 
@@ -671,7 +794,11 @@ fn a_name_the_kernel_refuses_changes_nothing() {
     for name in ["", "   ", &too_long, "with\nnewline"] {
         assert!(host.rename_self(name).is_err(), "{name:?} is not a name");
     }
-    assert_eq!(host.announced_name(), "Old name", "nothing was half-applied");
+    assert_eq!(
+        host.announced_name(),
+        "Old name",
+        "nothing was half-applied"
+    );
 }
 
 #[test]
@@ -683,16 +810,28 @@ fn a_padded_name_lands_in_both_copies_trimmed_and_identically() {
     // `" padded "` and the identity would report `"padded"` — two devices disagreeing about this one's name, which is
     // the fault this method exists to prevent.
     let (mut host, _db) = host(A, "Old name");
-    host.rename_self(" padded ").expect("a name of padding is a name");
-    assert_eq!(host.announced_name(), "padded", "the announced name is the checked one");
-    assert_eq!(host.identity().display_name, "padded", "and so is the stored one");
+    host.rename_self(" padded ")
+        .expect("a name of padding is a name");
+    assert_eq!(
+        host.announced_name(),
+        "padded",
+        "the announced name is the checked one"
+    );
+    assert_eq!(
+        host.identity().display_name,
+        "padded",
+        "and so is the stored one"
+    );
 }
 
 #[test]
 fn the_refusal_echoes_only_enough_of_the_name_to_recognise_it() {
     // A user can paste four hundred characters of emoji; a log line that carries all of it is a problem of its own.
     let long = "🎉".repeat(400);
-    let error = host(A, "Old name").0.rename_self(&long).expect_err("not a name");
+    let error = host(A, "Old name")
+        .0
+        .rename_self(&long)
+        .expect_err("not a name");
     let echoed = match error {
         HostError::Unnameable { name } => name,
         other => panic!("expected a refusal, got {other}"),
@@ -703,7 +842,6 @@ fn the_refusal_echoes_only_enough_of_the_name_to_recognise_it() {
         echoed.chars().count()
     );
 }
-
 
 #[test]
 fn a_received_frame_is_counted_by_its_event() {
@@ -728,7 +866,9 @@ fn a_received_frame_is_counted_by_its_event() {
     // ★ 而它记的是**接收**那一侧而不是发送：两个方向是分开的方法，
     // 因为「说得比听到的多」与「听到的比说得多」是两种不同的处境。
     assert_eq!(
-        recorder.snapshot().get("frames_sent_total{event=device.ping}"),
+        recorder
+            .snapshot()
+            .get("frames_sent_total{event=device.ping}"),
         None,
         "receiving counted as sending"
     );

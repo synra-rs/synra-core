@@ -25,6 +25,8 @@ pub struct Host {
     pub(super) listener: Option<TcpListener>,
     /// Flags a handshake runs under.
     pub(super) flags: Flags,
+    /// Authentication is unavailable until persistent credentials have been initialized.
+    pub(super) network: Result<crate::peer::authenticated::AuthenticatedPeer, String>,
     /// Envelopes sent, for a report.
     pub(super) sent: u64,
     /// Where this host's numbers go, when anybody is keeping them.
@@ -58,12 +60,13 @@ impl Host {
             sessions: SessionRegistry::new(),
             listener: None,
             flags: Flags::production(),
+            network: Err("device authentication has not been initialized".to_owned()),
             sent: 0,
             metrics: None,
         }
     }
 
-    /// A host with chosen flags, for a test that must not depend on the clock.
+    /// A host with chosen flags; authenticated handshakes always retain a finite total IO budget.
     #[must_use]
     pub fn with_flags(identity: Identity, local: LocalPeer, flags: Flags) -> Self {
         let mut host = Self::new(identity, local);
@@ -71,12 +74,27 @@ impl Host {
         host
     }
 
+    /// Installs a credential-backed network configuration; failures leave this host unable to connect.
+    pub fn configure_network(
+        &mut self,
+        network: Result<crate::peer::authenticated::AuthenticatedPeer, String>,
+    ) {
+        self.network = network.and_then(|network| {
+            network
+                .for_profile(self.local.clone())
+                .map_err(|error| error.to_string())
+        });
+    }
+
     /// Sends this host's numbers to a recorder.
     ///
     /// A builder rather than an argument on [`Host::new`], because the two places a host is built — the daemon and a
     /// hundred tests — should not each have to say where the numbers go when most of them keep none.
     #[must_use]
-    pub fn with_metrics(mut self, metrics: std::sync::Arc<synra_observe::metrics::RingRecorder>) -> Self {
+    pub fn with_metrics(
+        mut self,
+        metrics: std::sync::Arc<synra_observe::metrics::RingRecorder>,
+    ) -> Self {
         self.metrics = Some(metrics);
         self
     }
@@ -268,7 +286,12 @@ impl Host {
     ///
     /// The datagram is parsed by the protocol; what this decides is what to do with one, which is the part with
     /// decisions in it — whether the device is new, whether it moved, and whether the name may be shown.
-    pub fn heard(&mut self, announcement: &DeviceAnnouncement, from: SocketAddr, now_ms: i64) -> Absorbed {
+    pub fn heard(
+        &mut self,
+        announcement: &DeviceAnnouncement,
+        from: SocketAddr,
+        now_ms: i64,
+    ) -> Absorbed {
         self.discovery.absorb(announcement, from, now_ms)
     }
 
@@ -287,7 +310,9 @@ impl Host {
         // caller cannot name a session the registry never issued. A missing session is reported as a closure of the
         // device rather than as a made-up key.
         let Some(session) = self.sessions.live_for(device_id) else {
-            return Err(crate::sessions::RegistryError::NoSuchSession(SessionKey::UNISSUED));
+            return Err(crate::sessions::RegistryError::NoSuchSession(
+                SessionKey::UNISSUED,
+            ));
         };
         let key = session.key();
         self.sessions.record_frame_in(key, token, now_ms)
@@ -313,5 +338,4 @@ impl Host {
     ) -> bool {
         self.discovery.handshaked(device_id, address, name, now_ms)
     }
-
 }

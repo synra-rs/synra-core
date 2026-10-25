@@ -157,6 +157,12 @@ impl std::fmt::Debug for SynraDb {
 }
 
 impl SynraDb {
+    /// Whether this connection names a persistent file rather than temporary or in-memory storage.
+    #[must_use]
+    pub fn is_file_backed(&self) -> bool {
+        self.connection.path().is_some_and(|path| !path.is_empty())
+    }
+
     /// Opens a database file, creating it if it is absent.
     ///
     /// # Errors

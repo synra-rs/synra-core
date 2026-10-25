@@ -11,6 +11,12 @@ use synra_protocol::error::ErrorCode;
 /// would leave the client unable to say anything but the message the kernel wrote.
 pub(super) fn refusal_of(error: &HostError) -> Refusal {
     let code = match error {
+        HostError::NetworkUnavailable { .. } => ErrorCode::Unsupported,
+        HostError::Authentication { .. } => ErrorCode::NotPaired,
+        HostError::Link(synra_core::link::LinkError::Unauthorized) => ErrorCode::NotPaired,
+        HostError::Link(synra_core::link::LinkError::AuthorizationUnavailable { .. }) => {
+            ErrorCode::Internal
+        }
         // Nothing is called that. `NotPaired` rather than a "not found": what the kernel knows about is devices it has
         // seen, and one it has never seen is one it is not paired with — which is the fact the user can act on.
         HostError::NoSuchDevice { .. } => ErrorCode::NotPaired,
@@ -21,7 +27,9 @@ pub(super) fn refusal_of(error: &HostError) -> Refusal {
         // The device is there and the two cannot work together, which is a version problem rather than a network one.
         HostError::Incompatible { .. } => ErrorCode::Unsupported,
         // A handshake or a link failure is the network.
-        HostError::Handshake(_) | HostError::Link(_) | HostError::Bind { .. } => ErrorCode::TransportNotOpen,
+        HostError::Handshake(_) | HostError::Link(_) | HostError::Bind { .. } => {
+            ErrorCode::TransportNotOpen
+        }
         HostError::NoSession(_) => ErrorCode::NotPaired,
         // `#[non_exhaustive]`: a failure this build does not know is still a failure, and `Internal` is the honest code
         // for one it cannot name.
@@ -57,10 +65,12 @@ pub(super) const fn error_code_for_session(error: &synra_core::SessionError) -> 
     match error {
         // A transfer that did not verify is the code the protocol has for exactly this, and a client can act on it: the
         // partial file is discarded and a retry starts again.
-        synra_core::SessionError::Transfer(synra_core::TransferError::DigestMismatch { .. })
-        | synra_core::SessionError::Transfer(synra_core::TransferError::CompletionMismatch { .. }) => {
-            ErrorCode::IntegrityMismatch
-        }
+        synra_core::SessionError::Transfer(synra_core::TransferError::DigestMismatch {
+            ..
+        })
+        | synra_core::SessionError::Transfer(synra_core::TransferError::CompletionMismatch {
+            ..
+        }) => ErrorCode::IntegrityMismatch,
         // A transfer that stopped with blocks owed never finished.
         synra_core::SessionError::Transfer(synra_core::TransferError::Incomplete { .. }) => {
             ErrorCode::TransferFailed

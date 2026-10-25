@@ -50,6 +50,44 @@ pub struct AuthenticatedPeer {
 }
 
 impl AuthenticatedPeer {
+    /// Rebuilds local announcement metadata while retaining the same credential and approval database.
+    /// # Errors
+    /// Refuses invalid profiles and changes to the credential's device id.
+    pub fn for_profile(&self, profile: LocalPeer) -> Result<Self, SecurePeerError> {
+        Self::new(Arc::clone(&self.db), Arc::clone(&self.credentials), profile)
+    }
+
+    /// Finds the requested durable approval before opening TCP, then completes TLS and Hello.
+    /// # Errors
+    /// Refuses absent approvals, database errors, connection failures and failed authentication.
+    pub fn dial(
+        &self,
+        address: std::net::SocketAddr,
+        peer: synra_protocol::DeviceId,
+        sequence: u64,
+        now_seconds: u64,
+        timeout: Duration,
+    ) -> Result<(PeerLink, Negotiated), SecurePeerError> {
+        let started = Instant::now();
+        let budget = timeout.min(synra_protocol::limits::HELLO_TIMEOUT);
+        let approval = approved_peers(&self.db, &self.credentials, now_seconds)?
+            .into_iter()
+            .find(|approval| approval.identity().device_id() == peer)
+            .ok_or(LinkError::Unauthorized)?;
+        let remaining = budget.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            return Err(AuthenticationError::TimedOut.into());
+        }
+        let socket = TcpStream::connect_timeout(&address, remaining)
+            .map_err(|error| AuthenticationError::Transport(error.to_string()))?;
+        self.connect(
+            socket,
+            approval,
+            sequence,
+            budget.saturating_sub(started.elapsed()),
+        )
+    }
+
     /// Associates a validated local profile with its exact TLS credential and approval database.
     /// # Errors
     /// Refuses mismatched local device ids and invalid profiles.

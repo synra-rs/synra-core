@@ -12,6 +12,9 @@ use synra_store::SynraDb;
 use synra_store::secrets::{SecretBackend, SecretBytes, SecretError, SecretKey, SecretStrength};
 use synra_store::sqlite::DeviceCredentialRecord;
 
+mod network;
+pub use network::{DEVICE_IDENTITY_SERVICE, NetworkStartupError, initialize_native_network};
+
 /// Why a local credential cannot be enrolled or loaded.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
