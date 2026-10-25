@@ -26,7 +26,7 @@
 
 use std::cell::Cell;
 use std::collections::VecDeque;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::Duration;
 
 use super::{LinkError, LinkStream};
@@ -66,83 +66,108 @@ struct Pipe {
     /// microseconds and tests it the same way every time.
     capacity: usize,
     /// The bytes in flight, and the lock that makes them a queue.
-    bytes: Mutex<VecDeque<u8>>,
-    /// Signalled whenever the queue changes, in either direction.
+    state: Mutex<PipeState>,
+    /// Signalled whenever bytes or closure change; the predicate is protected by the same mutex.
     ready: Condvar,
-    /// Set when the writing end is dropped, so the reading end sees end-of-file rather than waiting forever.
-    closed: Mutex<bool>,
+}
+
+#[derive(Debug)]
+struct PipeState {
+    bytes: VecDeque<u8>,
+    closed: bool,
 }
 
 impl Pipe {
     fn push(&self, bytes: &[u8], deadline: Option<Duration>) -> std::io::Result<usize> {
-        let limit = self.capacity;
-        let mut queue = self.bytes.lock().unwrap_or_else(|error| error.into_inner());
-        if queue.len() >= limit {
-            // Full: wait for the reader, under the write deadline. This is where a stalled peer becomes observable rather
-            // than a hang.
-            queue = match deadline {
-                Some(timeout) => self
-                    .ready
-                    .wait_timeout_while(queue, timeout, |queue| queue.len() >= limit)
-                    .unwrap_or_else(|error| error.into_inner())
-                    .0,
-                None => self
-                    .ready
-                    .wait_while(queue, |queue| queue.len() >= limit)
-                    .unwrap_or_else(|error| error.into_inner()),
-            };
-            if queue.len() >= limit {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::WouldBlock,
-                    "the peer is not reading",
-                ));
-            }
+        if bytes.is_empty() {
+            return Ok(0);
         }
-        let room = limit - queue.len();
-        let taken = room.min(bytes.len());
-        queue.extend(bytes.iter().take(taken));
-        drop(queue);
+        let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let full = |state: &mut PipeState| state.bytes.len() >= self.capacity && !state.closed;
+        let mut state = match deadline {
+            Some(timeout) => {
+                self.ready
+                    .wait_timeout_while(state, timeout, full)
+                    .unwrap_or_else(|error| error.into_inner())
+                    .0
+            }
+            None => self
+                .ready
+                .wait_while(state, full)
+                .unwrap_or_else(|error| error.into_inner()),
+        };
+        if state.closed {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "the peer closed",
+            ));
+        }
+        if state.bytes.len() >= self.capacity {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "the peer is not reading",
+            ));
+        }
+        let taken = (self.capacity - state.bytes.len()).min(bytes.len());
+        state.bytes.extend(bytes.iter().take(taken));
+        drop(state);
         self.ready.notify_all();
         Ok(taken)
     }
 
-    fn pop(&self, buffer: &mut [u8], deadline: Option<Duration>) -> std::io::Result<usize> {
-        let mut queue = self.bytes.lock().unwrap_or_else(|error| error.into_inner());
-        while queue.is_empty() {
-            if *self.closed.lock().unwrap_or_else(|error| error.into_inner()) {
-                // End-of-file, which is what a peer that closed its socket produces.
-                return Ok(0);
-            }
-            queue = match deadline {
-                Some(timeout) => self
-                    .ready
-                    .wait_timeout(queue, timeout)
+    fn wait_for_data<'a>(
+        &self,
+        state: MutexGuard<'a, PipeState>,
+        deadline: Option<Duration>,
+    ) -> MutexGuard<'a, PipeState> {
+        let empty = |state: &mut PipeState| state.bytes.is_empty() && !state.closed;
+        // A notification is only a reason to recheck; timeout_while retains the original budget.
+        match deadline {
+            Some(timeout) => {
+                self.ready
+                    .wait_timeout_while(state, timeout, empty)
                     .unwrap_or_else(|error| error.into_inner())
-                    .0,
-                None => self
-                    .ready
-                    .wait(queue)
-                    .unwrap_or_else(|error| error.into_inner()),
-            };
-            // Still nothing after waiting: a **quiet** peer, which is not a broken one.
-            if queue.is_empty() {
-                return Err(std::io::Error::new(
+                    .0
+            }
+            None => self
+                .ready
+                .wait_while(state, empty)
+                .unwrap_or_else(|error| error.into_inner()),
+        }
+    }
+
+    fn pop(&self, buffer: &mut [u8], deadline: Option<Duration>) -> std::io::Result<usize> {
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        if state.bytes.is_empty() && !state.closed {
+            state = self.wait_for_data(state, deadline);
+        }
+        if state.bytes.is_empty() {
+            return if state.closed {
+                Ok(0)
+            } else {
+                Err(std::io::Error::new(
                     std::io::ErrorKind::WouldBlock,
                     "nothing arrived within the deadline",
-                ));
-            }
+                ))
+            };
         }
-        let taken = buffer.len().min(queue.len());
+        let taken = buffer.len().min(state.bytes.len());
         for slot in buffer.iter_mut().take(taken) {
-            *slot = queue.pop_front().unwrap_or(0);
+            *slot = state.bytes.pop_front().unwrap_or(0);
         }
-        drop(queue);
+        drop(state);
         self.ready.notify_all();
         Ok(taken)
     }
 
     fn close(&self) {
-        *self.closed.lock().unwrap_or_else(|error| error.into_inner()) = true;
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .closed = true;
         self.ready.notify_all();
     }
 }
@@ -164,9 +189,11 @@ impl MemoryStream {
         let pipe = |capacity| {
             Arc::new(Pipe {
                 capacity,
-                bytes: Mutex::new(VecDeque::new()),
+                state: Mutex::new(PipeState {
+                    bytes: VecDeque::new(),
+                    closed: false,
+                }),
                 ready: Condvar::new(),
-                closed: Mutex::new(false),
             })
         };
         let first = pipe(capacity);
@@ -193,17 +220,19 @@ impl MemoryStream {
     #[must_use]
     pub fn buffered(&self) -> usize {
         self.incoming
-            .bytes
+            .state
             .lock()
             .unwrap_or_else(|error| error.into_inner())
+            .bytes
             .len()
     }
 }
 
 impl Drop for MemoryStream {
     fn drop(&mut self) {
-        // The other end's read becomes end-of-file, which is what a closed socket does and what lets a reader stop waiting.
+        // Wake the peer's reader at EOF and its writer if the peer had filled our receive buffer.
         self.outgoing.close();
+        self.incoming.close();
     }
 }
 
@@ -236,3 +265,6 @@ impl LinkStream for MemoryStream {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests;
