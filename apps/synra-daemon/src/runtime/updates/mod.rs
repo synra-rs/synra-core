@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use synra_core::plugin_updates::{POLL_INTERVAL, configured_policy, due};
+use synra_core::plugin_updates::{POLL_INTERVAL, configured_policy, due_plugins, record_failure};
 use synra_core::supervisor::{Cancellation, Supervisor, TaskId, TaskSpec};
 use synra_plugin_api::update::UpdatePolicy;
 use synra_store::PluginUpdateCheck;
@@ -45,38 +45,26 @@ pub(crate) fn check_all(
     now_ms: i64,
     cancel: &Cancellation,
 ) -> Vec<PluginUpdateCheck> {
-    let snapshot = {
+    let plugins = {
         let db = runtime.db();
-        if configured_policy(&db).is_none() {
-            return Vec::new();
+        match due_plugins(&db, now_ms) {
+            Ok(plugins) => plugins,
+            Err(error) => {
+                tracing::warn!(%error, "plugin update schedule could not be read");
+                return Vec::new();
+            }
         }
-        let Ok(rows) = db.plugins() else {
-            return Vec::new();
-        };
-        let Ok(checks) = db.plugin_update_checks() else {
-            return Vec::new();
-        };
-        drop(db);
-        (rows, checks)
     };
     let mut available = Vec::new();
-    for row in snapshot.0 {
+    for plugin in plugins {
         if cancel.is_cancelled() || configured_policy(&runtime.db()).is_none() {
             break;
         }
-        let last = snapshot
-            .1
-            .iter()
-            .find(|check| check.plugin_id == row.plugin_id)
-            .map(|check| check.checked_at_ms);
-        if !due(last, now_ms) {
-            continue;
-        }
-        match check_one(runtime, &row.plugin_id, now_ms, cancel, true) {
+        match check_one(runtime, &plugin, now_ms, cancel, true) {
             Ok(Some(check)) => available.push(check),
             Ok(None) => {}
             Err(error) => {
-                tracing::warn!(plugin = %row.plugin_id, %error, "plugin update check failed")
+                tracing::warn!(%plugin, %error, "plugin update check failed")
             }
         }
     }
@@ -140,6 +128,8 @@ fn check_one(
         checked_at_ms: now_ms,
         available_version: latest.map(|entry| entry.version.clone()),
         added_capabilities: added,
+        attempts: 0,
+        retry_at_ms: None,
     };
     let policy = {
         let db = runtime.db();
@@ -169,7 +159,11 @@ fn check_one(
         match automatic(runtime, &sources, &document, latest, &check, policy, cancel) {
             Ok(()) => return Ok(None),
             Err(error) => {
-                tracing::warn!(plugin, %error, "automatic plugin update refused; update remains available")
+                let recorded = record_failure(&runtime.db(), &check, policy, cancel, now_ms)
+                    .map_err(|failure| {
+                        format!("{error}; retry state could not be saved: {failure}")
+                    })?;
+                tracing::warn!(plugin, %error, recorded, "automatic plugin update refused");
             }
         }
     }

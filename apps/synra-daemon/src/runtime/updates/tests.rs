@@ -164,7 +164,9 @@ fn installed(root: &Path) -> Runtime {
     runtime
         .plugin_install(first.to_str().expect("path"))
         .expect("install");
-    let fingerprint = runtime.db().publishers().expect("publishers")[0].fingerprint.clone();
+    let fingerprint = runtime.db().publishers().expect("publishers")[0]
+        .fingerprint
+        .clone();
     runtime
         .db()
         .set_publisher_trust("@acme", &fingerprint, synra_store::TRUST_TRUSTED, 1)
@@ -254,6 +256,70 @@ fn both_registry_formats_apply_only_policy_and_signature_admitted_updates() {
             "download cleanup"
         );
     }
+}
+
+#[test]
+fn failed_downloads_back_off_across_restart_and_preserve_the_installed_version() {
+    let root = super::super::tests::TempDir::new("bounded-update-retries");
+    let runtime = installed(root.path());
+    let registry = Registry::start();
+    let next = root.path().join("next");
+    signed_source(&next, "1.1.0", 7, false);
+    registry.publish(&next, "1.1.0", false);
+    *registry.tarball.lock() = (503, b"unavailable".to_vec());
+    configure(&runtime, &registry, "auto-all", false);
+    let cancel = Cancellation::new();
+    assert_eq!(check_all(&runtime, 100, &cancel).len(), 1);
+    let saved = runtime
+        .db()
+        .plugin_update_check("@acme/hello")
+        .expect("read")
+        .expect("check");
+    assert_eq!(saved.attempts, 1);
+    let backup = root.path().join("retry-restart.sqlite3");
+    runtime.db().backup_to(&backup).expect("snapshot");
+    let mut restarted = super::super::tests::runtime(root.path());
+    restarted.db = Arc::new(Mutex::new(
+        synra_store::SynraDb::open(&backup).expect("reopen"),
+    ));
+    let mut next_attempt = saved.retry_at_ms.expect("deadline");
+    for attempt in 2..=3 {
+        let requests = registry.requests.load(Ordering::SeqCst);
+        assert!(check_all(&restarted, next_attempt - 1, &cancel).is_empty());
+        assert_eq!(
+            registry.requests.load(Ordering::SeqCst),
+            requests,
+            "no request before the retry deadline"
+        );
+        assert_eq!(check_all(&restarted, next_attempt, &cancel).len(), 1);
+        assert!(registry.requests.load(Ordering::SeqCst) > requests);
+        let saved = restarted
+            .db()
+            .plugin_update_check("@acme/hello")
+            .expect("read")
+            .expect("check");
+        assert_eq!(saved.attempts, attempt);
+        next_attempt = saved
+            .retry_at_ms
+            .unwrap_or(saved.checked_at_ms + CHECK_EVERY_MS);
+        assert_eq!(saved.retry_at_ms.is_none(), attempt == 3);
+    }
+    let requests = registry.requests.load(Ordering::SeqCst);
+    assert!(check_all(&restarted, next_attempt - 1, &cancel).is_empty());
+    assert_eq!(
+        registry.requests.load(Ordering::SeqCst),
+        requests,
+        "the daily check takes over"
+    );
+    assert_eq!(
+        restarted
+            .db()
+            .active_plugin("@acme/hello")
+            .expect("read")
+            .expect("installed")
+            .version,
+        "1.0.0"
+    );
 }
 
 #[test]
@@ -696,9 +762,14 @@ fn revoking_a_publisher_stops_its_installed_plugin() {
     // publisher, so the installed manifest's publisher id names the same set the signature would.
     let root = super::super::tests::TempDir::new("publisher-revoke");
     let runtime = installed(root.path());
-    let fingerprint = runtime.db().publishers().expect("publishers")[0].fingerprint.clone();
+    let fingerprint = runtime.db().publishers().expect("publishers")[0]
+        .fingerprint
+        .clone();
     let id = PluginId::parse("@acme/hello").expect("a plugin id");
-    assert!(runtime.plugins.lock().contains(&id), "the fixture starts loaded");
+    assert!(
+        runtime.plugins.lock().contains(&id),
+        "the fixture starts loaded"
+    );
 
     runtime
         .plugin_publisher_decide("@acme", &fingerprint, "revoked")
@@ -713,5 +784,8 @@ fn revoking_a_publisher_stops_its_installed_plugin() {
         .expect("the plugin row");
     assert!(!row.enabled, "a revoked publisher's plugin is switched off");
     assert!(!row.trusted, "and its trust goes with the key");
-    assert!(!runtime.plugins.lock().contains(&id), "the running instance is unloaded");
+    assert!(
+        !runtime.plugins.lock().contains(&id),
+        "the running instance is unloaded"
+    );
 }

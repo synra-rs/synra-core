@@ -388,16 +388,14 @@ pub const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 15,
         name: "plugin-update-checks",
-        statements: &[
-            "CREATE TABLE plugin_update_checks (
+        statements: &["CREATE TABLE plugin_update_checks (
                 plugin_id TEXT PRIMARY KEY REFERENCES plugins(plugin_id) ON DELETE CASCADE,
                 current_version TEXT NOT NULL,
                 checked_at_ms INTEGER NOT NULL,
                 registry TEXT,
                 available_version TEXT,
                 added_capabilities TEXT NOT NULL
-            )",
-        ],
+            )"],
     },
     Migration {
         version: 16,
@@ -413,6 +411,17 @@ pub const MIGRATIONS: &[Migration] = &[
             "ALTER TABLE plugin_versions ADD COLUMN publisher_id TEXT",
             "ALTER TABLE plugin_versions ADD COLUMN fingerprint TEXT",
             "CREATE INDEX plugin_versions_by_fingerprint ON plugin_versions (fingerprint, active)",
+        ],
+    },
+    Migration {
+        version: 17,
+        name: "update-retries",
+        statements: &[
+            // ★ An automatic update that failed waited a whole day for the next attempt, which made a transient refusal —
+            // a closed socket, a mirror that was briefly down — cost a day of being out of date. The attempt count is on
+            // the check because the check is the row that already knows what is available.
+            "ALTER TABLE plugin_update_checks ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE plugin_update_checks ADD COLUMN retry_at_ms INTEGER",
         ],
     },
 ];
