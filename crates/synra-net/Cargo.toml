@@ -15,10 +15,16 @@ synra-observe = { path = "../synra-observe" }
 serde.workspace = true
 thiserror.workspace = true
 parking_lot.workspace = true
+rustls.workspace = true
+rcgen.workspace = true
+sha2.workspace = true
+time.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
 rstest.workspace = true
+# TLS 1.2 exists only as an adversarial test client; production configurations select TLS 1.3.
+rustls = { workspace = true, features = ["tls12"] }
 
 [lints]
 workspace = true

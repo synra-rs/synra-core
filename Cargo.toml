@@ -62,6 +62,9 @@ thiserror = "2"
 # The transfer layer's whole-object digest. Already in the tree through `ed25519-dalek`, so naming it adds no download —
 # and it is named rather than re-exported because a crate that computes digests should say which implementation it trusts.
 sha2 = "0.10"
+# Device authentication uses the same TLS implementation and provider validated by the Android spike.
+rustls = { version = "=0.23.45", default-features = false, features = ["std", "ring"] }
+rcgen = { version = "=0.14.10", default-features = false, features = ["crypto", "ring"] }
 # Digest values travel as base64 without padding, which is what `SriDigest` accepts.
 base64 = "0.22"
 
