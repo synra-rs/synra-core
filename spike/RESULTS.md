@@ -19,6 +19,7 @@ already documents.
 | 5 | multi-WebView independent origins | ⛔ not run | desktop spike, runnable today |
 | 6 | CSP blocks a plugin's fetch | ⛔ not run | desktop spike, runnable today |
 | 8 | host-call latency under concurrency | ⛔ not run | needs `cargo bench` on the plugin host |
+| D1 | [device authentication](./device-authentication/README.md) | **partial validation** | seven Windows tests cover real connections and key validation; Android checks and test linking pass; Android execution and production pairing remain unverified |
 
 > ⚠️ **What a green 3 and 4 do not mean.** `cargo check` never links and never runs. They prove the dependency graphs
 > survive the target. They do **not** prove that an `.so` links, that a component instantiates on a phone, or — most
