@@ -27,11 +27,12 @@
 //! # What it deliberately does not check
 //!
 //! Anything needing types: whether a `pub` item is reachable, whether a signature compiles, what a macro expands to.
-//! This reads text, and it says so in every message it produces.
+//! Container and enum rules read lines. Foreign error checks parse public types and signatures;
+//! they never scan function bodies. Name resolution, macro expansion and cross-file reachability
+//! still require the compiler and review.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
-
 // Test code is exempt from the no-panic rules; see `synra-protocol` for the reasoning. An assertion that indexes a
 // vector of findings and panics on an unexpected one is the shape every test in this file has.
 #![cfg_attr(
@@ -44,6 +45,8 @@
         clippy::needless_pass_by_value,
     )
 )]
+
+mod foreign;
 
 /// Why a rule was broken.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -63,7 +66,9 @@ pub enum Violation {
     },
 
     /// A public enum a consumer must match on is missing `#[non_exhaustive]`.
-    #[error("{file}:{line}: `{item}` is a public enum in a stable crate without `#[non_exhaustive]`")]
+    #[error(
+        "{file}:{line}: `{item}` is a public enum in a stable crate without `#[non_exhaustive]`"
+    )]
     NotNonExhaustive {
         /// Where.
         file: String,
@@ -73,9 +78,10 @@ pub enum Violation {
         item: String,
     },
 
-
     /// A public error variant holds a third-party error type.
-    #[error("{file}:{line}: `{item}` holds {foreign}, which is a promise about that crate's version")]
+    #[error(
+        "{file}:{line}: `{item}` holds {foreign}, which is a promise about that crate's version"
+    )]
     ForeignError {
         /// Where.
         file: String,
@@ -219,18 +225,17 @@ impl Source {
             path: path.display().to_string(),
             reason: error.to_string(),
         })?;
-        Ok(Self { path: path.display().to_string(), text })
+        Ok(Self {
+            path: path.display().to_string(),
+            text,
+        })
     }
 }
 
 /// Checks one file against the rules for its crate's tier.
 ///
-/// # Why text and not a syntax tree
-///
-/// A tree would need a parser, and a parser would need to be kept in step with the language. What these rules are
-/// about — is a `HashMap` in this signature, is this enum annotated — is visible in the text, and a text check that
-/// occasionally has to be told about a false positive is one a reviewer can reason about. Every message quotes the
-/// line it is about.
+/// Enum and container checks use lines; foreign errors are checked in parsed public types and signatures.
+/// Every finding quotes the source line rather than requiring a manually maintained false-positive list.
 #[must_use]
 pub fn check(source: &Source, tier: Tier) -> Vec<Violation> {
     let mut violations = Vec::new();
@@ -318,23 +323,13 @@ pub fn check(source: &Source, tier: Tier) -> Vec<Violation> {
                 }
             }
         }
+    }
 
-        for foreign in FOREIGN_ERRORS {
-            // ★ Not `starts_with("pub ")`: an enum variant is indented and carries no visibility keyword of its own —
-            // `Io(std::io::Error),` is a public variant of a public enum, and a rule that required `pub` on the line
-            // would check nothing. What makes it a violation is the *type*, and the type is on the line.
-            //
-            // The false-positive surface is a private helper taking an `io::Error`, which is legitimate and would be
-            // reported. That is the safe direction for this rule: a public error type is a promise, and the message
-            // quotes the line so a reviewer can see which it is.
-            if names_type(trimmed, foreign) {
-                violations.push(Violation::ForeignError {
-                    file: source.path.clone(),
-                    line,
-                    item: trimmed.trim_end_matches(',').trim().to_owned(),
-                    foreign: (*foreign).to_owned(),
-                });
-            }
+    // Avoid parsing snippets with no candidate error names and ordinary files unaffected by this rule.
+    if tier.makes_a_promise() {
+        let compact: String = source.text.split_whitespace().collect();
+        if FOREIGN_ERRORS.iter().any(|name| names_type(&compact, name)) {
+            violations.extend(foreign::check(source));
         }
     }
 
@@ -344,7 +339,12 @@ pub fn check(source: &Source, tier: Tier) -> Vec<Violation> {
 /// The name of a public enum declared on a line, if one is.
 fn public_enum(line: &str) -> Option<String> {
     let rest = line.strip_prefix("pub enum ")?;
-    Some(rest.split([' ', '{', '<']).next().unwrap_or_default().to_owned())
+    Some(
+        rest.split([' ', '{', '<'])
+            .next()
+            .unwrap_or_default()
+            .to_owned(),
+    )
 }
 
 /// The name of a public function or struct field declared on a line, if one is.
@@ -362,14 +362,30 @@ fn public_enum(line: &str) -> Option<String> {
 /// from mattering is the direction of the rule — a false positive here is a request to look, and a false negative would
 /// be a promise nobody checked.
 fn public_fn_or_field(line: &str) -> Option<String> {
-    for prefix in ["pub fn ", "pub const fn ", "pub async fn ", "pub unsafe fn "] {
+    for prefix in [
+        "pub fn ",
+        "pub const fn ",
+        "pub async fn ",
+        "pub unsafe fn ",
+    ] {
         if let Some(rest) = line.strip_prefix(prefix) {
             // Up to the generic list or the argument list, which is where the name ends.
-            return Some(rest.split(['(', '<']).next().unwrap_or_default().trim().to_owned());
+            return Some(
+                rest.split(['(', '<'])
+                    .next()
+                    .unwrap_or_default()
+                    .trim()
+                    .to_owned(),
+            );
         }
     }
     if let Some(rest) = line.strip_prefix("pub struct ") {
-        return Some(rest.split([' ', '{', '(', '<']).next().unwrap_or_default().to_owned());
+        return Some(
+            rest.split([' ', '{', '(', '<'])
+                .next()
+                .unwrap_or_default()
+                .to_owned(),
+        );
     }
     // A public field in a struct whose fields are public, which this rule also applies to. The `pub` must be followed
     // by the field's name, so `pub(crate)` — which the parenthesis rules out — is not one.
@@ -396,7 +412,10 @@ fn names_container(line: &str, container: &str) -> bool {
     let mut start = 0;
     while let Some(offset) = line[start..].find(container) {
         let at = start + offset;
-        let before = at.checked_sub(1).and_then(|index| bytes.get(index)).copied();
+        let before = at
+            .checked_sub(1)
+            .and_then(|index| bytes.get(index))
+            .copied();
         let after = bytes.get(at + needle.len()).copied();
 
         let left_ok = before.is_none_or(|byte| !is_identifier_byte(byte));
@@ -435,7 +454,10 @@ fn names_identifier(haystack: &str, needle: &str) -> bool {
     let mut start = 0;
     while let Some(offset) = haystack[start..].find(needle) {
         let at = start + offset;
-        let before = at.checked_sub(1).and_then(|index| bytes.get(index)).copied();
+        let before = at
+            .checked_sub(1)
+            .and_then(|index| bytes.get(index))
+            .copied();
         let after = bytes.get(at + needle_bytes.len()).copied();
 
         // A boundary is anything that cannot be part of an identifier: the start of the line, a character that is not
@@ -464,7 +486,10 @@ mod tests {
     use super::*;
 
     fn source(text: &str) -> Source {
-        Source { path: "src/lib.rs".to_owned(), text: text.to_owned() }
+        Source {
+            path: "src/lib.rs".to_owned(),
+            text: text.to_owned(),
+        }
     }
 
     fn check_stable(text: &str) -> Vec<Violation> {
@@ -480,7 +505,12 @@ mod tests {
         let violations = check_stable("pub fn devices(&self) -> HashMap<String, Device> {");
         assert_eq!(violations.len(), 1, "{violations:?}");
         match &violations[0] {
-            Violation::ConcreteContainer { container, item, line, .. } => {
+            Violation::ConcreteContainer {
+                container,
+                item,
+                line,
+                ..
+            } => {
                 assert_eq!(container, "HashMap");
                 assert_eq!(item, "devices");
                 assert_eq!(*line, 1);
@@ -543,7 +573,10 @@ mod tests {
     #[test]
     fn an_internal_crate_is_not_checked_for_containers() {
         // `synra-observe` may return whatever it likes: nothing downstream depends on its shapes.
-        let violations = check(&source("pub fn f() -> HashMap<String, u32> {"), Tier::Internal);
+        let violations = check(
+            &source("pub fn f() -> HashMap<String, u32> {"),
+            Tier::Internal,
+        );
         assert!(violations.is_empty(), "{violations:?}");
     }
 
@@ -551,8 +584,14 @@ mod tests {
     fn a_doc_comment_that_names_a_container_is_not_a_violation() {
         // `missing_docs` means the documentation is full of the words this check looks for, and a rule that matched them
         // would fire on every explanation of the rule — including this file's own.
-        assert!(check_stable("/// Returns a `HashMap` of devices.\npub fn devices(&self) -> Devices {").is_empty());
-        assert!(check_stable("// A HashMap would be wrong here.\npub fn devices(&self) -> Devices {").is_empty());
+        assert!(
+            check_stable("/// Returns a `HashMap` of devices.\npub fn devices(&self) -> Devices {")
+                .is_empty()
+        );
+        assert!(
+            check_stable("// A HashMap would be wrong here.\npub fn devices(&self) -> Devices {")
+                .is_empty()
+        );
     }
 
     #[test]
@@ -595,7 +634,13 @@ mod tests {
         // kernel's own" from "a crate the kernel keeps in the internal tier", and `synra-observe` and `synra-platform`
         // are internal by tier while their enums are matched by a person reading a log or a CLI report. A rule applied
         // to the wrong thing is worse than no rule: it teaches a reviewer to ignore the tool.
-        assert!(check(&source("#[non_exhaustive]\npub enum Kind {"), Tier::Internal).is_empty());
+        assert!(
+            check(
+                &source("#[non_exhaustive]\npub enum Kind {"),
+                Tier::Internal
+            )
+            .is_empty()
+        );
         assert!(check(&source("pub enum Kind {"), Tier::Internal).is_empty());
     }
 
@@ -617,7 +662,15 @@ mod tests {
     #[test]
     fn a_public_error_holding_a_foreign_error_is_a_violation() {
         // A promise about that crate's version: a minor release of `serde_json` would change this crate's error type.
-        let violations = check_stable("    Io(std::io::Error),");
+        let violations =
+            check_stable("#[non_exhaustive]\npub enum Error {\n    Io(std::io::Error),\n}");
+        assert_eq!(violations.len(), 1, "{violations:?}");
+        assert!(matches!(violations[0], Violation::ForeignError { .. }));
+    }
+
+    #[test]
+    fn qualified_error_paths_with_whitespace_are_still_checked() {
+        let violations = check_stable("pub fn action() -> std :: io :: Error { todo!() }");
         assert_eq!(violations.len(), 1, "{violations:?}");
         assert!(matches!(violations[0], Violation::ForeignError { .. }));
     }
@@ -644,9 +697,13 @@ mod tests {
             let source = source("pub fn f() -> HashMap<String, u32> {\n    todo!()\n}");
             let violations = check(&source, *tier);
             if tier.makes_a_promise() {
-                assert_eq!(violations.len(), 1, "{name} is {} and did not check", tier.as_str());
-            }
-            else {
+                assert_eq!(
+                    violations.len(),
+                    1,
+                    "{name} is {} and did not check",
+                    tier.as_str()
+                );
+            } else {
                 assert!(violations.is_empty(), "{name} is internal and checked");
             }
         }
@@ -694,7 +751,10 @@ mod tests {
             let Some(end) = rest.find('"') else {
                 continue;
             };
-            let name = rest.get(..end).unwrap_or_default().trim_start_matches("crates/");
+            let name = rest
+                .get(..end)
+                .unwrap_or_default()
+                .trim_start_matches("crates/");
             if listed.contains(&name) {
                 classified += 1;
             } else {
