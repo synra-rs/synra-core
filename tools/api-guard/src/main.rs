@@ -13,7 +13,7 @@ fn main() -> ExitCode {
     let mut violations = Vec::new();
     let mut checked = 0usize;
 
-    for (name, tier) in CRATES {
+    for (name, boundary) in CRATES {
         let directory = Path::new(&root).join("crates").join(name).join("src");
         let files = match rust_files(&directory) {
             Ok(files) => files,
@@ -31,7 +31,7 @@ fn main() -> ExitCode {
                 }
             };
             checked += 1;
-            violations.extend(check(&source, *tier));
+            violations.extend(check(&source, *boundary));
         }
     }
 
@@ -44,7 +44,7 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     eprintln!(
-        "api-guard: {} violation(s) in {checked} file(s). STABILITY.md says which rules apply to which tier.",
+        "api-guard: {} violation(s) in {checked} file(s). STABILITY.md defines the unpublished workspace boundaries.",
         violations.len()
     );
     ExitCode::FAILURE
@@ -56,11 +56,17 @@ fn rust_files(directory: &Path) -> Result<Vec<PathBuf>, String> {
     let mut stack = vec![directory.to_path_buf()];
     while let Some(current) = stack.pop() {
         let entries = std::fs::read_dir(&current).map_err(|error| format!("{}: {error}", current.display()))?;
-        for entry in entries.flatten() {
+        for entry in entries {
+            let entry = entry.map_err(|error| format!("{}: {error}", current.display()))?;
             let path = entry.path();
-            match entry.file_type() {
-                Ok(kind) if kind.is_dir() => stack.push(path),
-                Ok(kind) if kind.is_file() && path.extension().is_some_and(|ext| ext == "rs") => out.push(path),
+            let kind = entry
+                .file_type()
+                .map_err(|error| format!("{}: {error}", path.display()))?;
+            match kind {
+                kind if kind.is_dir() => stack.push(path),
+                kind if kind.is_file() && path.extension().is_some_and(|ext| ext == "rs") => {
+                    out.push(path)
+                }
                 _ => {}
             }
         }

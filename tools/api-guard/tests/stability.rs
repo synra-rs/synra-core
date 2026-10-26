@@ -1,4 +1,4 @@
-//! Exercise the actual guard against the workspace with no false-positive exemptions.
+//! Run the actual boundary guard against the workspace and its declared policy.
 
 #![cfg_attr(
     test,
@@ -20,22 +20,17 @@ fn workspace_root() -> PathBuf {
         .expect("workspace")
 }
 
-const RULE_FRAGMENTS: [&str; 4] = [
-    "in its public signature",
-    "without `#[non_exhaustive]`",
-    "which is a promise about that crate's version",
-    "could not be read",
-];
+const RULE_FRAGMENTS: [&str; 2] = ["without a Synra error boundary", "could not be read"];
 
 #[test]
-fn no_crate_that_makes_a_promise_breaks_it() {
+fn domain_interfaces_keep_classified_errors_without_compatibility_requirements() {
     let output = Command::new(env!("CARGO_BIN_EXE_api-guard"))
         .arg(workspace_root())
         .output()
-        .expect("api-guard runs");
+        .expect("guard");
     assert!(
         output.status.success(),
-        "guard failed:\n{}\n{}",
+        "{}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -43,32 +38,42 @@ fn no_crate_that_makes_a_promise_breaks_it() {
 }
 
 #[test]
-fn the_crates_the_promise_covers_are_the_ones_the_tool_reads() {
-    let root = workspace_root();
-    let document = std::fs::read_to_string(root.join("STABILITY.md")).expect("STABILITY.md");
-    let mut documented: Vec<&str> = document
-        .lines()
-        .filter(|line| line.starts_with("| **Stable**") || line.starts_with("| **Semi-stable**"))
-        .flat_map(|line| line.split('`').skip(1).step_by(2))
-        .filter(|name| name.starts_with("synra-"))
-        .collect();
-    let mut checked: Vec<&str> = api_guard::CRATES
-        .iter()
-        .filter(|(_, tier)| tier.makes_a_promise())
-        .map(|(name, _)| *name)
-        .collect();
-    documented.sort_unstable();
-    checked.sort_unstable();
-    assert_eq!(
-        documented, checked,
-        "the document and guard cover different crates"
-    );
-    for name in documented {
-        assert!(
-            root.join("crates").join(name).join("src").is_dir(),
-            "missing source for {name}"
-        );
+fn the_document_and_guard_classify_the_same_libraries_and_boundaries() {
+    let document = std::fs::read_to_string(workspace_root().join("STABILITY.md")).expect("policy");
+    assert!(document.contains("**Unpublished**"));
+    for (label, boundary) in [
+        ("Domain", api_guard::Boundary::Domain),
+        ("Adapter", api_guard::Boundary::Adapter),
+    ] {
+        let mut documented: Vec<_> = document
+            .lines()
+            .filter(|line| line.starts_with(&format!("| {label} |")))
+            .flat_map(|line| line.split('`').skip(1).step_by(2))
+            .filter(|name| name.starts_with("synra-"))
+            .collect();
+        let mut classified: Vec<_> = api_guard::CRATES
+            .iter()
+            .filter(|(_, scope)| *scope == boundary)
+            .map(|(name, _)| *name)
+            .collect();
+        assert!(!documented.is_empty(), "missing {label} policy");
+        documented.sort_unstable();
+        classified.sort_unstable();
+        assert_eq!(documented, classified);
     }
+}
+
+#[test]
+fn an_unreadable_workspace_is_a_failed_check() {
+    let missing = workspace_root()
+        .join("target")
+        .join(format!("api-guard-missing-{}", std::process::id()));
+    assert!(!missing.exists());
+    let output = Command::new(env!("CARGO_BIN_EXE_api-guard"))
+        .arg(missing)
+        .output()
+        .expect("guard");
+    assert!(!output.status.success());
 }
 
 #[test]

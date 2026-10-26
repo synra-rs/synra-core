@@ -10,7 +10,7 @@ authors.workspace = true
 keywords = ["synra", "protocol", "lan"]
 categories = ["network-programming"]
 
-# ★ 稳定层：遵守 SemVer，破坏性变更需要 major 版本、ADR 与迁移说明（见 STABILITY.md）。
+# 未发布：接口和数据格式可直接重构，并同步调用方与验证；边界规则见 STABILITY.md。
 # ★ 无 IO 依赖是硬约束：tokio / rusqlite / wasmtime / tauri 一律不得出现。
 [dependencies]
 serde.workspace = true
