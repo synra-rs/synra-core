@@ -438,8 +438,10 @@ mod tests {
         // ★ The property that matters is not "a file appeared": it is that `extract_tgz` — the code the registry install
         // runs — finds the three files at the depths it expects.
         let root = scratch("ok");
-        std::fs::write(root.join("manifest.json"), manifest("1.2.3", &["log:*"])).expect("a manifest");
-        std::fs::write(root.join("plugin.wasm"), b"\0asm\x01\0\0\0").expect("an artifact");
+        std::fs::write(root.join("manifest.json"), manifest("1.2.3", &["log:*"]))
+            .expect("a manifest");
+        std::fs::write(root.join("plugin.wasm"), crate::test_component::component())
+            .expect("an artifact");
         sign(&root);
 
         let outcome = pack_plugin(&crate::args::PackArgs {
@@ -476,8 +478,10 @@ mod tests {
         // ★ A registry's digest is of the bytes it received. A pack that embedded the clock would make the same version
         // different on every machine, and every republish a new digest for unchanged content.
         let root = scratch("stable");
-        std::fs::write(root.join("manifest.json"), manifest("1.2.3", &["log:*"])).expect("a manifest");
-        std::fs::write(root.join("plugin.wasm"), b"\0asm\x01\0\0\0").expect("an artifact");
+        std::fs::write(root.join("manifest.json"), manifest("1.2.3", &["log:*"]))
+            .expect("a manifest");
+        std::fs::write(root.join("plugin.wasm"), crate::test_component::component())
+            .expect("an artifact");
 
         let pack = |name: &str| {
             let target = root.join(name);
@@ -524,7 +528,8 @@ mod tests {
     fn the_archive_is_named_after_the_id_and_version() {
         let root = scratch("name");
         std::fs::write(root.join("manifest.json"), manifest("2.0.0", &[])).expect("a manifest");
-        std::fs::write(root.join("plugin.wasm"), b"\0asm\x01\0\0\0").expect("an artifact");
+        std::fs::write(root.join("plugin.wasm"), crate::test_component::component())
+            .expect("an artifact");
 
         let outcome = pack_plugin(&crate::args::PackArgs {
             dir: root.clone(),
@@ -570,8 +575,10 @@ mod tests {
     #[test]
     fn a_signature_that_covers_the_package_is_kept() {
         let root = scratch("signed");
-        std::fs::write(root.join("manifest.json"), manifest("1.2.3", &["log:*"])).expect("a manifest");
-        std::fs::write(root.join("plugin.wasm"), b"\0asm\x01\0\0\0").expect("an artifact");
+        std::fs::write(root.join("manifest.json"), manifest("1.2.3", &["log:*"]))
+            .expect("a manifest");
+        std::fs::write(root.join("plugin.wasm"), crate::test_component::component())
+            .expect("an artifact");
         sign(&root);
 
         let outcome = pack_plugin(&crate::args::PackArgs {
@@ -594,19 +601,27 @@ mod tests {
         // ★ The whole point of checking at the publish boundary: the author signed one build, then rebuilt — the archive
         // must not carry a signature that says "trust this" about bytes it does not cover.
         let root = scratch("tampered");
-        std::fs::write(root.join("manifest.json"), manifest("1.2.3", &["log:*"])).expect("a manifest");
-        std::fs::write(root.join("plugin.wasm"), b"\0asm\x01\0\0\0").expect("an artifact");
+        std::fs::write(root.join("manifest.json"), manifest("1.2.3", &["log:*"]))
+            .expect("a manifest");
+        std::fs::write(root.join("plugin.wasm"), crate::test_component::component())
+            .expect("an artifact");
         sign(&root);
-        std::fs::write(root.join("plugin.wasm"), b"\0asm\x01\0\0\x01").expect("a changed artifact");
+        std::fs::write(
+            root.join("plugin.wasm"),
+            [crate::test_component::component(), vec![0, 2, 1, b'x']].concat(),
+        )
+        .expect("a changed artifact");
 
-        let crate::run::Outcome::Reported { lines, failure, .. } = pack_plugin(&crate::args::PackArgs {
-            dir: root.clone(),
-            out: None,
-            index: None,
-            registry: None,
-            dry_run: false,
-        })
-        .expect("a report") else {
+        let crate::run::Outcome::Reported { lines, failure, .. } =
+            pack_plugin(&crate::args::PackArgs {
+                dir: root.clone(),
+                out: None,
+                index: None,
+                registry: None,
+                dry_run: false,
+            })
+            .expect("a report")
+        else {
             panic!("expected a report");
         };
 
@@ -618,8 +633,10 @@ mod tests {
     #[test]
     fn a_changed_manifest_after_signing_is_refused() {
         let root = scratch("re-manifest");
-        std::fs::write(root.join("manifest.json"), manifest("1.2.3", &["log:*"])).expect("a manifest");
-        std::fs::write(root.join("plugin.wasm"), b"\0asm\x01\0\0\0").expect("an artifact");
+        std::fs::write(root.join("manifest.json"), manifest("1.2.3", &["log:*"]))
+            .expect("a manifest");
+        std::fs::write(root.join("plugin.wasm"), crate::test_component::component())
+            .expect("an artifact");
         sign(&root);
         // Same files, one more permission: the manifest digest the signature covers no longer names this manifest.
         std::fs::write(root.join("manifest.json"), manifest("1.2.3", &["log:*", "device:send:*"]))
@@ -653,8 +670,10 @@ mod tests {
         // ★ Nothing is uploaded. The flag answers "is this a registry the installing side could read?" and turns the
         // answer into the command an author would run, so the address is stated once instead of retyped.
         let root = scratch("registry");
-        std::fs::write(root.join("manifest.json"), manifest("1.2.3", &["log:*"])).expect("a manifest");
-        std::fs::write(root.join("plugin.wasm"), b"\0asm\x01\0\0\0").expect("an artifact");
+        std::fs::write(root.join("manifest.json"), manifest("1.2.3", &["log:*"]))
+            .expect("a manifest");
+        std::fs::write(root.join("plugin.wasm"), crate::test_component::component())
+            .expect("an artifact");
 
         let outcome = pack_plugin(&crate::args::PackArgs {
             dir: root.clone(),
@@ -678,8 +697,10 @@ mod tests {
     #[test]
     fn a_registry_that_could_not_be_read_is_refused() {
         let root = scratch("bad-registry");
-        std::fs::write(root.join("manifest.json"), manifest("1.2.3", &["log:*"])).expect("a manifest");
-        std::fs::write(root.join("plugin.wasm"), b"\0asm\x01\0\0\0").expect("an artifact");
+        std::fs::write(root.join("manifest.json"), manifest("1.2.3", &["log:*"]))
+            .expect("a manifest");
+        std::fs::write(root.join("plugin.wasm"), crate::test_component::component())
+            .expect("an artifact");
 
         for (url, acceptable) in [
             ("https://r.example", true),
@@ -709,8 +730,10 @@ mod tests {
         // ★ The author's half of static publishing: one document per package, at the path a `static:` registry reads, with
         // the tarball URL and the key that signed it. A hand-edited index is a second description of the same pack.
         let root = scratch("index");
-        std::fs::write(root.join("manifest.json"), manifest("1.2.3", &["log:*"])).expect("a manifest");
-        std::fs::write(root.join("plugin.wasm"), b"\0asm\x01\0\0\0").expect("an artifact");
+        std::fs::write(root.join("manifest.json"), manifest("1.2.3", &["log:*"]))
+            .expect("a manifest");
+        std::fs::write(root.join("plugin.wasm"), crate::test_component::component())
+            .expect("an artifact");
         sign(&root);
 
         let outcome = pack_plugin(&crate::args::PackArgs {
@@ -747,8 +770,10 @@ mod tests {
     #[test]
     fn an_unsigned_package_writes_an_index_with_no_publisher() {
         let root = scratch("index-unsigned");
-        std::fs::write(root.join("manifest.json"), manifest("1.2.3", &["log:*"])).expect("a manifest");
-        std::fs::write(root.join("plugin.wasm"), b"\0asm\x01\0\0\0").expect("an artifact");
+        std::fs::write(root.join("manifest.json"), manifest("1.2.3", &["log:*"]))
+            .expect("a manifest");
+        std::fs::write(root.join("plugin.wasm"), crate::test_component::component())
+            .expect("an artifact");
 
         let outcome = pack_plugin(&crate::args::PackArgs {
             dir: root.clone(),
@@ -774,8 +799,10 @@ mod tests {
         // version still has to find it.
         let root = scratch("index-history");
         let pack = |version: &str, out: &str| {
-            std::fs::write(root.join("manifest.json"), manifest(version, &["log:*"])).expect("a manifest");
-            std::fs::write(root.join("plugin.wasm"), b"\0asm\x01\0\0\0").expect("an artifact");
+            std::fs::write(root.join("manifest.json"), manifest(version, &["log:*"]))
+                .expect("a manifest");
+            std::fs::write(root.join("plugin.wasm"), crate::test_component::component())
+                .expect("an artifact");
             sign(&root);
             let outcome = pack_plugin(&crate::args::PackArgs {
                 dir: root.clone(),
@@ -854,8 +881,10 @@ mod tests {
         // ★ The author does not know the bucket's public URL at pack time; the client resolves the name against the
         // index's own URL, so publishing is "upload these two files".
         let root = scratch("index-relative");
-        std::fs::write(root.join("manifest.json"), manifest("1.2.3", &["log:*"])).expect("a manifest");
-        std::fs::write(root.join("plugin.wasm"), b"\0asm\x01\0\0\0").expect("an artifact");
+        std::fs::write(root.join("manifest.json"), manifest("1.2.3", &["log:*"]))
+            .expect("a manifest");
+        std::fs::write(root.join("plugin.wasm"), crate::test_component::component())
+            .expect("an artifact");
 
         let outcome = pack_plugin(&crate::args::PackArgs {
             dir: root.clone(),

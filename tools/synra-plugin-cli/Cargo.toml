@@ -21,6 +21,7 @@ required-features = ["rust-guest-tests"]
 
 [dependencies]
 wit-component = "=0.247.0"
+wit-parser = "=0.247.0"
 tempfile = "3"
 
 synra-protocol = { path = "../../crates/synra-protocol" }
@@ -54,6 +55,8 @@ tar = "0.4"
 
 [dev-dependencies]
 rstest.workspace = true
+wasmparser = { version = "=0.247.0", default-features = false, features = ["component-model"] }
+wit-component = { version = "=0.247.0", features = ["dummy-module"] }
 toml_edit = "=0.25.17"
 
 [lints]

@@ -486,7 +486,11 @@ mod tests {
             std::fs::write(&full, contents).expect("writes");
         }
         // The Wasm artifact `verify` looks for, because a build has not run.
-        std::fs::write(dir.path().join("plugin.wasm"), vec![0u8; 64]).expect("writes");
+        std::fs::write(
+            dir.path().join("plugin.wasm"),
+            crate::test_component::component(),
+        )
+        .expect("writes");
 
         let report = verify_plugin(&VerifyArgs {
             dir: dir.path().to_path_buf(),
@@ -534,7 +538,11 @@ mod tests {
             }
             std::fs::write(&full, contents).expect("writes");
         }
-        std::fs::write(dir.path().join("plugin.wasm"), vec![0u8; 64]).expect("writes");
+        std::fs::write(
+            dir.path().join("plugin.wasm"),
+            crate::test_component::component(),
+        )
+        .expect("writes");
 
         let report = verify_plugin(&VerifyArgs {
             dir: dir.path().to_path_buf(),

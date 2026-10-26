@@ -168,7 +168,8 @@ mod tests {
     /// Packs a package the way an author would, and returns the index path.
     fn packed(root: &Path, version: &str) -> std::path::PathBuf {
         std::fs::write(root.join("manifest.json"), manifest(version)).expect("a manifest");
-        std::fs::write(root.join("plugin.wasm"), b"\0asm\x01\0\0\0").expect("an artifact");
+        std::fs::write(root.join("plugin.wasm"), crate::test_component::component())
+            .expect("an artifact");
         let outcome = crate::pack::pack_plugin(&crate::args::PackArgs {
             dir: root.to_path_buf(),
             out: None,

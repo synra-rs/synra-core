@@ -48,6 +48,7 @@ fn the_rust_sdk_guest_loads_through_core_and_its_actual_calls_require_grants() {
         .expect("set SYNRA_RUST_GUEST to the freshly built wasm32-unknown-unknown SDK core module");
     let module = std::fs::read(path).unwrap();
     let bytes = synra_plugin_cli::build::component::encode(&module).unwrap();
+    verify_actual_guest(&bytes);
     let mut plugins = set();
     let denied = plugins.load(spec(bytes.clone(), false));
     assert!(
@@ -156,6 +157,10 @@ fn a_headless_scaffold_builds_a_component_and_a_failed_rebuild_preserves_it() {
     let (status, log) = build();
     assert!(status.success(), "{log}");
     let bytes = std::fs::read(dir.path().join("plugin.wasm")).unwrap();
+    let (status, log) = run(Command::new(env!("CARGO_BIN_EXE_synra-plugin"))
+        .args(["verify", "--dir"])
+        .arg(dir.path()));
+    assert!(status.success(), "{log}");
     assert_eq!(bytes.get(..8), Some(b"\0asm\x0d\0\x01\0".as_slice()));
     let mut plugins = set();
     let spec = spec(bytes.clone(), false);
@@ -205,4 +210,37 @@ fn a_headless_scaffold_builds_a_component_and_a_failed_rebuild_preserves_it() {
         std::fs::read(dir.path().join("plugin.wasm")).unwrap(),
         bytes
     );
+}
+
+fn verify_actual_guest(bytes: &[u8]) {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("actual.wasm"), bytes).unwrap();
+    for granted in [false, true] {
+        let capabilities = if granted {
+            serde_json::json!([{ "cap": "platform:open-url" }])
+        } else {
+            serde_json::json!([])
+        };
+        std::fs::write(
+            root.path().join("manifest.json"),
+            serde_json::json!({
+                "id": "@acme/sdk", "version": "1.0.0", "title": "SDK",
+                "publisher": { "id": "acme" }, "sdk": { "min": "0.1.0" },
+                "wit": synra_plugin_host::host_world(), "capabilities": capabilities,
+                "runtime": { "headless": { "artifact": "actual.wasm", "stateful": false } }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let (status, report) = run(Command::new(env!("CARGO_BIN_EXE_synra-plugin"))
+            .args(["verify", "--json", "--dir"])
+            .arg(root.path()));
+        assert_eq!(status.success(), granted, "{report}");
+        if !granted {
+            assert!(
+                report.contains("synra:plugin/host#platform-open-url"),
+                "{report}"
+            );
+        }
+    }
 }

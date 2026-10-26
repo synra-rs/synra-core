@@ -56,6 +56,10 @@ pub mod template;
 pub mod upload;
 pub mod verify;
 
+#[cfg(test)]
+#[path = "../tests/support/component.rs"]
+pub(crate) mod test_component;
+
 pub use args::{
     BuildArgs, Cli, Command, NewArgs, PackArgs, PublishArgs, SignArgs, UploadArgs, VerifyArgs,
 };
@@ -68,6 +72,6 @@ pub use sign::{SignError, SignedContent, SigningKeyFile};
 pub use template::{Scaffold, ScaffoldError, ScaffoldFile, TemplateKind};
 pub use upload::{UploadStep, upload_plugin};
 pub use verify::{
-    Finding, MAX_UI_BYTES, MAX_UI_FILES, MAX_WASM_BYTES, PROVIDED_IMPORTS, REFUSED_IMPORTS, Target,
-    Verdict, VerifyReport, verify,
+    ComponentInfo, Finding, MAX_UI_BYTES, MAX_UI_FILES, MAX_WASM_BYTES, Target, Verdict,
+    VerifyReport, verify,
 };

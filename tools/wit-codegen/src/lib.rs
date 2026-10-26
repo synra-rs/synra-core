@@ -1,7 +1,7 @@
-//! Derives capability metadata and standalone SDK resources from the primary WIT contract.
+//! Derives capability metadata and standalone author resources from the primary WIT contract.
 //!
 //! The compiler binding generators own ABI code. This tool owns the host table and trait, readable
-//! report, SDK import constants and bundled WIT resource. [`generate::synchronize`] prepares the
+//! report, SDK import constants and bundled SDK/CLI WIT resources. [`generate::synchronize`] prepares the
 //! complete plan before writing, or checks every artifact without repairing stale files.
 //! The contract parser refuses host functions without an explicit capability or ungated annotation.
 

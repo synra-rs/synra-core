@@ -16,7 +16,7 @@ fn checking_each_stale_artifact_fails_without_repairing_it() {
     let dir = tempfile::tempdir().unwrap();
     let source = source(dir.path());
     let outputs = synchronize(&source, false).unwrap();
-    assert_eq!(outputs.len(), 5);
+    assert_eq!(outputs.len(), 6);
     synchronize(&source, true).unwrap();
     for output in outputs {
         let previous = std::fs::read(&output).unwrap();
@@ -31,7 +31,7 @@ fn checking_each_stale_artifact_fails_without_repairing_it() {
 }
 
 #[test]
-fn missing_sdk_resources_fail_even_when_the_host_table_is_current() {
+fn missing_author_resources_fail_even_when_the_host_table_is_current() {
     let dir = tempfile::tempdir().unwrap();
     let source = source(dir.path());
     synchronize(&source, false).unwrap();
@@ -43,10 +43,14 @@ fn missing_sdk_resources_fail_even_when_the_host_table_is_current() {
         .join("crates/synra-plugin-host/src/generated/host_trait.rs");
     std::fs::remove_file(&sdk).unwrap();
     std::fs::remove_file(&host).unwrap();
+    let cli = dir
+        .path()
+        .join("tools/synra-plugin-cli/wit/synra-plugin.wit");
+    std::fs::remove_file(&cli).unwrap();
     let GenerateError::Drift { paths } = synchronize(&source, true).unwrap_err() else {
         panic!("expected every missing artifact")
     };
-    assert_eq!(paths.len(), 2);
+    assert_eq!(paths.len(), 3);
     assert!(
         paths
             .iter()
@@ -54,6 +58,7 @@ fn missing_sdk_resources_fail_even_when_the_host_table_is_current() {
     );
     assert!(!sdk.exists());
     assert!(!host.exists());
+    assert!(!cli.exists());
 }
 
 #[test]
@@ -86,19 +91,21 @@ fn the_sdk_bundle_preserves_the_primary_contract_and_normalizes_line_endings() {
         &source.replace('\n', "\r\n"),
     )
     .unwrap();
-    let sdk = unix
-        .iter()
-        .find(|artifact| {
-            artifact
-                .path
-                .ends_with("synra-plugin-sdk/wit/synra-plugin.wit")
-        })
-        .unwrap();
-    assert!(
-        sdk.contents
-            .ends_with(&format!("{}\n", SOURCE.replace("\r\n", "\n").trim_end()))
-    );
-    assert!(!sdk.contents.contains('\r'));
+    for destination in [
+        "crates/synra-plugin-sdk/wit/synra-plugin.wit",
+        "tools/synra-plugin-cli/wit/synra-plugin.wit",
+    ] {
+        let bundle = unix
+            .iter()
+            .find(|artifact| artifact.path.ends_with(destination))
+            .unwrap();
+        assert!(
+            bundle
+                .contents
+                .ends_with(&format!("{}\n", SOURCE.replace("\r\n", "\n").trim_end()))
+        );
+        assert!(!bundle.contents.contains('\r'));
+    }
     for (left, right) in unix.iter().zip(&windows) {
         assert_eq!(left.contents, right.contents);
     }

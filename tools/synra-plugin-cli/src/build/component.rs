@@ -24,32 +24,7 @@ pub fn encode(module: &[u8]) -> Result<Vec<u8>, String> {
     if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_WASM_BYTES {
         return Err("the encoded component exceeds the component size limit".to_owned());
     }
-    let wit_component::DecodedWasm::Component(resolve, world) = wit_component::decode(&bytes)
-        .map_err(|error| format!("the encoded component cannot be inspected: {error:#}"))?
-    else {
-        return Err("the output is not a component".to_owned());
-    };
-    let world = resolve
-        .worlds
-        .get(world)
-        .ok_or("the component has no decoded world")?;
-    let exports: Vec<String> = world
-        .exports
-        .keys()
-        .map(|key| resolve.name_world_key(key))
-        .collect();
-    for interface in synra_plugin_host::host_surface::EXPORTED_INTERFACES {
-        let wanted = format!(
-            "{}/{interface}@{}",
-            synra_plugin_host::PACKAGE,
-            synra_plugin_host::PACKAGE_VERSION
-        );
-        if !exports.contains(&wanted) {
-            return Err(format!(
-                "the component does not export {wanted}; implement the SDK guest traits and call export!"
-            ));
-        }
-    }
+    crate::verify::component::inspect(&bytes)?;
     Ok(bytes)
 }
 
@@ -164,7 +139,7 @@ mod tests {
     fn invalid_bytes_and_modules_without_plugin_exports_cannot_be_published() {
         assert!(encode(b"not wasm").is_err());
         let error = encode(b"\0asm\x01\0\0\0").unwrap_err();
-        assert!(error.contains("does not export"), "{error}");
+        assert!(error.contains("component"), "{error}");
     }
 
     #[test]
