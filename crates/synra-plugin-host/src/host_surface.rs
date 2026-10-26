@@ -111,7 +111,8 @@ pub fn provides(import_name: &str) -> bool {
 /// Whether a granted set makes a function available for import.
 ///
 /// Network availability requires a grant in the fetch family. Each call and redirect
-/// must separately authorize its concrete destination and HTTP method.
+/// must separately authorize its concrete destination and HTTP method. Logging similarly
+/// requires a supported granted level, and checks the actual level on every call.
 ///
 /// # `false` for a function the host does not provide
 ///
@@ -123,9 +124,8 @@ pub fn permits(import_name: &str, grants: &CapabilitySet) -> bool {
     match gate(import_name) {
         None => false,
         Some(HostGate::Ungated) => true,
-        // `CapabilitySet::grants` rather than a string comparison, because the declared capability is a *pattern*:
-        // `log:*` is one a host function needs, and a plugin granted the literal `log:*` covers every function that
-        // needs it. A comparison would make the two spellings different capabilities.
+        // Dynamic families need at least one usable concrete operation. The call checks its arguments again.
+        Some(HostGate::Capability("log:*")) => crate::host_calls::log_scope::available(grants),
         Some(HostGate::Capability("network:fetch:*")) => {
             crate::host_calls::network_scope::available(grants)
         }

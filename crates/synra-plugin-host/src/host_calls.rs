@@ -30,6 +30,7 @@ use synra_protocol::ids::PluginId;
 
 use crate::host_surface;
 
+pub(crate) mod log_scope;
 pub mod network_scope;
 use crate::quota::{Budget, Health, RateKind};
 
@@ -456,15 +457,18 @@ impl<'a> HostCalls<'a> {
         };
 
         if let Some(capability) = gate.capability() {
-            // Network calls authorize the concrete URL and method, not the family's import label.
-            // Other gates retain the capability table's matching rules.
-            let authorization = if import_name == "synra:plugin/host#network-fetch" {
-                network_scope::authorize(self.grants, argument)
-            } else if Capability::parse(capability).is_ok_and(|needed| self.grants.grants(&needed))
-            {
-                Ok(())
-            } else {
-                Err(CallError::denied(capability, self.grants))
+            // Scoped calls authorize the concrete operation, not the family's import label.
+            let authorization = match import_name {
+                "synra:plugin/host#network-fetch" => {
+                    network_scope::authorize(self.grants, argument)
+                }
+                "synra:plugin/host#log" => log_scope::authorize(self.grants, argument),
+                _ if Capability::parse(capability)
+                    .is_ok_and(|needed| self.grants.grants(&needed)) =>
+                {
+                    Ok(())
+                }
+                _ => Err(CallError::denied(capability, self.grants)),
             };
             if let Err(error) = authorization {
                 let outcome = if error.code == CallError::CAPABILITY_DENIED {

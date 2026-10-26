@@ -83,12 +83,10 @@ fn a_real_component_is_read_from_the_manifest_path_and_its_actual_imports_are_ch
     assert!(!report.to_string().contains("warn"), "{report}");
     let scoped: Vec<&str> = capabilities
         .iter()
-        .map(|cap| {
-            if *cap == "network:fetch:*" {
-                "network:fetch:api.github.com:GET"
-            } else {
-                *cap
-            }
+        .map(|cap| match *cap {
+            "network:fetch:*" => "network:fetch:api.github.com:GET",
+            "log:*" => "log:info",
+            cap => cap,
         })
         .collect();
     manifest(root.path(), "dist/custom.wasm", &scoped);
