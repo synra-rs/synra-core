@@ -108,7 +108,10 @@ pub fn emit_text(contract: &Contract) -> String {
         out.push_str("  (none)\n");
     }
     for function in ungated {
-        out.push_str(&format!("  {}: reads a fact about the environment\n", function.name));
+        out.push_str(&format!(
+            "  {}: reads a fact about the environment\n",
+            function.name
+        ));
     }
 
     out.push_str("\ngated:\n");
@@ -133,10 +136,8 @@ pub fn emit_text(contract: &Contract) -> String {
 ///
 /// # Why relative to the contract and not to the working directory
 ///
-/// `cargo run` sets the working directory to the package's own directory, so a path written as though it were relative
-/// to the repository root landed in `tools/wit-codegen/crates/…` — a directory nobody looks in, created silently. The
-/// contract's own location is the one fact that does not move: `wit/synra-plugin.wit` sits in `wit/`, and everything
-/// derived from it sits beside or above that.
+/// Paths are relative to the contract's directory, independent of where the tool was launched.
+/// This keeps a contract in a temporary workspace from modifying a different checkout.
 ///
 /// Returned rather than assumed, so the CI check and the writer cannot disagree about where the files go.
 #[must_use]
@@ -191,7 +192,9 @@ mod tests {
 
         for name in &ungated {
             assert!(
-                name.starts_with("env-") || *name == "platform-capabilities" || *name == "plugin-id",
+                name.starts_with("env-")
+                    || *name == "platform-capabilities"
+                    || *name == "plugin-id",
                 "{name} is ungated and is not a read-only fact"
             );
         }
@@ -216,7 +219,10 @@ mod tests {
             "storage:secure:read",
             "storage:secure:write",
         ] {
-            assert!(capabilities.iter().any(|known| known == capability), "{capability} is missing");
+            assert!(
+                capabilities.iter().any(|known| known == capability),
+                "{capability} is missing"
+            );
         }
     }
 
@@ -230,7 +236,10 @@ mod tests {
             .map(|interface| interface.name.as_str())
             .collect();
         for expected in ["lifecycle", "share", "actions"] {
-            assert!(exports.contains(&expected), "{expected} is not exported: {exports:?}");
+            assert!(
+                exports.contains(&expected),
+                "{expected} is not exported: {exports:?}"
+            );
         }
     }
 
@@ -243,7 +252,11 @@ mod tests {
         sorted.sort();
         sorted.dedup();
         assert_eq!(capabilities, sorted, "unsorted or duplicated");
-        assert!(capabilities.len() > 15, "only {} capabilities", capabilities.len());
+        assert!(
+            capabilities.len() > 15,
+            "only {} capabilities",
+            capabilities.len()
+        );
     }
 
     // ── The Rust output ───────────────────────────────────────────────────────────────────────────
@@ -315,7 +328,11 @@ mod tests {
         // Every ungated function is named under `ungated`, which is the list a reviewer reads first.
         for function in contract().ungated() {
             let ungated_section = text.split("\ngated:").next().unwrap_or_default();
-            assert!(ungated_section.contains(&function.name), "{} is not listed", function.name);
+            assert!(
+                ungated_section.contains(&function.name),
+                "{} is not listed",
+                function.name
+            );
         }
     }
 

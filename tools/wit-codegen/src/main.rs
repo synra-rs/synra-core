@@ -1,115 +1,36 @@
-//! `wit-codegen` — derives the capability table from the WIT contract.
-//!
-//! Parse, render, write. Everything decidable lives in the library, which is what keeps this file short.
+//! Generates or checks all files derived from the workspace WIT contract.
 
+use std::path::PathBuf;
 use std::process::ExitCode;
-use wit_codegen::{
-    Contract, binding_paths, emit_host_trait, emit_rust, emit_sdk_bindings, emit_text, emitted_paths,
-};
 
 fn main() -> ExitCode {
-    let contract_path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "wit/synra-plugin.wit".to_owned());
-
-    let text = match std::fs::read_to_string(&contract_path) {
-        Ok(text) => text,
-        Err(error) => {
-            eprintln!("wit-codegen: {contract_path}: {error}");
+    let mut check = false;
+    let mut path = None;
+    for argument in std::env::args().skip(1) {
+        if argument == "--check" {
+            check = true;
+        } else if argument.starts_with('-') || path.is_some() {
+            eprintln!("usage: wit-codegen [--check] [contract.wit]");
             return ExitCode::FAILURE;
+        } else {
+            path = Some(PathBuf::from(argument));
         }
-    };
-
-    let contract = match Contract::parse(&text) {
-        Ok(contract) => contract,
-        Err(error) => {
-            // The parser refuses a host function with no gate, so a failure here is a contract that would have shipped
-            // an ungated host call — the one outcome this tool exists to make impossible.
-            eprintln!("wit-codegen: {contract_path}: {error}");
-            return ExitCode::FAILURE;
+    }
+    let path = path.unwrap_or_else(|| PathBuf::from("wit/synra-plugin.wit"));
+    match wit_codegen::generate::synchronize(&path, check) {
+        Ok(paths) => {
+            for path in paths {
+                println!(
+                    "{} {}",
+                    if check { "checked" } else { "generated" },
+                    path.display()
+                );
+            }
+            ExitCode::SUCCESS
         }
-    };
-
-    // Resolved against the contract's directory rather than the working directory: `cargo run` sets the working
-    // directory to the package's own, so a path relative to the repository root would land in a directory nobody
-    // looks in — silently.
-    let contract_dir = std::path::Path::new(&contract_path)
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("."));
-    let [rust_relative, text_relative] = emitted_paths();
-    let rust_path = contract_dir.join(rust_relative).display().to_string();
-    let text_path = contract_dir.join(text_relative).display().to_string();
-    let [trait_relative, _report_relative, imports_relative] = binding_paths();
-    let trait_path = contract_dir.join(trait_relative).display().to_string();
-    // ★ No path for the SDK's module: `wit-bindgen` generates it at compile time from the same contract, so this tool
-    // has nothing to write there. The file it used to write was a stub whose bodies were `todo!()`, and a generator
-    // that overwrites a real module with stubs is worse than one that does not write it at all.
-    let imports_path = contract_dir.join(imports_relative).display().to_string();
-    let rust = match emit_rust(&contract) {
-        Ok(rust) => rust,
         Err(error) => {
             eprintln!("wit-codegen: {error}");
-            return ExitCode::FAILURE;
+            ExitCode::FAILURE
         }
-    };
-
-    if std::env::args().any(|arg| arg == "--check") {
-        // The CI gate: a table that is not what the contract says is a build failure rather than a diff nobody reads.
-        let current = std::fs::read_to_string(&rust_path).unwrap_or_default();
-        if current != rust {
-            eprintln!("wit-codegen: {rust_path} is out of date; run `wit-codegen`");
-            return ExitCode::FAILURE;
-        }
-        println!("{rust_path} is up to date");
-        return ExitCode::SUCCESS;
     }
-
-    // The trait and the SDK bindings, from the same contract. A type the generator does not know is a refusal here
-    // rather than a `String` in a signature that would compile and be wrong at the component boundary.
-    let generated = match (
-        emit_host_trait(&contract),
-        emit_sdk_bindings(&contract),
-    ) {
-        (Ok(host), Ok(sdk)) => {
-            // The SDK module is one file and the import-name constants are the same module's, so the two are written
-            // from one rendering: a second file that listed the names would be a second list to keep in step, and the
-            // SDK already carries each name beside its function.
-            let imports = sdk
-                .lines()
-                .filter(|line| line.contains("_IMPORT: &str ="))
-                .map(|line| { let trimmed = line.trim(); let name = trimmed.split(':').next().unwrap_or("IMPORT"); format!("/// The import name for `{name}`.\n{trimmed}") })
-                .collect::<Vec<String>>()
-                .join("\n");
-            vec![
-                (trait_path, host),
-                (imports_path, format!("// Generated by `wit-codegen` from `wit/synra-plugin.wit`. Do not edit.\n//\n// The import names a compiled component carries, one per host function. Generated separately from the module so a\n// build script can read them without compiling it.\n\n{imports}\n")),
-            ]
-        }
-        (Err(error), _) | (_, Err(error)) => {
-            eprintln!("wit-codegen: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
-
-    for (path, body) in std::iter::once((rust_path, rust))
-        .chain(std::iter::once((text_path, emit_text(&contract))))
-        .chain(generated)
-    {
-        if let Some(parent) = std::path::Path::new(&path).parent()
-            && let Err(error) = std::fs::create_dir_all(parent)
-        {
-            eprintln!("wit-codegen: {}: {error}", parent.display());
-            return ExitCode::FAILURE;
-        }
-        if let Err(error) = std::fs::write(&path, body) {
-            eprintln!("wit-codegen: {path}: {error}");
-            return ExitCode::FAILURE;
-        }
-        println!("wrote {path}");
-    }
-
-    for line in contract.summary_lines() {
-        println!("{line}");
-    }
-    ExitCode::SUCCESS
 }

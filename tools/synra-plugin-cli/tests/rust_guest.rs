@@ -14,6 +14,9 @@ use synra_plugin_host::engine::WasmtimeBackend;
 use synra_plugin_host::{Backend, BackendKind, CallBudget, CallOutcome, InstancePolicy, Work};
 use synra_protocol::PluginId;
 
+#[path = "rust_guest/isolated_sdk.rs"]
+mod isolated_sdk;
+
 fn set() -> PluginSet {
     PluginSet::new(
         Backend::new(Arc::new(
@@ -122,7 +125,7 @@ fn a_headless_scaffold_builds_a_component_and_a_failed_rebuild_preserves_it() {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, file.contents).unwrap();
     }
-    let sdk = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../crates/synra-plugin-sdk");
+    let sdk = isolated_sdk::copy(dir.path());
     let cargo = dir.path().join("Cargo.toml");
     let source = std::fs::read_to_string(&cargo)
         .unwrap()

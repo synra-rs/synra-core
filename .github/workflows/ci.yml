@@ -63,6 +63,10 @@ jobs:
             synra-rust-core -> target
             synra-rust-app/src-tauri -> target
 
+      - name: Check generated WIT artifacts
+        working-directory: synra-rust-core
+        run: cargo run --locked -q -p wit-codegen -- --check
+
       - name: Clippy
         working-directory: synra-rust-core
         run: cargo clippy --locked --workspace --all-targets -- -D warnings

@@ -54,6 +54,7 @@ tar = "0.4"
 
 [dev-dependencies]
 rstest.workspace = true
+toml_edit = "=0.25.17"
 
 [lints]
 workspace = true
