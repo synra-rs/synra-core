@@ -74,6 +74,9 @@ mod wasmtime_backend;
 #[cfg(all(test, feature = "wasm-runtime"))]
 mod test_component;
 
+#[cfg(all(test, feature = "wasm-runtime"))]
+mod scoped_fetch_tests;
+
 #[cfg(all(test, feature = "rust-guest-tests"))]
 mod rust_guest_tests;
 

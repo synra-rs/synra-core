@@ -625,7 +625,9 @@ fn an_artifact_importing_a_function_its_capabilities_do_cover_loads() {
     let mut set = PluginSet::new(Backend::new(std::sync::Arc::new(backend)), host());
 
     let mut grants = CapabilitySet::new();
-    grants.insert_str("network:fetch:*").expect("a capability");
+    grants
+        .insert_str("network:fetch:api.github.com")
+        .expect("a scoped capability");
 
     set.load(PluginSpec {
         id: id("@synra/bbb-declared-network"),

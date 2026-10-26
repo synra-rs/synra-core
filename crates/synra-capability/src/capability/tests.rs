@@ -381,3 +381,34 @@ fn the_legacy_clipboard_spelling_is_recognised_and_corrected() {
     assert_eq!(crate::canonical_spelling("platform:open-url"), None);
     assert_eq!(crate::canonical_spelling("log:*"), None);
 }
+
+#[test]
+fn scoped_wildcard_qualifiers_keep_their_position() {
+    for (pattern, allowed, denied) in [
+        (
+            "network:fetch:api.github.com:*",
+            "network:fetch:api.github.com:POST",
+            "network:fetch:other.example:POST",
+        ),
+        (
+            "network:fetch:api.github.com:**",
+            "network:fetch:api.github.com:GET",
+            "network:fetch:other.example:api.github.com",
+        ),
+        (
+            "action:invoke:@acme/formatter:*",
+            "action:invoke:@acme/formatter:format",
+            "action:invoke:@acme/other:format",
+        ),
+    ] {
+        let pattern = Capability::parse(pattern).unwrap();
+        assert!(
+            pattern.matches(&Capability::parse(allowed).unwrap()),
+            "{pattern}"
+        );
+        assert!(
+            !pattern.matches(&Capability::parse(denied).unwrap()),
+            "{pattern}"
+        );
+    }
+}

@@ -262,7 +262,70 @@ impl Client {
     /// `responseTooLarge`, `timeout`, `rateLimited`, or `hostFailed` for a transport failure. The code is what a plugin
     /// branches on and the sentence is what a person reads, as everywhere else.
     pub fn fetch(&self, request: &Request) -> Result<Response, Refusal> {
-        let fetched = self.request(request, BodyMode::Text)?;
+        self.fetch_scoped(request, None)
+    }
+
+    /// Fetches for a plugin using its current grants on every redirect before network IO.
+    ///
+    /// # Errors
+    /// As [`Self::fetch`], including capability denial for the actual host or HTTP method.
+    pub fn fetch_authorized(
+        &self,
+        request: &Request,
+        grants: &[String],
+    ) -> Result<Response, Refusal> {
+        let mut parsed = synra_capability::CapabilitySet::new();
+        for grant in grants {
+            parsed.insert_str(grant).map_err(|error| {
+                Refusal::new(
+                    ErrorCode::Internal,
+                    format!("invalid stored fetch authority: {error}"),
+                )
+            })?;
+        }
+        self.fetch_scoped(request, Some(&parsed))
+    }
+
+    /// Runs the plugin JSON request flow with its current stored grants.
+    ///
+    /// # Errors
+    /// Preserves capability denial across the protocol/plugin error-code boundary.
+    pub fn fetch_plugin(
+        &self,
+        request_json: &str,
+        grants: &[String],
+    ) -> Result<String, synra_plugin_host::CallError> {
+        use synra_plugin_host::CallError;
+        let request: Request = serde_json::from_str(request_json).map_err(|error| {
+            CallError::new(
+                CallError::BAD_ARGUMENT,
+                format!("the request is not readable: {error}"),
+            )
+        })?;
+        let response = self.fetch_authorized(&request, grants).map_err(|refusal| {
+            CallError::new(
+                if refusal.code == ErrorCode::CapabilityDenied {
+                    CallError::CAPABILITY_DENIED
+                } else {
+                    refusal.code.as_str()
+                },
+                refusal.message,
+            )
+        })?;
+        serde_json::to_string(&response).map_err(|error| {
+            CallError::new(
+                CallError::HOST_FAILED,
+                format!("the answer could not be written: {error}"),
+            )
+        })
+    }
+
+    fn fetch_scoped(
+        &self,
+        request: &Request,
+        grants: Option<&synra_capability::CapabilitySet>,
+    ) -> Result<Response, Refusal> {
+        let fetched = self.request(request, BodyMode::Text, grants)?;
         Ok(Response {
             status: fetched.status,
             status_text: fetched.status_text,
@@ -282,7 +345,7 @@ impl Client {
     ///
     /// As [`Client::fetch`].
     pub fn fetch_bytes(&self, request: &Request) -> Result<BinaryResponse, Refusal> {
-        let fetched = self.request(request, BodyMode::Bytes)?;
+        let fetched = self.request(request, BodyMode::Bytes, None)?;
         Ok(BinaryResponse {
             status: fetched.status,
             status_text: fetched.status_text,
@@ -294,7 +357,12 @@ impl Client {
     }
 
     /// The checks both fetches share, then the request itself.
-    fn request(&self, request: &Request, mode: BodyMode) -> Result<Fetched, Refusal> {
+    fn request(
+        &self,
+        request: &Request,
+        mode: BodyMode,
+        grants: Option<&synra_capability::CapabilitySet>,
+    ) -> Result<Fetched, Refusal> {
         if request.method.trim().is_empty() {
             return Err(Refusal::new(ErrorCode::InvalidArgument, "the method is empty"));
         }
@@ -313,7 +381,7 @@ impl Client {
         // ★ Taken **after** the cheap refusals and **before** anything that can block. A request refused for a bad URL
         // must not hold a slot, or a plugin sending rubbish would exhaust its own concurrency with work it never started.
         let slot = self.take_slot()?;
-        let outcome = self.send(request, body, mode);
+        let outcome = self.send(request, body, mode, grants);
         drop(slot);
 
         outcome
@@ -342,7 +410,13 @@ impl Client {
     }
 
     /// The request itself, with the redirect loop.
-    fn send(&self, request: &Request, body: &str, mode: BodyMode) -> Result<Fetched, Refusal> {
+    fn send(
+        &self,
+        request: &Request,
+        body: &str,
+        mode: BodyMode,
+        grants: Option<&synra_capability::CapabilitySet>,
+    ) -> Result<Fetched, Refusal> {
         let started = Instant::now();
         let mut url = request.url.clone();
 
@@ -356,6 +430,23 @@ impl Client {
                 .checked_sub(started.elapsed())
                 .ok_or_else(|| timeout_refusal(&request.url, self.limits.timeout))?;
 
+            if let Some(grants) = grants {
+                synra_plugin_host::host_calls::network_scope::authorize_request(
+                    grants,
+                    &url,
+                    &request.method,
+                )
+                .map_err(|error| {
+                    Refusal::new(
+                        if error.code == synra_plugin_host::CallError::CAPABILITY_DENIED {
+                            ErrorCode::CapabilityDenied
+                        } else {
+                            ErrorCode::InvalidArgument
+                        },
+                        error.message,
+                    )
+                })?;
+            }
             let checked = self.guard.check_url(&url)?;
             let addresses = self.resolve(&checked)?;
             let agent = self.agent(&addresses, remaining)?;

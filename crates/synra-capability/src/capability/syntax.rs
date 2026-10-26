@@ -129,7 +129,7 @@ pub struct Capability {
     pub(super) prefixes: SmallVec<[Segment; 3]>,
     /// The qualifier segments, if any. Index 0 here corresponds to segment [`MAX_PREFIXES`] overall.
     pub(super) qualifier: SmallVec<[Segment; 2]>,
-    /// How many whole prefixes are wildcards, so `is_exact` is a field read rather than a scan.
+    /// How many whole segments are wildcards, so `is_exact` is a field read rather than a scan.
     pub(super) wildcards: u8,
 }
 
@@ -184,21 +184,20 @@ impl Capability {
         let mut wildcards: u8 = 0;
 
         for (position, segment) in segments.iter().enumerate().skip(1) {
-            // A standalone `*` or `**` is always a wildcard segment, wherever it appears. It is the one
-            // form that can cross the prefix boundary, which `network:fetch:**` depends on: the `**`
-            // sits at prefix position 2 but has to absorb qualifier segments, so classifying it by
-            // position would leave it as a literal `**` that matches nothing.
-            //
-            // No ambiguity arises, because a qualifier's `*` is never standalone: `/data/*` and
-            // `_plugin.chat.*` are single segments with other characters in them.
+            // Preserve positions in the same prefix/qualifier split as literal segments. Moving a
+            // trailing wildcard before a literal qualifier changes the permission being checked.
             if *segment == "*" || *segment == "**" {
                 wildcards = wildcards.saturating_add(1);
-                prefixes.push(if *segment == "*" {
+                let wildcard = if *segment == "*" {
                     Segment::star()
-                }
-                else {
+                } else {
                     Segment::double_star()
-                });
+                };
+                if position <= MAX_PREFIXES {
+                    prefixes.push(wildcard);
+                } else {
+                    qualifier.push(wildcard);
+                }
                 continue;
             }
 

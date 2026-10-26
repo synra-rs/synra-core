@@ -388,20 +388,8 @@ impl Host for KernelHost {
     }
 
     fn fetch(&self, plugin: &PluginId, request_json: &str) -> Result<String, CallError> {
-        let request: synra_fetch::Request = serde_json::from_str(request_json).map_err(|error| {
-            CallError::new(CallError::BAD_ARGUMENT, format!("the request is not readable: {error}"))
-        })?;
-
         let client = fetcher_for(self, plugin)?;
-        let response = client.fetch(&request).map_err(|refusal| {
-            // The guard's codes are the contract's own, so they travel as they are: `hostNotAllowed` is what a plugin
-            // branches on to try somewhere else, and `responseTooLarge` to ask for less.
-            CallError::new(refusal.code.as_str(), refusal.message)
-        })?;
-
-        serde_json::to_string(&response).map_err(|error| {
-            CallError::new(CallError::HOST_FAILED, format!("the answer could not be written: {error}"))
-        })
+        client.fetch_plugin(request_json, &self.granted(plugin))
     }
 
     fn transfer_send(&self, _p: &PluginId, _k: &str, _t: &str, _m: &str) -> Result<String, CallError> {
@@ -501,7 +489,7 @@ mod tests {
         PluginId::try_from(name.to_owned()).expect("a plugin id")
     }
 
-    fn host_with(grants: &[(&str, bool)]) -> KernelHost {
+    pub(super) fn host_with(grants: &[(&str, bool)]) -> KernelHost {
         let mut db = synra_store::SynraDb::open_in_memory().expect("a database");
         db.migrate().expect("migrates");
         db.insert_plugin("@acme/notes", true, true, "healthy", 1, 1).expect("a plugin row");
@@ -672,5 +660,39 @@ fn a_bad_address_is_the_plugins_mistake_rather_than_a_missing_feature() {
         assert!(host.platform_capabilities().is_empty());
         // A fresh database has paired with nothing, so the list is empty — and it is empty because it is true.
         assert!(host.devices().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod scoped_fetch_tests {
+    use super::*;
+    use synra_plugin_host::host_calls::Host;
+
+    #[test]
+    fn a_cached_client_rechecks_stored_method_grants_for_each_request() {
+        let host = tests::host_with(&[("network:fetch:127.0.0.1:GET", true)]);
+        let plugin = PluginId::parse("@acme/notes").unwrap();
+        let before = fetcher_for(&host, &plugin).unwrap();
+        let error = host
+            .fetch(&plugin, r#"{"url":"https://127.0.0.1:1/","method":"POST"}"#)
+            .unwrap_err();
+        assert_eq!(error.code, CallError::CAPABILITY_DENIED);
+        host.db
+            .lock()
+            .record_grants(
+                plugin.as_str(),
+                &[
+                    ("network:fetch:127.0.0.1:GET".to_owned(), false),
+                    ("network:fetch:127.0.0.1:POST".to_owned(), true),
+                ],
+                2,
+                "method change",
+            )
+            .unwrap();
+        assert!(Arc::ptr_eq(&before, &fetcher_for(&host, &plugin).unwrap()));
+        let error = host
+            .fetch(&plugin, r#"{"url":"https://127.0.0.1:1/","method":"GET"}"#)
+            .unwrap_err();
+        assert_eq!(error.code, CallError::CAPABILITY_DENIED);
     }
 }

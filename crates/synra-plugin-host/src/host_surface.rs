@@ -108,7 +108,10 @@ pub fn provides(import_name: &str) -> bool {
     gate(import_name).is_some()
 }
 
-/// Whether a granted set satisfies a function's gate.
+/// Whether a granted set makes a function available for import.
+///
+/// Network availability requires a grant in the fetch family. Each call and redirect
+/// must separately authorize its concrete destination and HTTP method.
 ///
 /// # `false` for a function the host does not provide
 ///
@@ -123,6 +126,9 @@ pub fn permits(import_name: &str, grants: &CapabilitySet) -> bool {
         // `CapabilitySet::grants` rather than a string comparison, because the declared capability is a *pattern*:
         // `log:*` is one a host function needs, and a plugin granted the literal `log:*` covers every function that
         // needs it. A comparison would make the two spellings different capabilities.
+        Some(HostGate::Capability("network:fetch:*")) => {
+            crate::host_calls::network_scope::available(grants)
+        }
         Some(HostGate::Capability(capability)) => {
             let Ok(needed) = synra_capability::Capability::parse(capability) else {
                 // A capability in the table that does not parse is a bug in the contract, which `build.rs` regenerates.

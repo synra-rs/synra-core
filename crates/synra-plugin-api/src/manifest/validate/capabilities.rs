@@ -5,12 +5,17 @@ use crate::manifest::types::Manifest;
 
 impl Manifest {
     /// The capabilities, and whether this kind of plugin can use them.
-    pub(super) fn check_capabilities(&self) -> Result<synra_capability::CapabilitySet, ManifestError> {
+    pub(super) fn check_capabilities(
+        &self,
+    ) -> Result<synra_capability::CapabilitySet, ManifestError> {
         let set = self.capability_set()?;
 
         for declaration in &self.capabilities {
             let capability = Capability::parse(&declaration.cap).map_err(|source| {
-                ManifestError::BadCapability { cap: declaration.cap.clone(), source }
+                ManifestError::BadCapability {
+                    cap: declaration.cap.clone(),
+                    source,
+                }
             })?;
 
             // A headless plugin has no interface, so a `ui:*` grant is one the user would approve at install
@@ -34,51 +39,79 @@ impl Manifest {
         &self,
         capabilities: &synra_capability::CapabilitySet,
     ) -> Result<(), ManifestError> {
-        let declared_hosts: Vec<&str> = self
+        let outbound = self
             .network
             .as_ref()
-            .map(|network| network.outbound.iter().map(|host| host.host.as_str()).collect())
+            .map(|network| network.outbound.as_slice())
             .unwrap_or_default();
 
-        // Every declared host must be covered by a `network:fetch:<host>` capability.
-        for host in &declared_hosts {
-            let capability = Capability::parse(&format!("network:fetch:{host}"));
-            let covered = capability.map(|cap| capabilities.contains(&cap)).unwrap_or(false);
+        // A finite methods list needs authority for each listed operation. An empty list means all methods.
+        for declaration in outbound {
+            let host = &declaration.host;
+            let target = format!("network:fetch:{host}");
+            let all_methods =
+                Capability::parse(&target).is_ok_and(|cap| capabilities.contains(&cap));
+            let covered = all_methods
+                || (!declaration.methods.is_empty()
+                    && declaration.methods.iter().all(|method| {
+                        Capability::parse(&format!("{target}:{method}"))
+                            .is_ok_and(|cap| capabilities.contains(&cap))
+                    }));
             if !covered {
                 return Err(ManifestError::NetworkMismatch {
                     detail: format!(
-                        "{host:?} is declared as reachable but no `network:fetch:{host}` capability backs it"
+                        "{host:?} declares host or method access without matching fetch capabilities"
                     ),
                 });
             }
         }
 
-        // And every `network:fetch:<host>` capability must be described, unless it is a wildcard — a wildcard
-        // has no finite description, which is exactly why the design document says the interface must spell it
-        // out as "any website" rather than pretending otherwise.
+        // A concrete grant must be described, and must not authorize methods the consent declaration omits.
         for capability in capabilities.iter() {
-            if capability.domain() != Domain::Network {
+            if capability.domain() != Domain::Network
+                || capability
+                    .prefixes()
+                    .first()
+                    .map(synra_capability::Segment::as_str)
+                    != Some("fetch")
+            {
                 continue;
             }
-            let resource = capability
-                .prefixes()
+            let Some(host) = capability
+                .qualifier()
                 .first()
                 .map(synra_capability::Segment::as_str)
-                .unwrap_or_default();
-            if resource != "fetch" {
-                continue;
-            }
-            let Some(host) = capability.qualifier().first().map(synra_capability::Segment::as_str) else {
+            else {
                 continue;
             };
-            if host.contains('*') {
-                continue;
-            }
-            if !declared_hosts.contains(&host) {
+            let declarations: Vec<_> = outbound.iter().filter(|entry| entry.host == host).collect();
+            if declarations.is_empty() {
+                // Unbounded host patterns have no finite host list; consent must identify their wildcard scope.
+                if host.contains('*') {
+                    continue;
+                }
                 return Err(ManifestError::NetworkMismatch {
                     detail: format!(
-                        "the capability `network:fetch:{host}` is declared but {host:?} is not in \
-                         `network.outbound`"
+                        "the capability `{capability}` is not described in `network.outbound`"
+                    ),
+                });
+            }
+            let method = capability
+                .qualifier()
+                .get(1)
+                .map(synra_capability::Segment::as_str);
+            let described = capability.qualifier().len() <= 2
+                && declarations.iter().any(|entry| {
+                    entry.methods.is_empty()
+                        || method.is_some_and(|method| {
+                            !method.contains('*')
+                                && entry.methods.iter().any(|declared| declared == method)
+                        })
+                });
+            if !described {
+                return Err(ManifestError::NetworkMismatch {
+                    detail: format!(
+                        "the capability `{capability}` exceeds its declared HTTP methods"
                     ),
                 });
             }

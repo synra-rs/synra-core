@@ -759,13 +759,60 @@ use super::version::*;
     fn a_wildcard_declared_host_needs_its_capability() {
         let manifest = with_network(
             "{ \"host\": \"*.example.com\", \"methods\": [\"GET\"] }",
-            "{ \"cap\": \"network:fetch:*.example.com\" }",
+            "{ \"cap\": \"network:fetch:*.example.com:GET\" }",
         );
         assert_eq!(
             manifest.validate(ValidationLevel::Schema, &ManifestContext::default()),
             Ok(())
         );
     }
+
+#[test]
+fn finite_network_method_declarations_match_their_authority_in_both_directions() {
+    let cases = [
+        (
+            r#""methods":["GET"]"#,
+            r#"{"cap":"network:fetch:api.x.com:GET"}"#,
+            true,
+        ),
+        (
+            r#""methods":["GET","POST"]"#,
+            r#"{"cap":"network:fetch:api.x.com:GET"},{"cap":"network:fetch:api.x.com:POST"}"#,
+            true,
+        ),
+        (
+            r#""methods":["GET"]"#,
+            r#"{"cap":"network:fetch:api.x.com:POST"}"#,
+            false,
+        ),
+        (
+            r#""methods":[]"#,
+            r#"{"cap":"network:fetch:api.x.com:GET"}"#,
+            false,
+        ),
+        (
+            r#""methods":["GET"]"#,
+            r#"{"cap":"network:fetch:api.x.com"}"#,
+            false,
+        ),
+        (
+            r#""methods":["GET","POST"]"#,
+            r#"{"cap":"network:fetch:api.x.com:GET"}"#,
+            false,
+        ),
+        (
+            r#""methods":["GET"]"#,
+            r#"{"cap":"network:fetch:api.x.com:*"}"#,
+            false,
+        ),
+    ];
+    for (methods, caps, allowed) in cases {
+        let declaration = format!(r#"{{"host":"api.x.com",{methods}}}"#);
+        let result = with_network(&declaration, caps)
+            .validate(ValidationLevel::Schema, &ManifestContext::default());
+        assert_eq!(result.is_ok(), allowed, "{methods} / {caps}: {result:?}");
+    }
+}
 
     #[test]
     fn a_non_fetch_network_capability_needs_no_declared_host() {

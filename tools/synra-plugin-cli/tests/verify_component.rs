@@ -81,6 +81,27 @@ fn a_real_component_is_read_from_the_manifest_path_and_its_actual_imports_are_ch
     let (status, report) = verify(root.path());
     assert!(status.success(), "{report}");
     assert!(!report.to_string().contains("warn"), "{report}");
+    let scoped: Vec<&str> = capabilities
+        .iter()
+        .map(|cap| {
+            if *cap == "network:fetch:*" {
+                "network:fetch:api.github.com:GET"
+            } else {
+                *cap
+            }
+        })
+        .collect();
+    manifest(root.path(), "dist/custom.wasm", &scoped);
+    let path = root.path().join("manifest.json");
+    let mut declaration: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    declaration.as_object_mut().unwrap().insert(
+        "network".to_owned(),
+        serde_json::json!({ "outbound": [{ "host": "api.github.com", "methods": ["GET"] }] }),
+    );
+    std::fs::write(path, declaration.to_string()).unwrap();
+    let (status, report) = verify(root.path());
+    assert!(status.success(), "{report}");
     let without_open: Vec<&str> = capabilities
         .iter()
         .copied()

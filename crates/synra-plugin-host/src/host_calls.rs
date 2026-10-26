@@ -29,6 +29,8 @@ use synra_observe::audit::{AuditEntry, AuditOutcome};
 use synra_protocol::ids::PluginId;
 
 use crate::host_surface;
+
+pub mod network_scope;
 use crate::quota::{Budget, Health, RateKind};
 
 /// What a plugin is told when a call does not proceed.
@@ -454,21 +456,33 @@ impl<'a> HostCalls<'a> {
         };
 
         if let Some(capability) = gate.capability() {
-            // `grants` rather than a string comparison, because the table's capability is a *pattern*: a plugin granted
-            // `log:*` covers every function that needs it, and a comparison would make the two spellings different
-            // capabilities.
-            let held = Capability::parse(capability).is_ok_and(|needed| self.grants.grants(&needed));
-            if !held {
-                let error = CallError::denied(capability, self.grants);
-                self.record(import_name, AuditOutcome::Denied, None);
+            // Network calls authorize the concrete URL and method, not the family's import label.
+            // Other gates retain the capability table's matching rules.
+            let authorization = if import_name == "synra:plugin/host#network-fetch" {
+                network_scope::authorize(self.grants, argument)
+            } else if Capability::parse(capability).is_ok_and(|needed| self.grants.grants(&needed))
+            {
+                Ok(())
+            } else {
+                Err(CallError::denied(capability, self.grants))
+            };
+            if let Err(error) = authorization {
+                let outcome = if error.code == CallError::CAPABILITY_DENIED {
+                    AuditOutcome::Denied
+                } else {
+                    AuditOutcome::Failed
+                };
+                self.record(import_name, outcome, None);
                 // ★ The numbers, written beside the audit rather than instead of it.
                 //
                 // The two answer different questions and neither replaces the other: the audit is *which plugin tried to do
                 // what it could not*, one entry per call, bounded and read by a person. The metric is *how often*, aggregated
                 // and read by a graph. The outcome label is `AuditOutcome`'s own name, so a count in the metrics and a line
                 // in the audit cannot come to disagree about what happened.
-                self.count("gate_checks_total", &[("result", AuditOutcome::Denied.as_str())], 1);
-                self.count("gate_denied_total", &[("capability", capability)], 1);
+                self.count("gate_checks_total", &[("result", outcome.as_str())], 1);
+                if outcome == AuditOutcome::Denied {
+                    self.count("gate_denied_total", &[("capability", capability)], 1);
+                }
                 return Err(error);
             }
             self.count("gate_checks_total", &[("result", AuditOutcome::Allowed.as_str())], 1);
