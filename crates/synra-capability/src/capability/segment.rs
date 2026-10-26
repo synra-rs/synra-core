@@ -58,7 +58,7 @@ impl Segment {
     /// Whether this segment contains a wildcard anywhere.
     ///
     /// True for `*` and `**`, and also for a qualifier that embeds one, such as `/data/**` or
-    /// `_plugin.chat.*`. Those match by their own rules, but they are still patterns rather than
+    /// `_plugin.@acme/chat.*`. Those match by their own rules, but they are still patterns rather than
     /// literal values — which matters when deciding whether a set of capabilities can be enumerated
     /// exactly.
     #[must_use]

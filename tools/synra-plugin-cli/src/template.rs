@@ -204,7 +204,7 @@ impl Scaffold {
             synra_protocol::PluginId::parse(plugin_id).map_err(|error| ScaffoldError::BadId {
                 reason: error.to_string(),
             })?;
-        let slug = synra_plugin_api::manifest::to_wire_slug(&id).map_err(|error| {
+        let slug = synra_plugin_api::manifest::to_project_slug(&id).map_err(|error| {
             ScaffoldError::BadId {
                 reason: error.to_string(),
             }

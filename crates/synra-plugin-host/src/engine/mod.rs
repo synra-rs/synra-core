@@ -75,6 +75,8 @@ mod wasmtime_backend;
 mod test_component;
 
 #[cfg(all(test, feature = "wasm-runtime"))]
+mod scoped_event_tests;
+#[cfg(all(test, feature = "wasm-runtime"))]
 mod scoped_fetch_tests;
 #[cfg(all(test, feature = "wasm-runtime"))]
 mod scoped_log_tests;

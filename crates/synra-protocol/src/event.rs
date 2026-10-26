@@ -5,7 +5,7 @@
 //! * **Built-in events** are the host's. Their names are defined here, their payload shapes are
 //!   defined by the host, and they describe *capabilities* — "a device came online", "a transfer
 //!   finished and its digest checked out", "a share arrived that no plugin claimed".
-//! * **Plugin events** are an author's. They live under `_plugin.<slug>.`, and the plugin declares
+//! * **Plugin events** are an author's. They live under `_plugin.<full-plugin-id>.`, and the plugin declares
 //!   their payload shape in its manifest.
 //!
 //! The host does not try to guess what a plugin's events mean. It cannot: the whole point of a
@@ -14,9 +14,9 @@
 //!
 //! # The namespace rule is enforced, not documented
 //!
-//! [`EventName::plugin`] only accepts the slug it is given, and [`EventName::plugin_scope`] tells a
+//! [`EventName::plugin`] preserves the complete identity it is given, and [`EventName::plugin_scope`] tells a
 //! caller whether a name belongs to a plugin and which one. A plugin that could emit
-//! `_plugin.someone-else.thing` could impersonate another plugin, so the check lives in the type
+//! `_plugin.@acme/someone-else.thing` could impersonate another plugin, so the check lives in the type
 //! rather than in a convention someone has to remember.
 //!
 //! # Names are interned elsewhere
@@ -29,7 +29,7 @@ use core::fmt;
 use compact_str::CompactString;
 use serde::{Deserialize, Serialize};
 
-use crate::ids::PluginSlug;
+use crate::ids::PluginId;
 
 /// Prefix for host-defined events.
 pub const SYSTEM_PREFIX: &str = "_synra.";
@@ -40,8 +40,9 @@ pub const PLUGIN_PREFIX: &str = "_plugin.";
 /// Prefix reserved for events that never leave the process.
 pub const INTERNAL_PREFIX: &str = "synra.internal.";
 
-/// Length limit for an event name, generous enough for a nested plugin name.
-pub const MAX_EVENT_NAME_LEN: usize = 128;
+/// Event-name byte bound, leaving 16 bytes for the longest event capability prefix.
+/// Full package identities remain within the shared 256-byte capability grammar limit.
+pub const MAX_EVENT_NAME_LEN: usize = 240;
 
 /// The largest gap a consumer is told the *size* of.
 ///
@@ -79,9 +80,9 @@ pub enum EventNameError {
     /// A plugin tried to emit under a namespace that is not its own.
     #[error("plugin {attempted} may not emit under {actual}")]
     ForeignNamespace {
-        /// The slug found in the name.
+        /// The complete package id found in the name.
         actual: String,
-        /// The slug of the plugin that tried.
+        /// The complete id of the plugin that tried.
         attempted: String,
     },
 
@@ -115,9 +116,12 @@ impl EventName {
 
         if let Some(rest) = name.strip_prefix(PLUGIN_PREFIX) {
             let (slug, logical) = rest.split_once('.').ok_or_else(|| {
-                EventNameError::Malformed("a plugin event needs a slug and a name".to_owned())
+                EventNameError::Malformed(
+                    "a plugin event needs a full package id and a name".to_owned(),
+                )
             })?;
-            PluginSlug::parse(slug).map_err(|error| EventNameError::Malformed(error.to_string()))?;
+            PluginId::validate(slug)
+                .map_err(|error| EventNameError::Malformed(error.to_string()))?;
             validate_segments(logical)?;
             return Ok(Self(CompactString::from(name)));
         }
@@ -169,9 +173,9 @@ impl EventName {
     /// # Errors
     ///
     /// [`EventNameError::Malformed`] if `logical` is empty or has an empty segment.
-    pub fn plugin(slug: &PluginSlug, logical: &str) -> Result<Self, EventNameError> {
+    pub fn plugin(id: &PluginId, logical: &str) -> Result<Self, EventNameError> {
         validate_segments(logical)?;
-        Self::parse(&format!("{PLUGIN_PREFIX}{slug}.{logical}"))
+        Self::parse(&format!("{PLUGIN_PREFIX}{id}.{logical}"))
     }
 
     /// Builds an event that stays inside the process.
@@ -229,14 +233,14 @@ impl EventName {
         self.0.starts_with("file.transfer.")
     }
 
-    /// The owning plugin's slug and the event's own name, for a plugin event.
+    /// The owning plugin's complete package id and the event's own name, for a plugin event.
     #[must_use]
     pub fn plugin_scope(&self) -> Option<(&str, &str)> {
         let rest = self.0.strip_prefix(PLUGIN_PREFIX)?;
         rest.split_once('.')
     }
 
-    /// Checks this name may be emitted by the plugin with `slug`.
+    /// Checks this name may be emitted by the plugin with the complete package `id`.
     ///
     /// The host calls this on every outbound plugin event. It is the difference between "plugins
     /// have their own namespace" being true and it being a sentence in a document.
@@ -245,14 +249,14 @@ impl EventName {
     ///
     /// [`EventNameError::ForeignNamespace`] if the name belongs to another plugin,
     /// [`EventNameError::ReservedForHost`] if it is a host event a plugin may not send.
-    pub fn check_emittable_by(&self, slug: &PluginSlug) -> Result<(), EventNameError> {
+    pub fn check_emittable_by(&self, id: &PluginId) -> Result<(), EventNameError> {
         if let Some((owner, _)) = self.plugin_scope() {
-            if owner == slug.as_str() {
+            if owner == id.as_str() {
                 return Ok(());
             }
             return Err(EventNameError::ForeignNamespace {
                 actual: owner.to_owned(),
-                attempted: slug.to_string(),
+                attempted: id.to_string(),
             });
         }
 
@@ -294,7 +298,7 @@ impl From<EventName> for String {
 /// # No wildcards
 ///
 /// `*` is deliberately **not** allowed here. It belongs to `handles` patterns, which describe what a
-/// plugin wants to receive, and a pattern is not a name: nothing can be *sent* as `_plugin.chat.*`.
+/// plugin wants to receive, and a pattern is not a name: nothing can be *sent* as `_plugin.@acme/chat.*`.
 /// Keeping the two grammars apart means an [`EventName`] is always something a peer could
 /// legitimately have sent, so a routing table built from names never has to ask whether an entry is
 /// a pattern. [`crate::inbound::HandlePattern`] is the grammar that accepts wildcards.
@@ -590,8 +594,8 @@ mod tests {
     use super::*;
     use rstest::rstest;
 
-    fn slug(text: &str) -> PluginSlug {
-        PluginSlug::parse(text).expect("valid slug")
+    fn slug(text: &str) -> PluginId {
+        PluginId::parse(&format!("@acme/{text}")).expect("valid plugin id")
     }
 
     #[test]
@@ -615,12 +619,12 @@ mod tests {
 
     #[test]
     fn plugin_events_expose_their_owner() {
-        let name = EventName::parse("_plugin.chat.text").expect("valid");
+        let name = EventName::parse("_plugin.@acme/chat.text").expect("valid");
         assert!(name.is_plugin());
-        assert_eq!(name.plugin_scope(), Some(("chat", "text")));
+        assert_eq!(name.plugin_scope(), Some(("@acme/chat", "text")));
         // Dotted logical names nest, and still report the owner correctly.
-        let nested = EventName::parse("_plugin.chat.room.message").expect("valid");
-        assert_eq!(nested.plugin_scope(), Some(("chat", "room.message")));
+        let nested = EventName::parse("_plugin.@acme/chat.room.message").expect("valid");
+        assert_eq!(nested.plugin_scope(), Some(("@acme/chat", "room.message")));
     }
 
     #[rstest]
@@ -629,12 +633,44 @@ mod tests {
     #[case("_synra.")]
     #[case("_synra..x")]
     #[case("synra.internal.")]
-    #[case("_plugin.chat")]
+    #[case("_plugin.@acme/chat")]
     #[case("_plugin..text")]
     #[case("_plugin.Chat.text")]
-    #[case("_plugin.chat.")]
+    #[case("_plugin.@acme/chat.")]
     fn malformed_names_are_rejected(#[case] name: &str) {
         assert!(EventName::parse(name).is_err(), "{name:?} should not parse");
+    }
+
+    #[test]
+    fn package_scope_and_conventional_prefixes_cannot_alias_event_owners() {
+        let owner = PluginId::parse("@acme/chat").unwrap();
+        let name = EventName::plugin(&owner, "ready").unwrap();
+        for foreign in ["@other/chat", "@acme/synra-plugin-chat", "@acme/chat-extra"] {
+            let foreign = PluginId::parse(foreign).unwrap();
+            assert_ne!(owner.event_namespace(), foreign.event_namespace());
+            assert!(matches!(
+                name.check_emittable_by(&foreign),
+                Err(EventNameError::ForeignNamespace { .. })
+            ));
+        }
+        assert_eq!(name.check_emittable_by(&owner), Ok(()));
+        for legacy in ["_plugin.chat.ready", "_plugin.synra-plugin-chat.ready"] {
+            assert!(EventName::parse(legacy).is_err());
+        }
+    }
+
+    #[test]
+    fn maximal_package_ids_still_have_a_bounded_event_namespace() {
+        let owner = PluginId::parse(&format!("@{}/{}", "a".repeat(62), "b".repeat(64))).unwrap();
+        assert_eq!(owner.as_str().len(), crate::ids::MAX_PLUGIN_ID_LEN);
+        let logical = "x".repeat(MAX_EVENT_NAME_LEN - owner.event_namespace().len());
+        let name = EventName::plugin(&owner, &logical).unwrap();
+        assert_eq!(name.as_str().len(), MAX_EVENT_NAME_LEN);
+        assert_eq!(name.check_emittable_by(&owner), Ok(()));
+        assert!(matches!(
+            EventName::plugin(&owner, &format!("{logical}x")),
+            Err(EventNameError::TooLong { .. })
+        ));
     }
 
     #[test]
@@ -649,23 +685,28 @@ mod tests {
     #[test]
     fn a_wildcard_is_not_a_sendable_event_name() {
         // `*` belongs to `handles` patterns, which describe what a plugin wants to receive. A
-        // pattern is not a name: nothing can be sent as `_plugin.chat.*`. Keeping the two grammars
+        // pattern is not a name: nothing can be sent as `_plugin.@acme/chat.*`. Keeping the two grammars
         // apart means an `EventName` is always something a peer could legitimately have sent.
-        for pattern in ["_plugin.chat.*", "_synra.*", "file.*", "*"] {
+        for pattern in ["_plugin.@acme/chat.*", "_synra.*", "file.*", "*"] {
             assert!(
                 EventName::parse(pattern).is_err(),
                 "{pattern:?} is a pattern, not a name",
             );
         }
         // The matching grammar accepts them; see `inbound::HandlePattern`.
-        assert!(crate::inbound::HandlePattern::parse("_plugin.chat.*").is_ok());
+        assert!(crate::inbound::HandlePattern::parse("_plugin.@acme/chat.*").is_ok());
     }
 
     #[test]
     fn characters_outside_the_grammar_are_refused() {
         // A name that could be read as a path, a shell argument or a URL fragment is refused, so a
         // name can never be passed to another system and mean something there.
-        for name in ["_plugin.chat.a/b", "device.pi ng", "device.ping;rm", "a..b"] {
+        for name in [
+            "_plugin.@acme/chat.a/b",
+            "device.pi ng",
+            "device.ping;rm",
+            "a..b",
+        ] {
             assert!(EventName::parse(name).is_err(), "{name:?} should not parse");
         }
     }
@@ -678,7 +719,7 @@ mod tests {
         );
         assert_eq!(
             EventName::plugin(&slug("chat"), "text").expect("valid").as_str(),
-            "_plugin.chat.text"
+            "_plugin.@acme/chat.text"
         );
         assert_eq!(
             EventName::internal("host.boot").expect("valid").as_str(),
@@ -705,7 +746,7 @@ mod tests {
         assert!(matches!(
             name.check_emittable_by(&notes),
             Err(EventNameError::ForeignNamespace { actual, attempted })
-                if actual == "chat" && attempted == "notes"
+                if actual == "@acme/chat" && attempted == "@acme/notes"
         ));
     }
 
@@ -752,7 +793,7 @@ mod tests {
         // Everything a user would notice losing.
         assert_eq!(ack(events::PAIR_REQUEST), AckPolicy::Await);
         assert_eq!(ack(events::INTENT_INVOKE), AckPolicy::Await);
-        assert_eq!(ack("_plugin.chat.text"), AckPolicy::Await);
+        assert_eq!(ack("_plugin.@acme/chat.text"), AckPolicy::Await);
         assert_eq!(ack(builtin::TRANSFER_COMPLETED), AckPolicy::Await);
     }
 
@@ -860,9 +901,9 @@ mod tests {
 
     #[test]
     fn events_round_trip_through_json_as_bare_strings() {
-        let name = EventName::parse("_plugin.chat.text").expect("valid");
+        let name = EventName::parse("_plugin.@acme/chat.text").expect("valid");
         let json = serde_json::to_string(&name).expect("serialises");
-        assert_eq!(json, "\"_plugin.chat.text\"");
+        assert_eq!(json, "\"_plugin.@acme/chat.text\"");
 
         let back: EventName = serde_json::from_str(&json).expect("deserialises");
         assert_eq!(back, name);
@@ -899,7 +940,7 @@ mod proptests {
         /// Anything a constructor accepts parses back to itself and reports the owner it was given.
         #[test]
         fn plugin_events_name_their_owner(slug in slug_text(), logical in logical_text()) {
-            let slug = PluginSlug::parse(&slug).expect("the generator produces valid slugs");
+            let slug = PluginId::parse(&format!("@acme/{slug}")).expect("valid generated identity");
             let name = EventName::plugin(&slug, &logical).expect("builds");
             prop_assert!(name.is_plugin());
             prop_assert_eq!(name.plugin_scope().map(|(owner, _)| owner), Some(slug.as_str()));
@@ -914,8 +955,8 @@ mod proptests {
             logical in logical_text(),
         ) {
             prop_assume!(owner != other);
-            let owner = PluginSlug::parse(&owner).expect("valid");
-            let other = PluginSlug::parse(&other).expect("valid");
+            let owner = PluginId::parse(&format!("@acme/{owner}")).expect("valid");
+            let other = PluginId::parse(&format!("@acme/{other}")).expect("valid");
             let name = EventName::plugin(&owner, &logical).expect("builds");
             prop_assert!(name.check_emittable_by(&other).is_err());
         }

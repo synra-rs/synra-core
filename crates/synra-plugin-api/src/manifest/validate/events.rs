@@ -6,7 +6,7 @@ use crate::manifest::types::Manifest;
 impl Manifest {
     /// The event declarations and their payload schemas.
     pub(super) fn check_events(&self) -> Result<(), ManifestError> {
-        let namespace = self.event_namespace()?;
+        let namespace = self.event_namespace();
         let mut names = HashSet::new();
 
         for event in &self.events {
@@ -27,6 +27,13 @@ impl Manifest {
                 });
             }
 
+            synra_protocol::event::EventName::parse(&event.name).map_err(|error| {
+                ManifestError::BadEventName {
+                    name: event.name.clone(),
+                    reason: error.to_string(),
+                }
+            })?;
+
             if let Some(payload) = &event.payload {
                 check_payload_schema(&event.name, payload)?;
             }
@@ -37,7 +44,7 @@ impl Manifest {
     /// The `handles` entries.
     pub(super) fn check_handles(&self) -> Result<(), ManifestError> {
         let declared: HashSet<&str> = self.events.iter().map(|event| event.name.as_str()).collect();
-        let namespace = self.event_namespace()?;
+        let namespace = self.event_namespace();
 
         for handle in &self.handles {
             // Four things an entry may be, and the order matters only for the message:

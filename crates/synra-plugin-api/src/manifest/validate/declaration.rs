@@ -3,10 +3,9 @@ use crate::manifest::types::{Manifest, ManifestContext};
 use crate::manifest::version::{check_plugin_id, check_version, compare_versions};
 
 impl Manifest {
-    /// The id, the slug and the versions.
+    /// The complete package id and versions.
     pub(super) fn check_identity(&self) -> Result<(), ManifestError> {
         check_plugin_id(self.id.as_str())?;
-        self.wire_slug()?;
         check_version(&self.version)?;
         check_version(&self.sdk.min)?;
         if let Some(preferred) = &self.sdk.preferred {

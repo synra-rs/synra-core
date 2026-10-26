@@ -12,17 +12,15 @@ use synra_protocol::PluginId;
 use super::error::ManifestError;
 use super::types::RESERVED_SCOPES;
 
-/// A plugin's wire slug: the segment its events live under.
+/// A short directory name for a local development project.
 ///
-/// `@synra-plugin/chat` becomes `chat`, and `@imba97/synra-plugin-notes` becomes `notes`. The
-/// `synra-plugin-` prefix is dropped because it is noise that every official plugin carries, and the slug is
-/// what an author types in an event name.
+/// Conventional package prefixes may be omitted here. Event ownership always uses the full id.
 ///
 /// # Errors
 ///
 /// [`ManifestError::UnsluggedId`] when the name has no usable ending — an empty name, or one that is all
 /// prefixes.
-pub fn to_wire_slug(id: &PluginId) -> Result<String, ManifestError> {
+pub fn to_project_slug(id: &PluginId) -> Result<String, ManifestError> {
     let text = id.as_str();
     // The name is everything after the last `/`, or the whole string when there is no scope.
     let name = text.rsplit('/').next().unwrap_or(text);
@@ -40,8 +38,8 @@ fn is_slug_segment(text: &str) -> bool {
     let Some(first) = chars.next() else {
         return false;
     };
-    // Must start with a lowercase letter, then lowercase letters, digits or hyphens, and not end with one: a
-    // trailing hyphen makes `_plugin.chat-.text` legal, which reads as a typo.
+    // A project directory label starts with a letter and does not end in a hyphen.
+    // These readability rules do not define event identity.
     if !first.is_ascii_lowercase() {
         return false;
     }

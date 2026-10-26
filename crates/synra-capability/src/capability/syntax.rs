@@ -27,7 +27,7 @@ pub const MAX_PREFIX_LEN: usize = 64;
 /// Segment 0 is the domain, so the prefixes are positions `1..=MAX_PREFIXES` and the qualifier starts at
 /// `MAX_PREFIXES + 1`. With a value of 1 the longest prefix form is `domain:resource`, and
 /// `network:fetch:api.github.com` has `fetch` as its prefix and the hostname as its qualifier;
-/// `event:emit:_plugin.chat.*` has two prefixes and an event pattern as its qualifier.
+/// `event:emit:_plugin.@acme/chat.*` has two prefixes and an event pattern as its qualifier.
 ///
 /// Written as the last prefix *position* rather than a count, because it is used directly in a
 /// `position <= …` test and a count would have to be adjusted by one at every use — which is exactly
@@ -316,7 +316,7 @@ fn is_prefix_name(text: &str) -> bool {
 /// One character class for every domain's qualifier, because the domains disagree about theirs and a
 /// per-domain rule here would be five parsers sharing one caller. It admits domain names
 /// (`api.github.com`), HTTP methods (`POST`), paths (`/data/**`), device ids (`@synra-pc`), event
-/// patterns (`_plugin.chat.*`) and page keys (`settings`), and nothing that would let a qualifier
+/// patterns (`_plugin.@acme/chat.*`) and page keys (`settings`), and nothing that would let a qualifier
 /// escape its own meaning: no colon, so it cannot forge a segment boundary; no whitespace; no
 /// quotes or angle brackets, so it cannot be reinterpreted as markup.
 fn is_qualifier_segment(text: &str) -> bool {

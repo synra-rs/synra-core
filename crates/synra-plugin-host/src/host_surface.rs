@@ -125,6 +125,9 @@ pub fn permits(import_name: &str, grants: &CapabilitySet) -> bool {
         None => false,
         Some(HostGate::Ungated) => true,
         // Dynamic families need at least one usable concrete operation. The call checks its arguments again.
+        Some(HostGate::Capability("event:emit:*")) => {
+            crate::host_calls::event_scope::available(grants)
+        }
         Some(HostGate::Capability("log:*")) => crate::host_calls::log_scope::available(grants),
         Some(HostGate::Capability("network:fetch:*")) => {
             crate::host_calls::network_scope::available(grants)

@@ -847,8 +847,8 @@ mod proptests {
             Just("device.ping"),
             Just("device.bye"),
             Just("_synra.device.changed"),
-            Just("_plugin.chat.text"),
-            Just("_plugin.chat.typing"),
+            Just("_plugin.@acme/chat.text"),
+            Just("_plugin.@acme/chat.typing"),
         ]
     }
 

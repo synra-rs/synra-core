@@ -67,15 +67,14 @@ use synra_protocol::PluginId;
             let _ = manifest.validate(ValidationLevel::Verify, &context);
             // And the derived accessors do not panic on whatever survived.
             let _ = manifest.capability_set();
-            let _ = manifest.wire_slug();
+            let _ = manifest.project_slug();
             let _ = manifest.event_namespace();
             let _ = manifest.localised_title("zh-CN");
         }
 
-        /// A slug is always a legal event-name segment, so whatever it is, an event built from it parses. A slug
-        /// that was not would produce a plugin whose events nobody can name.
+        /// Full package identities produce valid event owners without requiring a short directory slug.
         #[test]
-        fn a_slug_is_always_a_legal_event_segment(
+        fn a_package_identity_is_a_legal_event_owner(
             scope in "[a-z][a-z0-9-]{0,10}",
             name in "[a-z][a-z0-9-]{0,10}",
         ) {
@@ -83,13 +82,11 @@ use synra_protocol::PluginId;
             let Ok(id) = PluginId::parse(&id) else {
                 return Ok(());
             };
-            if let Ok(slug) = to_wire_slug(&id) {
-                let event = format!("_plugin.{slug}.thing");
-                prop_assert!(
-                    synra_protocol::event::EventName::parse(&event).is_ok(),
-                    "the slug produced an unnameable event: {event}",
-                );
-            }
+            let event = format!("{}thing", id.event_namespace());
+            prop_assert!(
+                synra_protocol::event::EventName::parse(&event).is_ok(),
+                "the package identity produced an unnameable event: {event}",
+            );
         }
 
         /// A payload schema either validates or is refused for a reason. The walk is bounded, so a hostile
@@ -112,7 +109,7 @@ use synra_protocol::PluginId;
                  \"wit\":\"synra:plugin@1.0.0\",\
                  \"runtime\":{{\"headless\":{{\"artifact\":\"a\",\"stateful\":false}}}},\
                  \"capabilities\":[],\
-                 \"events\":[{{\"name\":\"_plugin.chat.x\",\"payload\":{payload}}}]}}"
+                 \"events\":[{{\"name\":\"_plugin.@synra-plugin/chat.x\",\"payload\":{payload}}}]}}"
             );
             if let Ok(manifest) = Manifest::from_json(&text) {
                 let _ = manifest.validate(ValidationLevel::Schema, &ManifestContext::default());

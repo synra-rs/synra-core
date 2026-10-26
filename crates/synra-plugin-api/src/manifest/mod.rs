@@ -15,7 +15,7 @@
 //!
 //! Every rule in [`Manifest::validate`] exists because the alternative is a failure somewhere much worse:
 //!
-//! * A **namespace violation** — an event named `_plugin.someone-else.thing` — is one plugin impersonating
+//! * A **namespace violation** — an event named `_plugin.@synra-plugin/someone-else.thing` — is one plugin impersonating
 //!   another, and it fails silently: the receiving side sees a legitimate name and routes it.
 //! * A **capability the runtime cannot use** — `ui:*` on a headless plugin — is a permission the user approves
 //!   at install time and that nothing can ever exercise. The consent screen said something untrue.
@@ -56,7 +56,7 @@ pub mod version;
 
 pub use error::ManifestError;
 pub use types::*;
-pub use version::{check_plugin_id, check_version, compare_versions, to_wire_slug};
+pub use version::{check_plugin_id, check_version, compare_versions, to_project_slug};
 
 #[cfg(test)]
 mod proptests;

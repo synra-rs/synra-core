@@ -30,6 +30,7 @@ use synra_protocol::ids::PluginId;
 
 use crate::host_surface;
 
+pub(crate) mod event_scope;
 pub(crate) mod log_scope;
 pub mod network_scope;
 use crate::quota::{Budget, Health, RateKind};
@@ -463,6 +464,9 @@ impl<'a> HostCalls<'a> {
                     network_scope::authorize(self.grants, argument)
                 }
                 "synra:plugin/host#log" => log_scope::authorize(self.grants, argument),
+                "synra:plugin/host#event-emit" => {
+                    event_scope::authorize(self.grants, &self.plugin, argument)
+                }
                 _ if Capability::parse(capability)
                     .is_ok_and(|needed| self.grants.grants(&needed)) =>
                 {
@@ -567,7 +571,6 @@ impl<'a> HostCalls<'a> {
             "event-emit" => {
                 let parsed: EventArguments = serde_json::from_str(argument)
                     .map_err(|error| CallError::new(CallError::BAD_ARGUMENT, error.to_string()))?;
-                Self::check_emittable(plugin, &parsed.event)?;
                 host.event_emit(plugin, &parsed.event, &parsed.payload)?;
                 Ok(String::new())
             }
@@ -779,35 +782,35 @@ const ACTION_SHAPED: &'static [&'static str] = &[
     "action-invoke",
 ];
 
-/// Refuses an event a plugin may not emit.
-///
-/// # ★ Why this exists, and why it is here
-///
-/// Because `EventName::check_emittable_by` was written, tested and documented as the enforcement point — its own doc says
-/// *"The host calls this on every outbound plugin event. It is the difference between 'plugins have their own namespace'
-/// being true and it being a sentence in a document"* — and **the host did not call it**. Every one of its call sites was
-/// in its own test module.
-///
-/// So the two things it exists to stop were both allowed:
-///
-/// * a plugin emitting another plugin's event (`_plugin.<other>/something`), which is one plugin speaking as another;
-/// * a plugin emitting a host event (`_synra.device.changed`), which is a plugin telling the kernel, and every other
-///   plugin, that something happened that did not.
-///
-/// Both are the "forged events" threat design [11](11-design-principles.md) lists. Nothing was delivered to a plugin in
-/// this build, so there was no live exploit — and that is exactly why the check belongs here, in the host, before
-/// delivery exists rather than after.
-///
-/// # Errors
-///
-/// [`CallError::BAD_ARGUMENT`] naming the owner when the event belongs to another plugin, and the same when it is a host
-/// event a plugin may not send. A name that is not a well-formed event at all is refused for that reason instead.
-fn check_emittable(plugin: &PluginId, event: &str) -> Result<(), CallError> {
-    let name = synra_protocol::event::EventName::parse(event)
-        .map_err(|error| CallError::new(CallError::BAD_ARGUMENT, error.to_string()))?;
-    name.check_emittable_by(&plugin.wire_slug())
-        .map_err(|error| CallError::new(CallError::BAD_ARGUMENT, error.to_string()))
-}
+    /// Refuses an event a plugin may not emit.
+    ///
+    /// # ★ Why this exists, and why it is here
+    ///
+    /// Because `EventName::check_emittable_by` was written, tested and documented as the enforcement point — its own doc says
+    /// *"The host calls this on every outbound plugin event. It is the difference between 'plugins have their own namespace'
+    /// being true and it being a sentence in a document"* — and **the host did not call it**. Every one of its call sites was
+    /// in its own test module.
+    ///
+    /// So the two things it exists to stop were both allowed:
+    ///
+    /// * a plugin emitting another plugin's event (`_plugin.<other>/something`), which is one plugin speaking as another;
+    /// * a plugin emitting a host event (`_synra.device.changed`), which is a plugin telling the kernel, and every other
+    ///   plugin, that something happened that did not.
+    ///
+    /// Both are the "forged events" threat design [11](11-design-principles.md) lists. Nothing was delivered to a plugin in
+    /// this build, so there was no live exploit — and that is exactly why the check belongs here, in the host, before
+    /// delivery exists rather than after.
+    ///
+    /// # Errors
+    ///
+    /// [`CallError::CAPABILITY_DENIED`] for foreign ownership or a host-reserved event;
+    /// [`CallError::BAD_ARGUMENT`] when the name itself is malformed.
+    fn check_emittable(plugin: &PluginId, event: &str) -> Result<(), CallError> {
+        let name = synra_protocol::event::EventName::parse(event)
+            .map_err(|error| CallError::new(CallError::BAD_ARGUMENT, error.to_string()))?;
+        name.check_emittable_by(plugin)
+            .map_err(|error| CallError::new(CallError::CAPABILITY_DENIED, error.to_string()))
+    }
 
 /// Adds one to a counter, when there is anywhere to add it to.
 ///

@@ -938,7 +938,7 @@ mod proptests {
             Just("_synra.device.*".to_owned()),
             Just("_synra.transfer.*".to_owned()),
             Just("_synra.*".to_owned()),
-            Just("_plugin.chat.text".to_owned()),
+            Just("_plugin.@acme/chat.text".to_owned()),
         ]
     }
 
@@ -950,7 +950,7 @@ mod proptests {
             Just("_synra.device.changed".to_owned()),
             Just("_synra.transfer.completed".to_owned()),
             Just("_synra.device.offline".to_owned()),
-            Just("_plugin.chat.text".to_owned()),
+            Just("_plugin.@acme/chat.text".to_owned()),
             Just("_synra.unknown.thing".to_owned()),
         ]
     }

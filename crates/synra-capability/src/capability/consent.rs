@@ -79,7 +79,7 @@ impl Capability {
 /// Renders an event-name qualifier for a consent prompt.
 ///
 /// The pattern suffix is what decides how much is covered, so showing it would leave the user to work
-/// out the scope. The family a pattern names is the useful answer: `_plugin.chat.*` covers the chat
+/// out the scope. The family a pattern names is the useful answer: `_plugin.@acme/chat.*` covers the chat
 /// plugin's events, and `_synra.*` covers the host's.
 fn event_family(pattern: &str) -> String {
     let trimmed = pattern.trim_end_matches('*').trim_end_matches('.');

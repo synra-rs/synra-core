@@ -883,11 +883,11 @@ mod tests {
         let mut receiver = link_with_stream(there, PEER, LOCAL);
 
         sender
-            .send(&envelope(LOCAL, PEER, "_plugin.chat.text"))
+            .send(&envelope(LOCAL, PEER, "_plugin.@acme/chat.text"))
             .expect("sends over memory");
         let received = receiver.receive().expect("receives over memory");
 
-        assert_eq!(received.event.as_str(), "_plugin.chat.text");
+        assert_eq!(received.event.as_str(), "_plugin.@acme/chat.text");
         assert_eq!(received.from, device(LOCAL));
         assert_eq!(received.target, device(PEER));
         // And the counters the report is built from moved, so this went through the same path a socket does.

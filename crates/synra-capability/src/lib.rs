@@ -35,7 +35,7 @@
 //! network:fetch:api.github.com:POST
 //! fs:read:/data/**
 //! platform:read-clipboard
-//! event:emit:_plugin.chat.*
+//! event:emit:_plugin.@acme/chat.*
 //! ```
 //!
 //! # What is deliberately not allowed

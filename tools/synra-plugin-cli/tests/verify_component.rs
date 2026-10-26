@@ -86,6 +86,7 @@ fn a_real_component_is_read_from_the_manifest_path_and_its_actual_imports_are_ch
         .map(|cap| match *cap {
             "network:fetch:*" => "network:fetch:api.github.com:GET",
             "log:*" => "log:info",
+            "event:emit:*" => "event:emit:_plugin.@acme/verify.ready",
             cap => cap,
         })
         .collect();
@@ -96,6 +97,12 @@ fn a_real_component_is_read_from_the_manifest_path_and_its_actual_imports_are_ch
     declaration.as_object_mut().unwrap().insert(
         "network".to_owned(),
         serde_json::json!({ "outbound": [{ "host": "api.github.com", "methods": ["GET"] }] }),
+    );
+    declaration.as_object_mut().unwrap().insert(
+        "events".to_owned(),
+        serde_json::json!([{ "name": "_plugin.@acme/verify.ready", "payload": {
+            "type": "object", "properties": {}, "additionalProperties": false
+        }}]),
     );
     std::fs::write(path, declaration.to_string()).unwrap();
     let (status, report) = verify(root.path());

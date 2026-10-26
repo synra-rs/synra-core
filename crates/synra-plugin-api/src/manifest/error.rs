@@ -30,7 +30,7 @@ pub enum ManifestError {
     },
 
     /// The id has no usable wire slug.
-    #[error("the plugin id {id:?} has no usable event namespace")]
+    #[error("the plugin id {id:?} has no usable project directory slug")]
     UnsluggedId {
         /// The id that was offered.
         id: String,
@@ -100,6 +100,15 @@ pub enum ManifestError {
         name: String,
         /// The namespace the plugin owns.
         namespace: String,
+    },
+
+    /// An event declaration has invalid syntax or exceeds the event-name bound.
+    #[error("the event {name:?} is invalid: {reason}")]
+    BadEventName {
+        /// The declared name.
+        name: String,
+        /// The protocol validator's diagnosis.
+        reason: String,
     },
 
     /// An event payload schema is not usable.

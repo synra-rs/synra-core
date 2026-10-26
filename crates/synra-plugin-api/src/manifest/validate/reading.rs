@@ -2,7 +2,7 @@ use synra_capability::Capability;
 
 use crate::manifest::error::ManifestError;
 use crate::manifest::types::{Manifest, MANIFEST_SCHEMA};
-use crate::manifest::version::to_wire_slug;
+use crate::manifest::version::to_project_slug;
 
 impl Manifest {
     /// Parses a manifest, rejecting anything the shape does not allow.
@@ -46,22 +46,19 @@ impl Manifest {
         Ok(manifest)
     }
 
-    /// The wire slug this plugin's events live under.
+    /// The short directory name used by development scaffolding, separate from event ownership.
     ///
     /// # Errors
     ///
-    /// [`ManifestError::UnsluggedId`] for an id with no usable slug.
-    pub fn wire_slug(&self) -> Result<String, ManifestError> {
-        to_wire_slug(&self.id)
+    /// Returns an error when the package has no usable short project slug.
+    pub fn project_slug(&self) -> Result<String, ManifestError> {
+        to_project_slug(&self.id)
     }
 
-    /// The event namespace this plugin owns, including the trailing dot.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::wire_slug`].
-    pub fn event_namespace(&self) -> Result<String, ManifestError> {
-        Ok(format!("_plugin.{}.", self.wire_slug()?))
+    /// The namespace owned by the full package identity, including the trailing dot.
+    #[must_use]
+    pub fn event_namespace(&self) -> String {
+        self.id.event_namespace()
     }
 
     /// The capabilities, compiled into a set.

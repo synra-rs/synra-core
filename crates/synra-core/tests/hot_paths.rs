@@ -204,6 +204,20 @@ mod tests {
     }
 
     #[test]
+    fn parsing_a_qualified_plugin_event_owns_only_the_event_name() {
+        let text = "_plugin.@acme/long-package-name.ready";
+        warm_the_counter();
+        let (name, count) = CounterGuard::counted(|| {
+            synra_protocol::event::EventName::parse(text).expect("a qualified event")
+        });
+        assert_eq!(name.as_str(), text);
+        assert!(
+            within(count, 1),
+            "event ownership validation allocated a discarded id: {count}"
+        );
+    }
+
+    #[test]
     fn a_gated_host_call_stays_within_its_budget() {
         // Measure table lookup and grant coverage together for the import availability path.
         let import = "synra:plugin/host#log";

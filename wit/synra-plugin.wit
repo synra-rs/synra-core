@@ -126,6 +126,8 @@ interface host {
     // ── event:emit:* / event:subscribe:* ────────────────────────────────────────────────────────────
 
     /// Publish an event to whoever subscribed.
+    /// Plugin events use `_plugin.<full @scope/name>.<topic>` and are bounded to 240 ASCII bytes.
+    /// Complete package ownership and the concrete event grant are checked independently.
     /// @capability("event:emit:*")
     event-emit: func(event: string, payload: string) -> outcome;
 
@@ -346,7 +348,7 @@ interface actions {
 
 /// The world a plugin component implements.
 ///
-/// One world, versioned by the package: a plugin imports the host and exports the four interfaces the kernel calls.
+/// One world, versioned by the package: a plugin imports the host and exports the interfaces the kernel calls.
 /// There is no second world for a UI-only plugin, because a UI plugin is a bundle the host serves rather than a
 /// component it loads — the Manifest's `runtime` block is what says which halves exist.
 world plugin {

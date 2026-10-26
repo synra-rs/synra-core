@@ -40,7 +40,7 @@ fn arbitrary_qualifier_segment() -> impl Strategy<Value = &'static str> {
         "@a",
         "page",
         "POST",
-        "_plugin.chat.*",
+        "_plugin.@acme/chat.*",
     ])
 }
 

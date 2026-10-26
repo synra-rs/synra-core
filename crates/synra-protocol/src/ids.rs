@@ -412,6 +412,12 @@ impl PluginId {
     /// Returns [`IdError::Empty`], [`IdError::TooLong`], [`IdError::Unscoped`] or
     /// [`IdError::InvalidCharacter`].
     pub fn parse(s: &str) -> Result<Self, IdError> {
+        Self::validate(s)?;
+        Ok(Self(s.to_owned()))
+    }
+
+    // Event and pattern validation borrow the owner instead of allocating a discarded id.
+    pub(crate) fn validate(s: &str) -> Result<(), IdError> {
         if s.is_empty() {
             return Err(IdError::Empty);
         }
@@ -431,7 +437,7 @@ impl PluginId {
         // and the name right after `/`.
         validate_slug_like(scope, 1)?;
         validate_slug_like(name, 2 + scope.len())?;
-        Ok(Self(s.to_owned()))
+        Ok(())
     }
 
     /// The whole id, including the scope.
@@ -456,17 +462,12 @@ impl PluginId {
             .map_or("", |(scope, _)| scope)
     }
 
-    /// The slug used in this plugin's event namespace.
+    /// The complete event namespace owned by this package, including its publisher and trailing dot.
     ///
-    /// `@synra-plugin/chat` becomes `chat`, and `@imba97/synra-plugin-notes` becomes `notes`, so the
-    /// wire name stays short and readable while the package name stays conventional.
+    /// The full id is preserved: neither publisher names nor conventional package prefixes are aliases.
     #[must_use]
-    pub fn wire_slug(&self) -> PluginSlug {
-        let name = self.name();
-        let trimmed = name.strip_prefix("synra-plugin-").unwrap_or(name);
-        // `PluginId::parse` already restricted the name to the slug character set, so this cannot
-        // fail; the fallback keeps the function total rather than panicking.
-        PluginSlug::parse(trimmed).unwrap_or(PluginSlug(compact_str::CompactString::from("plugin")))
+    pub fn event_namespace(&self) -> String {
+        format!("{}{self}.", crate::event::PLUGIN_PREFIX)
     }
 }
 
@@ -711,20 +712,25 @@ mod tests {
     }
 
     #[test]
-    fn wire_slug_strips_the_conventional_prefix() {
-        assert_eq!(
-            PluginId::parse("@synra-plugin/chat").expect("valid").wire_slug().as_str(),
-            "chat"
-        );
-        assert_eq!(
-            PluginId::parse("@imba97/synra-plugin-notes").expect("valid").wire_slug().as_str(),
-            "notes"
-        );
-        // A name without the prefix is used as-is.
-        assert_eq!(
-            PluginId::parse("@acme/formatter").expect("valid").wire_slug().as_str(),
-            "formatter"
-        );
+    fn event_namespaces_preserve_the_full_package_identity() {
+        for (id, namespace) in [
+            ("@synra-plugin/chat", "_plugin.@synra-plugin/chat."),
+            (
+                "@imba97/synra-plugin-notes",
+                "_plugin.@imba97/synra-plugin-notes.",
+            ),
+            ("@acme/chat", "_plugin.@acme/chat."),
+            ("@other/chat", "_plugin.@other/chat."),
+            (
+                "@acme/synra-plugin-chat",
+                "_plugin.@acme/synra-plugin-chat.",
+            ),
+        ] {
+            assert_eq!(
+                PluginId::parse(id).expect("valid").event_namespace(),
+                namespace
+            );
+        }
     }
 
     #[test]

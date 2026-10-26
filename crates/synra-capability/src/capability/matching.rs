@@ -169,7 +169,7 @@ enum SegmentKind<'a> {
     Star,
     /// Any number of segments, including none.
     DoubleStar,
-    /// One segment, matched by an embedded wildcard such as `/data/**` or `_plugin.chat.*`.
+    /// One segment, matched by an embedded wildcard such as `/data/**` or `_plugin.@acme/chat.*`.
     Glob(&'a str),
 }
 
@@ -202,7 +202,7 @@ fn segment_matches(pattern: SegmentKind<'_>, candidate: &str) -> bool {
     }
 }
 
-/// Matches a pattern segment that embeds a wildcard, such as `/data/**` or `_plugin.chat.*`.
+/// Matches a pattern segment that embeds a wildcard, such as `/data/**` or `_plugin.@acme/chat.*`.
 ///
 /// A trailing `**` matches any remainder, crossing `/` and `.`. A single trailing `*` matches the rest
 /// of one path component: `/data/*` covers `/data/file` but not `/data/sub/file`, and that boundary is

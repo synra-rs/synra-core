@@ -13,7 +13,7 @@ fn real_capabilities_parse() {
     for text in [
         "log:*",
         "log:debug",
-        "event:emit:_plugin.chat.*",
+        "event:emit:_plugin.@acme/chat.*",
         "event:subscribe:_synra.device.*",
         "device:list",
         "device:send:@synra-pc",
@@ -120,7 +120,7 @@ fn a_qualifier_admits_the_forms_the_domains_need() {
         "network:fetch:xn--fsqu00a.com",
         "fs:read:/data/**",
         "device:send:@synra-pc",
-        "event:emit:_plugin.chat.*",
+        "event:emit:_plugin.@acme/chat.*",
         "ui:navigate:settings-page",
     ] {
         assert!(Capability::parse(text).is_ok(), "{text}");
@@ -146,14 +146,14 @@ fn the_segment_ceiling_is_enforced() {
 #[test]
 fn a_qualifier_has_a_character_class_of_its_own() {
     // A qualifier admits dots, slashes, `@` and `*`, which a prefix does not: `api.github.com`,
-    // `/data/**`, `@synra-pc` and `_plugin.chat.*` are qualifiers, and rejecting them would reject
+    // `/data/**`, `@synra-pc` and `_plugin.@acme/chat.*` are qualifiers, and rejecting them would reject
     // every capability the design document lists.
     for text in [
         "network:fetch:api.github.com",
         "network:fetch:api.x.com:POST",
         "fs:read:/data/**",
         "device:send:@synra-pc",
-        "event:emit:_plugin.chat.*",
+        "event:emit:_plugin.@acme/chat.*",
     ] {
         assert!(Capability::parse(text).is_ok(), "{text} should parse");
     }
@@ -280,9 +280,13 @@ fn a_single_wildcard_in_a_qualifier_stays_within_one_segment() {
 
 #[test]
 fn an_event_pattern_qualifier_matches_a_family() {
-    let pattern = Capability::parse("event:emit:_plugin.chat.*").expect("valid");
-    assert!(pattern.matches(&Capability::parse("event:emit:_plugin.chat.text").expect("valid")));
-    assert!(!pattern.matches(&Capability::parse("event:emit:_plugin.notes.text").expect("valid")));
+    let pattern = Capability::parse("event:emit:_plugin.@acme/chat.*").expect("valid");
+    assert!(
+        pattern.matches(&Capability::parse("event:emit:_plugin.@acme/chat.text").expect("valid"))
+    );
+    assert!(
+        !pattern.matches(&Capability::parse("event:emit:_plugin.@acme/notes.text").expect("valid"))
+    );
 }
 
 #[test]
@@ -304,8 +308,16 @@ fn is_exact_distinguishes_a_value_from_a_family() {
     assert!(!Capability::parse("ui:**").expect("valid").is_exact());
     // A wildcard inside a qualifier counts: `/data/**` covers many paths even though it is
     // written as one segment.
-    assert!(!Capability::parse("fs:read:/data/**").expect("valid").is_exact());
-    assert!(!Capability::parse("event:emit:_plugin.chat.*").expect("valid").is_exact());
+    assert!(
+        !Capability::parse("fs:read:/data/**")
+            .expect("valid")
+            .is_exact()
+    );
+    assert!(
+        !Capability::parse("event:emit:_plugin.@acme/chat.*")
+            .expect("valid")
+            .is_exact()
+    );
 }
 
 #[test]
@@ -334,7 +346,7 @@ fn every_capability_has_a_human_description() {
         "platform:read-clipboard",
         "storage:local:read",
         "file:transfer:send",
-        "event:emit:_plugin.chat.*",
+        "event:emit:_plugin.@acme/chat.*",
         "ui:page",
     ] {
         let capability = Capability::parse(text).expect("valid");

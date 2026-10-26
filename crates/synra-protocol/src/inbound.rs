@@ -24,7 +24,7 @@
 //! # Why `handles` patterns are a separate grammar
 //!
 //! A [`HandlePattern`] may contain `*`, and an [`EventName`] may not. That separation is load-bearing:
-//! `_plugin.chat.*` describes what a plugin wants to *receive* and can never be sent, so a routing
+//! `_plugin.@acme/chat.*` describes what a plugin wants to *receive* and can never be sent, so a routing
 //! table built from names never has to ask whether one of its entries is a pattern. Two grammars,
 //! two types, no ambiguity.
 //!
@@ -46,7 +46,7 @@ use smallvec::SmallVec;
 use crate::envelope::Envelope;
 use crate::error::{ErrorCode, SynraError};
 use crate::event::{builtin, events, DataPlaneEvent, EventName};
-use crate::ids::PluginSlug;
+use crate::ids::PluginId;
 
 /// The most wildcards a single `handles` entry may contain.
 ///
@@ -68,12 +68,21 @@ pub enum PatternError {
     #[error("handle pattern is empty")]
     Empty,
 
+    /// The pattern exceeds the event-name limit.
+    #[error("handle pattern is {len} bytes, the limit is {max}")]
+    TooLong {
+        /// Observed length.
+        len: usize,
+        /// Maximum accepted length.
+        max: usize,
+    },
+
     /// The pattern has an empty segment.
     #[error("handle pattern {0:?} has an empty segment")]
     EmptySegment(String),
 
     /// A segment has a character outside the grammar.
-    #[error("handle pattern {pattern:?} has a character outside [A-Za-z0-9_-*]: {segment:?}")]
+    #[error("handle pattern {pattern:?} has an invalid event segment or package id: {segment:?}")]
     BadCharacter {
         /// The whole pattern.
         pattern: String,
@@ -101,14 +110,14 @@ pub enum PatternError {
 /// plus a standalone `*` segment, which matches exactly one segment.
 ///
 /// ```text
-/// "_plugin.chat.*"             the chat plugin's own events, one segment deep
-/// "_plugin.chat.room.*"        one segment deeper
+/// "_plugin.@acme/chat.*"             the chat plugin's own events, one segment deep
+/// "_plugin.@acme/chat.room.*"        one segment deeper
 /// "_synra.transfer.completed"  a built-in, no wildcard
 /// "file.transfer.*"            a data-plane family
 /// ```
 ///
 /// A trailing `*` does **not** match a name ending in a dot, and does not match multiple segments:
-/// `_plugin.chat.*` matches `_plugin.chat.text` but not `_plugin.chat.room.message`. That is
+/// `_plugin.@acme/chat.*` matches `_plugin.@acme/chat.text` but not `_plugin.@acme/chat.room.message`. That is
 /// deliberate. A pattern that could match an unbounded number of segments makes "which plugin gets
 /// this event" impossible to answer by reading a manifest.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -132,6 +141,12 @@ impl HandlePattern {
     pub fn parse(pattern: &str) -> Result<Self, PatternError> {
         if pattern.is_empty() {
             return Err(PatternError::Empty);
+        }
+        if pattern.len() > crate::event::MAX_EVENT_NAME_LEN {
+            return Err(PatternError::TooLong {
+                len: pattern.len(),
+                max: crate::event::MAX_EVENT_NAME_LEN,
+            });
         }
 
         let mut prefix = String::new();
@@ -164,16 +179,20 @@ impl HandlePattern {
             }
 
             if segment.contains('*') {
-                // `_plugin.chat.tex*` is refused rather than treated as a prefix match: a partial
+                // `_plugin.@acme/chat.tex*` is refused rather than treated as a prefix match: a partial
                 // wildcard is a different feature, and supporting it silently would make manifests
                 // mean something their authors did not intend.
                 return Err(PatternError::PartialWildcard(pattern.to_owned()));
             }
 
-            if !segment
-                .chars()
-                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
-            {
+            let valid = if segments == 2 && pattern.starts_with("_plugin.") {
+                PluginId::validate(segment).is_ok()
+            } else {
+                segment
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+            };
+            if !valid {
                 return Err(PatternError::BadCharacter {
                     pattern: pattern.to_owned(),
                     segment: segment.to_owned(),
@@ -294,8 +313,8 @@ pub enum Inbound {
 
     /// A plugin-defined event.
     Plugin {
-        /// The owning plugin's slug.
-        owner: PluginSlug,
+        /// The owning plugin's complete package id.
+        owner: PluginId,
         /// The event name.
         event: EventName,
         /// The message. The payload stays raw: the kernel does not know this shape.
@@ -382,7 +401,7 @@ impl Inbound {
             };
         }
         if let Some((owner, _)) = name.plugin_scope()
-            && let Ok(slug) = PluginSlug::parse(owner)
+            && let Ok(slug) = PluginId::parse(owner)
         {
             return Self::Plugin { owner: slug, event: name, envelope: Box::new(envelope) };
         }
@@ -554,14 +573,14 @@ pub enum BuiltinEvent {
     /// A plugin was installed on this device.
     PluginInstalled {
         /// Which plugin.
-        plugin: crate::ids::PluginId,
+        plugin: PluginId,
         /// Its version.
         version: String,
     },
     /// A plugin was updated on this device.
     PluginUpdated {
         /// Which plugin.
-        plugin: crate::ids::PluginId,
+        plugin: PluginId,
         /// The version it was.
         from: String,
         /// The version it became.
@@ -570,12 +589,12 @@ pub enum BuiltinEvent {
     /// A plugin was uninstalled from this device.
     PluginUninstalled {
         /// Which plugin.
-        plugin: crate::ids::PluginId,
+        plugin: PluginId,
     },
     /// A plugin's granted capabilities changed.
     PluginCapabilityChanged {
         /// Which plugin.
-        plugin: crate::ids::PluginId,
+        plugin: PluginId,
         /// The capabilities it now holds, as DSL strings.
         capabilities: Vec<String>,
     },
@@ -727,19 +746,19 @@ impl BuiltinEvent {
                 from: crate::ids::DeviceId::new(),
             },
             builtin::PLUGIN_INSTALLED => Self::PluginInstalled {
-                plugin: crate::ids::PluginId::parse("@synra-plugin/unknown").ok()?,
+                plugin: PluginId::parse("@synra-plugin/unknown").ok()?,
                 version: String::new(),
             },
             builtin::PLUGIN_UPDATED => Self::PluginUpdated {
-                plugin: crate::ids::PluginId::parse("@synra-plugin/unknown").ok()?,
+                plugin: PluginId::parse("@synra-plugin/unknown").ok()?,
                 from: String::new(),
                 to: String::new(),
             },
             builtin::PLUGIN_UNINSTALLED => Self::PluginUninstalled {
-                plugin: crate::ids::PluginId::parse("@synra-plugin/unknown").ok()?,
+                plugin: PluginId::parse("@synra-plugin/unknown").ok()?,
             },
             builtin::PLUGIN_CAPABILITY_CHANGED => Self::PluginCapabilityChanged {
-                plugin: crate::ids::PluginId::parse("@synra-plugin/unknown").ok()?,
+                plugin: PluginId::parse("@synra-plugin/unknown").ok()?,
                 capabilities: Vec::new(),
             },
             builtin::HOST_FOREGROUND => Self::HostForeground,
@@ -1010,8 +1029,33 @@ mod tests {
     use crate::event::EventName;
     use crate::ids::{DeviceId, TraceId};
 
-    fn slug(text: &str) -> PluginSlug {
-        PluginSlug::parse(text).expect("valid slug")
+    #[test]
+    fn package_patterns_keep_publisher_identity_and_have_a_length_bound() {
+        let pattern = HandlePattern::parse("_plugin.@acme/chat.*").unwrap();
+        assert!(pattern.matches("_plugin.@acme/chat.ready"));
+        assert!(!pattern.matches("_plugin.@other/chat.ready"));
+        assert!(!pattern.matches("_plugin.@acme/synra-plugin-chat.ready"));
+        for bad in [
+            "_plugin.chat.*",
+            "_plugin.@acme/../chat.*",
+            "_plugin.@acme/chat.topic/extra",
+        ] {
+            assert!(HandlePattern::parse(bad).is_err(), "{bad}");
+        }
+        let prefix = "_plugin.@acme/chat.";
+        let at_limit = format!(
+            "{prefix}{}",
+            "x".repeat(crate::event::MAX_EVENT_NAME_LEN - prefix.len())
+        );
+        assert!(HandlePattern::parse(&at_limit).is_ok());
+        assert!(matches!(
+            HandlePattern::parse(&format!("{at_limit}x")),
+            Err(PatternError::TooLong { .. })
+        ));
+    }
+
+    fn slug(text: &str) -> PluginId {
+        PluginId::parse(&format!("@acme/{text}")).expect("valid plugin id")
     }
 
     fn envelope(event: &str, from: DeviceId, target: DeviceId) -> Envelope {
@@ -1044,19 +1088,19 @@ mod tests {
 
     #[test]
     fn a_trailing_wildcard_matches_exactly_one_segment() {
-        let pattern = HandlePattern::parse("_plugin.chat.*").expect("valid");
+        let pattern = HandlePattern::parse("_plugin.@acme/chat.*").expect("valid");
         assert!(!pattern.is_exact());
         assert_eq!(pattern.wildcard_count(), 1);
 
-        assert!(pattern.matches("_plugin.chat.text"));
-        assert!(pattern.matches("_plugin.chat.typing"));
+        assert!(pattern.matches("_plugin.@acme/chat.text"));
+        assert!(pattern.matches("_plugin.@acme/chat.typing"));
         // Deeper names do not match. A pattern that could match an unbounded number of segments
         // makes "which plugin gets this event" unanswerable from a manifest.
-        assert!(!pattern.matches("_plugin.chat.room.message"));
+        assert!(!pattern.matches("_plugin.@acme/chat.room.message"));
         // And neither does a shorter one.
-        assert!(!pattern.matches("_plugin.chat"));
+        assert!(!pattern.matches("_plugin.@acme/chat"));
         // Nor another plugin's namespace.
-        assert!(!pattern.matches("_plugin.notes.text"));
+        assert!(!pattern.matches("_plugin.@acme/notes.text"));
     }
 
     #[test]
@@ -1088,7 +1132,7 @@ mod tests {
         // `tex*` is a different feature. Accepting it silently would make a manifest mean something
         // its author did not intend.
         assert!(matches!(
-            HandlePattern::parse("_plugin.chat.tex*"),
+            HandlePattern::parse("_plugin.@acme/chat.tex*"),
             Err(PatternError::PartialWildcard(_))
         ));
         assert!(HandlePattern::parse("_plugin.*chat.text").is_err());
@@ -1102,11 +1146,11 @@ mod tests {
             Err(PatternError::EmptySegment(_))
         ));
         assert!(matches!(
-            HandlePattern::parse("_plugin.chat.a/b"),
+            HandlePattern::parse("_plugin.@acme/chat.a/b"),
             Err(PatternError::BadCharacter { .. })
         ));
         assert!(matches!(
-            HandlePattern::parse("_plugin.chat.a b"),
+            HandlePattern::parse("_plugin.@acme/chat.a b"),
             Err(PatternError::BadCharacter { .. })
         ));
     }
@@ -1135,9 +1179,9 @@ mod tests {
     fn exact_patterns_and_wildcards_agree_with_event_names() {
         // A pattern that parses must be able to match at least one *sendable* name, or the plugin
         // declares a subscription that can never fire.
-        let pattern = HandlePattern::parse("_plugin.chat.*").expect("valid");
-        assert!(pattern.matches("_plugin.chat.text"));
-        assert!(EventName::parse("_plugin.chat.text").is_ok());
+        let pattern = HandlePattern::parse("_plugin.@acme/chat.*").expect("valid");
+        assert!(pattern.matches("_plugin.@acme/chat.text"));
+        assert!(EventName::parse("_plugin.@acme/chat.text").is_ok());
     }
 
     // ── HandleSet ──────────────────────────────────────────────────────────────────────────────
@@ -1147,7 +1191,7 @@ mod tests {
         let set = HandleSet::compile([
             "_synra.transfer.completed",
             "_synra.device.changed",
-            "_plugin.chat.*",
+            "_plugin.@acme/chat.*",
         ])
         .expect("compiles");
 
@@ -1156,9 +1200,9 @@ mod tests {
         assert!(!set.is_empty());
 
         assert!(set.matches("_synra.transfer.completed"));
-        assert!(set.matches("_plugin.chat.text"));
+        assert!(set.matches("_plugin.@acme/chat.text"));
         assert!(!set.matches("_synra.share.received"));
-        assert!(!set.matches("_plugin.notes.text"));
+        assert!(!set.matches("_plugin.@acme/notes.text"));
     }
 
     #[test]
@@ -1178,13 +1222,17 @@ mod tests {
 
     #[test]
     fn wildcard_rules_are_bounded() {
-        let many: Vec<String> = (0..=MAX_WILDCARD_RULES).map(|i| format!("_plugin.p{i}.*")).collect();
+        let many: Vec<String> = (0..=MAX_WILDCARD_RULES)
+            .map(|i| format!("_plugin.@acme/p{i}.*"))
+            .collect();
         assert!(matches!(
             HandleSet::compile(many),
             Err(HandleSetError::TooManyWildcards { max: MAX_WILDCARD_RULES })
         ));
 
-        let at_limit: Vec<String> = (0..MAX_WILDCARD_RULES).map(|i| format!("_plugin.p{i}.*")).collect();
+        let at_limit: Vec<String> = (0..MAX_WILDCARD_RULES)
+            .map(|i| format!("_plugin.@acme/p{i}.*"))
+            .collect();
         assert!(HandleSet::compile(at_limit).is_ok());
     }
 
@@ -1265,7 +1313,7 @@ mod tests {
     #[test]
     fn plugin_events_report_their_owner() {
         let (a, b) = (DeviceId::new(), DeviceId::new());
-        let inbound = Inbound::classify(envelope("_plugin.chat.text", a, b));
+        let inbound = Inbound::classify(envelope("_plugin.@acme/chat.text", a, b));
         match inbound {
             Inbound::Plugin { owner, .. } => assert_eq!(owner, slug("chat")),
             other => panic!("expected a plugin event, got {other:?}"),
@@ -1318,7 +1366,7 @@ mod tests {
     #[test]
     fn every_classified_message_keeps_its_envelope() {
         let (a, b) = (DeviceId::new(), DeviceId::new());
-        let original = envelope("_plugin.chat.text", a, b);
+        let original = envelope("_plugin.@acme/chat.text", a, b);
         let request_id = original.request_id;
 
         for inbound in [

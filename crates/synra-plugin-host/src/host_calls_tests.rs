@@ -69,10 +69,19 @@ fn every_function_in_the_contract_reaches_the_host_rather_than_an_unknown_functi
     // signature should name a standard container — which is why `implemented` answers with pairs.
     let arguments = std::collections::BTreeMap::from([
         ("log", r#"{"level":"info","message":"hello"}"#),
-        ("event-emit", r#"{"event":"_plugin.chat.something","payload":"{}"}"#),
+        (
+            "event-emit",
+            r#"{"event":"_plugin.@acme/chat.something","payload":"{}"}"#,
+        ),
         ("event-subscribe", "a.*"),
-        ("device-send", r#"{"target":"device-a","event":"_plugin.chat.something","payload":"{}"}"#),
-        ("device-broadcast", r#"{"event":"_plugin.chat.something","payload":"{}"}"#),
+        (
+            "device-send",
+            r#"{"target":"device-a","event":"_plugin.@acme/chat.something","payload":"{}"}"#,
+        ),
+        (
+            "device-broadcast",
+            r#"{"event":"_plugin.@acme/chat.something","payload":"{}"}"#,
+        ),
         ("storage-get", "known"),
         ("storage-set", r#"{"key":"k","value":"v"}"#),
         ("storage-delete", "k"),
@@ -238,8 +247,14 @@ fn a_pure_session_refuses_the_calls_that_act() {
     // Every action-shaped call is refused, and the code says why: the plugin holds the capability, so
     // `capabilityDenied` would send a user to grant something they already granted.
     for (import, argument) in [
-        ("event-emit", r#"{"event":"_plugin.chat.something","payload":"{}"}"#),
-        ("device-send", r#"{"target":"device-a","event":"_plugin.chat.something","payload":"{}"}"#),
+        (
+            "event-emit",
+            r#"{"event":"_plugin.@acme/chat.something","payload":"{}"}"#,
+        ),
+        (
+            "device-send",
+            r#"{"target":"device-a","event":"_plugin.@acme/chat.something","payload":"{}"}"#,
+        ),
         ("storage-set", r#"{"key":"k","value":"v"}"#),
         ("secret-set", r#"{"key":"k","value":"v"}"#),
         ("platform-open-url", "https://example"),
@@ -299,7 +314,7 @@ fn a_plugin_cannot_emit_an_event_in_another_plugins_namespace() {
     // `EventName::check_emittable_by` was written, tested and documented as the enforcement point — its own doc says
     // "The host calls this on every outbound plugin event. It is the difference between 'plugins have their own
     // namespace' being true and it being a sentence in a document" — and **the host did not call it**. Every call site
-    // was in its own test module, so a plugin could emit `_plugin.notes.something` and every subscriber would believe it
+    // was in its own test module, so a plugin could emit `_plugin.@acme/notes.something` and every subscriber would believe it
     // came from `notes`.
     let host = Stub::with_devices(&[]);
     let grants = all_capabilities();
@@ -310,12 +325,12 @@ fn a_plugin_cannot_emit_an_event_in_another_plugins_namespace() {
     let refused = calls
         .call(
             "synra:plugin/host#event-emit",
-            r#"{"event":"_plugin.notes.something","payload":"{}"}"#,
+            r#"{"event":"_plugin.@acme/notes.something","payload":"{}"}"#,
         )
         .expect_err("another plugin's namespace is not this plugin's to use");
 
-    assert_eq!(refused.code, CallError::BAD_ARGUMENT);
-    // The message names whose namespace it is, because "bad argument" alone does not tell an author what to change.
+    assert_eq!(refused.code, CallError::CAPABILITY_DENIED);
+    // The message names whose namespace it is, because "denied" alone does not tell an author what to change.
     assert!(refused.message.contains("notes"), "{}", refused.message);
 }
 
@@ -337,7 +352,7 @@ fn a_plugin_cannot_emit_a_host_event() {
             )
             .expect_err("a host event is not a plugin's to emit");
 
-        assert_eq!(refused.code, CallError::BAD_ARGUMENT, "{event}");
+        assert_eq!(refused.code, CallError::CAPABILITY_DENIED, "{event}");
         // And it names the event, so an author reading the refusal knows which call to change rather than guessing
         // among the several an event-emitting plugin makes.
         assert!(refused.message.contains(event), "{}", refused.message);
@@ -769,7 +784,10 @@ fn a_returned_value_that_is_empty_becomes_the_json_null_the_glue_expects() {
     let mut audit = Vec::new();
     let mut calls = session(&host, &grants, &budget, &mut audit);
     assert_eq!(
-        calls.call("synra:plugin/host#event-emit", r#"{"event":"_plugin.chat.something","payload":"{}"}"#),
+        calls.call(
+            "synra:plugin/host#event-emit",
+            r#"{"event":"_plugin.@acme/chat.something","payload":"{}"}"#
+        ),
         Ok("null".to_owned())
     );
 }
@@ -1192,4 +1210,164 @@ fn scoped_log_escaped_json_levels_preserve_their_concrete_authority() {
             .is_ok()
     );
     assert_eq!(host.called(), ["log"]);
+}
+
+#[test]
+fn plugins_with_the_same_package_name_cannot_emit_each_others_events() {
+    let host = Stub::default();
+    let grants = granted(&["event:emit:*"]);
+    let budget = budget();
+    let mut audit = Vec::new();
+    let argument = r#"{"event":"_plugin.@acme/chat.ready","payload":"{}"}"#;
+    let mut owner = HostCalls::new(
+        &host,
+        PluginId::parse("@acme/chat").unwrap(),
+        &grants,
+        &budget,
+        &mut audit,
+    );
+    assert!(owner.call("synra:plugin/host#event-emit", argument).is_ok());
+    let mut other = HostCalls::new(
+        &host,
+        PluginId::parse("@other/chat").unwrap(),
+        &grants,
+        &budget,
+        &mut audit,
+    );
+    assert_eq!(
+        other
+            .call("synra:plugin/host#event-emit", argument)
+            .unwrap_err()
+            .code,
+        CallError::CAPABILITY_DENIED
+    );
+    assert_eq!(host.called(), ["event-emit"]);
+}
+
+#[test]
+fn scoped_events_authorize_the_concrete_name_and_recheck_revocation() {
+    let host = Stub::default();
+    let budget = budget();
+    let mut audit = Vec::new();
+    for (caps, event, allowed) in [
+        (
+            &["event:emit:_plugin.@acme/chat.ready"][..],
+            "_plugin.@acme/chat.ready",
+            true,
+        ),
+        (
+            &["event:emit:_plugin.@acme/chat.ready"][..],
+            "_plugin.@acme/chat.other",
+            false,
+        ),
+        (&[][..], "_plugin.@acme/chat.ready", false),
+    ] {
+        let grants = granted(caps);
+        let mut calls = session(&host, &grants, &budget, &mut audit);
+        let argument = serde_json::json!({"event": event, "payload": "{}"}).to_string();
+        let result = calls.call("synra:plugin/host#event-emit", &argument);
+        if allowed {
+            assert!(result.is_ok(), "{result:?}");
+        } else {
+            assert_eq!(result.unwrap_err().code, CallError::CAPABILITY_DENIED);
+        }
+    }
+    assert_eq!(host.called(), ["event-emit"]);
+    assert_eq!(
+        audit
+            .iter()
+            .filter(|entry| entry.outcome == AuditOutcome::Denied)
+            .count(),
+        2
+    );
+    for cap in [
+        "event:emit:_plugin.@acme/chat.ready",
+        "event:emit:_plugin.@acme/chat.*",
+        "event:**",
+    ] {
+        assert!(host_surface::permits(
+            "synra:plugin/host#event-emit",
+            &granted(&[cap])
+        ));
+    }
+}
+
+#[test]
+fn event_capabilities_cannot_override_identity_or_invent_event_names() {
+    let host = Stub::default();
+    let grants = granted(&["event:emit:*"]);
+    let budget = budget();
+    let mut audit = Vec::new();
+    {
+        let mut calls = session(&host, &grants, &budget, &mut audit);
+        for (event, expected) in [
+            ("_plugin.@other/chat.ready", CallError::CAPABILITY_DENIED),
+            (
+                "_plugin.@acme/synra-plugin-chat.ready",
+                CallError::CAPABILITY_DENIED,
+            ),
+            ("_plugin.chat.ready", CallError::BAD_ARGUMENT),
+            ("_plugin.@acme/chat.*", CallError::BAD_ARGUMENT),
+            ("_synra.device.changed", CallError::CAPABILITY_DENIED),
+        ] {
+            let argument = serde_json::json!({"event": event}).to_string();
+            assert_eq!(
+                calls
+                    .call("synra:plugin/host#event-emit", &argument)
+                    .unwrap_err()
+                    .code,
+                expected
+            );
+        }
+    }
+    assert!(host.called().is_empty());
+    assert_eq!(
+        audit
+            .iter()
+            .filter(|entry| entry.outcome == AuditOutcome::Denied)
+            .count(),
+        3
+    );
+    assert_eq!(
+        audit
+            .iter()
+            .filter(|entry| entry.outcome == AuditOutcome::Failed)
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn escaped_event_owner_strings_preserve_their_authority_and_maximal_names_fit() {
+    let host = Stub::default();
+    let grants = granted(&["event:emit:_plugin.@acme/chat.*"]);
+    let budget = budget();
+    let mut audit = Vec::new();
+    {
+        let mut calls = session(&host, &grants, &budget, &mut audit);
+        assert!(
+            calls
+                .call(
+                    "synra:plugin/host#event-emit",
+                    r#"{"event":"_plugin.@acme\/chat.ready","payload":"{}"}"#
+                )
+                .is_ok()
+        );
+        let prefix = "_plugin.@acme/chat.";
+        let event = format!(
+            "{prefix}{}",
+            "x".repeat(synra_protocol::event::MAX_EVENT_NAME_LEN - prefix.len())
+        );
+        let argument = serde_json::json!({"event": event}).to_string();
+        assert!(
+            calls
+                .call("synra:plugin/host#event-emit", &argument)
+                .is_ok()
+        );
+    }
+    assert_eq!(host.called(), ["event-emit", "event-emit"]);
+    assert_eq!(
+        synra_protocol::event::MAX_EVENT_NAME_LEN + "event:subscribe:".len(),
+        synra_capability::capability::MAX_LEN
+    );
 }
