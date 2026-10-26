@@ -228,6 +228,9 @@ pub struct SynraError {
     /// Trace id of the operation that failed, so a report can be tied to a log.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trace_id: Option<String>,
+    /// Optional structured diagnostic context. Never use it to override the error classification.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<Box<serde_json::Value>>,
 }
 
 impl fmt::Display for SynraError {
@@ -249,6 +252,7 @@ impl SynraError {
             retryable: code.retryable(),
             actions: Vec::new(),
             trace_id: None,
+            details: None,
         }
     }
 
@@ -323,6 +327,13 @@ impl SynraError {
     #[must_use]
     pub fn with_action(mut self, action: SuggestedAction) -> Self {
         self.actions.push(action);
+        self
+    }
+
+    /// Attaches diagnostic context without changing the error classification.
+    #[must_use]
+    pub fn with_details(mut self, details: serde_json::Value) -> Self {
+        self.details = Some(Box::new(details));
         self
     }
 
@@ -532,6 +543,9 @@ mod tests {
     #[test]
     fn error_round_trips_over_the_wire() {
         let err = SynraError::capability_denied("network:fetch:api.example.com")
+            .with_details(
+                serde_json::json!({"pluginCode":"hostFailed","pluginDetails":{"label":"中文🖱️"}}),
+            )
             .with_trace("0123456789abcdef0123456789abcdef");
 
         let json = serde_json::to_string(&err).expect("serialises");

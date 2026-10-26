@@ -179,6 +179,38 @@ impl Board {
         request_id: Option<RequestId>,
         now_ms: i64,
     ) -> (IntentId, TraceId, bool) {
+        self.raise_with_trace(source, choice, origin, request_id, None, now_ms)
+    }
+
+    /// Receive authenticated remote work while retaining the originating operation's trace.
+    /// A duplicate keeps the original trace and outcome, even if the new envelope claims another trace.
+    pub fn receive(
+        &mut self,
+        source: IntentSource,
+        origin: DeviceId,
+        request: RequestId,
+        trace: TraceId,
+        now_ms: i64,
+    ) -> (IntentId, TraceId, bool) {
+        self.raise_with_trace(
+            source,
+            Choice::default(),
+            Some(origin),
+            Some(request),
+            Some(trace),
+            now_ms,
+        )
+    }
+
+    fn raise_with_trace(
+        &mut self,
+        source: IntentSource,
+        choice: Choice,
+        origin: Option<DeviceId>,
+        request_id: Option<RequestId>,
+        trace: Option<TraceId>,
+        now_ms: i64,
+    ) -> (IntentId, TraceId, bool) {
         // ★ The idempotency check comes before anything is created. A sender whose answer was lost resends the same
         // request, and raising a second intent would run a user's action twice — the failure this exists to prevent,
         // and the one a "did we already do this" check placed *after* creation cannot prevent.
@@ -191,7 +223,7 @@ impl Board {
         }
 
         let id = IntentId::new();
-        let trace = TraceId::new();
+        let trace = trace.unwrap_or_default();
         let deadline = now_ms.saturating_add(i64::try_from(self.matching_window.as_millis()).unwrap_or(i64::MAX));
         let implied = source.implied_action();
         let state = match implied {
@@ -446,26 +478,19 @@ impl Board {
     ///
     /// [`IntentError::Unknown`] when there is no such intent. An outcome for an intent this board has forgotten is
     /// **not** an error at the protocol level — it is a late answer, and the caller logs it.
-    pub fn conclude(&mut self, id: IntentId, ok: bool, result: &str, error: Option<SynraError>, elapsed_ms: u64) -> Result<IntentState, IntentError> {
+    pub fn conclude(
+        &mut self,
+        id: IntentId,
+        outcome: Result<serde_json::Value, SynraError>,
+        elapsed_ms: u64,
+    ) -> Result<IntentState, IntentError> {
         let intent = self.intents.get(&id).ok_or(IntentError::Unknown { intent_id: id })?;
         if intent.state.is_final() {
-            // A second outcome for an intent that already ended. Kept as the first answer: a device that reports
-            // success and then failure has not changed what happened.
             return Ok(intent.state.clone());
         }
-        let next = if ok {
-            IntentState::Succeeded {
-                // A payload that does not parse is stored as a JSON string rather than refused: the action *succeeded*,
-                // and turning a formatting problem into a failure would report the wrong thing to the user.
-                result: serde_json::from_str(result)
-                    .unwrap_or_else(|_| serde_json::Value::String(result.to_owned())),
-                elapsed_ms,
-            }
-        } else {
-            IntentState::Failed {
-                error: error.unwrap_or_else(|| SynraError::new(synra_protocol::error::ErrorCode::Internal, result)),
-                elapsed_ms,
-            }
+        let next = match outcome {
+            Ok(result) => IntentState::Succeeded { result, elapsed_ms },
+            Err(error) => IntentState::Failed { error, elapsed_ms },
         };
         let _ = self.set_state(id, next);
         self.intents

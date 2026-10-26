@@ -384,7 +384,7 @@ fn a_dispatch_is_found_by_the_request_and_the_device_it_went_to() {
     assert_eq!(board.dispatched_to(RequestId::new(), target), None, "another request is another dispatch");
 
     // Once it concludes it is no longer dispatched to anything, which is what stops a late duplicate from being applied.
-    let _ = board.conclude(id, true, "\"opened\"", None, 1);
+    let _ = board.conclude(id, Ok(serde_json::json!("opened")), 1);
     assert_eq!(board.dispatched_to(request, target), None);
 }
 
@@ -415,7 +415,7 @@ fn a_successful_outcome_is_recorded_with_its_result() {
     let _ = board.confirm(id);
 
     let ended = board
-        .conclude(id, true, r#"{"opened":true}"#, None, 42)
+        .conclude(id, Ok(serde_json::json!({"opened":true})), 42)
         .expect("an outcome");
     match ended {
         IntentState::Succeeded { result, elapsed_ms } => {
@@ -427,11 +427,13 @@ fn a_successful_outcome_is_recorded_with_its_result() {
 }
 
 #[test]
-fn a_result_that_is_not_json_is_kept_as_text_rather_than_turned_into_a_failure() {
-    // The action *succeeded*. Turning a formatting problem into a failure would report the wrong thing to the user.
+fn a_text_result_is_recorded_without_becoming_a_failure() {
+    // Text has already been normalized at the execution boundary; the board stores the typed success.
     let mut board = board();
     let (id, ..) = board.raise(share(), Choice::Automatic, None, None, NOW);
-    let ended = board.conclude(id, true, "just words", None, 1).expect("an outcome");
+    let ended = board
+        .conclude(id, Ok(serde_json::json!("just words")), 1)
+        .expect("an outcome");
 
     match ended {
         IntentState::Succeeded { result, .. } => {
@@ -447,7 +449,9 @@ fn a_failed_outcome_carries_the_devices_own_error_code() {
     let (id, ..) = board.raise(share(), Choice::Automatic, None, None, NOW);
     let error = SynraError::new(ErrorCode::CapabilityDenied, "the plugin may not open URLs");
 
-    let ended = board.conclude(id, false, "denied", Some(error.clone()), 3).expect("an outcome");
+    let ended = board
+        .conclude(id, Err(error.clone()), 3)
+        .expect("an outcome");
     match ended {
         IntentState::Failed { error: carried, elapsed_ms } => {
             assert_eq!(carried, error);
@@ -463,8 +467,19 @@ fn a_second_outcome_does_not_change_what_happened() {
     // shown, and the promise to conclude once is what a test can hold the kernel to.
     let mut board = board();
     let (id, ..) = board.raise(share(), Choice::Automatic, None, None, NOW);
-    let first = board.conclude(id, true, "1", None, 1).expect("an outcome");
-    let second = board.conclude(id, false, "0", None, 2).expect("an outcome");
+    let first = board
+        .conclude(id, Ok(serde_json::json!(1)), 1)
+        .expect("an outcome");
+    let second = board
+        .conclude(
+            id,
+            Err(SynraError::new(
+                ErrorCode::Internal,
+                "ignored repeated result",
+            )),
+            2,
+        )
+        .expect("an outcome");
 
     assert_eq!(first, second);
     assert!(first.is_final());
@@ -473,7 +488,7 @@ fn a_second_outcome_does_not_change_what_happened() {
 #[test]
 fn a_late_outcome_for_a_forgotten_intent_names_the_intent_rather_than_panicking() {
     let mut board = board();
-    match board.conclude(IntentId::new(), true, "1", None, 1) {
+    match board.conclude(IntentId::new(), Ok(serde_json::json!(1)), 1) {
         Err(IntentError::Unknown { intent_id }) => assert!(!intent_id.to_string().is_empty()),
         other => panic!("expected an unknown-intent error, got {other:?}"),
     }
@@ -485,7 +500,9 @@ fn cancelling_something_that_already_ended_is_not_an_error() {
     // about an invalid state.
     let mut board = board();
     let (id, ..) = board.raise(share(), Choice::Automatic, None, None, NOW);
-    let ended = board.conclude(id, true, "1", None, 1).expect("an outcome");
+    let ended = board
+        .conclude(id, Ok(serde_json::json!(1)), 1)
+        .expect("an outcome");
 
     assert_eq!(board.cancel(id, "the user closed the window").expect("a no-op"), ended);
 }
@@ -528,7 +545,7 @@ fn a_live_list_is_ordered_and_excludes_what_ended() {
     let mut board = board();
     let (first, ..) = board.raise(share(), Choice::Automatic, None, None, NOW);
     let (second, ..) = board.raise(share(), Choice::Automatic, None, None, NOW + 1);
-    let _ = board.conclude(first, true, "1", None, 1);
+    let _ = board.conclude(first, Ok(serde_json::json!(1)), 1);
 
     let live: Vec<IntentId> = board.live().iter().map(|intent| intent.id).collect();
     assert_eq!(live, vec![second], "the ended one is not live and the order is by age");
@@ -542,7 +559,7 @@ fn the_sweep_drops_the_oldest_finished_intents_and_nothing_else() {
     let mut ended = Vec::new();
     for index in 0..4 {
         let (id, ..) = board.raise(share(), Choice::Automatic, None, None, NOW + index);
-        let _ = board.conclude(id, true, "1", None, 1);
+        let _ = board.conclude(id, Ok(serde_json::json!(1)), 1);
         ended.push(id);
     }
     // A live one, which the sweep must never touch however old it is: an intent somebody is still answering is not
@@ -563,7 +580,7 @@ fn a_sweep_that_has_nothing_stale_drops_nothing() {
     // The other half of the rule: the age is what decides, so a board whose intents are all recent keeps all of them.
     let mut board = Board::with_window(Duration::from_millis(1));
     let (id, ..) = board.raise(share(), Choice::Automatic, None, None, NOW);
-    let _ = board.conclude(id, true, "1", None, 1);
+    let _ = board.conclude(id, Ok(serde_json::json!(1)), 1);
 
     assert_eq!(board.forget_ended_before(NOW, Duration::from_secs(60)), 0);
     assert!(board.get(id).is_some());
@@ -750,7 +767,7 @@ fn an_intent_survives_the_round_trip_at_every_step_of_its_life() {
     let _ = board.confirm(id);
     assert_eq!(through_json(board.get(id).expect("confirmed")), *board.get(id).expect("confirmed"), "as confirmed");
 
-    let _ = board.conclude(id, true, r#"{"opened":true}"#, None, 42);
+    let _ = board.conclude(id, Ok(serde_json::json!({"opened":true})), 42);
     assert_eq!(through_json(board.get(id).expect("concluded")), *board.get(id).expect("concluded"), "as succeeded");
 }
 
@@ -1016,7 +1033,7 @@ fn a_restored_board_lists_its_intents_including_the_ended_ones() {
     // result.
     let mut live = board();
     let (ended, ..) = live.raise(share(), Choice::Automatic, None, None, NOW);
-    let _ = live.conclude(ended, true, r#"{"ok":true}"#, None, 3);
+    let _ = live.conclude(ended, Ok(serde_json::json!({"ok":true})), 3);
     let (still_live, ..) = live.raise(share(), Choice::Automatic, None, None, NOW);
 
     let mut restored = board();

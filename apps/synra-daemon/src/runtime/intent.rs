@@ -481,8 +481,12 @@ mod tests {
         assert_eq!(answer.target, local_device(), "it goes back to whoever asked");
         assert_eq!(answer.reply_to, Some(request), "and it says which request it answers");
         let payload = synra_core::intent::remote::result_from(&answer).expect("a readable result");
-        assert!(payload.ok, "{payload:?}");
-        assert_eq!(payload.result, "opened", "the plugin ran, and its answer came back");
+        assert!(payload.is_ok(), "{payload:?}");
+        assert_eq!(
+            payload.into_parts().1,
+            serde_json::json!("opened"),
+            "the plugin ran, and its answer came back"
+        );
     }
 
     #[test]
@@ -511,15 +515,10 @@ mod tests {
         // what the first version of this test wrote.
         assert_eq!(board.lock().len(), 1, "one request is one intent");
 
-        // And both answers carry the same outcome. `ok`/`result`/`error` are compared rather than the whole struct, because
-        // `elapsed_ms` is derived from the **real** wall clock while `now_ms` here is a fixture value — so the two calls
-        // cannot agree on it unless the second is answered from the record, and a test that asserted on it would be
-        // asserting on how fast the machine is.
+        // A duplicate returns the recorded outcome, including its original elapsed time.
         let first = synra_core::intent::remote::result_from(&first).expect("a result");
         let second = synra_core::intent::remote::result_from(&second).expect("a result");
-        assert_eq!(first.ok, second.ok, "{first:?} vs {second:?}");
-        assert_eq!(first.result, second.result, "{first:?} vs {second:?}");
-        assert_eq!(first.error, second.error, "{first:?} vs {second:?}");
+        assert_eq!(first, second);
     }
 
     #[test]
@@ -571,7 +570,7 @@ mod tests {
         // ★ Nothing ran, and nothing failed. `ok` is false because no outcome exists yet, and `dispatchedTo` beside it is
         // what stops that being read as a failure.
         assert_eq!(answer["ok"], false, "{answer}");
-        assert_eq!(answer["result"], "", "{answer}");
+        assert_eq!(answer["result"], serde_json::Value::Null, "{answer}");
         assert_eq!(answer["error"], serde_json::Value::Null, "{answer}");
 
         // The envelope is for the device the user chose, carries the event the far side listens for, and carries the
@@ -616,13 +615,7 @@ mod tests {
         let mut reply = synra_core::intent::remote::result(
             target,
             invoke.from,
-            &synra_core::intent::remote::InvokeResult {
-                ok: true,
-                result: "opened".to_owned(),
-                error: None,
-                error_code: None,
-                elapsed_ms: 2,
-            },
+            &synra_core::intent::remote::InvokeResult::from_execution(Ok("opened".to_owned()), 2),
             invoke.trace_id,
             3_000,
         )
@@ -663,13 +656,7 @@ mod tests {
         let mut reply = synra_core::intent::remote::result(
             target,
             invoke.from,
-            &synra_core::intent::remote::InvokeResult {
-                ok: true,
-                result: "opened".to_owned(),
-                error: None,
-                error_code: None,
-                elapsed_ms: 2,
-            },
+            &synra_core::intent::remote::InvokeResult::from_execution(Ok("opened".to_owned()), 2),
             invoke.trace_id,
             3_000,
         )

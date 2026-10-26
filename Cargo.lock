@@ -2026,6 +2026,8 @@ dependencies = [
  "tempfile",
  "thiserror",
  "wat",
+ "wit-component",
+ "wit-parser 0.247.0",
  "zip",
 ]
 

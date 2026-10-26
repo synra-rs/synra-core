@@ -224,7 +224,11 @@ impl IpcError {
             code: error.code,
             message: key,
             params: serde_json::Value::Null,
-            details: Some(serde_json::json!({ "kernelMessage": error.message })),
+            details: Some(serde_json::json!({
+                "kernelMessage": error.message,
+                "context": error.details,
+                "traceId": error.trace_id,
+            })),
             retryable: error.retryable,
             actions: error.actions.clone(),
         }
@@ -414,6 +418,8 @@ mod tests {
     #[test]
     fn a_kernel_error_is_carried_across_with_its_judgement_intact() {
         let kernel = synra_protocol::SynraError::new(ErrorCode::Timeout, "the peer did not answer")
+            .with_trace("operation-trace")
+            .with_details(serde_json::json!({"pluginCode":"hostFailed"}))
             .with_action(SuggestedAction::Retry);
         let ipc = IpcError::from_synra_error(&kernel);
 
@@ -423,7 +429,18 @@ mod tests {
         assert_eq!(ipc.actions.len(), 1);
         // The kernel's sentence is kept as a detail rather than as the message: a log reader and a user need
         // different things from the same failure.
-        assert_eq!(ipc.details.as_ref().expect("details")["kernelMessage"], "the peer did not answer");
+        assert_eq!(
+            ipc.details.as_ref().expect("details")["kernelMessage"],
+            "the peer did not answer"
+        );
+        assert_eq!(
+            ipc.details.as_ref().expect("details")["context"],
+            serde_json::json!({"pluginCode":"hostFailed"})
+        );
+        assert_eq!(
+            ipc.details.as_ref().expect("details")["traceId"],
+            "operation-trace"
+        );
     }
 
     #[test]

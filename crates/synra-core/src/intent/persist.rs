@@ -373,7 +373,9 @@ mod tests {
     fn an_intent_that_already_ended_is_never_turned_into_an_unanswered_one() {
         let mut board = Board::new();
         let id = dispatching(&mut board, 1_000);
-        board.conclude(id, true, "opened", None, 5).expect("ended");
+        board
+            .conclude(id, Ok(serde_json::json!("opened")), 5)
+            .expect("ended");
 
         assert!(expire_unanswered(&mut board, i64::MAX).is_empty());
         assert!(matches!(board.get(id).expect("there").state, IntentState::Succeeded { .. }));

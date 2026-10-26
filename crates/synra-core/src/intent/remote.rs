@@ -65,32 +65,77 @@ pub struct Invoke {
 
 /// What the device that ran it reports back.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InvokeResult {
-    /// Whether the action ran.
-    pub ok: bool,
-    /// What it returned, when it did.
-    pub result: String,
-    /// Why it did not, when it did not.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-    /// The protocol code for that failure, when it has one.
-    ///
-    /// # ★ Why the sentence alone was not enough
-    ///
-    /// Because the interface branches on the code, not on the sentence: `capability_denied` asks the user to grant
-    /// something, `plugin_not_installed` asks them to install something, and `Internal` asks them to file a bug. The
-    /// sender used to receive only a string and answered `Internal` for every remote failure, so the one fact the page
-    /// acts on was the one the wire dropped.
-    ///
-    /// Optional and defaulted so a peer running an older build still produces a readable result — it just cannot say why.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error_code: Option<ErrorCode>,
-    /// How long the call took on the device that made it.
-    ///
-    /// Measured there rather than here, because this is the only side that can see the plugin run: a sender that timed
-    /// the round trip would report the network as the plugin's cost.
-    pub elapsed_ms: u64,
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum InvokeResult {
+    /// The action succeeded. JSON remains JSON rather than being embedded in another string.
+    Succeeded {
+        /// The returned value.
+        result: serde_json::Value,
+        /// Execution time on the device that ran it.
+        #[serde(rename = "elapsedMs")]
+        elapsed_ms: u64,
+    },
+    /// The action failed with its complete error, including diagnostics and trace.
+    Failed {
+        /// The structured failure.
+        error: SynraError,
+        /// Execution time on the device that ran it.
+        #[serde(rename = "elapsedMs")]
+        elapsed_ms: u64,
+    },
+}
+
+impl InvokeResult {
+    /// Whether execution succeeded, for result counters and diagnostics.
+    #[must_use]
+    pub const fn is_ok(&self) -> bool {
+        matches!(self, Self::Succeeded { .. })
+    }
+
+    /// Build the wire result from execution, parsing a successful JSON payload once.
+    #[must_use]
+    pub fn from_execution(outcome: Result<String, SynraError>, elapsed_ms: u64) -> Self {
+        match outcome {
+            Ok(payload) => Self::Succeeded {
+                result: serde_json::from_str(&payload)
+                    .unwrap_or(serde_json::Value::String(payload)),
+                elapsed_ms,
+            },
+            Err(error) => Self::Failed { error, elapsed_ms },
+        }
+    }
+
+    /// Extract the typed result for the intent board without serializing JSON again.
+    pub fn into_outcome(self) -> (Result<serde_json::Value, SynraError>, u64) {
+        match self {
+            Self::Succeeded { result, elapsed_ms } => (Ok(result), elapsed_ms),
+            Self::Failed { error, elapsed_ms } => (Err(error), elapsed_ms),
+        }
+    }
+
+    /// Build a reply from the authoritative concluded state; other states have no execution result.
+    #[must_use]
+    pub fn from_state(state: super::IntentState) -> Option<Self> {
+        match state {
+            super::IntentState::Succeeded { result, elapsed_ms } => {
+                Some(Self::Succeeded { result, elapsed_ms })
+            }
+            super::IntentState::Failed { error, elapsed_ms } => {
+                Some(Self::Failed { error, elapsed_ms })
+            }
+            _ => None,
+        }
+    }
+
+    /// Fields used by the local decision view and host response adapter.
+    #[must_use]
+    pub fn into_parts(self) -> (bool, serde_json::Value, Option<SynraError>, u64) {
+        let (outcome, elapsed_ms) = self.into_outcome();
+        match outcome {
+            Ok(result) => (true, result, None, elapsed_ms),
+            Err(error) => (false, serde_json::Value::Null, Some(error), elapsed_ms),
+        }
+    }
 }
 
 /// Tells a device to stop running something it was asked to run.

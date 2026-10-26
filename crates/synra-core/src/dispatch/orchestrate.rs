@@ -155,10 +155,10 @@ pub struct Decided {
     pub action: String,
     /// Whether it succeeded.
     pub ok: bool,
-    /// What it returned, or a sentence describing how it did not.
-    pub result: String,
-    /// Why the host could not make the call, when that is what happened.
-    pub error: Option<String>,
+    /// The returned JSON value, or null when no action succeeded.
+    pub result: serde_json::Value,
+    /// The complete failure reported by the plugin or its execution host.
+    pub error: Option<synra_protocol::SynraError>,
     /// What stage the intent ended at.
     pub state: &'static str,
     /// The envelope a host must send, when the action runs on another device.
@@ -489,28 +489,22 @@ pub fn apply_result(
     let found = {
         let intents = board.lock();
         let id = intents.dispatched_to(request, envelope.from);
+        let found = id.and_then(|id| intents.get(id).map(|intent| (id, intent.trace)));
         // Released rather than left to the end of the block: the conclude below takes the same board, and holding one
         // guard while asking for the second is a deadlock rather than a slow path.
         drop(intents);
-        id
+        found
     };
-    let Some(id) = found else {
+    let Some((id, trace)) = found else {
         // An outcome for a request this device is not waiting on. Ignored rather than refused: a retry, a duplicate or a
         // reply to work that was cancelled is not a protocol error, and saying so keeps a link open.
         return Ok(None);
     };
-    // ★ The code the far side reported, not `Internal` for everything. The interface branches on it: a remote
-    // `capability_denied` asks the user to grant something, and `Internal` asks them to file a bug.
-    let code = reported.error_code.unwrap_or(synra_protocol::ErrorCode::Internal);
+    let (outcome, elapsed_ms) = reported.into_outcome();
+    let outcome = outcome.map_err(|error| error.with_trace(trace.to_string()));
     board
         .lock()
-        .conclude(
-            id,
-            reported.ok,
-            &reported.result,
-            reported.error.map(|error| synra_protocol::SynraError::new(code, error)),
-            reported.elapsed_ms,
-        )
+        .conclude(id, outcome, elapsed_ms)
         .map_err(|error| refuse_intent(&error))?;
     Ok(Some(id))
 }
@@ -654,7 +648,7 @@ pub fn decide(
             action: candidate.planned.action,
             // Nothing ran, and nothing failed: it is in flight. `is_dispatched` is what a caller branches on.
             ok: false,
-            result: String::new(),
+            result: serde_json::Value::Null,
             error: None,
             state,
             outbound: Some(outbound),
@@ -669,27 +663,24 @@ pub fn decide(
         crate::dispatch::execute(&mut set, &candidate.plugin_id, &candidate, started_ms, trace)
     };
 
-    let (ok, result, failure) = match outcome {
-        Ok(synra_plugin_host::CallOutcome::Ok(payload)) => (true, payload, None),
-        Ok(other) => (false, other.as_str().to_owned(), None),
-        Err(failure) => (false, String::new(), Some(failure)),
-    };
-    let error = failure.as_ref().map(ToString::to_string);
+    let outcome = outcome
+        .map_err(|failure| synra_protocol::SynraError::new(failure.code(), failure.to_string()))
+        .and_then(synra_plugin_host::CallOutcome::into_result)
+        .map_err(|error| error.with_trace(trace.to_string()));
     // Measured from the moment the call was made rather than from the intent's creation: what a user reads is "this took
     // 40 ms", and an intent that sat in a prompt for a minute did not take a minute to run.
     let elapsed_ms = u64::try_from(synra_store::sqlite::now_ms().saturating_sub(now_ms)).unwrap_or(0);
+    let report = crate::intent::remote::InvokeResult::from_execution(outcome, elapsed_ms);
+    let (outcome, elapsed_ms) = report.into_outcome();
     let state = board
         .lock()
-        .conclude(
-            id,
-            ok,
-            &result,
-            failure
-                .as_ref()
-                .map(|failure| synra_protocol::SynraError::new(failure.code(), failure.to_string())),
-            elapsed_ms,
-        )
+        .conclude(id, outcome, elapsed_ms)
         .map_err(|error| refuse_intent(&error))?;
+    let status = state_name(&state);
+    let (ok, result, error, _) = crate::intent::remote::InvokeResult::from_state(state).map_or(
+        (false, serde_json::Value::Null, None, elapsed_ms),
+        crate::intent::remote::InvokeResult::into_parts,
+    );
 
     Ok(Decided {
         intent_id: id,
@@ -700,7 +691,7 @@ pub fn decide(
         ok,
         result,
         error,
-        state: state_name(&state),
+        state: status,
         // It ran here, so there is nothing to send.
         outbound: None,
     })
@@ -826,11 +817,11 @@ pub fn accept_remote(
         target: local_device,
     };
 
-    let (id, trace, created) = board.lock().raise(
+    let (id, trace, created) = board.lock().receive(
         source,
-        crate::intent::Choice::default(),
-        Some(origin),
-        Some(envelope.request_id),
+        origin,
+        envelope.request_id,
+        envelope.trace_id,
         now_ms,
     );
 
@@ -844,27 +835,9 @@ pub fn accept_remote(
             drop(intents);
             found
         };
-        return match concluded {
-            Some(crate::intent::IntentState::Succeeded { result, elapsed_ms }) => {
-                Ok(Some(answer(origin, trace, envelope, &crate::intent::remote::InvokeResult {
-                    ok: true,
-                    result: result.as_str().unwrap_or_default().to_owned(),
-                    error: None,
-                    error_code: None,
-                    elapsed_ms,
-                }, now_ms)?))
-            }
-            Some(crate::intent::IntentState::Failed { error, elapsed_ms }) => {
-                Ok(Some(answer(origin, trace, envelope, &crate::intent::remote::InvokeResult {
-                    ok: false,
-                    result: String::new(),
-                    error: Some(error.to_string()),
-                    error_code: Some(error.code),
-                    elapsed_ms,
-                }, now_ms)?))
-            }
-            // Still in flight, or ended some other way with nothing to report as an outcome. The first copy answers.
-            _ => Ok(None),
+        return match concluded.and_then(crate::intent::remote::InvokeResult::from_state) {
+            Some(report) => Ok(Some(answer(origin, trace, envelope, &report, now_ms)?)),
+            None => Ok(None),
         };
     }
 
@@ -892,40 +865,21 @@ pub fn accept_remote(
         crate::dispatch::execute(&mut set, &candidate.plugin_id, &candidate, started_ms, trace)
     };
 
-    let (ok, result, failure) = match outcome {
-        Ok(synra_plugin_host::CallOutcome::Ok(payload)) => (true, payload, None),
-        Ok(other) => (false, other.as_str().to_owned(), None),
-        Err(failure) => (false, String::new(), Some(failure)),
-    };
-    let error = failure.as_ref().map(ToString::to_string);
-    let error_code = failure.as_ref().map(crate::dispatch::PluginSetError::code);
+    let outcome = outcome
+        .map_err(|failure| synra_protocol::SynraError::new(failure.code(), failure.to_string()))
+        .and_then(synra_plugin_host::CallOutcome::into_result)
+        .map_err(|error| error.with_trace(trace.to_string()));
     let elapsed_ms = u64::try_from(synra_store::sqlite::now_ms().saturating_sub(now_ms)).unwrap_or(0);
-    board
+    let report = crate::intent::remote::InvokeResult::from_execution(outcome, elapsed_ms);
+    let (outcome, elapsed_ms) = report.into_outcome();
+    let state = board
         .lock()
-        .conclude(
-            id,
-            ok,
-            &result,
-            failure
-                .as_ref()
-                .map(|failure| synra_protocol::SynraError::new(failure.code(), failure.to_string())),
-            elapsed_ms,
-        )
+        .conclude(id, outcome, elapsed_ms)
         .map_err(|refusal| refuse_intent(&refusal))?;
-
-    Ok(Some(answer(
-        origin,
-        trace,
-        envelope,
-        &crate::intent::remote::InvokeResult {
-            ok,
-            result,
-            error,
-            error_code,
-            elapsed_ms,
-        },
-        now_ms,
-    )?))
+    match crate::intent::remote::InvokeResult::from_state(state) {
+        Some(report) => Ok(Some(answer(origin, trace, envelope, &report, now_ms)?)),
+        None => Ok(None),
+    }
 }
 
 /// The envelope that answers an invocation.
@@ -1125,6 +1079,8 @@ const fn state_name(state: &crate::intent::IntentState) -> &'static str {
 }
 
 #[cfg(test)]
+mod outcome_tests;
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::intent::{Choice, IntentSource};
@@ -1228,9 +1184,7 @@ mod tests {
         board
             .conclude(
                 id,
-                false,
-                "",
-                Some(synra_protocol::SynraError::new(
+                Err(synra_protocol::SynraError::new(
                     synra_protocol::ErrorCode::Internal,
                     "the plugin trapped",
                 )),
@@ -1264,11 +1218,18 @@ mod tests {
         let mut reply = crate::intent::remote::result(
             peer(),
             local(),
-            &crate::intent::remote::InvokeResult {
-                ok: false,
-                result: String::new(),
-                error: Some("the plugin is not allowed to open that".to_owned()),
-                error_code: Some(synra_protocol::ErrorCode::CapabilityDenied),
+            &crate::intent::remote::InvokeResult::Failed {
+                error: synra_protocol::SynraError::new(
+                    synra_protocol::ErrorCode::CapabilityDenied,
+                    "the plugin is not allowed to open that".to_owned(),
+                )
+                .with_trace("spoofed-trace")
+                .with_details(serde_json::json!({"cleanupPending":true}))
+                .with_action(
+                    synra_protocol::error::SuggestedAction::RequestCapability {
+                        capability: "platform:open-url".to_owned(),
+                    },
+                ),
                 elapsed_ms: 2,
             },
             trace,
@@ -1283,6 +1244,13 @@ mod tests {
         let error = view.error.as_ref().expect("the failure is carried");
         assert_eq!(error.code, synra_protocol::ErrorCode::CapabilityDenied);
         assert_eq!(error.message, "the plugin is not allowed to open that");
+        assert_eq!(error.trace_id, Some(trace.to_string()));
+        assert_eq!(
+            error.details.as_deref(),
+            Some(&serde_json::json!({"cleanupPending":true}))
+        );
+        assert_eq!(error.actions.len(), 1);
+        assert!(!error.retryable);
     }
 
     #[test]
@@ -1346,7 +1314,9 @@ mod tests {
             Some(synra_protocol::ids::RequestId::new()),
             1_000,
         );
-        board.conclude(id, true, "opened", None, 1).expect("ended");
+        board
+            .conclude(id, Ok(serde_json::json!("opened")), 1)
+            .expect("ended");
         let board = Arc::new(Mutex::new(board));
 
         let view = snapshot(&board, &id.to_string()).expect("a view");

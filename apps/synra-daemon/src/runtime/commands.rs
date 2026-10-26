@@ -710,9 +710,10 @@ impl Kernel for Runtime {
                 // replaces "in flight" with what actually happened: returning `dispatching` after holding the outcome would
                 // make the interface show work still running that has already finished.
                 Some(result) => {
-                    decided.ok = result.ok;
-                    decided.result = result.result;
-                    decided.error = result.error;
+                    let (ok, payload, error, _) = result.into_parts();
+                    decided.ok = ok;
+                    decided.result = payload;
+                    decided.error = error;
                     decided.state = self
                         .board
                         .lock()
@@ -1056,7 +1057,7 @@ impl Runtime {
                     tracing::info!(
                         trace_id = %reply.trace_id,
                         intent = %id,
-                        ok = result.ok,
+                        ok = result.is_ok(),
                         "remote outcome applied"
                     );
                 }

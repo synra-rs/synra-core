@@ -40,11 +40,11 @@ fn an_invocation_survives_the_wire_with_its_arguments() {
 fn a_result_survives_the_wire_including_the_reason_it_failed() {
     // The failure direction is the one that matters: a receiver that reported `ok: false` with no reason would leave the
     // sender unable to say anything better than "it did not work".
-    let payload = InvokeResult {
-        ok: false,
-        result: String::new(),
-        error: Some("the plugin refused the URL".to_owned()),
-        error_code: Some(synra_protocol::ErrorCode::CapabilityDenied),
+    let payload = InvokeResult::Failed {
+        error: synra_protocol::SynraError::new(
+            synra_protocol::ErrorCode::CapabilityDenied,
+            "the plugin refused the URL".to_owned(),
+        ),
         elapsed_ms: 42,
     };
 
@@ -64,7 +64,7 @@ fn the_two_events_are_not_the_same_event() {
     let answered = result(
         device(2),
         device(1),
-        &InvokeResult { ok: true, result: "done".to_owned(), error: None, error_code: None, elapsed_ms: 1 },
+        &InvokeResult::from_execution(Ok("done".to_owned()), 1),
         TraceId::new(),
         2,
     )
@@ -111,4 +111,44 @@ fn every_envelope_gets_its_own_request_identifier() {
 
     assert_ne!(first.request_id, second.request_id, "each envelope mints its own");
     assert_eq!(first.trace_id, first.trace_id, "and the trace is the caller's, carried through");
+}
+
+#[test]
+fn result_variants_reject_missing_errors_and_contradictory_fields() {
+    for value in [
+        serde_json::json!({"ok":false,"result":"failed","elapsedMs":1}),
+        serde_json::json!({"status":"failed","elapsedMs":1}),
+        serde_json::json!({"status":"succeeded","elapsedMs":1}),
+        serde_json::json!({"status":"failed","error":null,"elapsedMs":1}),
+        serde_json::json!({"status":"succeeded","result":null,"error":{},"elapsedMs":1}),
+        serde_json::json!({"status":"pending","elapsedMs":1}),
+        serde_json::json!({"status":"succeeded","result":null,"elapsedMs":-1}),
+    ] {
+        assert!(
+            serde_json::from_value::<InvokeResult>(value.clone()).is_err(),
+            "{value}"
+        );
+    }
+}
+
+#[test]
+fn a_late_execution_cannot_report_success_after_the_intent_was_cancelled() {
+    let mut board = crate::intent::Board::new();
+    let (id, _, _) = board.raise(
+        crate::intent::IntentSource::Direct {
+            plugin_id: plugin(),
+            action: "run".to_owned(),
+            params: serde_json::Value::Null,
+            target: device(2),
+        },
+        crate::intent::Choice::Automatic,
+        None,
+        None,
+        1000,
+    );
+    board.cancel(id, "user cancelled").expect("cancelled");
+    let state = board
+        .conclude(id, Ok(serde_json::json!({"done":true})), 10)
+        .expect("late execution");
+    assert!(InvokeResult::from_state(state).is_none());
 }

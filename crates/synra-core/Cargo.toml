@@ -41,6 +41,9 @@ fs2 = "=0.4.3"
 base64.workspace = true
 
 [dev-dependencies]
+# Encode intent result fixtures against the production WIT contract.
+wit-component = "0.247"
+wit-parser = "0.247"
 # Fault injection removes metadata through a second real SQLite connection.
 rusqlite = { version = "0.40", features = ["bundled"] }
 synra-testkit = { path = "../synra-testkit" }

@@ -62,9 +62,12 @@ pub const MAX_COMPONENT_BYTES: usize = 16 * 1024 * 1024;
 
 pub mod cache;
 pub mod executor;
+mod outcome;
 pub mod scripted;
 pub mod session;
 pub mod types;
+
+pub use outcome::reported_failure;
 
 #[cfg(feature = "wasm-runtime")]
 pub mod linker;
