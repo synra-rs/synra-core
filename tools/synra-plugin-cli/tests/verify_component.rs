@@ -87,6 +87,9 @@ fn a_real_component_is_read_from_the_manifest_path_and_its_actual_imports_are_ch
             "network:fetch:*" => "network:fetch:api.github.com:GET",
             "log:*" => "log:info",
             "event:emit:*" => "event:emit:_plugin.@acme/verify.ready",
+            "device:send:*" => "device:send:00000000-0000-4000-8000-000000000001",
+            "action:invoke:*:*" => "action:invoke:@acme/formatter:format-date",
+            "action:declare:*" => "action:declare:format-date",
             cap => cap,
         })
         .collect();
@@ -107,6 +110,25 @@ fn a_real_component_is_read_from_the_manifest_path_and_its_actual_imports_are_ch
     std::fs::write(path, declaration.to_string()).unwrap();
     let (status, report) = verify(root.path());
     assert!(status.success(), "{report}");
+    let incomplete_action: Vec<&str> = capabilities
+        .iter()
+        .map(|cap| {
+            if *cap == "action:invoke:*:*" {
+                "action:invoke:*"
+            } else {
+                *cap
+            }
+        })
+        .collect();
+    manifest(root.path(), "dist/custom.wasm", &incomplete_action);
+    let (status, report) = verify(root.path());
+    assert!(!status.success(), "{report}");
+    assert!(
+        report
+            .to_string()
+            .contains("synra:plugin/host#action-invoke"),
+        "{report}"
+    );
     let without_open: Vec<&str> = capabilities
         .iter()
         .copied()

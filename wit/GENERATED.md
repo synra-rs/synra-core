@@ -16,8 +16,8 @@ ungated:
   plugin-id: reads a fact about the environment
 
 gated:
-  action-declare: action:declare
-  action-invoke: action:invoke:*
+  action-declare: action:declare:*
+  action-invoke: action:invoke:*:*
   action-list: action:list
   device-broadcast: device:broadcast
   device-list: device:list
@@ -46,8 +46,8 @@ gated:
   transfer-status: file:transfer:read
 
 capabilities:
-  action:declare
-  action:invoke:*
+  action:declare:*
+  action:invoke:*:*
   action:list
   device:broadcast
   device:list

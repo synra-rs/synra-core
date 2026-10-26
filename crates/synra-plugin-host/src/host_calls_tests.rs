@@ -76,7 +76,7 @@ fn every_function_in_the_contract_reaches_the_host_rather_than_an_unknown_functi
         ("event-subscribe", "a.*"),
         (
             "device-send",
-            r#"{"target":"device-a","event":"_plugin.@acme/chat.something","payload":"{}"}"#,
+            r#"{"target":"00000000-0000-4000-8000-000000000001","event":"_plugin.@acme/chat.something","payload":"{}"}"#,
         ),
         (
             "device-broadcast",
@@ -253,7 +253,7 @@ fn a_pure_session_refuses_the_calls_that_act() {
         ),
         (
             "device-send",
-            r#"{"target":"device-a","event":"_plugin.@acme/chat.something","payload":"{}"}"#,
+            r#"{"target":"00000000-0000-4000-8000-000000000001","event":"_plugin.@acme/chat.something","payload":"{}"}"#,
         ),
         ("storage-set", r#"{"key":"k","value":"v"}"#),
         ("secret-set", r#"{"key":"k","value":"v"}"#),

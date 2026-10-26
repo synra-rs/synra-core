@@ -129,6 +129,9 @@ pub fn permits(import_name: &str, grants: &CapabilitySet) -> bool {
             crate::host_calls::event_scope::available(grants)
         }
         Some(HostGate::Capability("log:*")) => crate::host_calls::log_scope::available(grants),
+        Some(HostGate::Capability(
+            family @ ("device:send:*" | "action:invoke:*:*" | "action:declare:*"),
+        )) => crate::host_calls::target_scope::available(grants, family),
         Some(HostGate::Capability("network:fetch:*")) => {
             crate::host_calls::network_scope::available(grants)
         }

@@ -8,9 +8,7 @@ impl Manifest {
     pub(super) fn check_names(&self) -> Result<(), ManifestError> {
         let mut actions = HashSet::new();
         for action in &self.actions {
-            if action.name.is_empty() {
-                return Err(ManifestError::Malformed("an action has an empty name".to_owned()));
-            }
+            crate::manifest::validate_action_name(&action.name)?;
             if !actions.insert(action.name.as_str()) {
                 return Err(ManifestError::DuplicateName {
                     kind: "action",

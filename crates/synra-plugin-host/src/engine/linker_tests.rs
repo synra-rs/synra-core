@@ -92,7 +92,7 @@ fn typed_argument_adapters_preserve_multi_argument_meanings_and_string_payloads(
     let payload = "{\"text\":\"你好\\nquoted\"}".to_owned();
     let answer = data
         .device_send(
-            "peer".to_owned(),
+            "00000000-0000-4000-8000-000000000001".to_owned(),
             "_plugin.@acme/bridge.arrived".to_owned(),
             payload.clone(),
         )
@@ -120,7 +120,7 @@ fn typed_argument_adapters_preserve_multi_argument_meanings_and_string_payloads(
     let seen = host.seen.lock().unwrap().clone();
     assert!(seen.contains(&(
         "device-send".to_owned(),
-        format!("peer/_plugin.@acme/bridge.arrived/{payload}")
+        format!("00000000-0000-4000-8000-000000000001/_plugin.@acme/bridge.arrived/{payload}")
     )));
     assert!(seen.contains(&("transfer-send".to_owned(), format!("file/peer/{payload}"))));
     assert!(seen.contains(&("action-declare".to_owned(), format!("render/{payload}"))));

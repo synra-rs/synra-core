@@ -148,6 +148,8 @@ interface host {
     device-list: func() -> list<device-target>;
 
     /// Send an event to one device.
+    /// The target is a canonical device UUID, not a display name or alias. The import's family
+    /// label permits scoped grants; each call checks device:send:<target> and event ownership.
     /// @capability("device:send:*")
     device-send: func(target: string, event: string, payload: string) -> outcome;
 
@@ -274,11 +276,14 @@ interface host {
     // ── action:*（cross-plugin actions）─────────────────────────────────────────────────────────────
 
     /// Declare an action other plugins may call.
-    /// @capability("action:declare")
+    /// Each call checks action:declare:<literal action name>; the family label permits scoped imports.
+    /// @capability("action:declare:*")
     action-declare: func(name: string, schema-json: string) -> outcome;
 
     /// Call another plugin's action.
-    /// @capability("action:invoke:*")
+    /// Each call checks action:invoke:<full @scope/name>:<literal action name>.
+    /// The family label permits scoped imports; it does not authorize a particular call.
+    /// @capability("action:invoke:*:*")
     action-invoke: func(target-plugin: string, name: string, args-json: string) -> outcome;
 
     /// Every action this kernel knows about, as a JSON array.

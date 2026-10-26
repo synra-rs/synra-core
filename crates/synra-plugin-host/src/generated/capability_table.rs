@@ -17,8 +17,8 @@ pub const HOST_INTERFACE: &str = "host";
 /// Sorted so a binary search and a stable diff are the same decision. `None` means the call is ungated: it
 /// reads a fact about the environment and nothing else.
 pub const HOST_FUNCTIONS: &[(&str, Option<&str>)] = &[
-    ("synra:plugin/host#action-declare", Some("action:declare")),
-    ("synra:plugin/host#action-invoke", Some("action:invoke:*")),
+    ("synra:plugin/host#action-declare", Some("action:declare:*")),
+    ("synra:plugin/host#action-invoke", Some("action:invoke:*:*")),
     ("synra:plugin/host#action-list", Some("action:list")),
     ("synra:plugin/host#device-broadcast", Some("device:broadcast")),
     ("synra:plugin/host#device-list", Some("device:list")),
@@ -56,8 +56,8 @@ pub const HOST_FUNCTIONS: &[(&str, Option<&str>)] = &[
 
 /// Every capability the table mentions, sorted and deduplicated.
 pub const CAPABILITIES: &[&str] = &[
-    "action:declare",
-    "action:invoke:*",
+    "action:declare:*",
+    "action:invoke:*:*",
     "action:list",
     "device:broadcast",
     "device:list",

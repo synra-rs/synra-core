@@ -33,6 +33,7 @@ use crate::host_surface;
 pub(crate) mod event_scope;
 pub(crate) mod log_scope;
 pub mod network_scope;
+pub(crate) mod target_scope;
 use crate::quota::{Budget, Health, RateKind};
 
 /// What a plugin is told when a call does not proceed.
@@ -469,6 +470,9 @@ impl<'a> HostCalls<'a> {
                     network_scope::authorize(self.grants, argument)
                 }
                 "synra:plugin/host#log" => log_scope::authorize(self.grants, argument),
+                "synra:plugin/host#device-send" => target_scope::device(self.grants, argument),
+                "synra:plugin/host#action-invoke" => target_scope::action(self.grants, argument),
+                "synra:plugin/host#action-declare" => target_scope::declare(self.grants, argument),
                 "synra:plugin/host#event-emit" => {
                     event_scope::authorize(self.grants, &self.plugin, argument)
                 }

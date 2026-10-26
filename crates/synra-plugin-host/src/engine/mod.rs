@@ -86,6 +86,8 @@ mod scoped_event_tests;
 mod scoped_fetch_tests;
 #[cfg(all(test, feature = "wasm-runtime"))]
 mod scoped_log_tests;
+#[cfg(all(test, feature = "wasm-runtime"))]
+mod scoped_target_tests;
 
 #[cfg(all(test, feature = "rust-guest-tests"))]
 mod rust_guest_tests;

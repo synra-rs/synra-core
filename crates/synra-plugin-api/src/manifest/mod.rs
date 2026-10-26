@@ -55,6 +55,9 @@ pub mod validate;
 pub mod version;
 
 pub use error::ManifestError;
+mod action_name;
+pub use action_name::validate_action_name;
+
 pub use types::*;
 pub use version::{check_plugin_id, check_version, compare_versions, to_project_slug};
 

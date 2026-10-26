@@ -1078,6 +1078,23 @@ fn finite_network_method_declarations_match_their_authority_in_both_directions()
         }
     }
 
+#[test]
+fn action_names_are_validated_when_a_manifest_is_admitted() {
+    for (name, allowed) in [
+        ("format-date", true),
+        ("*", false),
+        ("a:b", false),
+        ("a/b", false),
+        ("中文", false),
+    ] {
+        let mut document: serde_json::Value = serde_json::from_str(MINIMAL).expect("fixture");
+        document["actions"] = serde_json::json!([{ "name": name }]);
+        let result = parse(&document.to_string())
+            .validate(ValidationLevel::Schema, &ManifestContext::default());
+        assert_eq!(result.is_ok(), allowed, "{name}: {result:?}");
+    }
+}
+
     #[test]
     fn a_duplicate_action_name_is_refused() {
         let text = MINIMAL.replace(

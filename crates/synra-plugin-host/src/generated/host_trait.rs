@@ -72,9 +72,9 @@ pub trait Host {
     fn platform_write_clipboard(text: String) -> Outcome;
     /// `platform-capabilities`. Ungated: it reads a fact about the environment.
     fn platform_capabilities() -> Vec<String>;
-    /// `action-declare`. Requires `action:declare`. The contract documents it.
+    /// `action-declare`. Requires `action:declare:*`. The contract documents it.
     fn action_declare(name: String, schema_json: String) -> Outcome;
-    /// `action-invoke`. Requires `action:invoke:*`. The contract documents it.
+    /// `action-invoke`. Requires `action:invoke:*:*`. The contract documents it.
     fn action_invoke(target_plugin: String, name: String, args_json: String) -> Outcome;
     /// `action-list`. Requires `action:list`. The contract documents it.
     fn action_list() -> String;
