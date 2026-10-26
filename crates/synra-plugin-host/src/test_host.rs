@@ -13,6 +13,8 @@ pub(crate) struct Stub {
     pub(crate) devices: Vec<(String, String, String)>,
     /// Whether a secret is held, so `secret-get` has something to find.
     pub(crate) secret: Option<String>,
+    /// Override the sample clipboard result, including absence and an empty text value.
+    pub(crate) clipboard: Option<Option<String>>,
     /// How many bytes its storage is holding, which the quota check reads.
     ///
     /// Settable rather than derived from what `storage-set` was asked to write, because the number that matters is what
@@ -180,12 +182,15 @@ impl Host for Stub {
     fn platform(
         &self,
         _plugin: &PluginId,
-        action: &str,
+        action: PlatformAction,
         argument: &str,
     ) -> Result<Option<String>, CallError> {
-        self.record("platform", &format!("{action}/{argument}"));
-        if action == PlatformAction::ReadClipboard.as_str() {
-            return Ok(Some("clipboard text".to_owned()));
+        self.record("platform", &format!("{}/{argument}", action.as_str()));
+        if action == PlatformAction::ReadClipboard {
+            return Ok(self
+                .clipboard
+                .clone()
+                .unwrap_or_else(|| Some("clipboard text".to_owned())));
         }
         Ok(None)
     }

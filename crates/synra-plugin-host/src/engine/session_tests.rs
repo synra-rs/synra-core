@@ -90,7 +90,12 @@ impl Host for Silent {
     fn transfer_status(&self, _p: &PluginId, _id: &str) -> Result<String, CallError> {
         Err(CallError::new(CallError::NOT_IMPLEMENTED, "no host"))
     }
-    fn platform(&self, _p: &PluginId, _a: &str, _arg: &str) -> Result<Option<String>, CallError> {
+    fn platform(
+        &self,
+        _p: &PluginId,
+        _a: crate::PlatformAction,
+        _arg: &str,
+    ) -> Result<Option<String>, CallError> {
         Err(CallError::new(CallError::NOT_IMPLEMENTED, "no host"))
     }
     fn action_declare(&self, _p: &PluginId, _n: &str, _s: &str) -> Result<(), CallError> {

@@ -220,10 +220,15 @@ pub trait Host: Send + Sync {
 
     /// Perform a platform action.
     ///
-    /// One function rather than eight, because the eight differ only in their argument shape and the host's answer is
-    /// the same for all of them: the guard, the rate limiter, and the action. The name is a
-    /// [`PlatformAction`](crate::host_calls::PlatformAction::as_str).
-    fn platform(&self, plugin: &PluginId, action: &str, argument: &str) -> Result<Option<String>, CallError>;
+    /// The action is typed so callers and adapters cannot disagree about its spelling.
+    /// Clipboard reads return raw optional text, preserving `Some("")`; the shared dispatcher JSON-encodes
+    /// that value exactly once. Commands with no return value answer `None`.
+    fn platform(
+        &self,
+        plugin: &PluginId,
+        action: PlatformAction,
+        argument: &str,
+    ) -> Result<Option<String>, CallError>;
 
     /// Declare an action other plugins may call.
     fn action_declare(&self, plugin: &PluginId, name: &str, schema_json: &str) -> Result<(), CallError>;
@@ -239,7 +244,7 @@ pub trait Host: Send + Sync {
     ) -> Result<String, CallError>;
 }
 
-/// The eight actions `platform:*` covers, as the host names them.
+/// The seven actions `platform:*` covers, as the host names them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum PlatformAction {
@@ -738,9 +743,12 @@ impl<'a> HostCalls<'a> {
             }
             _ => argument.to_owned(),
         };
-        match self.host.platform(&self.plugin, action.as_str(), &text)? {
-            Some(answer) => Ok(answer),
-            None => Ok(String::new()),
+        let answer = self.host.platform(&self.plugin, action, &text)?;
+        if action == PlatformAction::ReadClipboard {
+            serde_json::to_string(&answer)
+                .map_err(|error| CallError::new(CallError::HOST_FAILED, error.to_string()))
+        } else {
+            Ok(answer.unwrap_or_default())
         }
     }
 

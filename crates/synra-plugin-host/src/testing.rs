@@ -157,7 +157,7 @@ impl Host for RefusingHost {
     fn platform(
         &self,
         _p: &PluginId,
-        _a: &str,
+        _a: crate::PlatformAction,
         _arg: &str,
     ) -> Result<Option<String>, CallError> {
         refuse()

@@ -254,7 +254,9 @@ interface host {
     /// @capability("platform:notify")
     platform-notify: func(title: string, body: string) -> outcome;
 
-    /// Read the clipboard.
+    /// Read clipboard text. The successful outcome contains JSON `null` when there is no text,
+    /// or a JSON string preserving all text, including the empty string. Hosts return raw optional
+    /// text internally; the shared dispatcher JSON-encodes it exactly once.
     /// @capability("platform:read-clipboard")
     platform-read-clipboard: func() -> outcome;
 

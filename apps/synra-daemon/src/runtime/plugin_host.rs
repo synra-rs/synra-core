@@ -32,7 +32,7 @@
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use synra_plugin_host::host_calls::{CallError, Host};
+use synra_plugin_host::host_calls::{CallError, Host, PlatformAction};
 use synra_protocol::ids::PluginId;
 
 /// One plugin's fetcher, and the hosts it was built for.
@@ -403,12 +403,11 @@ impl Host for KernelHost {
     fn platform(
         &self,
         _plugin: &PluginId,
-        action: &str,
+        action: PlatformAction,
         argument: &str,
     ) -> Result<Option<String>, CallError> {
         use synra_platform::Platform as _;
-        // The action names come from the contract, and the host maps them to the same enum the admission checks use, so
-        // a name that is not one is a contract disagreement rather than a plugin mistake.
+        // The shared dispatcher supplies a typed action; this adapter applies the headless platform's policy.
         let refusal = |error: synra_platform::PlatformError| CallError::new(
             match error {
                 // ★ A refused address, path or chord is `badArgument`: the plugin supplied it, and telling it so is the
@@ -435,22 +434,26 @@ impl Host for KernelHost {
         );
 
         let outcome = match action {
-            "open-url" => self.platform.open_url(argument),
-            "open-path" => self.platform.open_path(std::path::Path::new(argument)),
-            "reveal-path" => self.platform.reveal_path(std::path::Path::new(argument), None),
-            "simulate-keys" => self.platform.simulate_keys(argument),
-            "read-clipboard" => self.platform.read_clipboard().map(|_| ()),
-            "write-clipboard" => self.platform.write_clipboard(argument),
-            "notify" => {
+            PlatformAction::OpenUrl => self.platform.open_url(argument),
+            PlatformAction::OpenPath => self.platform.open_path(std::path::Path::new(argument)),
+            PlatformAction::RevealPath => self
+                .platform
+                .reveal_path(std::path::Path::new(argument), None),
+            PlatformAction::SimulateKeys => self.platform.simulate_keys(argument),
+            PlatformAction::ReadClipboard => {
+                return self.platform.read_clipboard().map_err(refusal);
+            }
+            PlatformAction::WriteClipboard => self.platform.write_clipboard(argument),
+            PlatformAction::Notify => {
                 // A notification carries a title and a body separated by the contract's own delimiter — the same shape
                 // `host_calls` builds when it sends one.
                 let (title, body) = argument.split_once('\u{1}').unwrap_or((argument, ""));
                 self.platform.notify(title, body)
             }
-            other => {
+            _ => {
                 return Err(CallError::new(
-                    CallError::BAD_ARGUMENT,
-                    format!("`{other}` is not a platform action"),
+                    CallError::NOT_IMPLEMENTED,
+                    "this daemon does not implement this platform action",
                 ));
             }
         };
@@ -487,6 +490,32 @@ mod tests {
 
     fn id(name: &str) -> PluginId {
         PluginId::try_from(name.to_owned()).expect("a plugin id")
+    }
+
+    #[test]
+    fn gated_platform_calls_reach_headless_policy_and_refuse_without_effects() {
+        use synra_plugin_host::{
+            host_calls::HostCalls,
+            quota::{Budget, Quota},
+        };
+
+        let host = host_with(&[]);
+        let mut grants = synra_capability::CapabilitySet::new();
+        grants.insert_str("platform:open-url").expect("grant");
+        grants.insert_str("platform:read-clipboard").expect("grant");
+        let budget = Budget::new(Quota::default());
+        let mut audit = Vec::new();
+        let mut calls = HostCalls::new(&host, id("@acme/notes"), &grants, &budget, &mut audit);
+        for (function, argument, expected) in [
+            ("platform-open-url", "javascript:alert(1)", "badArgument"),
+            ("platform-open-url", "https://example.com", "notImplemented"),
+            ("platform-read-clipboard", "", "notImplemented"),
+        ] {
+            let error = calls
+                .call(&format!("synra:plugin/host#{function}"), argument)
+                .expect_err("headless refusal");
+            assert_eq!(error.code, expected, "{error:?}");
+        }
     }
 
     pub(super) fn host_with(grants: &[(&str, bool)]) -> KernelHost {
@@ -628,26 +657,31 @@ fn a_bad_address_is_the_plugins_mistake_rather_than_a_missing_feature() {
     let host = host_with(&[]);
     let plugin = id("@acme/notes");
 
-    // The plugin's mistake: `badArgument`, because the address is the thing that is wrong.
-    let refused = host
-        .platform(&plugin, "open-url", "javascript:alert(1)")
-        .expect_err("the guard refuses this scheme");
-    assert_eq!(refused.code, "badArgument", "{refused:?}");
-    assert!(refused.message.contains("javascript"), "{}", refused.message);
+        // The plugin's mistake: `badArgument`, because the address is the thing that is wrong.
+        let refused = host
+            .platform(
+                &plugin,
+                synra_plugin_host::PlatformAction::OpenUrl,
+                "javascript:alert(1)",
+            )
+            .expect_err("the guard refuses this scheme");
+        assert_eq!(refused.code, "badArgument", "{refused:?}");
+        assert!(
+            refused.message.contains("javascript"),
+            "{}",
+            refused.message
+        );
 
-    // The installation's limitation: `notImplemented`, for an address that is perfectly fine.
-    let refused = host
-        .platform(&plugin, "open-url", "https://example.com")
-        .expect_err("a headless host has no browser");
-    assert_eq!(refused.code, "notImplemented", "{refused:?}");
-
-    // And a name that is not a platform action is the caller's mistake rather than either of those.
-    let refused = host
-        .platform(&plugin, "not-an-action", "")
-        .expect_err("that is not an action");
-    assert_eq!(refused.code, "badArgument", "{refused:?}");
-}
-
+        // The installation's limitation: `notImplemented`, for an address that is perfectly fine.
+        let refused = host
+            .platform(
+                &plugin,
+                synra_plugin_host::PlatformAction::OpenUrl,
+                "https://example.com",
+            )
+            .expect_err("a headless host has no browser");
+        assert_eq!(refused.code, "notImplemented", "{refused:?}");
+    }
 
     #[test]
     fn the_answers_that_exist_are_the_daemons_own() {

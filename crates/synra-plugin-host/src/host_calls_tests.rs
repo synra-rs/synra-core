@@ -729,7 +729,7 @@ fn a_platform_action_carries_its_own_capability_and_its_own_argument() {
     );
     assert_eq!(
         calls.call("synra:plugin/host#platform-read-clipboard", ""),
-        Ok("clipboard text".to_owned())
+        Ok(r#""clipboard text""#.to_owned())
     );
     match calls.call("synra:plugin/host#platform-simulate-keys", "ctrl+s") {
         Err(error) => assert_eq!(error.code, CallError::CAPABILITY_DENIED),
