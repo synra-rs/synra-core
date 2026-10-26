@@ -66,6 +66,9 @@ pub mod host_calls;
 /// copying ~170 lines of named refusals.
 pub mod testing;
 pub mod host_surface;
+
+#[cfg(test)]
+mod test_host;
 pub mod lifecycle;
 pub mod pool;
 pub mod quota;

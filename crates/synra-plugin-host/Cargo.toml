@@ -54,6 +54,9 @@ wasm-runtime = ["dep:wasmtime", "dep:anyhow"]
 wasm-text = ["wasm-runtime", "wasmtime/wat"]
 
 [dev-dependencies]
+# Build the complete ABI test component directly from the real WIT source.
+wit-component = { version = "0.247", features = ["dummy-module"] }
+wit-parser = "0.247"
 proptest.workspace = true
 rstest.workspace = true
 # The verify pipeline's tests sign a package, which needs a key and the same base64 a signature document carries.

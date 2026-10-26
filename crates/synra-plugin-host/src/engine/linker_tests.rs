@@ -1,287 +1,213 @@
-//! The glue, driven from both sides: what the contract declares, and what a guest receives.
-//!
-//! There is no engine here, and that is the point: everything this layer decides — which functions exist, what a
-//! refusal looks like on the wire, what JSON a two-argument call takes — is a function of the contract's own table and
-//! of strings. An engine would add a guest, and a guest is what the decisions are *about* rather than what makes them
-//! right.
+//! The linker is checked against the real WIT world and the shared host-call dispatcher.
 
 use super::*;
-// The refusals these tests build are handed the set a plugin holds, so the set has to be nameable here.
+use crate::engine::session::LinkerSession;
+use crate::engine::wasmtime_backend::bindings::synra::plugin::{host::Host, types};
+use crate::engine::{Backend, BackendKind, WasmBackend, WasmtimeBackend};
+use crate::quota::{Budget, Quota};
+use crate::test_host::Stub;
+use std::sync::Arc;
 use synra_capability::CapabilitySet;
+use synra_protocol::ids::PluginId;
 
-/// Every function the contract declares, as bare names.
-fn contract_functions() -> Vec<String> {
-    host_surface::provided()
-        .into_iter()
-        .map(|import| import.rsplit_once('#').map_or(import, |(_, name)| name).to_owned())
-        .collect()
+fn state(grants: &[&str], host: Arc<Stub>) -> StoreData {
+    let mut capabilities = CapabilitySet::new();
+    for grant in grants {
+        capabilities.insert_str(grant).unwrap();
+    }
+    let mut state = StoreData::new();
+    state.session = Some(Box::new(LinkerSession::new(
+        PluginId::parse("@acme/bridge").unwrap(),
+        capabilities,
+        Arc::new(Budget::new(Quota::default())),
+        host,
+    )));
+    state
 }
 
 #[test]
-fn every_function_the_contract_declares_is_defined_by_one_of_the_shapes() {
-    // ★ The test that keeps the glue and the contract the same size. The shapes are hand-written and the contract is
-    // generated, so the failure mode this catches is a function added to the WIT file that the linker never defines —
-    // which a plugin author would see as "the host does not provide `x`" for a function the contract plainly declares.
-    let defined = shapes_defined();
-    let mut missing: Vec<String> = contract_functions()
-        .into_iter()
-        .filter(|function| !defined.contains(function))
-        .collect();
-    missing.sort();
-    assert!(missing.is_empty(), "the linker does not define: {missing:?}");
-    assert_eq!(defined.len(), host_surface::provided().len());
-}
-
-#[test]
-fn the_linker_defines_nothing_the_contract_does_not_declare() {
-    // The other direction: a function the shapes define and the table does not know about would be a host function no
-    // gate covers, which is the one outcome the whole design forbids.
-    let mut extra: Vec<String> = shapes_defined()
-        .into_iter()
-        .filter(|function| !host_surface::provides(&import_name_for(function)))
-        .collect();
-    extra.sort();
-    assert!(extra.is_empty(), "the linker defines functions the contract does not declare: {extra:?}");
-}
-
-#[test]
-fn the_parameter_names_cover_every_function_whose_arguments_are_named() {
-    // ★ A parameter name is what a JSON body is keyed by, so a function whose names are invented rather than read from
-    // the contract is one that shifts a payload into a target. `device-send(target, event, payload)` and
-    // `transfer-send(kind, target, meta-json)` have the same types and different meanings, which is why the names are a
-    // table rather than positional.
-    for function in contract_functions() {
-        let names = parameter_names(&function);
-        let declared = declared_parameter_count(&function);
-        assert_eq!(
-            names.len(),
-            declared,
-            "{function} has {declared} parameter(s) in the contract and {} name(s) here",
-            names.len()
-        );
+fn the_complete_production_wit_world_instantiates_against_the_real_linker() {
+    let component = crate::engine::test_component::dummy_world();
+    let backend = Arc::new(WasmtimeBackend::new(BackendKind::WasmtimeCranelift).unwrap());
+    let artifact = backend.compile(&component, "@acme/full-world").unwrap();
+    if let Err(error) = Backend::new(backend).instantiate(artifact.as_ref()) {
+        panic!("the complete WIT component did not instantiate: {error}");
     }
 }
 
 #[test]
-fn the_shapes_arity_is_what_the_parameter_table_names() {
-    // ★ The join between the two halves: the JSON a call receives is built from `parameter_names`, and the shape's
-    // closure is what destructures the guest's arguments. They have to agree, or a three-argument call sends two.
-    for (function, arity) in [
-        ("env-sdk-version", 0),
-        ("env-can", 1),
-        ("plugin-id", 0),
-        ("platform-capabilities", 0),
-        ("device-list", 0),
-        ("storage-quota", 0),
-        ("storage-keys", 1),
-        ("action-list", 0),
-        ("event-emit", 2),
-        ("device-send", 3),
-        ("device-broadcast", 2),
-        ("storage-set", 2),
-        ("secret-set", 2),
-        ("transfer-send", 3),
-        ("log", 3),
-        ("platform-notify", 2),
-        ("action-declare", 2),
-        ("action-invoke", 3),
-        ("platform-read-clipboard", 0),
-        ("network-fetch", 1),
-    ] {
-        assert_eq!(declared_parameter_count(function), arity, "{function}");
-    }
+fn typed_outcomes_preserve_the_gate_error_and_do_not_reach_the_host() {
+    let host = Arc::new(Stub::default());
+    let mut data = state(&[], Arc::clone(&host));
+    let answer = data.storage_get("known".to_owned()).unwrap();
+    let types::Outcome::Err(error) = answer else {
+        panic!("permission refusal expected")
+    };
+    assert_eq!(error.code, CallError::CAPABILITY_DENIED);
+    assert!(!error.message.is_empty());
+    assert!(host.called().is_empty());
+    assert_eq!(data.host_calls, 1);
 }
 
 #[test]
-fn a_two_argument_call_is_keyed_by_the_contracts_own_names() {
-    // The assertion that makes the table worth having: the JSON a call receives is the one the host-call layer's own
-    // `Deserialize` expects, with no positional guessing in between.
-    assert_eq!(arguments_json("device-send", &["phone", "a.b", "{}"]), r#"{"target":"phone","event":"a.b","payload":"{}"}"#);
-    assert_eq!(arguments_json("storage-set", &["k", "v"]), r#"{"key":"k","value":"v"}"#);
+fn typed_storage_results_include_payloads_and_actual_host_calls_only() {
+    let host = Arc::new(Stub::default());
+    let mut data = state(&["storage:local:read"], Arc::clone(&host));
+    let answer = data.storage_get("known".to_owned()).unwrap();
+    assert!(matches!(answer, types::Outcome::Ok(text) if text == "a value"));
+    assert_eq!(host.called(), ["storage-get"]);
+    assert_eq!(data.host_calls, 1);
+}
+
+#[test]
+fn typed_device_lists_and_quota_are_not_flattened_into_other_component_types() {
+    let host = Arc::new(Stub::with_devices(&[("device", "Desktop", "desktop")]));
+    let mut data = state(&["device:list", "storage:local:read"], Arc::clone(&host));
+    let devices = data.device_list().unwrap();
+    assert_eq!(devices.len(), 1);
+    let device = devices.first().unwrap();
+    assert_eq!(device.id, "device");
+    assert!(matches!(device.kind, types::DeviceKind::Desktop));
+    let quota = data.storage_quota().unwrap();
+    assert_eq!(quota.0, 0);
+    assert_eq!(quota.1, Quota::default().max_storage_bytes);
+}
+
+#[test]
+fn calls_without_a_session_fail_closed_and_still_count_as_host_attempts() {
+    let mut data = StoreData::new();
+    assert!(data.env_sdk_version().is_err());
+    assert!(matches!(
+        data.storage_get("known".to_owned()).unwrap(),
+        types::Outcome::Err(_)
+    ));
+    assert_eq!(data.host_calls, 2);
+}
+
+#[test]
+fn typed_argument_adapters_preserve_multi_argument_meanings_and_string_payloads() {
+    let host = Arc::new(Stub::default());
+    let grants = host_surface::CAPABILITIES;
+    let mut data = state(grants, Arc::clone(&host));
+    let payload = "{\"text\":\"你好\\nquoted\"}".to_owned();
+    let answer = data
+        .device_send(
+            "peer".to_owned(),
+            "_plugin.bridge.arrived".to_owned(),
+            payload.clone(),
+        )
+        .unwrap();
+    assert!(matches!(&answer, types::Outcome::Ok(_)), "{answer:?}");
+    assert!(matches!(
+        data.transfer_send("file".to_owned(), "peer".to_owned(), payload.clone())
+            .unwrap(),
+        types::Outcome::Ok(_)
+    ));
+    assert!(matches!(
+        data.action_declare("render".to_owned(), payload.clone())
+            .unwrap(),
+        types::Outcome::Ok(_)
+    ));
+    assert!(matches!(
+        data.action_invoke(
+            "@acme/target".to_owned(),
+            "render".to_owned(),
+            payload.clone()
+        )
+        .unwrap(),
+        types::Outcome::Ok(_)
+    ));
+    let seen = host.seen.lock().unwrap().clone();
+    assert!(seen.contains(&(
+        "device-send".to_owned(),
+        format!("peer/_plugin.bridge.arrived/{payload}")
+    )));
+    assert!(seen.contains(&("transfer-send".to_owned(), format!("file/peer/{payload}"))));
+    assert!(seen.contains(&("action-declare".to_owned(), format!("render/{payload}"))));
+    assert!(seen.contains(&(
+        "action-invoke".to_owned(),
+        format!("@acme/target/render/{payload}")
+    )));
+    assert_eq!(data.host_calls, 4);
+}
+
+#[test]
+fn typed_lists_preserve_optional_prefixes_and_invalid_device_kinds_are_refused() {
+    let host = Arc::new(Stub::with_devices(&[(
+        "device",
+        "Unknown",
+        "not-a-wit-kind",
+    )]));
+    let grants = host_surface::CAPABILITIES;
+    let mut data = state(grants, host);
     assert_eq!(
-        arguments_json("transfer-send", &["file", "phone", "{}"]),
-        r#"{"kind":"file","target":"phone","meta-json":"{}"}"#
+        data.storage_keys(Some("前缀/".to_owned())).unwrap(),
+        ["前缀/one", "前缀/two"]
     );
-    // And each of those parses as the field names the host call layer looks for.
-    for (function, values) in [
-        ("device-send", vec!["phone", "a.b", "{}"]),
-        ("storage-set", vec!["k", "v"]),
-        ("transfer-send", vec!["file", "phone", "{}"]),
-        ("event-emit", vec!["a.b", "{}"]),
-    ] {
-        let json = arguments_json(function, &values);
-        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
-        assert!(parsed.is_object(), "{function}: {json}");
-        assert_eq!(parsed.as_object().map(serde_json::Map::len), Some(values.len()), "{function}");
-    }
-}
-
-#[test]
-fn a_log_line_carries_the_level_the_contract_names_rather_than_its_index() {
-    // The WIT `enum` crosses as a `u32` index, and what the host wants is the name: a log line that said `2` would be
-    // one nobody could grep for.
-    assert_eq!(log_json(0, "hello", None), r#"{"level":"trace","message":"hello"}"#);
-    assert_eq!(log_json(2, "hello", None), r#"{"level":"info","message":"hello"}"#);
+    assert_eq!(data.storage_keys(None).unwrap(), ["one", "two"]);
     assert_eq!(
-        log_json(4, "hello", Some("startup")),
-        r#"{"level":"error","message":"hello","context":"startup"}"#
+        data.action_list().unwrap(),
+        r#"[{"plugin":"@acme/other","name":"greet"}]"#
     );
-    // An index past the end is not a panic: a guest built against a different contract is one whose enum had more
-    // cases, and the line is logged at the least alarming level rather than dropped.
-    assert_eq!(log_json(99, "hello", None), r#"{"level":"info","message":"hello"}"#);
+    assert!(data.device_list().is_err());
 }
 
 #[test]
-fn a_refusal_is_the_json_the_outcome_variant_carries() {
-    // The contract's shape for a call that can fail is `outcome`, whose `err` case carries a structured error with a
-    // stable code. A refusal rendered as anything else would be one a plugin could not branch on.
-    let denied = CallError::denied("storage:local:write", &CapabilitySet::new());
-    let json = error_json(&denied);
-    let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
-    assert_eq!(parsed.get("code").and_then(|value| value.as_str()), Some("capabilityDenied"));
-    assert!(parsed.get("details").is_some(), "{json}");
-
-    let unknown = error_json(&CallError::unknown("synra:plugin/host#teleport"));
-    assert!(unknown.contains("unknownFunction"), "{unknown}");
+fn an_import_with_a_matching_name_and_wrong_result_type_is_refused_at_linking() {
+    let backend = WasmtimeBackend::new(BackendKind::WasmtimeCranelift).unwrap();
+    let binary = wat::parse_str(
+        r#"(component
+          (import "synra:plugin/host@1.0.0" (instance
+            (export "storage-get" (func (param "key" string) (result string)))))
+          (instance $lifecycle)
+          (export "synra:plugin/lifecycle@1.0.0" (instance $lifecycle)))"#,
+    )
+    .unwrap();
+    let artifact = backend.compile(&binary, "@acme/wrong-host-abi").unwrap();
+    let error = match Backend::new(Arc::new(backend)).instantiate(artifact.as_ref()) {
+        Ok(_) => panic!("a familiar import name must not bypass WIT type checking"),
+        Err(error) => error.to_string(),
+    };
+    assert!(error.contains("storage-get"), "{error}");
+    assert!(error.contains("type mismatch"), "{error}");
 }
 
 #[test]
-fn an_answer_that_is_empty_becomes_the_json_null_the_outcome_expects() {
-    // A function with nothing to say says `null` rather than an empty string, because an empty string is a value a
-    // plugin would have to distinguish from "no answer".
-    assert_eq!(Answer::Ok("null".to_owned()).into_outcome(), "null");
-    assert_eq!(Answer::Ok("[1,2]".to_owned()).into_outcome(), "[1,2]");
-    // And a refusal goes out as the error's JSON, not as its sentence.
-    let refused = Answer::Denied(CallError::denied("log:*", &CapabilitySet::new()));
-    assert!(refused.was_refused());
-    assert!(refused.into_outcome().starts_with('{'));
-}
-
-#[test]
-fn a_list_answer_that_is_not_a_list_is_an_empty_list_rather_than_a_panic() {
-    // The host builds these with `json_array`, so a parse failure is a host bug — and the answer a plugin sees is
-    // "there are none" rather than a call that failed.
-    assert_eq!(parse_list(r#"["a","b"]"#), vec!["a".to_owned(), "b".to_owned()]);
-    assert_eq!(parse_list(""), Vec::<String>::new());
-    assert_eq!(parse_list("not json"), Vec::<String>::new());
-    assert_eq!(parse_list(r#"{"a":1}"#), Vec::<String>::new());
-}
-
-#[test]
-fn the_interface_a_guest_imports_is_the_one_the_contract_names() {
-    // `synra:plugin/host@1.0.0`, assembled from the generated table so a version bump cannot leave this behind. The
-    // symptom of getting it wrong is a component that will not instantiate for a plugin author who did nothing wrong.
-    assert_eq!(host_interface(), "synra:plugin/host");
-    assert_eq!(instance_interface(), "synra:plugin/host@1.0.0");
-    assert_eq!(import_name("log"), "synra:plugin/host#log");
-    
-    // And the import names the linker uses are the names the gate table is keyed by, which is what makes the gate
-    // reachable at all: a definition under a different name would call `gate()` with a name it does not know, and the
-    // call would be refused as an unknown function.
-    for function in contract_functions() {
-        let by_interface = import_name(&function);
-        let bare = import_name_for(&function);
-        assert!(by_interface.ends_with(&format!("#{function}")), "{by_interface}");
-        assert!(bare.ends_with(&format!("#{function}")), "{bare}");
-        assert!(host_surface::provides(&bare), "{bare}");
-    }
-}
-
-#[test]
-fn a_refusal_a_guest_receives_names_what_to_ask_for() {
-    // The next thing an author does after a refusal is ask the user for the capability, so the refusal names it — and
-    // the code is one a plugin branches on rather than a sentence it parses.
-    let refused = Answer::Denied(CallError::denied("device:send:*", &CapabilitySet::new()));
-    let json = error_json(match &refused {
-        Answer::Denied(error) => error,
-        Answer::Ok(_) => panic!("a refusal"),
+fn a_constructor_that_never_returns_is_stopped_by_its_startup_budget() {
+    use crate::engine::executor::{Epoch, EpochTicker};
+    let epoch = Epoch::new();
+    let _ticker = EpochTicker::start(epoch.clone());
+    let backend = Arc::new(
+        WasmtimeBackend::with_epoch(BackendKind::WasmtimeCranelift, epoch.clone()).unwrap(),
+    );
+    let binary = wat::parse_str(
+        r#"(component
+      (core module $m (func $start (loop $again (br $again))) (start $start))
+      (core instance $i (instantiate $m))
+      (instance $lifecycle)
+      (export "synra:plugin/lifecycle@1.0.0" (instance $lifecycle)))"#,
+    )
+    .unwrap();
+    let artifact = backend.compile(&binary, "@acme/spinning-start").unwrap();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let detail = match Backend::new(backend).instantiate(artifact.as_ref()) {
+            Ok(_) => panic!("an infinite constructor must not instantiate"),
+            Err(error) => error.to_string(),
+        };
+        sender.send(detail).unwrap();
     });
-    assert!(json.contains("capabilityDenied"), "{json}");
-    assert!(json.contains("device:send:*"), "{json}");
-    assert!(refused.was_refused());
-}
-
-#[test]
-fn the_shapes_name_every_function_exactly_once() {
-    // A function defined twice would be a `wasmtime` error at link time — a host bug that a suite should catch rather
-    // than a kernel that fails to start.
-    let defined = shapes_defined();
-    let mut sorted = defined.clone();
-    sorted.sort();
-    sorted.dedup();
-    assert_eq!(sorted.len(), defined.len(), "a function is defined twice: {defined:?}");
-}
-
-/// Every bare function name the shapes define.
-///
-/// # Why this is a list rather than a probe
-///
-/// Because defining them on a real `Linker` needs an engine, and an engine is the one thing this module's tests do not
-/// have. The list is the shapes' own contents, and the suite's job is to keep it equal to the contract.
-fn shapes_defined() -> Vec<String> {
-    let mut defined: Vec<String> = Vec::new();
-    for group in [
-        &["env-sdk-version", "env-host-kind", "env-locale", "plugin-id"][..],
-        &["env-dark-mode"][..],
-        &["env-can"][..],
-        &["platform-capabilities", "device-list"][..],
-        &["storage-quota"][..],
-        &["storage-keys", "action-list"][..],
-        &[
-            "event-subscribe",
-            "storage-get",
-            "storage-delete",
-            "secret-get",
-            "secret-delete",
-            "network-fetch",
-            "network-websocket",
-            "transfer-status",
-            "platform-open-url",
-            "platform-open-path",
-            "platform-reveal-path",
-            "platform-simulate-keys",
-            "platform-write-clipboard",
-        ][..],
-        &["event-emit", "device-send", "device-broadcast", "storage-set", "secret-set"][..],
-        &["transfer-send"][..],
-        &["log"][..],
-        &["platform-read-clipboard"][..],
-        &["platform-notify"][..],
-        &["action-declare"][..],
-        &["action-invoke"][..],
-    ] {
-        defined.extend(group.iter().map(|function| (*function).to_owned()));
+    let result = receiver.recv_timeout(std::time::Duration::from_secs(3));
+    if result.is_err() {
+        // Independent interruption keeps a broken fuel test from leaving a runaway worker.
+        for _ in 0..1024 {
+            epoch.advance();
+        }
     }
-    defined
-}
-
-/// An import name in the spelling the gate table is keyed by.
-///
-/// The table is generated from the WIT *file*, whose package is `synra:plugin`, and the version lives on the world
-/// rather than on each import — so the name a guest imports (`…/host@1.0.0#log`) and the name the table uses
-/// (`synra:plugin/host#log`) differ by the version, and this is the one place that is written down.
-fn import_name_for(function: &str) -> String {
-    format!("{}/{}#{}", host_surface::PACKAGE, host_surface::HOST_INTERFACE, function)
-}
-
-/// How many parameters the contract declares for a function.
-///
-/// # Why this is derived and not a second table
-///
-/// Because two hand-kept tables that have to agree are two tables that will disagree — and the disagreement would be a
-/// JSON body keyed by names nobody reads. The *arity* is checkable from the shape each function is defined in, which is
-/// what this reads: a function in a shape whose closure takes two arguments has two parameters.
-///
-/// The one exception is `log`, whose level and context are a `log-level` and an `option<string>` rather than strings —
-/// so it is named rather than inferred.
-fn declared_parameter_count(function: &str) -> usize {
-    if function == "log" {
-        return 3;
-    }
-    let named = parameter_names(function);
-    if named.is_empty() {
-        // No names means the function takes nothing, which is the claim `parameter_names` makes by having no entry.
-        return 0;
-    }
-    named.len()
+    worker.join().unwrap();
+    let detail = result.expect("startup must finish within its budget");
+    assert!(
+        detail.contains("fuel") || detail.contains("interrupt"),
+        "{detail}"
+    );
 }

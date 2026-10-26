@@ -1,38 +1,21 @@
-//! The engine, tested against real components.
+//! Real component compilation, calls, interruption and resource limits.
 //!
-//! These tests need the `wasm-text` feature, and they are the only place in the crate where a guest actually runs.
-//! Everything else — the pool's choices, the budget arithmetic, the script table — is tested without an engine, on
-//! purpose: a suite that needed a compiler to check a state machine would only run where the compiler builds.
-//!
-//! # Where the components come from
-//!
-//! From the `wat` strings below, as text, compiled by the engine at test time. A checked-in `.wasm` would be a binary
-//! nobody can review; a `.wat` is a few lines a reader can check against what the test asserts.
-//!
-//! # Two tests are ignored, and why
-//!
-//! Making a *call* needs one more thing than compiling and instantiating do: the address of an export that lives inside
-//! a nested interface instance. `wasmtime`'s lookup is by the name an instance merges into its own component's export
-//! map, and everything a nested instance holds is **not** in the component's own map — which is the component model
-//! being correct rather than a missing feature, and it is exactly what the generated bindings exist to bridge.
-//!
-//! So those two tests are written and ignored, and what they specify is a published promise rather than a wish: the
-//! instruction budget ends a guest that loops, and a call's answer comes back. What *is* tested here without them is
-//! everything that does not need a call — compiling, reading what a component imports, refusing a component this host
-//! cannot link, and the ABI being checked when the component is decoded.
+//! These tests run with wasm-runtime. The dev-only WAT assembler keeps text fixtures independent
+//! of the optional wasm-text feature; typed host imports and result codecs come from production WIT.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use super::*;
-use crate::engine::types::{Backend, WasmBackend};
 use crate::engine::executor::{Epoch, EpochTicker, WasmExecutor};
+use crate::engine::types::{Backend, WasmBackend};
 
 /// A backend sharing an executor's epoch, as a running kernel builds it.
-fn backend_and_executor() -> (Arc<WasmtimeBackend>, WasmExecutor) {
+pub(super) fn backend_and_executor() -> (Arc<WasmtimeBackend>, WasmExecutor) {
     let executor = WasmExecutor::start(2, 4).expect("an executor");
-    let backend = WasmtimeBackend::with_epoch(BackendKind::WasmtimeCranelift, executor.epoch().clone())
-        .expect("an engine");
+    let backend =
+        WasmtimeBackend::with_epoch(BackendKind::WasmtimeCranelift, executor.epoch().clone())
+            .expect("an engine");
     (Arc::new(backend), executor)
 }
 
@@ -45,8 +28,6 @@ const EMPTY: &str = r#"
   (instance $lifecycle)
   (export "synra:plugin/lifecycle@1.0.0" (instance $lifecycle)))
 "#;
-
-
 
 /// A component whose `deactivate` returns at once.
 const STOPS: &str = r#"
@@ -61,22 +42,7 @@ const STOPS: &str = r#"
 )
 "#;
 
-/// A component whose `deactivate` never returns.
-///
-/// # ★ Why this is `deactivate` and not `activate`
-///
-/// `activate` takes a `string` and returns an `outcome`, so a hand-written `.wat` for it has to implement the canonical
-/// ABI's lowering and lifting by hand: a pointer and a length in, a pointer and a length out, a `realloc` for the host to
-/// write the parameter with, and a `post-return`. That is what the one remaining ignored test in this file is ignored
-/// *for*, and it is the thing a `bindgen!`-generated fixture would fix.
-///
-/// `deactivate` is `func()` — no parameters, no results — so its canonical lift is a core function with no signature at
-/// all, and a hand-written guest can be **four lines**. The instruction budget is a property of the engine rather than of
-/// the interface, so a guest that loops in `deactivate` tests exactly the same limit as one that loops in `activate`, and
-/// it tests it on a real component instead of on a stub.
-///
-/// ★ This fixture replaced one that lifted a loop as `activate` and was therefore never usable — nothing called it, and a
-/// dead fixture is worse than none: it reads as coverage.
+/// Spins without parameters or results so the instruction-limit test isolates execution budgeting.
 const SPINS_ON_DEACTIVATE: &str = r#"
 (component
   (core module $m
@@ -119,26 +85,10 @@ const GROWS_UNTIL_REFUSED: &str = r#"
 )
 "#;
 
-/// A component whose `can-handle` hands back a string of its own.
-///
-/// # ★ What the canonical ABI wants for `string -> string`, and what the old fixture got wrong
-///
-/// The `string` **parameter** arrives as a pointer and a length, written into the guest's own memory by the host through
-/// the guest's `realloc`. The `string` **result** comes back as an `i32`: the address of an eight-byte return area holding
-/// the answer's own pointer and length. Three things follow, and the previous fixture missed all three —
-///
-/// 1. ★ The result is **indirect**: a `string` is two values — a pointer and a length — and the canonical ABI's flat limit
-///    is one, so the caller passes a pointer to a return area as a **leading parameter** and the core function returns
-///    nothing at all. Writing the pair at a fixed address and returning that address is the mistake the previous fixture
-///    made, and the engine's answer to it was `expected 1 result(s), got 0`;
-/// 2. the length written there is the answer's real length — twenty-one, not twenty, which is what the old data and the old
-///    length disagreed about;
-/// 3. the return area is the caller's, so the guest must not assume it can be written to at a fixed address of its own
-///    choosing.
-///
-/// The answer is a string the **host never built**: it is bytes in the guest's memory, lifted out by the engine. A call
-/// that never reached the guest cannot produce it, which is what makes this the test of the call path.
-const ANSWERS: &str = r#"
+/// Returns bytes owned by the guest, rather than an answer synthesized by the host.
+/// Canonical lift receives the input string as pointer/length and returns an i32 pointing to the
+/// result string's pointer/length pair in guest memory. It does not take an extra result parameter.
+pub(super) const ANSWERS: &str = r#"
 (component
   (core module $m
     (memory (export "memory") 1)
@@ -206,7 +156,7 @@ const IMPORTS_UNKNOWN: &str = r#"
 /// through used to work only when the optional `wasm-text` feature was on, and silently failed with "magic header not
 /// detected" in every build that enabled `wasm-runtime` without it. Assembling here means the fixture always reaches the
 /// engine in the form the engine actually accepts, whichever features the workspace happened to unify.
-fn compile(backend: &WasmtimeBackend, wat: &str, id: &str) -> Box<dyn CompiledArtifact> {
+pub(super) fn compile(backend: &WasmtimeBackend, wat: &str, id: &str) -> Box<dyn CompiledArtifact> {
     let binary = wat::parse_str(wat)
         .unwrap_or_else(|error| panic!("the {id} fixture is not valid text: {error}"));
     match backend.compile(&binary, id) {
@@ -218,7 +168,10 @@ fn compile(backend: &WasmtimeBackend, wat: &str, id: &str) -> Box<dyn CompiledAr
 }
 
 /// Instantiates, or fails with the engine's own reason.
-fn instantiate(backend: &Arc<WasmtimeBackend>, artifact: &dyn CompiledArtifact) -> Box<dyn PluginInstance> {
+pub(super) fn instantiate(
+    backend: &Arc<WasmtimeBackend>,
+    artifact: &dyn CompiledArtifact,
+) -> Box<dyn PluginInstance> {
     match handle(backend).instantiate(artifact) {
         Ok(instance) => instance,
         Err(error) => panic!("the component did not instantiate: {error}"),
@@ -248,8 +201,14 @@ fn an_artifact_larger_than_the_ceiling_is_refused_before_the_engine_sees_it() {
 
     match backend.compile(&oversized, "@acme/huge") {
         Err(BackendError::Compile { detail }) => {
-            assert!(detail.contains("16777217"), "it names the size it was given: {detail}");
-            assert!(detail.contains("16777216"), "and the largest it accepts: {detail}");
+            assert!(
+                detail.contains("16777217"),
+                "it names the size it was given: {detail}"
+            );
+            assert!(
+                detail.contains("16777216"),
+                "and the largest it accepts: {detail}"
+            );
         }
         // A compiled artifact has no `Debug`, so the arm reports that it succeeded rather than showing one.
         Ok(_) => panic!("a 16 MiB artifact was compiled"),
@@ -260,7 +219,10 @@ fn an_artifact_larger_than_the_ceiling_is_refused_before_the_engine_sees_it() {
 #[test]
 fn an_empty_artifact_is_refused_before_the_engine_sees_it() {
     let backend = WasmtimeBackend::new(BackendKind::WasmtimeCranelift).expect("an engine");
-    assert!(matches!(backend.compile(b"", "p"), Err(BackendError::Compile { .. })));
+    assert!(matches!(
+        backend.compile(b"", "p"),
+        Err(BackendError::Compile { .. })
+    ));
 }
 
 #[test]
@@ -284,8 +246,17 @@ fn a_component_compiles_and_reports_a_digest_of_the_right_shape() {
     let artifact = compile(&backend, EMPTY, "@acme/empty");
 
     assert_eq!(artifact.kind(), BackendKind::WasmtimeCranelift);
-    assert_eq!(artifact.digest().len(), 64, "a digest is what a cache key is built from");
-    assert!(artifact.digest().chars().all(|character| character.is_ascii_hexdigit()));
+    assert_eq!(
+        artifact.digest().len(),
+        64,
+        "a digest is what a cache key is built from"
+    );
+    assert!(
+        artifact
+            .digest()
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
+    );
 }
 
 #[test]
@@ -299,7 +270,10 @@ fn what_a_component_imports_is_read_from_the_component() {
         .downcast_ref::<EngineArtifact>()
         .expect("the artefact this backend made");
     assert!(
-        concrete.imports().iter().any(|import| import.contains("synra:plugin/host")),
+        concrete
+            .imports()
+            .iter()
+            .any(|import| import.contains("synra:plugin/host")),
         "{:?}",
         concrete.imports()
     );
@@ -346,12 +320,6 @@ fn an_artefact_from_another_backend_is_refused_by_name() {
 // ── Running ───────────────────────────────────────────────────────────────────────────────────────
 
 #[test]
-#[ignore = "the hand-written fixture does not satisfy the canonical ABI for a `string` result. Two attempts, and what \
-the engine said about each: a core function taking the return pointer as a leading parameter gives `lowered parameter \
-types [I32, I32] do not match parameter types [I32, I32, I32]` (the lowered parameters are the input string only, so \
-there is no return pointer); returning the address of a return area as a flat `i32` compiles and then traps with \
-`expected 1 result(s), got 0`. A fixture generated by `bindgen!` from the WIT file is what would settle it, and the \
-assertion below is already the one worth keeping — it used to be a tautology"]
 fn a_call_reaches_the_guest_and_its_answer_comes_back() {
     // ★ The one test that proves the whole path: a call goes in, the guest runs, and bytes the **host never built** come
     // back out. Everything else in this file tests a part of it — the lookup, the instantiation, the limits, the traps.
@@ -366,14 +334,23 @@ fn a_call_reaches_the_guest_and_its_answer_comes_back() {
     let mut instance = instantiate(&backend, artifact.as_ref());
 
     let outcome = instance
-        .call(&Work::CanHandle { item_json: "{\"mime\":\"text/plain\"}".to_owned() }, CallBudget::unlimited())
+        .call(
+            &Work::CanHandle {
+                item_json: "{\"mime\":\"text/plain\"}".to_owned(),
+            },
+            CallBudget::unlimited(),
+        )
         .expect("a call");
 
     match outcome {
         CallOutcome::Ok(text) => assert_eq!(text, "hello from the plugin"),
         other => panic!("expected the guest's own string, got {other:?}"),
     }
-    assert_eq!(instance.host_calls(), 0, "the guest called nothing; the string is its own");
+    assert_eq!(
+        instance.host_calls(),
+        0,
+        "the guest called nothing; the string is its own"
+    );
     // ★ The reading the plugin group's `plugin_fuel_consumed` histogram is built from: the store is set to the budget
     // before the call and the remainder is read after, so a guest that ran spent something. `unlimited` gives `u64::MAX`,
     // which is why the assertion is "more than zero" rather than a number only this fixture could name.
@@ -392,7 +369,12 @@ fn a_call_to_an_export_the_component_does_not_have_is_a_named_trap() {
     let mut instance = instantiate(&backend, artifact.as_ref());
 
     let outcome = instance
-        .call(&Work::CanHandle { item_json: "{}".to_owned() }, CallBudget::unlimited())
+        .call(
+            &Work::CanHandle {
+                item_json: "{}".to_owned(),
+            },
+            CallBudget::unlimited(),
+        )
         .expect("a call");
     match outcome {
         CallOutcome::Trap { detail } => assert!(detail.contains("share.can-handle"), "{detail}"),
@@ -436,7 +418,11 @@ fn a_guest_that_loops_for_ever_is_stopped_by_its_instruction_budget() {
         "an exhausted budget reports what it was given"
     );
     // And the instance survived: one bad call is not a dead plugin, which is what makes the next call possible.
-    assert!(instance.call(&Work::Deactivate, CallBudget::unlimited()).is_ok());
+    assert!(
+        instance
+            .call(&Work::Deactivate, CallBudget::unlimited())
+            .is_ok()
+    );
 }
 
 #[test]
@@ -463,7 +449,11 @@ fn a_budget_that_names_no_ceiling_is_still_bounded() {
     let outcome = instance
         .call(
             &Work::Deactivate,
-            CallBudget { fuel: Some(1_000_000), timeout: None, max_memory_growth: None },
+            CallBudget {
+                fuel: Some(1_000_000),
+                timeout: None,
+                max_memory_growth: None,
+            },
         )
         .expect("a call");
 
@@ -475,11 +465,12 @@ fn a_budget_that_names_no_ceiling_is_still_bounded() {
         // ★ Asserted against the constant rather than the number, which is the difference between a test that
         // checks the ceiling is reported and one that checks the arithmetic somebody typed matches theirs.
         CallOutcome::MemoryExceeded { limit } => assert_eq!(
-            limit,
-            INSTANTIATION_CEILING as u64,
+            limit, INSTANTIATION_CEILING as u64,
             "an unnamed ceiling is the instantiation ceiling, and the outcome must name it"
         ),
-        other => panic!("a guest that grows without bound must hit the instantiation ceiling, got {other:?}"),
+        other => panic!(
+            "a guest that grows without bound must hit the instantiation ceiling, got {other:?}"
+        ),
     }
 }
 
@@ -556,7 +547,9 @@ fn a_call_that_asks_for_no_fuel_is_given_fuel_rather_than_left_at_zero() {
 
     match outcome {
         CallOutcome::Timeout { .. } => {}
-        other => panic!("a budget with no instruction limit should run until its clock, got {other:?}"),
+        other => {
+            panic!("a budget with no instruction limit should run until its clock, got {other:?}")
+        }
     }
     assert!(
         started.elapsed() < Duration::from_secs(30),
@@ -611,28 +604,26 @@ fn a_real_guest_that_loops_is_stopped_by_the_wall_clock_not_by_zero() {
 
 #[test]
 fn a_budget_with_no_time_limit_leaves_no_deadline_armed() {
-    // """ + S + """ A call that asked for no wall clock must not be interrupted by one.
-    //
-    // Instantiation arms `set_epoch_deadline(1)` so a start function cannot run away before the first call sets a budget.
-    // Nothing put it back, so a call whose budget had `timeout: None` kept that deadline of one tick: the executor's next
-    // epoch advance interrupted it and `classify` reported `Timeout { after: 0ns }` — a timeout for a budget that had none.
-    //
-    // ★ It surfaced as a **flake**, and this test is written to not be one. The interrupt needs the epoch to advance while a
-    // call is in flight, which under load happens by itself and never when the test runs alone; so instead of racing, this
-    // advances the epoch **first** and then calls. The store's counter is ahead of a deadline of one, so with the bug the
-    // very next call is interrupted, and with the fix it is not — deterministically, on every machine.
+    // Advance beyond the constructor's finite deadline before making an unlimited call.
+    // Retaining startup's deadline would interrupt the call deterministically.
     let (backend, executor) = backend_and_executor();
     let artifact = compile(&backend, STOPS, "@acme/stops");
     let mut instance = instantiate(&backend, artifact.as_ref());
 
     // The epoch is already past the deadline instantiation armed.
-    let now = executor.epoch().advance();
-    assert!(now >= 1, "the epoch moved");
+    let ticks = ticks_for(INSTANTIATION_TIMEOUT);
+    for _ in 0..=ticks {
+        executor.epoch().advance();
+    }
 
     let outcome = instance
         .call(
             &Work::Deactivate,
-            CallBudget { fuel: None, timeout: None, max_memory_growth: None },
+            CallBudget {
+                fuel: None,
+                timeout: None,
+                max_memory_growth: None,
+            },
         )
         .expect("a call");
 
@@ -655,7 +646,11 @@ fn a_wall_clock_budget_arms_a_deadline_on_the_store() {
     let artifact = compile(&backend, SPINS_ON_DEACTIVATE, "@acme/spins");
     let mut instance = instantiate(&backend, artifact.as_ref());
 
-    assert_eq!(instance.deadline_epoch(), None, "nothing is armed before a call");
+    assert_eq!(
+        instance.deadline_epoch(),
+        None,
+        "no call deadline has been recorded before a call"
+    );
     let budget = CallBudget {
         fuel: None,
         timeout: Some(Duration::from_millis(250)),
@@ -711,13 +706,14 @@ fn a_host_on_an_engine_that_enforces_nothing_is_refused_and_told_which_limit() {
     // The scripted backend is what makes this testable at all: it honestly reports that it has no engine, which is exactly
     // the state a future lightweight backend would be in. It is a test double, so no production path reaches it — which is
     // why the check lives where a kernel chooses its engine rather than on every call.
-    let backend = crate::Backend::new(std::sync::Arc::new(
-        crate::engine::ScriptedBackend::new(),
-    ));
+    let backend = crate::Backend::new(std::sync::Arc::new(crate::engine::ScriptedBackend::new()));
 
     match crate::engine::check_enforceable(&backend, &crate::quota::Quota::default()) {
         Err(BackendError::CannotEnforce { missing }) => {
-            assert_eq!(missing, "an instruction budget", "the first limit the defaults ask for");
+            assert_eq!(
+                missing, "an instruction budget",
+                "the first limit the defaults ask for"
+            );
         }
         other => panic!("an engine that enforces nothing must be refused, got {other:?}"),
     }
@@ -731,7 +727,10 @@ fn the_engine_reports_that_it_enforces_every_limit() {
     assert!(enforcement.fuel);
     assert!(enforcement.epoch);
     assert!(enforcement.memory);
-    assert_eq!(enforcement.first_gap(&CallBudget::from_quota(&crate::quota::Quota::default())), None);
+    assert_eq!(
+        enforcement.first_gap(&CallBudget::from_quota(&crate::quota::Quota::default())),
+        None
+    );
     assert_eq!(backend.engine_version(), ENGINE_VERSION);
     assert!(backend.describe().contains("wasmtime-cranelift"));
 }
@@ -750,7 +749,10 @@ fn what_the_engine_claims_it_enforces_is_what_it_does() {
     let enforcement = backend.enforcement();
 
     // The three limits are applied in `apply_budget`, so they are claimed and are real.
-    assert!(enforcement.fuel && enforcement.epoch && enforcement.memory, "{enforcement:?}");
+    assert!(
+        enforcement.fuel && enforcement.epoch && enforcement.memory,
+        "{enforcement:?}"
+    );
 
     // Precompilation is the one that is not implemented, so it must not be claimed. This is the assertion that would
     // have caught the false claim: it fails the moment the flag and the method disagree.
@@ -803,8 +805,9 @@ fn an_engine_with_its_own_epoch_advances_it() {
 #[test]
 fn an_engine_sharing_an_epoch_is_joined_to_it() {
     let executor = WasmExecutor::start(2, 4).expect("an executor");
-    let backend = WasmtimeBackend::with_epoch(BackendKind::WasmtimeCranelift, executor.epoch().clone())
-        .expect("an engine");
+    let backend =
+        WasmtimeBackend::with_epoch(BackendKind::WasmtimeCranelift, executor.epoch().clone())
+            .expect("an engine");
 
     let described = format!("{:?}", backend.epoch());
     assert!(
@@ -819,13 +822,17 @@ fn a_deadline_only_fires_if_the_epoch_advances() {
     // nothing increments has a wall-clock budget that does nothing at all — and the difference is only visible by
     // watching the counter.
     let executor = WasmExecutor::start(2, 4).expect("an executor");
-    let backend = WasmtimeBackend::with_epoch(BackendKind::WasmtimeCranelift, executor.epoch().clone())
-        .expect("an engine");
+    let backend =
+        WasmtimeBackend::with_epoch(BackendKind::WasmtimeCranelift, executor.epoch().clone())
+            .expect("an engine");
 
     let before = executor.epoch().now();
     let ticker = EpochTicker::start(executor.epoch().clone());
     std::thread::sleep(crate::engine::executor::EPOCH_PERIOD * 3);
-    assert!(executor.epoch().now() > before, "the ticker is what moves the deadline");
+    assert!(
+        executor.epoch().now() > before,
+        "the ticker is what moves the deadline"
+    );
     assert!(ticker.is_running());
     // And the engine is looking at that counter, not at one of its own.
     let artifact = compile(&backend, EMPTY, "@acme/empty");
