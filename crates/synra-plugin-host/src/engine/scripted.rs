@@ -61,6 +61,8 @@ pub enum Scripted {
         code: String,
         /// The sentence.
         message: String,
+        /// Optional details, matching the real engine's WIT result.
+        details: Option<String>,
     },
     /// Trap.
     Trap {
@@ -355,7 +357,15 @@ impl PluginInstance for ScriptedInstance {
 
         Ok(match self.shared.answer_for(&self.plugin_id, work) {
             Scripted::Ok(payload) => CallOutcome::Ok(payload),
-            Scripted::Failed { code, message } => CallOutcome::Failed { code, message },
+            Scripted::Failed {
+                code,
+                message,
+                details,
+            } => CallOutcome::Failed {
+                code,
+                message,
+                details,
+            },
             Scripted::Trap { detail } => CallOutcome::Trap { detail },
             // ★ A panic in the host, which is a different failure from a trap the *guest* produced.
             //
@@ -589,6 +599,7 @@ mod tests {
             Scripted::Failed {
                 code: "device_offline".to_owned(),
                 message: "the peer went away".to_owned(),
+                details: Some(r#"{"peer":"laptop"}"#.to_owned()),
             },
         );
         let artifact = compiled(&backend);
@@ -602,6 +613,14 @@ mod tests {
         assert!(!outcome.is_ok());
         assert!(!outcome.is_misbehaviour(), "{outcome:?}");
         assert_eq!(outcome.as_str(), "failed");
+        assert_eq!(
+            outcome,
+            CallOutcome::Failed {
+                code: "device_offline".to_owned(),
+                message: "the peer went away".to_owned(),
+                details: Some(r#"{"peer":"laptop"}"#.to_owned()),
+            }
+        );
     }
 
     #[test]

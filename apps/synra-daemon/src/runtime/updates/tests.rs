@@ -707,6 +707,7 @@ fn migration_failures_keep_the_old_version_and_activation_failures_report_the_co
         Scripted::Failed {
             code: "migration".to_owned(),
             message: "cannot migrate".to_owned(),
+            details: None,
         },
     );
     assert_eq!(check_all(&runtime, 100, &Cancellation::new()).len(), 1);
@@ -734,6 +735,7 @@ fn migration_failures_keep_the_old_version_and_activation_failures_report_the_co
         Scripted::Failed {
             code: "activation".to_owned(),
             message: "cannot activate".to_owned(),
+            details: None,
         },
     );
     assert!(check_all(&runtime, 100 + CHECK_EVERY_MS, &Cancellation::new()).is_empty());

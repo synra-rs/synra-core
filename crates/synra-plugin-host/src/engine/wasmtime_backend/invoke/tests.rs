@@ -25,8 +25,15 @@ fn works() -> Vec<Work> {
     ]
 }
 
-fn component(failed: bool) -> String {
+fn component(failed: bool, details: Option<&str>) -> String {
     let flag = u8::from(failed);
+    let details_flag = u8::from(details.is_some());
+    let details = details.unwrap_or_default();
+    let details_len = details.len();
+    let details_data: String = details
+        .bytes()
+        .map(|byte| format!("\\{byte:02x}"))
+        .collect();
     format!(
         r#"
 (component
@@ -37,6 +44,7 @@ fn component(failed: bool) -> String {
     (data (i32.const 1024) "guest result")
     (data (i32.const 1100) "pluginRefused")
     (data (i32.const 1200) "intent rejected")
+    (data (i32.const 1300) "{details_data}")
     (global $next (mut i32) (i32.const 4096))
     (global $active (mut i32) (i32.const 0))
     (func (export "realloc") (param i32 i32 i32 i32) (result i32)
@@ -54,7 +62,9 @@ fn component(failed: bool) -> String {
           (i32.store (i32.const 2056) (i32.const 13))
           (i32.store (i32.const 2060) (i32.const 1200))
           (i32.store (i32.const 2064) (i32.const 15))
-          (i32.store8 (i32.const 2068) (i32.const 0)))
+          (i32.store8 (i32.const 2068) (i32.const {details_flag}))
+          (i32.store (i32.const 2072) (i32.const 1300))
+          (i32.store (i32.const 2076) (i32.const {details_len})))
         (else
           (i32.store (i32.const 2052) (i32.const 1024))
           (i32.store (i32.const 2056) (i32.const 12))))
@@ -92,9 +102,19 @@ fn component(failed: bool) -> String {
 
 #[test]
 fn every_outcome_entry_lifts_success_and_failure_and_runs_post_return_before_reuse() {
-    for failed in [false, true] {
+    for (failed, details) in [
+        (false, None),
+        (true, None),
+        (true, Some("")),
+        (
+            true,
+            Some(r#"{"kind":"timeout","label":"中文🖱️","cleanupPending":true}"#),
+        ),
+        (true, Some("null")),
+        (true, Some("not-json")),
+    ] {
         let (backend, _executor) = backend_and_executor();
-        let artifact = compile(&backend, &component(failed), "@acme/outcomes");
+        let artifact = compile(&backend, &component(failed, details), "@acme/outcomes");
         let mut instance = instantiate(&backend, artifact.as_ref());
         for _ in 0..2 {
             for work in works() {
@@ -105,6 +125,7 @@ fn every_outcome_entry_lifts_success_and_failure_and_runs_post_return_before_reu
                         CallOutcome::Failed {
                             code: "pluginRefused".to_owned(),
                             message: "intent rejected".to_owned(),
+                            details: details.map(str::to_owned),
                         }
                     } else {
                         CallOutcome::Ok("guest result".to_owned())
@@ -139,8 +160,9 @@ fn a_result_signature_mismatch_is_refused_before_guest_instructions_run() {
 #[test]
 fn post_return_failure_cannot_be_reported_as_a_successful_guest_answer() {
     let (backend, _executor) = backend_and_executor();
-    let fixture = component(false).replace("(global.set $active (i32.const 0))", "(unreachable)");
-    assert_ne!(fixture, component(false));
+    let fixture =
+        component(false, None).replace("(global.set $active (i32.const 0))", "(unreachable)");
+    assert_ne!(fixture, component(false, None));
     let artifact = compile(&backend, &fixture, "@acme/bad-cleanup");
     let mut instance = instantiate(&backend, artifact.as_ref());
     let result = instance

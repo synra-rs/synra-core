@@ -287,11 +287,20 @@ fn every_way_a_plugin_can_misbehave_leaves_the_others_working() {
     // an engine that never exhausts fuel makes this table vacuous, and a kernel that gives up on the first bad outcome makes
     // the engine's enforcement useless.
     let cases: [(&str, Scripted); 6] = [
-        ("a reported failure", Scripted::Failed {
-            code: "host_failed".to_owned(),
-            message: "the device is unreachable".to_owned(),
-        }),
-        ("a trap", Scripted::Trap { detail: "unreachable".to_owned() }),
+        (
+            "a reported failure",
+            Scripted::Failed {
+                code: "host_failed".to_owned(),
+                message: "the device is unreachable".to_owned(),
+                details: None,
+            },
+        ),
+        (
+            "a trap",
+            Scripted::Trap {
+                detail: "unreachable".to_owned(),
+            },
+        ),
         ("an exhausted instruction budget", Scripted::FuelExhausted),
         ("a memory ceiling", Scripted::MemoryExceeded),
         ("a timeout", Scripted::Timeout),

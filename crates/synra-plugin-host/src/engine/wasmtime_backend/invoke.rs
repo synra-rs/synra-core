@@ -93,6 +93,7 @@ fn outcome(answer: Outcome) -> CallOutcome {
         Outcome::Err(error) => CallOutcome::Failed {
             code: error.code,
             message: error.message,
+            details: error.details,
         },
     }
 }

@@ -118,6 +118,7 @@ fn a_plugin_that_refuses_to_activate_is_not_left_loaded() {
         Scripted::Failed {
             code: "invalidArgument".to_owned(),
             message: "the settings are nonsense".to_owned(),
+            details: None,
         },
     );
 

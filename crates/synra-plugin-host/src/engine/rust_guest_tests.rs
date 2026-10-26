@@ -91,7 +91,8 @@ fn rust_guest_round_trips_through_the_sdk_and_generated_host() {
         result,
         CallOutcome::Failed {
             code: "notMine".to_owned(),
-            message: "this plugin handles nothing".to_owned()
+            message: "this plugin handles nothing".to_owned(),
+            details: None,
         }
     );
     assert_eq!(instance.host_calls(), 4);

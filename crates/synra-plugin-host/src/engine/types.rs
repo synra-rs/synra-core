@@ -253,10 +253,12 @@ pub enum CallOutcome {
     Ok(String),
     /// The plugin returned a structured failure. Not a bug: it is a thing the plugin handled and reported.
     Failed {
-        /// One of the kernel's stable error codes.
+        /// The plugin's error code, which may also be a forwarded host-call code.
         code: String,
         /// A sentence for a log.
         message: String,
+        /// Optional WIT error details, retained verbatim including empty or non-JSON strings.
+        details: Option<String>,
     },
     /// The instruction budget ran out.
     FuelExhausted {
