@@ -66,7 +66,7 @@ pub enum PlatformError {
     },
 
     /// A value is too long.
-    #[error("the {field} is {len} characters, and the limit is {max}")]
+    #[error("the {field} has length {len}, and the limit is {max}")]
     TooLong {
         /// Which field.
         field: &'static str,
@@ -105,12 +105,80 @@ pub enum PlatformError {
         reason: String,
     },
 
+    /// All bounded command jobs are still active or finishing cleanup.
+    #[error("all {limit} command job slots are occupied")]
+    RunnerBusy {
+        /// Shared job ceiling.
+        limit: usize,
+    },
+
+    /// Execution exceeded its deadline; pending cleanup continues to retain admission.
+    #[error("`{program}` exceeded {timeout_ms}ms; cleanup pending: {cleanup_pending}")]
+    RunnerTimedOut {
+        /// Program, never its arguments or input.
+        program: String,
+        /// Execution budget in milliseconds, before the bounded cleanup allowance.
+        timeout_ms: u64,
+        /// Whether a process or pipe worker still owns the job slot.
+        cleanup_pending: bool,
+    },
+
+    /// An output stream exceeded its byte ceiling and the child was stopped.
+    #[error("`{program}` {stream} exceeds {max} bytes")]
+    RunnerOutputTooLong {
+        /// Program, never its arguments or input.
+        program: String,
+        /// Output stream or decoded field whose byte limit was exceeded.
+        stream: &'static str,
+        /// Stream byte ceiling.
+        max: usize,
+    },
+
+    /// The owned child could not yet be confirmed reaped; its job slot remains occupied.
+    #[error("`{program}` could not be reaped within the cleanup allowance")]
+    RunnerCleanupFailed {
+        /// Program, never its arguments or input.
+        program: String,
+    },
+
     /// This host has no such capability at all, which is a property of the installation rather than of the machine.
     ///
     /// The distinction from [`Self::RunnerFailed`] is what a user acts on: a headless kernel genuinely cannot open a
     /// browser, and a desktop whose `xdg-open` is missing can be fixed.
     #[error("this host cannot {0}")]
     Unsupported(&'static str),
+}
+
+impl PlatformError {
+    /// Structured command diagnostics without arguments, input or captured output.
+    /// Non-command errors have their own domain-specific fields and return `None` here.
+    #[must_use]
+    pub fn command_details(&self) -> Option<serde_json::Value> {
+        match self {
+            Self::RunnerBusy { limit } => Some(serde_json::json!({"kind": "busy", "limit": limit})),
+            Self::RunnerTimedOut {
+                program,
+                timeout_ms,
+                cleanup_pending,
+            } => Some(serde_json::json!({
+                "kind": "timeout", "program": program, "timeoutMs": timeout_ms, "cleanupPending": cleanup_pending,
+            })),
+            Self::RunnerOutputTooLong {
+                program,
+                stream,
+                max,
+            } => Some(serde_json::json!({
+                "kind": "outputLimit", "program": program, "stream": stream, "max": max,
+            })),
+            Self::RunnerCleanupFailed { program } => Some(serde_json::json!({
+                "kind": "cleanupPending", "program": program, "cleanupPending": true,
+            })),
+            Self::RunnerFailed { program, .. } => {
+                Some(serde_json::json!({"kind": "commandFailed", "program": program}))
+            }
+            _ => None,
+        }
+    }
 }
 
 /// Why a URL was refused.

@@ -14,6 +14,7 @@ use super::*;
 #[derive(Default)]
 struct Recorder {
     seen: Mutex<Vec<(String, Vec<String>)>>,
+    input: Mutex<Vec<Option<String>>>,
     /// What a successful run prints, which is how `read_clipboard` is tested.
     stdout: String,
     /// Whether every run fails, which is how a missing program is tested.
@@ -46,7 +47,19 @@ impl Recorder {
 }
 
 impl CommandRunner for Recorder {
-    fn run(&self, program: &str, arguments: &[&str]) -> Result<String, PlatformError> {
+    fn is_available(&self) -> bool {
+        true
+    }
+    fn run(
+        &self,
+        program: &str,
+        arguments: &[&str],
+        input: Option<&str>,
+    ) -> Result<String, PlatformError> {
+        self.input
+            .lock()
+            .expect("not poisoned")
+            .push(input.map(str::to_owned));
         if let Ok(mut seen) = self.seen.lock() {
             seen.push((program.to_owned(), arguments.iter().map(|value| (*value).to_owned()).collect()));
         }
@@ -84,8 +97,16 @@ fn over_recorder(desktop: Desktop) -> (std::sync::Arc<Recorder>, CommandPlatform
 struct Shared(std::sync::Arc<Recorder>);
 
 impl CommandRunner for Shared {
-    fn run(&self, program: &str, arguments: &[&str]) -> Result<String, PlatformError> {
-        self.0.run(program, arguments)
+    fn is_available(&self) -> bool {
+        self.0.is_available()
+    }
+    fn run(
+        &self,
+        program: &str,
+        arguments: &[&str],
+        input: Option<&str>,
+    ) -> Result<String, PlatformError> {
+        self.0.run(program, arguments, input)
     }
 }
 
@@ -185,7 +206,10 @@ fn simulating_keys_is_refused_by_policy_before_the_rate_limit_or_the_runner() {
     let (recorder, platform) = over_recorder(Desktop::Linux);
     let platform = platform.with_policies(Policies::new().with_simulate_keys(true));
     platform.simulate_keys("ctrl+s").expect("simulated");
-    assert_eq!(recorder.commands(), vec!["xdotool key ctrl+s".to_owned()]);
+    assert_eq!(
+        recorder.commands(),
+        vec!["xdotool key -- ctrl+s".to_owned()]
+    );
 }
 
 #[test]
@@ -211,20 +235,21 @@ fn a_notification_over_the_length_limit_never_reaches_the_runner() {
     assert_eq!(recorder.count(), 0);
 
     platform.notify("Hello", "World").expect("notified");
-    assert_eq!(recorder.commands(), vec!["notify-send Hello World".to_owned()]);
+    assert_eq!(
+        recorder.commands(),
+        vec!["notify-send -- Hello World".to_owned()]
+    );
 }
 
 #[test]
 fn a_plugins_notification_text_is_an_argument_and_never_part_of_a_script() {
-    // ★ The one place this could go wrong is a notification on macOS or Windows, where the desktop's tool takes a
-    // *program*. The program is fixed and the text arrives through `argv`, so nothing a plugin wrote is parsed as
-    // AppleScript or PowerShell — and this asserts the text is present as its own argument.
+    // The macOS script is fixed; data follows the option terminator as separate argv values.
     let (recorder, platform) = over_recorder(Desktop::MacOs);
     platform.notify("Title\" & (do shell script \"rm -rf /\") & \"", "Body").expect("notified");
     let command = recorder.commands().first().cloned().expect("a command");
     assert!(command.starts_with("osascript -e on run argv"), "{command}");
     assert!(command.contains("item 1 of argv"), "the script reads its arguments: {command}");
-    // The title and the body are the last two arguments, and the second carries the injection attempt.
+    // The title and the body are the last two arguments; the title carries the injection attempt.
     assert!(command.ends_with("Body"), "{command}");
     // ★ And what `osascript -e` is given as its *script* is three fixed fragments, the last of which ends at `end run`.
     // The title lands after that, so nothing a plugin wrote is part of the program — which is the property that makes
@@ -232,18 +257,37 @@ fn a_plugins_notification_text_is_an_argument_and_never_part_of_a_script() {
     let script: Vec<&str> = command.split(" -e ").skip(1).take(3).collect();
     assert_eq!(script.len(), 3, "{command}");
     assert_eq!(script.first().copied(), Some("on run argv"), "{command}");
-    assert!(script.get(2).is_some_and(|fragment| fragment.contains("end run")), "{command}");
-    let (program, arguments) = command.split_once("end run ").expect("the script and its arguments");
-    assert_eq!(arguments, "Title\" & (do shell script \"rm -rf /\") & \" Body");
-    assert!(!program.contains("rm -rf"), "the injection reached the program: {program}");
+    assert!(
+        script
+            .get(2)
+            .is_some_and(|fragment| fragment.contains("end run")),
+        "{command}"
+    );
+    let (program, arguments) = command
+        .split_once("end run -- ")
+        .expect("the script and its arguments");
+    assert_eq!(
+        arguments,
+        "Title\" & (do shell script \"rm -rf /\") & \" Body"
+    );
+    assert!(
+        !program.contains("rm -rf"),
+        "the injection reached the program: {program}"
+    );
 
     // A different notification has the same program up to `end run`, which is what says the program is fixed rather
     // than assembled from the text — everything after that point is the two arguments.
     let (second, platform) = over_recorder(Desktop::MacOs);
     platform.notify("Other", "Other").expect("notified");
     let other = second.commands().first().cloned().expect("a command");
-    let other_program = other.split_once("end run ").map(|(program, _)| program.to_owned());
-    assert_eq!(Some(program.to_owned()), other_program, "the program depends on the text");
+    let other_program = other
+        .split_once("end run -- ")
+        .map(|(program, _)| program.to_owned());
+    assert_eq!(
+        Some(program.to_owned()),
+        other_program,
+        "the program depends on the text"
+    );
 }
 
 #[test]
@@ -257,22 +301,108 @@ fn a_clipboard_read_returns_what_the_program_printed() {
 }
 
 #[test]
-fn a_clipboard_write_says_so_when_this_rung_cannot_do_it() {
-    // ★ A `CommandRunner` gives a program no standard input, and `xclip` reads the text from its standard input.
-    // Writing through `printf` would be a shell, which is the thing the runner exists to avoid — so the honest answer
-    // is that this rung does not support it, and an application with a runner that can hand over a pipe implements it
-    // through its own platform.
-    let (recorder, platform) = over_recorder(Desktop::Linux);
-    match platform.write_clipboard("text") {
-        Err(PlatformError::Unsupported(_)) => {}
-        other => panic!("expected a refusal, got {other:?}"),
-    }
-    assert_eq!(recorder.count(), 0, "a refused write ran a program");
+fn a_clipboard_write_delivers_utf8_data_as_standard_input() {
+    let (recorder, platform) = over_recorder(Desktop::MacOs);
+    let text = "\"literal\"; $value\r\n中文🖱️";
+    platform.write_clipboard(text).expect("write");
+    assert_eq!(
+        *recorder.input.lock().expect("input"),
+        [Some(text.to_owned())]
+    );
+    assert_eq!(recorder.commands(), ["pbcopy"]);
+}
 
-    // The two desktops that can do it through a program that takes the text as an argument do.
-    let (recorder, platform) = over_recorder(Desktop::Windows);
-    platform.write_clipboard("text").expect("written");
-    assert!(recorder.commands().first().is_some_and(|command| command.contains("Set-Clipboard")));
+#[test]
+fn an_unavailable_runner_advertises_no_actions_and_never_runs_a_command() {
+    struct Unavailable;
+    impl CommandRunner for Unavailable {
+        fn is_available(&self) -> bool {
+            false
+        }
+        fn run(
+            &self,
+            _program: &str,
+            _args: &[&str],
+            _input: Option<&str>,
+        ) -> Result<String, PlatformError> {
+            panic!("an unavailable runner was called");
+        }
+    }
+    let platform = CommandPlatform::with(Desktop::Linux, Box::new(Unavailable));
+    assert!(platform.supported_actions().is_empty());
+    assert!(matches!(
+        platform.open_url("https://example.com"),
+        Err(PlatformError::Unsupported(_))
+    ));
+    assert!(matches!(
+        platform.read_clipboard(),
+        Err(PlatformError::Unsupported(_))
+    ));
+    assert!(matches!(
+        platform.write_clipboard("text"),
+        Err(PlatformError::Unsupported(_))
+    ));
+}
+
+#[test]
+fn clipboard_writes_feed_each_desktop_without_interpolating_data() {
+    let text = "\"literal\"; $value\r\n中文🖱️";
+    for desktop in [Desktop::Linux, Desktop::MacOs, Desktop::Windows] {
+        let (recorder, platform) = over_recorder(desktop);
+        platform.write_clipboard(text).expect("written");
+        assert_eq!(
+            *recorder.input.lock().expect("input"),
+            [Some(text.to_owned())]
+        );
+        assert!(
+            !recorder.commands().join(" ").contains(text),
+            "data entered the command line"
+        );
+        assert_eq!(recorder.count(), 1);
+    }
+}
+
+#[test]
+fn windows_clipboard_reads_nullable_json_without_losing_empty_text() {
+    for value in [None, Some(""), Some("null"), Some("中文🖱️\\\"\r\n")] {
+        let answer = serde_json::to_string(&value).expect("JSON");
+        let (_, platform) = over_printer(Desktop::Windows, &answer);
+        assert_eq!(platform.read_clipboard().expect("read").as_deref(), value);
+    }
+    let (_, platform) = over_printer(Desktop::Windows, "not JSON");
+    assert!(matches!(
+        platform.read_clipboard(),
+        Err(PlatformError::RunnerFailed { .. })
+    ));
+}
+
+#[test]
+fn clipboard_limits_count_utf8_bytes_before_writes_and_after_reads() {
+    let too_long = "选".repeat(MAX_CLIPBOARD_BYTES / 3 + 1);
+    for desktop in [Desktop::Linux, Desktop::MacOs, Desktop::Windows] {
+        let (recorder, platform) = over_recorder(desktop);
+        assert!(matches!(
+            platform.write_clipboard(&too_long),
+            Err(PlatformError::TooLong { .. })
+        ));
+        assert_eq!(recorder.count(), 0);
+        let answer = if desktop == Desktop::Windows {
+            serde_json::to_string(&Some(&too_long)).expect("JSON")
+        } else {
+            too_long.clone()
+        };
+        let (_, platform) = over_printer(desktop, &answer);
+        assert!(matches!(
+            platform.read_clipboard(),
+            Err(PlatformError::RunnerOutputTooLong { .. })
+        ));
+    }
+    assert!(matches!(
+        crate::HeadlessPlatform::new().write_clipboard(&too_long),
+        Err(PlatformError::TooLong { .. })
+    ));
+    let at_limit = "x".repeat(MAX_CLIPBOARD_BYTES);
+    assert!(check_clipboard_text(&at_limit).is_ok());
 }
 
 #[test]
@@ -339,9 +469,12 @@ fn the_supported_actions_are_the_ones_a_menu_can_offer() {
     let platform = platform.with_policies(Policies::new().with_simulate_keys(true));
     assert!(platform.supported_actions().contains(&PlatformAction::SimulateKeys));
 
-    // And the one rung that cannot write to the clipboard does not offer it.
     let (_, platform) = over_recorder(Desktop::Linux);
-    assert!(!platform.supported_actions().contains(&PlatformAction::WriteClipboard));
+    assert!(
+        platform
+            .supported_actions()
+            .contains(&PlatformAction::WriteClipboard)
+    );
 }
 
 #[test]
@@ -395,5 +528,24 @@ fn the_policies_a_platform_was_given_are_the_ones_it_enforces() {
         // business rather than this test's.
         Err(PlatformError::RateLimited { .. } | PlatformError::QuotaExceeded { .. }) => {}
         other => panic!("expected a limit, got {other:?}"),
+    }
+}
+
+#[test]
+fn option_like_notification_text_follows_the_option_terminator() {
+    for desktop in [Desktop::MacOs, Desktop::Linux] {
+        let (recorder, platform) = over_recorder(desktop);
+        platform.notify("-e", "literal data").expect("notification");
+        let arguments = recorder
+            .seen
+            .lock()
+            .expect("recorded command")
+            .first()
+            .expect("one command")
+            .1
+            .clone();
+        let separated = matches!(arguments.as_slice(), [.., separator, title, body]
+            if separator == "--" && title == "-e" && body == "literal data");
+        assert!(separated);
     }
 }

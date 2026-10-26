@@ -2135,7 +2135,9 @@ dependencies = [
  "proptest",
  "rstest",
  "serde",
+ "serde_json",
  "synra-store",
+ "tempfile",
  "thiserror",
 ]
 

@@ -124,7 +124,7 @@ pub const MAX_NOTIFICATION_LEN: usize = 512;
 /// The longest a key chord may be.
 pub const MAX_CHORD_LEN: usize = 128;
 
-/// The longest clipboard content a plugin may read.
+/// The longest clipboard text a plugin may read or write, measured in UTF-8 bytes.
 ///
 /// Bounded because a clipboard can hold megabytes — an image, a whole document — and a plugin that asked for it
 /// would be handed the user's data in bulk. A plugin wanting a large object uses `file.transfer`, which the user

@@ -7,9 +7,11 @@
 
 use std::path::Path;
 
-use super::actions::{Policies, PlatformAction, MAX_NOTIFICATION_LEN};
+use super::actions::{PlatformAction, Policies};
 use super::error::PlatformError;
-use super::guard::{PathUse, check_key_chord, check_notification, check_path, check_url};
+use super::guard::{
+    PathUse, check_clipboard_text, check_key_chord, check_notification, check_path, check_url,
+};
 
 /// What a host can do.
 ///
@@ -177,14 +179,7 @@ impl Platform for HeadlessPlatform {
     }
 
     fn write_clipboard(&self, text: &str) -> Result<(), PlatformError> {
-        let len = text.chars().count();
-        if len > MAX_NOTIFICATION_LEN * 4 {
-            return Err(PlatformError::TooLong {
-                field: "clipboard text",
-                len,
-                max: MAX_NOTIFICATION_LEN * 4,
-            });
-        }
+        check_clipboard_text(text)?;
         Err(PlatformError::Unsupported("write to the clipboard"))
     }
 

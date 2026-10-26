@@ -13,6 +13,21 @@ use super::actions::{
 };
 use super::error::{PathRefusal, PlatformError, UrlRefusal};
 
+/// Check the shared UTF-8 byte budget before writing clipboard text.
+///
+/// # Errors
+/// [`PlatformError::TooLong`] when the encoded text exceeds [`crate::MAX_CLIPBOARD_BYTES`].
+pub const fn check_clipboard_text(text: &str) -> Result<(), PlatformError> {
+    if text.len() > crate::MAX_CLIPBOARD_BYTES {
+        return Err(PlatformError::TooLong {
+            field: "clipboard text in UTF-8 bytes",
+            len: text.len(),
+            max: crate::MAX_CLIPBOARD_BYTES,
+        });
+    }
+    Ok(())
+}
+
 /// The Windows device names, without their extensions and in upper case.
 ///
 /// # Why each of these is a device and not a file
