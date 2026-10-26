@@ -269,13 +269,26 @@ fn what_a_component_imports_is_read_from_the_component() {
     let concrete = (artifact.as_ref() as &dyn std::any::Any)
         .downcast_ref::<EngineArtifact>()
         .expect("the artefact this backend made");
-    assert!(
-        concrete
-            .imports()
-            .iter()
-            .any(|import| import.contains("synra:plugin/host")),
-        "{:?}",
-        concrete.imports()
+    assert_eq!(concrete.imports(), ["synra:plugin/host#env-sdk-version"]);
+}
+
+#[test]
+fn unexpected_resources_in_the_host_interface_are_not_dropped_from_import_checks() {
+    let backend = WasmtimeBackend::new(BackendKind::WasmtimeCranelift).unwrap();
+    let artifact = compile(
+        &backend,
+        r#"(component
+      (import "synra:plugin/host@1.0.0" (instance
+        (export "unexpected" (type (sub resource)))))
+      (instance $lifecycle)
+      (export "synra:plugin/lifecycle@1.0.0" (instance $lifecycle)))"#,
+        "@acme/resource-import",
+    );
+    assert_eq!(artifact.imports(), ["synra:plugin/host@1.0.0#unexpected"]);
+    let grants = synra_capability::CapabilitySet::new();
+    assert_eq!(
+        crate::host_surface::undeclared_imports(artifact.imports(), &grants),
+        artifact.imports()
     );
 }
 

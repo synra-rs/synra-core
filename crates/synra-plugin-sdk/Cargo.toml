@@ -14,19 +14,9 @@ authors.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-# The contract's types, and nothing else. A plugin links this crate and therefore whatever it depends on, and a plugin
-# artifact's size is a thing the user downloads.
-synra-plugin-api = { path = "../synra-plugin-api" }
+# Only generated component glue is linked into the guest; manifest and signing belong to the host.
+wit-bindgen = "=0.57.1"
 
-serde.workspace = true
-# ★ The generator, and the only dependency here that is not a contract type. It is a *compile-time* dependency: the
-# bindings it produces are ordinary Rust in this crate's own binary, and a plugin that links this crate carries no
-# wit-bindgen code. That is what makes the contract impossible to drift from — there is no step to run and no generated
-# file to keep in step.
-wit-bindgen = "0.57"
-
-# ★ This crate inherits the workspace's lints, and the exception it used to declare is gone with the reason for it: the
-# generated bodies were `todo!()` until `wit-bindgen` supplied the guest side, and there is nothing left to exempt.
 [lints]
 workspace = true
 

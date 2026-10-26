@@ -73,19 +73,24 @@ impl TemplateKind {
     /// carry any of that, and the host needs all of it.
     const fn blocks(self) -> &'static str {
         match self {
-            Self::Headless => r#""runtime": {
+            Self::Headless => {
+                r#""runtime": {
     "headless": {
       "artifact": "plugin.wasm",
       "stateful": false
     }
-  }"#,
-            Self::Ui => r#""runtime": {
+  }"#
+            }
+            Self::Ui => {
+                r#""runtime": {
     "ui": {
       "artifact": "ui",
       "entry": "index.html"
     }
-  }"#,
-            Self::Hybrid => r#""runtime": {
+  }"#
+            }
+            Self::Hybrid => {
+                r#""runtime": {
     "headless": {
       "artifact": "plugin.wasm",
       "stateful": false
@@ -94,7 +99,8 @@ impl TemplateKind {
       "artifact": "ui",
       "entry": "index.html"
     }
-  }"#,
+  }"#
+            }
         }
     }
 }
@@ -173,13 +179,19 @@ impl Scaffold {
         kind: TemplateKind,
     ) -> Result<Self, ScaffoldError> {
         synra_plugin_api::manifest::check_plugin_id(plugin_id).map_err(|error| {
-            ScaffoldError::BadId { reason: error.to_string() }
+            ScaffoldError::BadId {
+                reason: error.to_string(),
+            }
         })?;
         synra_plugin_api::manifest::check_version(version).map_err(|error| {
-            ScaffoldError::BadVersion { reason: error.to_string() }
+            ScaffoldError::BadVersion {
+                reason: error.to_string(),
+            }
         })?;
         if title.trim().is_empty() {
-            return Err(ScaffoldError::BadName { reason: "the title is empty".to_owned() });
+            return Err(ScaffoldError::BadName {
+                reason: "the title is empty".to_owned(),
+            });
         }
 
         // The directory is the wire slug, so a plugin's directory is the name its artifact uses everywhere else — the
@@ -188,14 +200,23 @@ impl Scaffold {
         // Parsed once, here, and the result used for both the directory and the crate name: parsing again where the
         // crate manifest is written would need an `expect` on a value that was already proven valid, and an `expect` in
         // production code is what this workspace forbids.
-        let id = synra_protocol::PluginId::parse(plugin_id)
-            .map_err(|error| ScaffoldError::BadId { reason: error.to_string() })?;
-        let slug = synra_plugin_api::manifest::to_wire_slug(&id)
-            .map_err(|error| ScaffoldError::BadId { reason: error.to_string() })?;
+        let id =
+            synra_protocol::PluginId::parse(plugin_id).map_err(|error| ScaffoldError::BadId {
+                reason: error.to_string(),
+            })?;
+        let slug = synra_plugin_api::manifest::to_wire_slug(&id).map_err(|error| {
+            ScaffoldError::BadId {
+                reason: error.to_string(),
+            }
+        })?;
 
         let manifest = manifest_json(plugin_id, version, title, kind);
         let mut files = vec![
-            ScaffoldFile { path: "manifest.json".to_owned(), contents: manifest, authored: false },
+            ScaffoldFile {
+                path: "manifest.json".to_owned(),
+                contents: manifest,
+                authored: false,
+            },
             ScaffoldFile {
                 path: "README.md".to_owned(),
                 contents: readme(plugin_id, kind),
@@ -214,15 +235,14 @@ impl Scaffold {
             r#"[package]
 name = "{name}"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 # A plugin is a library, not a binary: the kernel loads it, nothing runs it.
 [lib]
 crate-type = ["cdylib"]
 
 [dependencies]
-# The SDK is `no_std`-friendly and dependency-free on purpose: a plugin's size is what the user pays for on every
-# install, and a plugin that pulled in an async runtime would be one `verify` refuses.
+# The SDK supplies the component ABI; all effects go through its capability-gated host imports.
 synra-plugin-sdk = "0.1"
 
 # Release builds are what get published, and a plugin is loaded once and called many times.
@@ -350,7 +370,8 @@ fn manifest_json(plugin_id: &str, version: &str, title: &str, kind: TemplateKind
   {blocks},
   "capabilities": []
 }}
-"#,        schema = synra_plugin_api::manifest::MANIFEST_SCHEMA,
+"#,
+        schema = synra_plugin_api::manifest::MANIFEST_SCHEMA,
         kind = kind.as_str(),
     )
 }
@@ -383,24 +404,7 @@ fn gitignore() -> String {
 /// A constant rather than a function of the id: the source names the entry points the *manifest* declares, and the
 /// manifest carries the id. Interpolating one here would put the plugin's name in a file that has to compile, for no
 /// reason an author would thank us for.
-const HEADLESS_SOURCE: &str = r#"//! A Synra plugin's Wasm half.
-//!
-//! The kernel calls the functions named in `manifest.json`. Nothing here talks to the network, the filesystem or the
-//! clock directly: everything a plugin may do goes through a host function the kernel gates on the capabilities the
-//! manifest declares.
-
-/// Called when the plugin is activated.
-#[no_mangle]
-pub extern "C" fn synra_plugin_activate() {
-    // Nothing to do on activation yet.
-}
-
-/// Called for each event the plugin subscribed to in its manifest.
-#[no_mangle]
-pub extern "C" fn synra_plugin_on_event() {
-    // Read the event, decide, call a host function.
-}
-"#;
+const HEADLESS_SOURCE: &str = include_str!("template/headless.rs");
 
 /// The Rust half of a hybrid plugin.
 ///
@@ -467,7 +471,12 @@ mod tests {
             let manifest = scaffold
                 .validate_manifest()
                 .unwrap_or_else(|error| panic!("{} template: {error}", kind.as_str()));
-            assert_eq!(manifest.id.to_string(), "@synra-plugin/example", "{}", kind.as_str());
+            assert_eq!(
+                manifest.id.to_string(),
+                "@synra-plugin/example",
+                "{}",
+                kind.as_str()
+            );
             assert_eq!(manifest.version, "0.1.0");
         }
     }
@@ -481,13 +490,22 @@ mod tests {
             let paths = scaffold.paths();
 
             if matches!(kind, TemplateKind::Ui | TemplateKind::Hybrid) {
-                assert!(paths.iter().any(|path| path == "ui/index.html"), "{kind:?} wrote no interface");
+                assert!(
+                    paths.iter().any(|path| path == "ui/index.html"),
+                    "{kind:?} wrote no interface"
+                );
             }
             if matches!(kind, TemplateKind::Headless | TemplateKind::Hybrid) {
-                assert!(paths.iter().any(|path| path == "src/lib.rs"), "{kind:?} wrote no Wasm half");
+                assert!(
+                    paths.iter().any(|path| path == "src/lib.rs"),
+                    "{kind:?} wrote no Wasm half"
+                );
             }
             if kind == TemplateKind::Ui {
-                assert!(!paths.iter().any(|path| path == "src/lib.rs"), "a UI-only plugin has no Wasm half");
+                assert!(
+                    !paths.iter().any(|path| path == "src/lib.rs"),
+                    "a UI-only plugin has no Wasm half"
+                );
             }
         }
     }
@@ -502,10 +520,22 @@ mod tests {
         // Both carry the same description shape and the same capability block.
         let headless_manifest = headless.get("manifest.json").expect("a manifest");
         let ui_manifest = ui.get("manifest.json").expect("a manifest");
-        assert!(headless_manifest.contains(r#""headless""#), "the headless template ships no Wasm half");
-        assert!(!headless_manifest.contains(r#""ui""#), "the headless template ships an interface");
-        assert!(ui_manifest.contains(r#""ui""#), "the UI template ships no bundle");
-        assert!(!ui_manifest.contains(r#""headless""#), "the UI template ships a Wasm half");
+        assert!(
+            headless_manifest.contains(r#""headless""#),
+            "the headless template ships no Wasm half"
+        );
+        assert!(
+            !headless_manifest.contains(r#""ui""#),
+            "the headless template ships an interface"
+        );
+        assert!(
+            ui_manifest.contains(r#""ui""#),
+            "the UI template ships no bundle"
+        );
+        assert!(
+            !ui_manifest.contains(r#""headless""#),
+            "the UI template ships a Wasm half"
+        );
         // And both declare the same capability block, which is where an author starts from.
         assert!(headless_manifest.contains(r#""capabilities""#));
         assert!(ui_manifest.contains(r#""capabilities""#));
@@ -547,7 +577,10 @@ mod tests {
         for id in ["@synra/chat", "@core/thing", "@system/x"] {
             let error = Scaffold::new(id, "0.1.0", "X", TemplateKind::Headless)
                 .expect_err("a reserved scope is refused");
-            assert!(matches!(error, ScaffoldError::BadId { .. }), "{id}: {error:?}");
+            assert!(
+                matches!(error, ScaffoldError::BadId { .. }),
+                "{id}: {error:?}"
+            );
         }
     }
 
@@ -620,7 +653,10 @@ mod tests {
         let headless = scaffold(TemplateKind::Headless).as_map();
         let ui = scaffold(TemplateKind::Ui).as_map();
         assert!(
-            headless.get("README.md").expect("a readme").contains("Wasm"),
+            headless
+                .get("README.md")
+                .expect("a readme")
+                .contains("Wasm"),
             "the headless README should say what it builds"
         );
         assert!(
@@ -659,8 +695,14 @@ mod tests {
         let ui = scaffold(TemplateKind::Ui).as_map();
         let document = ui.get("ui/index.html").expect("a document");
         assert!(document.contains("window.synra"), "{document}");
-        assert!(!document.contains("__TAURI__"), "the scaffold reached past the facade:\n{document}");
-        assert!(!document.contains("token"), "the scaffold mentions a token:\n{document}");
+        assert!(
+            !document.contains("__TAURI__"),
+            "the scaffold reached past the facade:\n{document}"
+        );
+        assert!(
+            !document.contains("token"),
+            "the scaffold mentions a token:\n{document}"
+        );
     }
 
     #[test]
@@ -673,7 +715,10 @@ mod tests {
             let manifest = files.get("manifest.json").expect("a manifest");
             // An empty *array*, because a missing field and an empty list are different statements — "the author
             // forgot" and "this plugin needs nothing" — and the loader has to tell them apart.
-            assert!(manifest.contains(r#""capabilities": []"#), "{kind:?}:\n{manifest}");
+            assert!(
+                manifest.contains(r#""capabilities": []"#),
+                "{kind:?}:\n{manifest}"
+            );
         }
     }
 

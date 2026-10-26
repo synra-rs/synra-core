@@ -6,10 +6,8 @@
 //! the signature the contract declares. Generated from `wit/synra-plugin.wit`, so a plugin that calls a function the
 //! contract does not declare gets a compile error in its own crate rather than a trap when the kernel instantiates it.
 //!
-//! The three types the boundary exchanges — [`DeviceTarget`], [`LogLevel`] and [`Outcome`] — are re-exported from
-//! `synra-plugin-api` rather than declared here. That crate is the contract both sides read, and a second definition of
-//! `Outcome` would drift from the host's at the first field added, with the failure landing at the component boundary
-//! where the message names neither.
+//! Public boundary types and guest traits are re-exported from the generated WIT bindings,
+//! so host functions and plugin entry points use the same Rust types without a manual mirror.
 //!
 //! # Why this crate is thin
 //!
@@ -24,14 +22,6 @@
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
-
-// ★ The generated bindings' signatures are the contract: a parameter is named what the contract names it, and renaming
-// one to `_capability` to silence an unused-variable warning would rename the contract.
-//
-// An `#![allow]` inside the generated file itself would not work: an inner attribute is only an inner attribute at the
-// top of a file, and `include!` splices the file into the middle of this one.
-#![allow(unused_variables)]
-
 // Test code is exempt from the no-panic rules; see `synra-protocol` for the reasoning. An assertion about a generated
 // signature is the shape these tests have.
 #![cfg_attr(
@@ -67,6 +57,8 @@ pub mod generated {
         wit_bindgen::generate!({
             path: "../../wit",
             world: "plugin",
+            pub_export_macro: true,
+            export_macro_name: "__export_plugin",
         });
 
         /// The host calls, under the path this crate has always exposed them at.
@@ -78,7 +70,10 @@ pub mod generated {
 
     pub mod imports {
         //! The import names, on their own, for a build script that wants them without compiling the module.
-        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/generated/imports.rs"));
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/generated/imports.rs"
+        ));
     }
 }
 
@@ -88,9 +83,22 @@ pub mod generated {
 /// and the path in a plugin's source names the thing it is calling rather than where the file was put.
 pub use generated::bindings::host;
 
-// ★ Re-exported rather than declared: these are the contract's types, and a plugin's `Outcome` has to be the host's
-// `Outcome` or the component model refuses the instantiation.
-pub use synra_plugin_api::{DeviceTarget, LogLevel, Outcome};
+// Guest ABI types are generated from WIT; host-side manifest models are not linked into a guest.
+/// The WIT guest traits implemented by a plugin's entry point.
+pub use generated::bindings::exports;
+pub use generated::bindings::synra::plugin::types::{
+    DeviceKind, DeviceTarget, Error, LogLevel, Outcome,
+};
+
+/// Exports a plugin implementing the lifecycle, share and actions WIT guest traits.
+///
+/// Bindings are generated once in this SDK; callers never regenerate a second world or write raw exports.
+#[macro_export]
+macro_rules! export {
+    ($plugin:ident) => {
+        $crate::generated::bindings::__export_plugin!($plugin with_types_in $crate::generated::bindings);
+    };
+}
 
 /// The version of the plugin contract these bindings were generated from.
 ///
@@ -158,21 +166,32 @@ mod tests {
     fn the_contract_version_is_the_one_the_contract_declares() {
         // The manifest's `sdk.min` is compared against the host's version, so a constant that disagreed with the
         // contract would be a plugin claiming to need a version nobody has.
-        assert_eq!(CONTRACT_VERSION, "1.0.0");
+        let contract =
+            wit_codegen::Contract::parse(include_str!("../../../wit/synra-plugin.wit")).unwrap();
+        assert_eq!(CONTRACT_VERSION, contract.version);
+        assert_eq!(HOST_INTERFACE, format!("{}/host", contract.package));
+        assert_eq!(
+            PLUGIN_WORLD,
+            format!("{}/{}", contract.package, contract.world)
+        );
     }
 
     #[test]
-    fn the_boundary_types_are_the_contracts_and_not_copies() {
-        // A compile-time property with a runtime witness: these are re-exports, so a plugin's `Outcome` **is** the
-        // host's. A copy would compile here and be refused by the component model at instantiation.
-        let outcome: Outcome = Outcome::done();
-        assert!(outcome.is_ok());
+    fn public_boundary_types_are_the_generated_host_function_types() {
+        // Public values are the generated host function types, rather than the host-side manifest model.
+        let outcome = Outcome::Ok("payload".to_owned());
+        assert!(matches!(outcome, Outcome::Ok(value) if value == "payload"));
+        let _: fn(&str) -> Outcome = host::storage_get;
 
         let level: LogLevel = LogLevel::Info;
-        assert_eq!(level.as_str(), "info");
+        assert!(matches!(level, LogLevel::Info));
 
-        let target: DeviceTarget = DeviceTarget::new("dev_a");
-        assert_eq!(target.device_id, "dev_a");
+        let target = DeviceTarget {
+            id: "dev_a".to_owned(),
+            name: "Device".to_owned(),
+            kind: DeviceKind::Desktop,
+        };
+        assert_eq!(target.id, "dev_a");
     }
 
     #[test]
@@ -198,10 +217,15 @@ mod tests {
         //
         // It is a dev-dependency rather than a dependency: a plugin links this crate, and a parser must not be in what a
         // user downloads. And it is not `synra-plugin-host`, so it is not the cycle the note above warns about.
-        let contract = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../wit/synra-plugin.wit"))
-            .expect("the contract");
+        let contract = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../wit/synra-plugin.wit"
+        ))
+        .expect("the contract");
         let parsed = wit_codegen::Contract::parse(&contract).expect("the contract parses");
-        let host = parsed.host().expect("the contract declares the host interface");
+        let host = parsed
+            .host()
+            .expect("the contract declares the host interface");
         // The contract's names are the import names the component model resolves, so they are compared as they are — a
         // bare-name comparison would pass for a binding keyed by the wrong interface.
         let declared: Vec<String> = host
@@ -209,7 +233,12 @@ mod tests {
             .iter()
             .map(|function| format!("synra:plugin/host#{}", function.name))
             .collect();
-        assert_eq!(declared.len(), 35, "the contract's own count: {}", declared.len());
+        assert_eq!(
+            declared.len(),
+            35,
+            "the contract's own count: {}",
+            declared.len()
+        );
 
         let generated = [
             generated::imports::ENV_SDK_VERSION_IMPORT,
@@ -249,15 +278,26 @@ mod tests {
             generated::imports::PLUGIN_ID_IMPORT,
         ];
 
-        let mut missing: Vec<&String> =
-            declared.iter().filter(|name| !generated.contains(&name.as_str())).collect();
+        let mut missing: Vec<&String> = declared
+            .iter()
+            .filter(|name| !generated.contains(&name.as_str()))
+            .collect();
         missing.sort_unstable();
-        assert!(missing.is_empty(), "the SDK has no binding for: {missing:?}");
+        assert!(
+            missing.is_empty(),
+            "the SDK has no binding for: {missing:?}"
+        );
 
-        let mut extra: Vec<&str> =
-            generated.iter().copied().filter(|name| !declared.iter().any(|held| held == name)).collect();
+        let mut extra: Vec<&str> = generated
+            .iter()
+            .copied()
+            .filter(|name| !declared.iter().any(|held| held == name))
+            .collect();
         extra.sort_unstable();
-        assert!(extra.is_empty(), "the SDK binds functions the contract does not declare: {extra:?}");
+        assert!(
+            extra.is_empty(),
+            "the SDK binds functions the contract does not declare: {extra:?}"
+        );
 
         // And every name is keyed by the interface, so a plugin cannot resolve one outside it.
         for name in generated {

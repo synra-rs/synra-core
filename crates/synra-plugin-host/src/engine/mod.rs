@@ -74,6 +74,9 @@ mod wasmtime_backend;
 #[cfg(all(test, feature = "wasm-runtime"))]
 mod test_component;
 
+#[cfg(all(test, feature = "rust-guest-tests"))]
+mod rust_guest_tests;
+
 pub use cache::{CACHED_EXTENSION, CacheEntry, CacheError, CacheKey, CompileCache};
 pub use executor::{
     EPOCH_PERIOD, Epoch, EpochTicker, ExecutorRefusal, MAX_THREADS, ThreadPool, WasmExecutor,

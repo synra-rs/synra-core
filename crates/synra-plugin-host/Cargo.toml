@@ -52,6 +52,8 @@ wasm-runtime = ["dep:wasmtime", "dep:anyhow"]
 # Lets the engine read the text form of a component, which is what the tests are written in: a checked-in `.wasm` is a
 # binary nobody reviews, and a `.wat` is four lines a reader can check against what the test asserts.
 wasm-text = ["wasm-runtime", "wasmtime/wat"]
+# Opt-in boundary tests consume a freshly built Rust fixture through SYNRA_RUST_GUEST.
+rust-guest-tests = ["wasm-runtime"]
 
 [dev-dependencies]
 # Build the complete ABI test component directly from the real WIT source.

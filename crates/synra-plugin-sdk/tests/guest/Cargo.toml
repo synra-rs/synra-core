@@ -1,0 +1,21 @@
+[package]
+name = "synra-sdk-fixture"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "world_fixture.rs"
+crate-type = ["cdylib"]
+
+[workspace]
+
+[dependencies]
+synra-plugin-sdk = { path = "../.." }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

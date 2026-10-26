@@ -33,7 +33,6 @@
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
-
 // Test code is exempt from the no-panic rules; see `synra-protocol` for the reasoning.
 #![cfg_attr(
     test,
@@ -57,16 +56,18 @@ pub mod template;
 pub mod upload;
 pub mod verify;
 
-pub use args::{BuildArgs, Cli, Command, NewArgs, PackArgs, PublishArgs, SignArgs, UploadArgs, VerifyArgs};
-pub use build::{BuildError, BuildPlan, Step, UI_BUILD_SCRIPT, WASM_RELEASE_DIR, WASM_TARGET};
+pub use args::{
+    BuildArgs, Cli, Command, NewArgs, PackArgs, PublishArgs, SignArgs, UploadArgs, VerifyArgs,
+};
+pub use build::{BuildError, BuildPlan, Step, UI_BUILD_SCRIPT, WASM_TARGET};
 pub use execute::{Executed, execute, is_dry_run};
 pub use pack::{pack_plugin, write_archive};
 pub use publish::publish_plugin;
 pub use run::{Outcome, build_plugin, new_plugin, sign_plugin, verify_plugin};
 pub use sign::{SignError, SignedContent, SigningKeyFile};
 pub use template::{Scaffold, ScaffoldError, ScaffoldFile, TemplateKind};
+pub use upload::{UploadStep, upload_plugin};
 pub use verify::{
     Finding, MAX_UI_BYTES, MAX_UI_FILES, MAX_WASM_BYTES, PROVIDED_IMPORTS, REFUSED_IMPORTS, Target,
     Verdict, VerifyReport, verify,
 };
-pub use upload::{UploadStep, upload_plugin};

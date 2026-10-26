@@ -8,7 +8,21 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[[bin]]
+name = "synra-plugin"
+path = "src/main.rs"
+
+[features]
+rust-guest-tests = ["synra-plugin-host/wasm-runtime"]
+
+[[test]]
+name = "rust_guest"
+required-features = ["rust-guest-tests"]
+
 [dependencies]
+wit-component = "=0.247.0"
+tempfile = "3"
+
 synra-protocol = { path = "../../crates/synra-protocol" }
 synra-plugin-api = { path = "../../crates/synra-plugin-api" }
 synra-plugin-host = { path = "../../crates/synra-plugin-host" }

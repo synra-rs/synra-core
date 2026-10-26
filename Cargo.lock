@@ -2173,7 +2173,9 @@ dependencies = [
  "synra-protocol",
  "synra-registry",
  "tar",
+ "tempfile",
  "thiserror",
+ "wit-component",
 ]
 
 [[package]]
@@ -2206,8 +2208,6 @@ dependencies = [
 name = "synra-plugin-sdk"
 version = "0.1.0"
 dependencies = [
- "serde",
- "synra-plugin-api",
  "wit-bindgen",
  "wit-codegen",
 ]

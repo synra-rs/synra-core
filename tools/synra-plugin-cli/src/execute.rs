@@ -63,7 +63,9 @@ pub const fn is_dry_run(cli: &Cli) -> bool {
         crate::args::Command::Upload(args) => args.dry_run,
         // Neither has a dry run: `verify` changes nothing, and a signature an author asked for is one they want. `publish`
         // only reads, so there is nothing a dry run could skip.
-        crate::args::Command::Verify(_) | crate::args::Command::Sign(_) | crate::args::Command::Publish(_) => false,
+        crate::args::Command::Verify(_)
+        | crate::args::Command::Sign(_)
+        | crate::args::Command::Publish(_) => false,
     }
 }
 
@@ -91,7 +93,14 @@ pub fn execute(outcome: &Outcome, dry_run: bool) -> Executed {
             run_steps(plan)
         }
 
-        Outcome::Archive { target, manifest, artifacts, signature, index, .. } => {
+        Outcome::Archive {
+            target,
+            manifest,
+            artifacts,
+            signature,
+            index,
+            ..
+        } => {
             if dry_run {
                 return Executed::ok(vec![format!("would write {}", target.display())]);
             }
@@ -102,7 +111,10 @@ pub fn execute(outcome: &Outcome, dry_run: bool) -> Executed {
                         if let Some(parent) = path.parent()
                             && let Err(error) = std::fs::create_dir_all(parent)
                         {
-                            return Executed::failed(vec![format!("{}: {error}", parent.display())]);
+                            return Executed::failed(vec![format!(
+                                "{}: {error}",
+                                parent.display()
+                            )]);
                         }
                         if let Err(error) = std::fs::write(path, body) {
                             return Executed::failed(vec![format!("{}: {error}", path.display())]);
@@ -115,7 +127,12 @@ pub fn execute(outcome: &Outcome, dry_run: bool) -> Executed {
             }
         }
 
-        Outcome::Signature { path, signature, public, .. } => {
+        Outcome::Signature {
+            path,
+            signature,
+            public,
+            ..
+        } => {
             // The signature and the public key beside it, so `--verify` has the one thing it needs without a second
             // command and without the author copying a key between files.
             let public_path = path.with_file_name("public-key.txt");
@@ -158,6 +175,12 @@ fn write_files(root: &Path, files: &[(String, String)]) -> Executed {
 /// Runs a build's commands and checks what they produced.
 fn run_steps(plan: &crate::build::BuildPlan) -> Executed {
     for step in &plan.steps {
+        if let Some(destination) = &step.component {
+            if let Err(error) = crate::build::component::build(&plan.root, step, destination) {
+                return Executed::failed(vec![error]);
+            }
+            continue;
+        }
         let status = Command::new(&step.program)
             .args(&step.args)
             .current_dir(plan.root.join(&step.in_dir))
@@ -187,8 +210,7 @@ fn run_steps(plan: &crate::build::BuildPlan) -> Executed {
     let lines = plan.outcome_lines();
     if plan.missing().is_empty() {
         Executed::ok(lines)
-    }
-    else {
+    } else {
         Executed::failed(lines)
     }
 }
@@ -206,7 +228,8 @@ mod tests {
 
     impl Cleanup {
         fn new(name: &str) -> Self {
-            let dir = std::env::temp_dir().join(format!("synra-exec-{name}-{}", std::process::id()));
+            let dir =
+                std::env::temp_dir().join(format!("synra-exec-{name}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).expect("creates");
             Self(dir)
@@ -257,7 +280,12 @@ mod tests {
     fn a_dry_run_is_read_from_the_arguments_for_every_command_that_has_one() {
         // Read from the arguments rather than inferred from the outcome, because a plan and a decision look the same
         // and only the flag says whether to carry it out.
-        assert!(is_dry_run(&cli(&["synra-plugin", "new", "@a/b", "--dry-run"])));
+        assert!(is_dry_run(&cli(&[
+            "synra-plugin",
+            "new",
+            "@a/b",
+            "--dry-run"
+        ])));
         assert!(is_dry_run(&cli(&["synra-plugin", "build", "--dry-run"])));
         assert!(!is_dry_run(&cli(&["synra-plugin", "new", "@a/b"])));
         assert!(!is_dry_run(&cli(&["synra-plugin", "build"])));
@@ -268,7 +296,11 @@ mod tests {
         // `verify` changes nothing, and a signature an author asked for is one they want. A `--dry-run` on either would
         // be a flag that did nothing.
         assert!(!is_dry_run(&cli(&["synra-plugin", "verify"])));
-        assert!(!is_dry_run(&cli(&["synra-plugin", "sign", "--generate-key"])));
+        assert!(!is_dry_run(&cli(&[
+            "synra-plugin",
+            "sign",
+            "--generate-key"
+        ])));
     }
 
     // ── A scaffold ────────────────────────────────────────────────────────────────────────────────
@@ -288,7 +320,10 @@ mod tests {
 
         // The dry run first, so the assertion about what is on disk is about a run that wrote.
         assert_eq!(execute(&outcome, true), Executed::ok(Vec::new()));
-        assert!(!dir.path().join("manifest.json").exists(), "a dry run wrote");
+        assert!(
+            !dir.path().join("manifest.json").exists(),
+            "a dry run wrote"
+        );
 
         let executed = execute(&outcome, false);
         assert_eq!(executed.code, 0, "{executed:?}");
@@ -314,7 +349,11 @@ mod tests {
 
         let executed = execute(&outcome, false);
         assert_eq!(executed.code, 1);
-        assert!(executed.lines[0].contains("blocked"), "{:?}", executed.lines);
+        assert!(
+            executed.lines[0].contains("blocked"),
+            "{:?}",
+            executed.lines
+        );
     }
 
     // ── A build ───────────────────────────────────────────────────────────────────────────────────
@@ -351,8 +390,11 @@ mod tests {
         // The wiring, asserted once: `build_plugin` resolves a plan and says what it will do.
         let dir = Cleanup::new("plan");
         dir.plugin();
-        let outcome = build_plugin(&BuildArgs { dir: dir.path().to_path_buf(), dry_run: true })
-            .expect("plans");
+        let outcome = build_plugin(&BuildArgs {
+            dir: dir.path().to_path_buf(),
+            dry_run: true,
+        })
+        .expect("plans");
         let lines = outcome.lines().join("\n");
         assert!(lines.contains("cargo build"), "{lines}");
         assert!(lines.contains("dry run"), "{lines}");
@@ -362,8 +404,11 @@ mod tests {
     #[test]
     fn a_build_of_a_directory_with_no_manifest_says_which_file() {
         let dir = Cleanup::new("no-manifest");
-        let error = build_plugin(&BuildArgs { dir: dir.path().to_path_buf(), dry_run: false })
-            .expect_err("refused");
+        let error = build_plugin(&BuildArgs {
+            dir: dir.path().to_path_buf(),
+            dry_run: false,
+        })
+        .expect_err("refused");
         assert!(error.contains("manifest.json"), "{error}");
     }
 
@@ -394,12 +439,17 @@ mod tests {
                 args: Vec::new(),
                 in_dir: std::path::PathBuf::new(),
                 why: "x".to_owned(),
+                component: None,
             }],
             ..plan
         };
         let executed = run_steps(&broken);
         assert_eq!(executed.code, 1);
-        assert!(executed.lines[0].contains("synra-no-such-program"), "{:?}", executed.lines);
+        assert!(
+            executed.lines[0].contains("synra-no-such-program"),
+            "{:?}",
+            executed.lines
+        );
     }
 
     // ── A signature ───────────────────────────────────────────────────────────────────────────────
@@ -428,7 +478,9 @@ mod tests {
         let executed = execute(&outcome, false);
         assert_eq!(executed.code, 0, "{executed:?}");
         assert!(
-            dir.path().join(synra_plugin_api::publisher::SIGNATURE_FILE).exists(),
+            dir.path()
+                .join(synra_plugin_api::publisher::SIGNATURE_FILE)
+                .exists(),
             "the document the host reads is what a package carries"
         );
         assert!(dir.path().join("public-key.txt").exists());
@@ -474,7 +526,11 @@ mod tests {
 
         let good = check(&dir);
         assert_eq!(good.exit_code(), 0, "{:?}", good.lines());
-        assert!(good.lines()[0].contains("is signed by"), "{:?}", good.lines());
+        assert!(
+            good.lines()[0].contains("is signed by"),
+            "{:?}",
+            good.lines()
+        );
 
         // One byte different, and the signature stops meaning anything.
         dir.write("plugin.wasm", b"the modul3");

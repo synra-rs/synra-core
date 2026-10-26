@@ -11,6 +11,7 @@ use wasmtime::component::{Component, Instance, Linker};
 mod artifact;
 pub(super) mod bindings;
 mod config;
+mod imports;
 mod invoke;
 mod store;
 pub use artifact::EngineArtifact;
@@ -464,11 +465,7 @@ impl WasmBackend for WasmtimeBackend {
         // call site far from its cause. The names come from the component's own type, so what is checked is what the
         // artifact imports rather than what its manifest claims.
         let component_type = component.component_type();
-        let mut imports = Vec::new();
-        for (name, _) in component_type.imports(&self.engine) {
-            imports.push(name.to_string());
-        }
-        imports.sort();
+        let imports = imports::calls(&component_type, &self.engine);
 
         // ★ The *exports* are checked here too, and for the same reason the imports are: a component that does not
         // export the three interfaces the contract requires is one built against a different contract, and a user
