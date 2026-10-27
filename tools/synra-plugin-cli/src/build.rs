@@ -110,10 +110,6 @@ pub enum BuildError {
         reason: String,
     },
 
-    /// The manifest declares no runtime half, so there is nothing to build.
-    #[error("the manifest declares neither a headless nor a UI runtime")]
-    NothingToBuild,
-
     /// A UI plugin has no `package.json`, so there is no build script to run.
     ///
     /// Refused rather than defaulted to a bundler: the one an author picked is the one their project already works
@@ -164,17 +160,17 @@ impl BuildPlan {
             }
         })?;
 
+        manifest
+            .validate(&synra_plugin_api::ManifestContext::default())
+            .map_err(|error| BuildError::BadManifest {
+                reason: error.to_string(),
+            })?;
         let headless = manifest.runtime.headless.as_ref();
         let ui = manifest.runtime.ui.as_ref();
-        if headless.is_none() && ui.is_none() {
-            return Err(BuildError::NothingToBuild);
-        }
-
-        let kind = match (headless.is_some(), ui.is_some()) {
-            (true, false) => TemplateKind::Headless,
-            (false, true) => TemplateKind::Ui,
-            (true, true) => TemplateKind::Hybrid,
-            (false, false) => return Err(BuildError::NothingToBuild),
+        let kind = if ui.is_some() {
+            TemplateKind::Hybrid
+        } else {
+            TemplateKind::Headless
         };
 
         let mut steps = Vec::new();
@@ -442,21 +438,13 @@ mod tests {
     }
 
     #[test]
-    fn a_ui_manifest_runs_the_authors_own_build_script() {
-        // Not a bundler this tool picks: the one the author picked is the one their project already works with.
-        let dir = Cleanup::new("ui");
+    fn a_ui_only_manifest_is_refused_before_a_build_is_planned() {
+        let dir = Cleanup::new("ui-only");
         dir.ui("dist");
         dir.package_with_build();
-
-        let plan = BuildPlan::resolve(dir.path()).expect("resolves");
-        assert_eq!(plan.kind, TemplateKind::Ui);
-        assert_eq!(plan.steps.len(), 1);
-        assert_eq!(plan.steps[0].program, "npm");
-        assert_eq!(
-            plan.steps[0].args,
-            vec!["run".to_owned(), "build".to_owned()]
-        );
-        assert_eq!(plan.expected, vec![PathBuf::from("dist")]);
+        let error = BuildPlan::resolve(dir.path()).unwrap_err();
+        assert!(matches!(error, BuildError::BadManifest { .. }));
+        assert!(error.to_string().contains("headless"), "{error}");
     }
 
     #[test]
@@ -519,7 +507,7 @@ mod tests {
         // own project does not reproduce, and the difference would appear as a plugin that behaves differently when
         // they build it themselves.
         let dir = Cleanup::new("no-script");
-        dir.ui("dist");
+        dir.hybrid("plugin.wasm", "dist");
         dir.package_without_build();
 
         match BuildPlan::resolve(dir.path()) {
@@ -535,7 +523,7 @@ mod tests {
     fn a_ui_plugin_with_no_package_json_is_refused_the_same_way() {
         // The two are the same problem from the author's side: there is nothing to run.
         let dir = Cleanup::new("no-package");
-        dir.ui("dist");
+        dir.hybrid("plugin.wasm", "dist");
         assert!(matches!(
             BuildPlan::resolve(dir.path()),
             Err(BuildError::NoUiBuildScript { .. })
@@ -562,7 +550,7 @@ mod tests {
         );
         assert!(matches!(
             BuildPlan::resolve(dir.path()),
-            Err(BuildError::NothingToBuild)
+            Err(BuildError::BadManifest { .. })
         ));
     }
 
@@ -697,7 +685,6 @@ mod tests {
             BuildError::BadManifest {
                 reason: "missing field `id`".to_owned(),
             },
-            BuildError::NothingToBuild,
             BuildError::NoUiBuildScript {
                 path: "/p/package.json".to_owned(),
                 script: "build".to_owned(),

@@ -42,7 +42,6 @@ struct Fixture {
     digest: String,
     manifest_digest: String,
     artifacts: Digests,
-    imports: Vec<String>,
     graph: DependencyGraph,
 }
 
@@ -55,11 +54,10 @@ impl Fixture {
         artifacts.insert("plugin.wasm", "sha256-abc");
         Self {
             manifest: manifest_json(&["log:*"]),
-            artifact: b"\0asm\x01\0\0\0".to_vec(),
+            artifact: synra_testkit::component::inert_component().expect("a real component"),
             digest: "sha256-abc".to_owned(),
             manifest_digest: "sha256-manifest".to_owned(),
             artifacts,
-            imports: Vec::new(),
             graph: DependencyGraph::new(),
         }
     }
@@ -68,7 +66,6 @@ impl Fixture {
     fn candidate<'a>(&'a self, signature: Option<&'a str>, required: bool) -> Candidate<'a> {
         Candidate {
             manifest_json: &self.manifest,
-            manifest: None,
             artifact: &self.artifact,
             declared_digest: Some(&self.digest),
             actual_digest: &self.digest,
@@ -76,11 +73,54 @@ impl Fixture {
             artifacts: &self.artifacts,
             signature,
             signature_required: required,
-            imports: &self.imports,
             dependencies: &self.graph,
             host: HostFacts::desktop(),
         }
     }
+}
+
+/// Build actual imports, instead of handing the verifier caller-controlled metadata.
+fn importing_component(import: &str) -> Vec<u8> {
+    let function = import.split('#').next_back().unwrap();
+    let foreign = import == "wasi:filesystem/types@0.2.0";
+    let source = if foreign {
+        "package wasi:filesystem@0.2.0; interface types { touch: func(); } world plugin { import types; }".to_owned()
+    } else {
+        include_str!("../../../wit/synra-plugin.wit").replace("env-sdk-version", function)
+    };
+    let mut resolve = wit_parser::Resolve::default();
+    let package = resolve.push_str("fixture.wit", &source).unwrap();
+    let world = resolve.select_world(&[package], Some("plugin")).unwrap();
+    if !foreign {
+        let interfaces: Vec<_> = resolve.worlds[world]
+            .imports
+            .values()
+            .filter_map(|item| match item {
+                wit_parser::WorldItem::Interface { id, .. } => Some(*id),
+                _ => None,
+            })
+            .collect();
+        for id in interfaces {
+            resolve.interfaces[id]
+                .functions
+                .retain(|name, _| name == function);
+        }
+    }
+    let mut module =
+        wit_component::dummy_module(&resolve, world, wit_parser::ManglingAndAbi::Standard32);
+    wit_component::embed_component_metadata(
+        &mut module,
+        &resolve,
+        world,
+        wit_component::StringEncoding::UTF8,
+    )
+    .unwrap();
+    wit_component::ComponentEncoder::default()
+        .module(&module)
+        .unwrap()
+        .validate(true)
+        .encode()
+        .unwrap()
 }
 
 /// A signature document over a subject, signed by a key.
@@ -382,7 +422,9 @@ fn a_plugin_built_for_another_world_stops_at_compatibility() {
 fn an_import_no_declared_capability_covers_stops_at_that_step() {
     // The plugin calls `storage-set`, which needs `storage:local:write`, and its manifest declares only `log:*`.
     let mut fixture = Fixture::new();
-    fixture.imports = vec!["synra:plugin/host#storage-set".to_owned()];
+    fixture.artifact = synra_testkit::plugin_events::EventPlugin::receiver(None)
+        .expect("a real importing component")
+        .wasm;
     match verify(&fixture.candidate(None, false), &PublisherTrustStore::new()) {
         Err((stage, VerifyError::UndeclaredImport { import })) => {
             assert_eq!(stage, Stage::ImportsWithinCapabilities);
@@ -399,8 +441,11 @@ fn an_import_the_declared_capability_covers_passes() {
     // The positive case, so the check is not one that refuses everything.
     let mut fixture = Fixture::new();
     fixture.manifest = manifest_json(&["storage:local:write"]);
-    fixture.imports = vec!["synra:plugin/host#storage-set".to_owned()];
-    let report = verify(&fixture.candidate(None, false), &PublisherTrustStore::new()).expect("a report");
+    fixture.artifact = synra_testkit::plugin_events::EventPlugin::receiver(None)
+        .expect("a real importing component")
+        .wasm;
+    let report =
+        verify(&fixture.candidate(None, false), &PublisherTrustStore::new()).expect("a report");
     assert!(report.is_acceptable());
 }
 
@@ -417,7 +462,7 @@ fn an_import_the_host_does_not_provide_stops_at_that_step() {
         "wasi:filesystem/types@0.2.0",
         "synra:plugin/host#teleport",
     ] {
-        fixture.imports = vec![import.to_owned()];
+        fixture.artifact = importing_component(import);
         match verify(&fixture.candidate(None, false), &PublisherTrustStore::new()) {
             Err((stage, VerifyError::ForbiddenImport { import: named })) => {
                 assert_eq!(stage, Stage::NoForbiddenImports);
@@ -433,7 +478,9 @@ fn an_import_this_host_provides_but_the_manifest_does_not_cover_stops_at_the_cov
     // The other half of the pair: the host has the function, and the plugin did not ask for the permission it needs.
     let mut fixture = Fixture::new();
     fixture.manifest = manifest_json(&["log:*"]);
-    fixture.imports = vec!["synra:plugin/host#storage-set".to_owned()];
+    fixture.artifact = synra_testkit::plugin_events::EventPlugin::receiver(None)
+        .expect("a real importing component")
+        .wasm;
 
     match verify(&fixture.candidate(None, false), &PublisherTrustStore::new()) {
         Err((stage, VerifyError::UndeclaredImport { import })) => {
@@ -448,7 +495,7 @@ fn an_import_this_host_provides_but_the_manifest_does_not_cover_stops_at_the_cov
 fn an_ungated_import_the_host_does_provide_passes() {
     let mut fixture = Fixture::new();
     fixture.manifest = manifest_json(&[]);
-    fixture.imports = vec!["synra:plugin/host#env-sdk-version".to_owned()];
+    fixture.artifact = importing_component("synra:plugin/host#env-sdk-version");
     let report = verify(&fixture.candidate(None, false), &PublisherTrustStore::new()).expect("a report");
     assert!(report.is_acceptable());
 }
@@ -526,9 +573,9 @@ fn a_deep_chain_does_not_overflow_a_stack() {
 // ── Stage 10 · the archive ────────────────────────────────────────────────────────────────────────
 
 #[test]
-fn an_empty_artifact_stops_at_the_archive_step() {
+fn an_empty_inventory_stops_at_the_archive_step() {
     let mut fixture = Fixture::new();
-    fixture.artifact = Vec::new();
+    fixture.artifacts.clear();
     match verify(&fixture.candidate(None, false), &PublisherTrustStore::new()) {
         Err((stage, VerifyError::ArchiveTooLarge { .. })) => assert_eq!(stage, Stage::ArchiveLimits),
         other => panic!("expected an archive refusal, got {other:?}"),

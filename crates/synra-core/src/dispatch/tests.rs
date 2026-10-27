@@ -967,42 +967,6 @@ fn the_report_is_the_default_of_nothing_happening() {
 
 // ── A real malicious guest, through the kernel ────────────────────────────────────────────────────
 
-/// A component whose `deactivate` never returns.
-///
-/// # """ + S + """ Why `deactivate`, and why hand-written `.wat`
-///
-/// `activate`, `can-handle` and `migrate` all take or return a `string`, whose canonical ABI a hand-written component has to
-/// implement by hand — a pointer and a length in, a pointer and a length out, a `realloc`, a `post-return`. `deactivate` is
-/// `func()`: no parameters, no results, so its lift is a core function with **no signature at all** and four lines of text
-/// suffice. The instruction budget is a property of the engine rather than of the interface, so a guest that loops in
-/// `deactivate` tests exactly the same limit as one that loops in `activate`.
-const SPINS: &str = r#"
-(component
-  (core module $m
-    (func (export "spin")
-      (loop $l
-        (br $l))))
-  (core instance $i (instantiate $m))
-  (func $deactivate
-    (canon lift (core func $i "spin")))
-  (instance $lifecycle (export "deactivate" (func $deactivate)))
-  (export "synra:plugin/lifecycle@1.0.0" (instance $lifecycle))
-)
-"#;
-
-/// A component whose `deactivate` returns at once.
-const FINISHES: &str = r#"
-(component
-  (core module $m
-    (func (export "stop")))
-  (core instance $i (instantiate $m))
-  (func $deactivate
-    (canon lift (core func $i "stop")))
-  (instance $lifecycle (export "deactivate" (func $deactivate)))
-  (export "synra:plugin/lifecycle@1.0.0" (instance $lifecycle))
-)
-"#;
-
 #[test]
 fn a_plugin_that_exhausts_its_budget_is_not_broken_afterwards() {
     // """ + S + """ A bad call must not cost the plugin its **next** call, and this was broken.
@@ -1015,7 +979,6 @@ fn a_plugin_that_exhausts_its_budget_is_not_broken_afterwards() {
     // So one budget overrun made a plugin permanently broken: every later call to it failed with a trap that says nothing
     // about the plugin and everything about the instance the kernel was reusing. The user's remedy would be to restart the
     // app.
-    let bytes = |wat: &str| wat::parse_str(wat).expect("the fixture is valid text");
     let engine = synra_plugin_host::engine::WasmtimeBackend::new(
         synra_plugin_host::BackendKind::WasmtimeCranelift,
     )
@@ -1024,7 +987,8 @@ fn a_plugin_that_exhausts_its_budget_is_not_broken_afterwards() {
     set.load(PluginSpec {
         id: id("@synra/aaa-spins"),
         version: "1.0.0".to_owned(),
-        wasm: bytes(SPINS),
+        wasm: synra_testkit::component::deactivation_component(true)
+            .expect("a complete looping guest"),
         grants: CapabilitySet::new(),
         policy: InstancePolicy::Stateless,
         limit: 4,
@@ -1075,18 +1039,18 @@ fn a_real_guest_that_loops_is_stopped_without_costing_the_others() {
     //
     // A scripted backend cannot do this. `Scripted::FuelExhausted` is a value somebody wrote down, and the failure it cannot
     // express is the one that matters: the engine really counting instructions and really stopping.
-    let bytes = |wat: &str| wat::parse_str(wat).expect("the fixture is valid text");
     let engine = synra_plugin_host::engine::WasmtimeBackend::new(
         synra_plugin_host::BackendKind::WasmtimeCranelift,
     )
     .expect("an engine");
     let mut set = PluginSet::new(Backend::new(std::sync::Arc::new(engine)), host());
 
-    for (name, wat) in [("@synra/aaa-spins", SPINS), ("@synra/bbb-finishes", FINISHES)] {
+    for (name, looping) in [("@synra/aaa-spins", true), ("@synra/bbb-finishes", false)] {
         set.load(PluginSpec {
             id: id(name),
             version: "1.0.0".to_owned(),
-            wasm: bytes(wat),
+            wasm: synra_testkit::component::deactivation_component(looping)
+                .expect("a complete guest"),
             grants: CapabilitySet::new(),
             policy: InstancePolicy::Stateless,
             limit: 4,

@@ -38,9 +38,8 @@ pub mod update;
 pub use boundary::{DeviceTarget, LogLevel, Outcome};
 pub use manifest::{
     ActionDeclaration, CapabilityDeclaration, ComposeDependency, EventDeclaration,
-    HandleDeclaration, HeadlessRuntime, Implementation, Manifest, ManifestContext, ManifestError,
-    Publisher, ResourceHints, Runtime, SdkRequirement, UiRuntime, ValidationLevel, manifest_digest,
-    to_project_slug,
+    HandleDeclaration, HeadlessRuntime, Manifest, ManifestContext, ManifestError, Publisher,
+    ResourceHints, Runtime, SdkRequirement, UiRuntime, manifest_digest, to_project_slug,
 };
 pub use publisher::{
     ALGORITHM, Fingerprint, PluginTrust, PublisherTrustStore, SIGNATURE_FILE, SIGNATURE_VERSION, SignatureCheck,

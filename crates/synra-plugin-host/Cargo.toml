@@ -25,6 +25,9 @@ parking_lot.workspace = true
 sha2.workspace = true
 # An SRI digest is base64, and `signature.json` carries its key and signature the same way.
 base64.workspace = true
+# Static WIT conformance is shared by admission and the CLI; it executes no guest code.
+wit-component = "=0.247.0"
+wit-parser = "=0.247.0"
 
 # ── The engine ────────────────────────────────────────────────────────────────────────────────────────────────────
 #
@@ -57,6 +60,7 @@ wasm-text = ["wasm-runtime", "wasmtime/wat"]
 rust-guest-tests = ["wasm-runtime"]
 
 [dev-dependencies]
+synra-testkit = { path = "../synra-testkit", features = ["wasm-fixtures"] }
 # Build the complete ABI test component directly from the real WIT source.
 wit-component = { version = "0.247", features = ["dummy-module"] }
 wit-parser = "0.247"

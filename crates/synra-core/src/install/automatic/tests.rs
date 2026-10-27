@@ -56,7 +56,8 @@ impl Fixture {
             "runtime":{"headless":{"artifact":"plugin.wasm", "stateful":false}}
         })
         .to_string();
-        let wasm = b"\0asm\x01\0\0\0";
+        let wasm_bytes = synra_testkit::component::inert_component().expect("a valid component");
+        let wasm = wasm_bytes.as_slice();
         let mut artifacts = Digests::new();
         artifacts.insert(
             "plugin.wasm",
@@ -240,7 +241,7 @@ fn manual_replacements_keep_verified_bytes_and_recheck_version_and_revocation() 
             assert_eq!(
                 std::fs::read(fixture.root.join("plugins/acme+hello/plugin.wasm"))
                     .expect("installed bytes"),
-                b"\0asm\x01\0\0\0"
+                synra_testkit::component::inert_component().expect("a valid component")
             );
             assert_eq!(fixture.version(), "1.1.0-beta.1");
         } else {

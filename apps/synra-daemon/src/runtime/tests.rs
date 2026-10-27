@@ -858,7 +858,11 @@ fn a_directory_named_differently_from_its_manifest_is_reported_rather_than_recor
         ),
     )
     .expect("a manifest");
-    std::fs::write(directory.join("plugin.wasm"), b"\0asm\x01\0\0\0").expect("an artifact");
+    std::fs::write(
+        directory.join("plugin.wasm"),
+        synra_testkit::component::inert_component().expect("a valid component"),
+    )
+    .expect("an artifact");
 
     let found = crate::runtime::record_discovered_plugins(&runtime.db(), &runtime.plugins_dir, 500);
 
@@ -1124,7 +1128,11 @@ fn write_plugin(plugins_dir: &Path, id: &str, capability: &str) {
     .expect("a manifest");
     // The bytes have the WebAssembly header, because the loader's engine refuses anything else — and a fixture that
     // dodged that check would be testing a path no plugin takes.
-    std::fs::write(directory.join("plugin.wasm"), b"\0asm\x01\0\0\0").expect("an artifact");
+    std::fs::write(
+        directory.join("plugin.wasm"),
+        synra_testkit::component::inert_component().expect("a valid component"),
+    )
+    .expect("an artifact");
 }
 
 /// Writes a `signature.json` over the package's bytes — or over **other** bytes, when `swap` is set.

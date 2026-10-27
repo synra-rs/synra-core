@@ -135,7 +135,8 @@ fn signed_source(directory: &Path, version: &str, seed: u8, extra: bool) {
     let manifest = serde_json::json!({"id":"@acme/hello", "version":version, "title":"Hello", "publisher":{"id":"@acme"},
         "sdk":{"min":"0.1.0"}, "wit":synra_plugin_host::host_world(), "capabilities":capabilities,
         "runtime":{"headless":{"artifact":"plugin.wasm", "stateful":false}}}).to_string();
-    let wasm = b"\0asm\x01\0\0\0";
+    let wasm_bytes = synra_testkit::component::inert_component().expect("a valid component");
+    let wasm = wasm_bytes.as_slice();
     let mut artifacts = Digests::new();
     artifacts.insert(
         "plugin.wasm",

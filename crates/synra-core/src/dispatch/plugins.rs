@@ -723,23 +723,18 @@ impl PluginSet {
         manifest_digest: String,
         partially_denied: bool,
     ) -> Result<(), PluginSetError> {
+        // Scripted backends execute a table of answers, never untrusted component bytes.
+        // Every executing backend must admit the complete world before native compilation.
+        if self.backend.kind() != synra_plugin_host::BackendKind::Scripted {
+            synra_plugin_host::component::inspect(&spec.wasm).map_err(|error| {
+                BackendError::Compile {
+                    detail: error.to_string(),
+                }
+            })?;
+        }
         let compiled = self.backend.compile(&spec.wasm, spec.id.as_str())?;
 
-        // ★ The load-time import check, which had no caller until now.
-        //
-        // `host_surface::undeclared_imports` was written, tested, and called by nothing in production: the pipeline that
-        // uses it (`synra_plugin_host::verify::verify`) has no caller either. So an artifact importing a host function
-        // its capabilities never covered was loaded and run, and the first sign of it would have been a call refused at
-        // the gate — long after the install, and for a reason the author could not act on.
-        //
-        // What is checked is what the **component** imports, read from its own type at compile time, rather than what
-        // its manifest claims. That is the difference between a claim and a fact, and it is why the check can only
-        // happen here: the imports do not exist until the bytes have been compiled.
-        //
-        // The comparison is against `spec.grants`, which in today's caller is the manifest's declared set — see the
-        // daemon's `grants_of`. That makes the check "the artifact imports nothing its manifest did not declare", which
-        // is exactly layer 1 of the three-layer gate and holds whatever the grants came from. When the consent flow
-        // starts narrowing `grants` to the user's actual decisions, this check narrows with it and needs no change.
+        // Actual engine imports must also be covered by this load's effective grants.
         let undeclared = synra_plugin_host::host_surface::undeclared_imports(compiled.imports(), &spec.grants);
         if let Some(import) = undeclared.first() {
             return Err(PluginSetError::UndeclaredImport {

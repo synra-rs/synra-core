@@ -46,6 +46,8 @@
 
 pub mod authentication;
 pub mod clock;
+#[cfg(feature = "wasm-fixtures")]
+pub mod component;
 pub mod pair;
 #[cfg(feature = "wasm-fixtures")]
 pub mod plugin_events;

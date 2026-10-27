@@ -219,17 +219,22 @@ fn a_headless_plugin_is_not_asked_for_an_interface() {
 }
 
 #[test]
-fn a_ui_plugin_is_not_asked_for_wasm() {
+fn a_ui_only_plugin_is_refused_by_manifest_validation() {
     let report = verify(&Target {
         ui_bundle: Ok((3, 100)),
         ..target(UI)
     });
+    assert!(!report.is_ok());
     assert!(
-        !report.findings.iter().any(|f| f.name == "wasm"),
+        report
+            .findings
+            .iter()
+            .any(|finding| finding.name == "manifest"
+                && finding.verdict == Verdict::Fail
+                && finding.detail.contains("headless")),
         "{:?}",
         report.findings
     );
-    assert!(report.is_ok(), "{:?}", report.findings);
 }
 
 // ── The imports ───────────────────────────────────────────────────────────────────────────────

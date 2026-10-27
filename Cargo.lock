@@ -2487,6 +2487,7 @@ dependencies = [
  "synra-plugin-api",
  "synra-protocol",
  "synra-store",
+ "synra-testkit",
  "thiserror",
  "wasmtime",
  "wat",

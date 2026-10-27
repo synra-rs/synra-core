@@ -162,24 +162,6 @@ fn component(receiver: bool, looping: bool) -> Result<Vec<u8>, String> {
       (func (export "synra:plugin/share@1.0.0#execute") (param i32 i32 i32 i32) (result i32) (i32.const 0))
       (func (export "synra:plugin/actions@1.0.0#invoke") (param i32 i32 i32 i32) (result i32) {action}))"#
     );
-    let mut module = wat::parse_str(wat).map_err(|error| error.to_string())?;
-    let mut resolve = wit_parser::Resolve::default();
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../wit/synra-plugin.wit");
-    let (package, _) = resolve.push_path(path).map_err(|error| error.to_string())?;
-    let world = resolve
-        .select_world(&[package], Some("plugin"))
-        .map_err(|error| error.to_string())?;
-    wit_component::embed_component_metadata(
-        &mut module,
-        &resolve,
-        world,
-        wit_component::StringEncoding::UTF8,
-    )
-    .map_err(|error| error.to_string())?;
-    wit_component::ComponentEncoder::default()
-        .module(&module)
-        .map_err(|error| error.to_string())?
-        .validate(true)
-        .encode()
-        .map_err(|error| error.to_string())
+    let module = wat::parse_str(wat).map_err(|error| error.to_string())?;
+    crate::component::encode(module)
 }

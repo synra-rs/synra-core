@@ -24,7 +24,7 @@
 //! graph and the platform applicability are here because they are about *this host* — what it can run and what it
 //! already has — rather than about the package.
 
-use synra_plugin_api::manifest::{Manifest, ManifestContext, ValidationLevel};
+use synra_plugin_api::manifest::{Manifest, ManifestContext};
 use synra_plugin_api::publisher::{Digests, PluginTrust, PublisherTrustStore, SignatureFile};
 
 use crate::host_surface;
@@ -185,6 +185,13 @@ pub enum VerifyError {
         provided: String,
     },
 
+    /// Actual component bytes do not implement the required plugin world.
+    #[error("the component is invalid: {source}")]
+    InvalidComponent {
+        /// Classified static validation failure.
+        source: crate::component::ComponentError,
+    },
+
     /// The artifact imports a function no declared capability covers.
     #[error("the artifact imports {import}, which the manifest's capabilities do not cover")]
     UndeclaredImport {
@@ -232,8 +239,6 @@ pub enum VerifyError {
 pub struct Candidate<'a> {
     /// The manifest file's bytes, exactly as they arrived.
     pub manifest_json: &'a str,
-    /// The manifest, parsed. `None` means it has not been read yet, which is what the schema step does.
-    pub manifest: Option<Manifest>,
     /// The artifact's bytes.
     pub artifact: &'a [u8],
     /// The digest the source declared for the artifact, if it declared one.
@@ -262,8 +267,6 @@ pub struct Candidate<'a> {
     /// build has no publisher and a registry install has one, and a host that demanded a signature for both would
     /// make a local plugin impossible while a host that demanded neither would make `Unsigned` unrepresentable.
     pub signature_required: bool,
-    /// The functions the artifact imports, as a compiled component reports them.
-    pub imports: &'a [String],
     /// Every plugin this one depends on, and what each of those depends on.
     ///
     /// The whole graph rather than this plugin's edges, because a cycle is a property of the graph: a plugin that
@@ -525,17 +528,20 @@ pub fn verify(candidate: &Candidate<'_>, trust: &PublisherTrustStore) -> Result<
     let manifest = Manifest::from_json(candidate.manifest_json).map_err(|error| {
         (Stage::ManifestSchema, VerifyError::InvalidManifest { reason: error.to_string() })
     })?;
-    // ★ `Verify` rather than `Schema`: this runs where the package is in hand, so the checks that need what is *in* it
-    // — that the artifacts it names exist, that its implementation provides the entry points it claims — are the ones
-    // worth running. The context carries the world this host implements, which is what the compatibility step below
-    // would otherwise be the only thing to check.
+    // Manifest consistency and actual component conformance are distinct proofs. This context
+    // names the host world; binary imports, exports and signatures are checked from the artifact below.
     let context = ManifestContext {
         host_wit: Some(candidate.host.wit.clone()),
         ..ManifestContext::default()
     };
-    manifest
-        .validate(ValidationLevel::Verify, &context)
-        .map_err(|error| (Stage::ManifestSchema, VerifyError::InvalidManifest { reason: error.to_string() }))?;
+    manifest.validate(&context).map_err(|error| {
+        (
+            Stage::ManifestSchema,
+            VerifyError::InvalidManifest {
+                reason: error.to_string(),
+            },
+        )
+    })?;
     steps.push(Step {
         stage: Stage::ManifestSchema,
         verdict: Verdict::Pass,
@@ -566,6 +572,20 @@ pub fn verify(candidate: &Candidate<'_>, trust: &PublisherTrustStore) -> Result<
             VerifyError::WitIncompatible { required: manifest.wit, provided: candidate.host.wit.clone() },
         ));
     }
+    // Derive the evidence from actual bytes. Unknown host imports have their own diagnostic;
+    // the shared inspector refuses them before checking whole-world subtyping.
+    let component =
+        crate::component::inspect(candidate.artifact).map_err(|source| match source {
+            crate::component::ComponentError::UnsupportedImport { import } => (
+                Stage::NoForbiddenImports,
+                VerifyError::ForbiddenImport { import },
+            ),
+            source => (
+                Stage::WitCompatibility,
+                VerifyError::InvalidComponent { source },
+            ),
+        })?;
+    let imports = component.imports.as_slice();
     steps.push(Step {
         stage: Stage::WitCompatibility,
         verdict: Verdict::Pass,
@@ -578,13 +598,13 @@ pub fn verify(candidate: &Candidate<'_>, trust: &PublisherTrustStore) -> Result<
     // `wasi:filesystem` or a function from a newer SDK is one the host does not provide, and reporting that as "no
     // declared capability covers it" would send an author looking through their manifest for a permission to add when
     // what they have is a plugin built against a different host.
-    if let Some(import) = candidate.imports.iter().find(|import| !host_surface::provides(import)) {
-        return Err((Stage::NoForbiddenImports, VerifyError::ForbiddenImport { import: import.clone() }));
-    }
     steps.push(Step {
         stage: Stage::NoForbiddenImports,
         verdict: Verdict::Pass,
-        detail: format!("all {} import(s) are ones this host provides", candidate.imports.len()),
+        detail: format!(
+            "all {} actual import(s) are ones this host provides",
+            imports.len()
+        ),
     });
 
     // 8 · The imports are covered by the capabilities.
@@ -594,7 +614,7 @@ pub fn verify(candidate: &Candidate<'_>, trust: &PublisherTrustStore) -> Result<
         // `let _ =` rather than an unwrap, because this function is not allowed to panic on a package's contents.
         let _ = granted.insert_str(&declared.cap);
     }
-    let uncovered = host_surface::undeclared_imports(candidate.imports, &granted);
+    let uncovered = host_surface::undeclared_imports(imports, &granted);
     if let Some(import) = uncovered.first() {
         return Err((
             Stage::ImportsWithinCapabilities,
@@ -604,7 +624,7 @@ pub fn verify(candidate: &Candidate<'_>, trust: &PublisherTrustStore) -> Result<
     steps.push(Step {
         stage: Stage::ImportsWithinCapabilities,
         verdict: Verdict::Pass,
-        detail: format!("{} import(s) are all covered", candidate.imports.len()),
+        detail: format!("{} actual import(s) are all covered", imports.len()),
     });
 
     // 9 · The dependency graph.
@@ -618,10 +638,12 @@ pub fn verify(candidate: &Candidate<'_>, trust: &PublisherTrustStore) -> Result<
     });
 
     // 10 · The archive, which the caller has already planned — this asks whether one was planned at all.
-    if candidate.artifact.is_empty() {
+    if candidate.artifacts.is_empty() {
         return Err((
             Stage::ArchiveLimits,
-            VerifyError::ArchiveTooLarge { detail: "the artifact is empty".to_owned() },
+            VerifyError::ArchiveTooLarge {
+                detail: "the package contains no runtime artifacts".to_owned(),
+            },
         ));
     }
     steps.push(Step {

@@ -475,11 +475,9 @@ impl WasmBackend for WasmtimeBackend {
             exports.push(name.to_string());
         }
         exports.sort();
-        // ★ The interface a plugin cannot be without is checked here, and the one it *is* checked for is `lifecycle`:
-        // `activate` is what the host calls before anything else, so a component without it is one that would be
-        // installed and then fail at the first use. `share` and `actions` are optional in practice — a plugin that
-        // handles nothing and declares no action exports empty instances — so requiring them would refuse components
-        // the contract allows.
+        // This low-level engine check also supports focused ABI and budget probes.
+        // Package admission is stricter: component::inspect, called by the verifier and
+        // executing PluginSet loads, requires the complete lifecycle, share and actions world.
         let required = crate::host_surface::EXPORTED_INTERFACES
             .first()
             .copied()

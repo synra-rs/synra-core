@@ -10,10 +10,10 @@
 //! possible which a directory of files does not:
 //!
 //! * A test can assert that every template produces a manifest the kernel's own validator accepts, and that the
-//!   manifest's `implementation` block matches the files that were written. A template whose manifest claims a `.wasm`
+//!   runtime declaration matches the files that were written. A template whose manifest claims a `.wasm`
 //!   entry point and writes none is a plugin that installs and then does nothing.
-//! * The three kinds differ only in which runtime block the manifest carries and which files are written, which is
-//!   the difference the design document draws between headless, UI and hybrid — so the shared part cannot drift
+//! * The two kinds differ only in which runtime block the manifest carries and which files are written, which is
+//!   the difference the design document draws between headless and hybrid — so the shared part cannot drift
 //!   between them.
 //! * Nothing writes to the author's disk until they ask. `new` on an existing directory is refused *before* a file is
 //!   created, rather than after three of them are.
@@ -26,18 +26,15 @@
 
 use std::collections::BTreeMap;
 
-use synra_plugin_api::manifest::{Manifest, ManifestContext, ValidationLevel};
+use synra_plugin_api::manifest::{Manifest, ManifestContext};
 
-/// The three shapes a plugin can have.
+/// The two supported shapes: a Wasm plugin, with an optional interface.
 ///
-/// The names are the design document's: a `headless` plugin runs as Wasm with no interface, a `ui` plugin runs in a
-/// WebView with no code the kernel executes, and a `hybrid` one is both halves of one plugin.
+/// Every plugin ships a Rust headless component. Hybrid plugins also ship a WebView bundle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum TemplateKind {
     /// Wasm only. No interface.
     Headless,
-    /// A WebView bundle only. No code the kernel executes.
-    Ui,
     /// Both halves, sharing one manifest.
     Hybrid,
 }
@@ -48,29 +45,17 @@ impl TemplateKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Headless => "headless",
-            Self::Ui => "ui",
             Self::Hybrid => "hybrid",
         }
     }
 
     /// Every kind, for a table-driven test.
     #[must_use]
-    pub const fn all() -> [Self; 3] {
-        [Self::Headless, Self::Ui, Self::Hybrid]
+    pub const fn all() -> [Self; 2] {
+        [Self::Headless, Self::Hybrid]
     }
 
-    /// The manifest's `implementation` block for this kind.
-    ///
-    /// The three differ only here, which is the point: the design document's classification *is* which parts a plugin
-    /// implements, so a template that differed elsewhere would be a template that disagreed with its own manifest.
-    /// The manifest's `runtime` and `implementation` blocks for this kind.
-    ///
-    /// The three differ only here, which is the point: the design document's classification *is* which halves a plugin
-    /// implements, so a template that differed elsewhere would be a template that disagreed with its own manifest.
-    ///
-    /// `headless`/`ui` are objects rather than a `kind` string, because a plugin declares what artifacts it ships —
-    /// the artifact path, whether the Wasm is stateful, the entry document inside the bundle. A single word could not
-    /// carry any of that, and the host needs all of it.
+    /// Runtime artifacts declared by this supported template.
     const fn blocks(self) -> &'static str {
         match self {
             Self::Headless => {
@@ -78,14 +63,6 @@ impl TemplateKind {
     "headless": {
       "artifact": "plugin.wasm",
       "stateful": false
-    }
-  }"#
-            }
-            Self::Ui => {
-                r#""runtime": {
-    "ui": {
-      "artifact": "ui",
-      "entry": "index.html"
     }
   }"#
             }
@@ -269,11 +246,6 @@ strip = true
                     authored: true,
                 });
             }
-            TemplateKind::Ui => files.push(ScaffoldFile {
-                path: "ui/index.html".to_owned(),
-                contents: ui_document(title),
-                authored: true,
-            }),
             TemplateKind::Hybrid => {
                 files.push(ScaffoldFile {
                     path: "Cargo.toml".to_owned(),
@@ -346,7 +318,7 @@ strip = true
             ..ManifestContext::default()
         };
         manifest
-            .validate(ValidationLevel::Schema, &context)
+            .validate(&context)
             .map_err(|error| error.to_string())?;
         Ok(manifest)
     }
@@ -380,7 +352,6 @@ fn manifest_json(plugin_id: &str, version: &str, title: &str, kind: TemplateKind
 fn readme(plugin_id: &str, kind: TemplateKind) -> String {
     let build = match kind {
         TemplateKind::Headless => "`synra-plugin build` compiles the Wasm artifact.",
-        TemplateKind::Ui => "`synra-plugin build` packages the `ui/` directory.",
         TemplateKind::Hybrid => {
             "`synra-plugin build` produces both halves: the Wasm artifact and the `ui/` bundle."
         }
@@ -489,7 +460,7 @@ mod tests {
             let scaffold = scaffold(kind);
             let paths = scaffold.paths();
 
-            if matches!(kind, TemplateKind::Ui | TemplateKind::Hybrid) {
+            if kind == TemplateKind::Hybrid {
                 assert!(
                     paths.iter().any(|path| path == "ui/index.html"),
                     "{kind:?} wrote no interface"
@@ -501,21 +472,15 @@ mod tests {
                     "{kind:?} wrote no Wasm half"
                 );
             }
-            if kind == TemplateKind::Ui {
-                assert!(
-                    !paths.iter().any(|path| path == "src/lib.rs"),
-                    "a UI-only plugin has no Wasm half"
-                );
-            }
         }
     }
 
     #[test]
-    fn the_three_kinds_differ_only_in_their_runtime_block() {
+    fn the_two_kinds_declare_the_required_headless_artifact() {
         // The design document's classification *is* which parts a plugin implements, so a template that differed
         // elsewhere would be a template that disagreed with its own manifest.
         let headless = scaffold(TemplateKind::Headless).as_map();
-        let ui = scaffold(TemplateKind::Ui).as_map();
+        let ui = scaffold(TemplateKind::Hybrid).as_map();
 
         // Both carry the same description shape and the same capability block.
         let headless_manifest = headless.get("manifest.json").expect("a manifest");
@@ -533,8 +498,8 @@ mod tests {
             "the UI template ships no bundle"
         );
         assert!(
-            !ui_manifest.contains(r#""headless""#),
-            "the UI template ships a Wasm half"
+            ui_manifest.contains(r#""headless""#),
+            "the hybrid template ships no Wasm half"
         );
         // And both declare the same capability block, which is where an author starts from.
         assert!(headless_manifest.contains(r#""capabilities""#));
@@ -542,7 +507,7 @@ mod tests {
     }
 
     #[test]
-    fn the_hybrid_template_implements_all_three_entry_points() {
+    fn the_hybrid_template_declares_both_artifacts() {
         // The only template with both halves, so the only one whose manifest names all three. A hybrid plugin missing
         // `execute` is one the kernel cannot ask to do anything.
         let hybrid = scaffold(TemplateKind::Hybrid);
@@ -651,7 +616,7 @@ mod tests {
         // The one thing an author needs next, and the one thing a template that shared a README between kinds would
         // get wrong.
         let headless = scaffold(TemplateKind::Headless).as_map();
-        let ui = scaffold(TemplateKind::Ui).as_map();
+        let ui = scaffold(TemplateKind::Hybrid).as_map();
         assert!(
             headless
                 .get("README.md")
@@ -692,7 +657,7 @@ mod tests {
     fn the_interface_reaches_the_kernel_only_through_the_facade() {
         // The one thing an author must not get wrong: `window.synra` is a closed facade, and a scaffold that used
         // `invoke` directly would be teaching the wrong shape — and require a token it cannot have.
-        let ui = scaffold(TemplateKind::Ui).as_map();
+        let ui = scaffold(TemplateKind::Hybrid).as_map();
         let document = ui.get("ui/index.html").expect("a document");
         assert!(document.contains("window.synra"), "{document}");
         assert!(
@@ -728,7 +693,6 @@ mod tests {
             assert!(!kind.as_str().is_empty());
         }
         assert_eq!(TemplateKind::Headless.as_str(), "headless");
-        assert_eq!(TemplateKind::Ui.as_str(), "ui");
         assert_eq!(TemplateKind::Hybrid.as_str(), "hybrid");
     }
 }

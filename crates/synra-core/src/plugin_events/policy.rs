@@ -3,7 +3,7 @@
 use super::{EventService, context::Execution, refusal};
 use std::{collections::HashMap, sync::Arc};
 use synra_capability::{Capability, CapabilitySet};
-use synra_plugin_api::{Manifest, ManifestContext, ValidationLevel, payload::PayloadSchema};
+use synra_plugin_api::{Manifest, ManifestContext, payload::PayloadSchema};
 use synra_protocol::{ErrorCode, SynraError, inbound::HandlePattern};
 
 pub(super) struct Policy {
@@ -149,7 +149,7 @@ impl EventService {
             ));
         }
         manifest
-            .validate(ValidationLevel::Schema, &ManifestContext::default())
+            .validate(&ManifestContext::default())
             .map_err(invalid)?;
         if manifest.id != execution.plugin
             || manifest.version != execution.version

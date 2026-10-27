@@ -354,8 +354,8 @@ interface actions {
 /// The world a plugin component implements.
 ///
 /// One world, versioned by the package: a plugin imports the host and exports the interfaces the kernel calls.
-/// There is no second world for a UI-only plugin, because a UI plugin is a bundle the host serves rather than a
-/// component it loads — the Manifest's `runtime` block is what says which halves exist.
+/// Every plugin provides this headless component. A hybrid plugin may also ship a UI bundle,
+/// which the host serves separately; UI-only plugins are not supported.
 world plugin {
     import host;
 

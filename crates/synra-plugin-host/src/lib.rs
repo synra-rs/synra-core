@@ -59,6 +59,7 @@
 )]
 
 pub mod catalog;
+pub mod component;
 pub mod engine;
 pub mod host_calls;
 

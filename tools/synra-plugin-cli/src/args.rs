@@ -281,7 +281,6 @@ mod tests {
     fn new_accepts_every_template_by_name() {
         for (word, kind) in [
             ("headless", TemplateKind::Headless),
-            ("ui", TemplateKind::Ui),
             ("hybrid", TemplateKind::Hybrid),
         ] {
             let Command::New(args) =
@@ -291,6 +290,14 @@ mod tests {
             };
             assert_eq!(args.template, kind, "{word}");
         }
+    }
+
+    #[test]
+    fn new_rejects_the_unsupported_ui_only_template() {
+        assert!(
+            Cli::try_parse_from(["synra-plugin", "new", "@scope/plugin", "--template", "ui"])
+                .is_err()
+        );
     }
 
     #[test]

@@ -227,7 +227,10 @@ mod tests {
         let mut builder = tar::Builder::new(Vec::new());
         for (name, bytes) in [
             ("package/manifest.json", manifest.into_bytes()),
-            ("package/plugin.wasm", b"\0asm\x01\0\0\0".to_vec()),
+            (
+                "package/plugin.wasm",
+                synra_testkit::component::inert_component().expect("a valid component"),
+            ),
         ] {
             let mut header = tar::Header::new_gnu();
             header.set_size(bytes.len() as u64);

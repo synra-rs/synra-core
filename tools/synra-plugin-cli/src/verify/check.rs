@@ -1,6 +1,6 @@
 //! Reports manifest, binary contract and artifact findings.
 
-use synra_plugin_api::manifest::{Manifest, ManifestContext, ValidationLevel};
+use synra_plugin_api::manifest::{Manifest, ManifestContext};
 use synra_plugin_host::host_surface;
 
 use super::{
@@ -79,7 +79,7 @@ fn manifest(target: &Target, findings: &mut Vec<Finding>) -> Option<Manifest> {
             host_wit: Some(synra_plugin_host::host_world()),
             ..ManifestContext::default()
         };
-        manifest.validate(ValidationLevel::Schema, &context)?;
+        manifest.validate(&context)?;
         Ok(manifest)
     });
     match parsed {

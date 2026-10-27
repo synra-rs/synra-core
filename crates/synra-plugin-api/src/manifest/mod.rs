@@ -19,8 +19,8 @@
 //!   another, and it fails silently: the receiving side sees a legitimate name and routes it.
 //! * A **capability the runtime cannot use** — `ui:*` on a headless plugin — is a permission the user approves
 //!   at install time and that nothing can ever exercise. The consent screen said something untrue.
-//! * A **`handles` entry with no `on_event`** produces a plugin that is installed, appears to work, and
-//!   silently drops every message it asked for.
+//! * A route declaration selects events; it cannot prove which functions a component exports.
+//!   The host checks the complete WIT world against actual component bytes, including unused required entries.
 //! * An **unbounded `maxLength`** in an event's payload schema is a promise the host cannot keep when it
 //!   validates the payload, and the promise is what the receiving side trusted.
 //!
@@ -31,8 +31,9 @@
 //!
 //! * It does not read files. [`Manifest::from_json`] takes text; finding and reading the file is the loader's
 //!   job, and the loader is what knows about package roots and symlinks.
-//! * It does not check that artifacts exist, or that declared methods are implemented. Both need the
-//!   filesystem and the Wasm module, so they arrive as [`ManifestContext`] and [`Implementation`].
+//! * It checks artifact names supplied through [`ManifestContext`], without reading files itself.
+//! * It does not prove binary imports or exports. The host's shared component validator checks the actual bytes;
+//!   caller-supplied implementation flags are not accepted as evidence.
 //! * It does not compile capabilities. [`synra_capability`] does that; this calls it.
 //!
 //! # Why this is a directory and not a file

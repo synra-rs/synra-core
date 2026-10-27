@@ -45,9 +45,9 @@ pub enum ManifestError {
         reason: String,
     },
 
-    /// Neither half of the runtime is declared.
-    #[error("a plugin must declare `runtime.headless`, `runtime.ui`, or both")]
-    NoRuntime,
+    /// The required headless Wasm runtime is absent.
+    #[error("a plugin must declare `runtime.headless`; UI-only plugins are not supported")]
+    MissingHeadless,
 
     /// A declared artifact is not in the package.
     #[error("the declared {kind} artifact {path:?} is not in the package")]
@@ -125,20 +125,6 @@ pub enum ManifestError {
     BadHandle {
         /// The entry that was offered.
         event: String,
-    },
-
-    /// The declarations and the implementation disagree.
-    #[error("the manifest declares {declared} but the plugin does not implement it")]
-    MissingImplementation {
-        /// What was declared.
-        declared: &'static str,
-    },
-
-    /// The implementation provides something the manifest does not declare.
-    #[error("the plugin implements {implemented} but the manifest does not declare it")]
-    UndeclaredImplementation {
-        /// What was implemented.
-        implemented: &'static str,
     },
 
     /// A page key is repeated.

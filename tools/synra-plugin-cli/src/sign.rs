@@ -180,8 +180,7 @@ fn collect_artifacts(root: &Path, manifest: &Manifest) -> Result<publisher::Dige
 
 /// The artifact file names a manifest declares.
 ///
-/// A UI-only plugin has no `.wasm`, and the thing that has to be covered is whatever a download could differ in —
-/// which for a UI plugin is its bundle.
+/// Signatures cover the headless component and, for hybrid plugins, the UI bundle.
 fn artifact_names(manifest: &Manifest) -> Vec<String> {
     let mut names = Vec::new();
     if let Some(headless) = &manifest.runtime.headless {

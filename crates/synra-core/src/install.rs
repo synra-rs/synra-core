@@ -301,10 +301,7 @@ fn prepare(
         .map_err(|error| InstallRefusal::new("write", format!("source.json: {error}")))?;
     files.push(("source.json".to_owned(), source_note));
 
-    // ── The imports, which need a compiled artifact ─────────────────────────────────────────────────────────────────
-    //
-    // Compiling here is not a second load: it is the only way to learn what a component imports, which is the fact two
-    // of the eleven checks are about. The compile cache makes the later load reuse it.
+    // Actual component validation runs after digest/signature checks in the shared pipeline.
     let headless = manifest.runtime.headless.as_ref().map(|runtime| runtime.artifact.clone());
     let wasm: &[u8] = match &headless {
         Some(name) => files
@@ -314,19 +311,6 @@ fn prepare(
             .unwrap_or(&[]),
         None => &[],
     };
-    let imports: Vec<String> = if headless.is_some() {
-        let compiled = backend
-            .compile(wasm, &plugin_id)
-            .map_err(|error| InstallRefusal::new("wit-compatibility", error.to_string()))?;
-        // Cloned rather than borrowed because the artifact is dropped here and the candidate outlives it. A thousand
-        // short strings is nothing beside the compile this just paid for.
-        compiled.imports().to_vec()
-    } else {
-        // A UI-only plugin has no component to compile, and passing an empty import set is the accurate answer rather
-        // than a shortcut: nothing in it imports anything.
-        Vec::new()
-    };
-
     // ★ The manifest's digest is the contract's own function, not a hash this module computes.
     //
     // `manifest_digest` hashes the bytes as they are on disk, in hex — which is what the plugin CLI signs and what the
@@ -340,7 +324,6 @@ fn prepare(
 
     let candidate = Candidate {
         manifest_json: &manifest_json,
-        manifest: None,
         artifact: wasm,
         declared_digest: None,
         actual_digest: &artifact_digest,
@@ -351,7 +334,6 @@ fn prepare(
         // package that *does* carry a signature is still checked against it — `verify` refuses one that covers other
         // bytes — so this is "a signature is not required", not "a signature is not looked at".
         signature_required: false,
-        imports: &imports,
         dependencies: &DependencyGraph::new(),
         host,
     };
@@ -365,6 +347,14 @@ fn prepare(
     let trust = trust_store(db);
     let report = verify::verify(&candidate, &trust)
         .map_err(|(stage, error)| InstallRefusal::new(stage.as_str(), error.to_string()))?;
+
+    // Only packages that passed the complete verification pipeline reach native compilation.
+    // This checks the selected engine without instantiating the guest or invoking callbacks.
+    if headless.is_some() {
+        let _ = backend
+            .compile(wasm, &plugin_id)
+            .map_err(|error| InstallRefusal::new("wit-compatibility", error.to_string()))?;
+    }
 
     let warnings: Vec<String> = report
         .warnings()
@@ -804,6 +794,10 @@ fn discard(directory: &Path, files: &[(String, Vec<u8>)]) {
 }
 
 #[cfg(test)]
+#[path = "install/contract_tests.rs"]
+mod contract_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write as _;
@@ -835,7 +829,11 @@ mod tests {
     fn write_source(directory: &Path) {
         std::fs::create_dir_all(directory).expect("the source directory");
         std::fs::write(directory.join("manifest.json"), manifest()).expect("a manifest");
-        std::fs::write(directory.join("plugin.wasm"), b"\0asm\x01\0\0\0").expect("an artifact");
+        std::fs::write(
+            directory.join("plugin.wasm"),
+            synra_testkit::component::inert_component().expect("a valid component"),
+        )
+        .expect("an artifact");
     }
 
     fn backend() -> Backend {
@@ -928,8 +926,13 @@ mod tests {
 
         let second = root.join("second");
         std::fs::create_dir_all(&second).expect("the second source");
-        std::fs::write(second.join("manifest.json"), manifest_version("2.0.0")).expect("a manifest");
-        std::fs::write(second.join("plugin.wasm"), b"\0asm\x01\0\0\0").expect("an artifact");
+        std::fs::write(second.join("manifest.json"), manifest_version("2.0.0"))
+            .expect("a manifest");
+        std::fs::write(
+            second.join("plugin.wasm"),
+            synra_testkit::component::inert_component().expect("a valid component"),
+        )
+        .expect("an artifact");
         let second_archive = root.join("hello-2.synra");
         package_directory(&second, &second_archive).expect("the second package");
 

@@ -16,8 +16,8 @@ impl Manifest {
 
     /// The runtime's shape and its artifacts.
     pub(super) fn check_runtime(&self, context: &ManifestContext) -> Result<(), ManifestError> {
-        if !self.is_headless() && !self.has_ui() {
-            return Err(ManifestError::NoRuntime);
+        if self.runtime.headless.is_none() {
+            return Err(ManifestError::MissingHeadless);
         }
 
         if let Some(present) = &context.present_artifacts {
@@ -85,26 +85,4 @@ impl Manifest {
         Ok(())
     }
 
-    /// Whether the declarations and the implementation agree, in both directions.
-    pub(super) const fn check_implementation(&self, context: &ManifestContext) -> Result<(), ManifestError> {
-        let Some(implementation) = context.implementation else {
-            return Ok(());
-        };
-
-        if !self.handles.is_empty() && !implementation.on_event {
-            return Err(ManifestError::MissingImplementation { declared: "`handles`" });
-        }
-        if self.handles.is_empty() && implementation.on_event {
-            return Err(ManifestError::UndeclaredImplementation { implemented: "on_event" });
-        }
-
-        // An interface-only plugin's actions run in the interface, so `execute` is about the headless half.
-        if !self.actions.is_empty() && self.is_headless() && !implementation.execute {
-            return Err(ManifestError::MissingImplementation { declared: "`actions`" });
-        }
-        if self.actions.is_empty() && implementation.execute {
-            return Err(ManifestError::UndeclaredImplementation { implemented: "execute" });
-        }
-        Ok(())
-    }
 }

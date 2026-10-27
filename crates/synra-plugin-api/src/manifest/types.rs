@@ -138,9 +138,8 @@ pub struct SdkRequirement {
 
 /// How a plugin runs.
 ///
-/// Both halves are optional and at least one is required: one is headless, one is interface-only, and both
-/// together are a hybrid. There is no fourth state, and the validation enforces that rather than leaving a
-/// manifest with neither artifact to be discovered as a load failure later.
+/// A validated plugin always has a headless Wasm component and may add a UI bundle.
+/// The optional input field lets validation classify missing headless declarations explicitly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Runtime {
@@ -308,25 +307,6 @@ pub struct ResourceHints {
 // What the checks need from outside
 // ──────────────────────────────────────────────────────────────────────────────────────────────────────
 
-/// What the methods a manifest's declarations imply.
-///
-/// The manifest declares what the plugin *wants* to handle; the Wasm module or the interface bundle has to
-/// actually implement the entry point. Both directions are checked, because each catches a different mistake:
-///
-/// * `handles` without `on_event` is a plugin that is installed, appears to work, and silently drops every
-///   message it asked for.
-/// * `on_event` without `handles` is dead code, and more importantly a sign that the manifest and the
-///   implementation have drifted apart — at which point no other declaration can be trusted either.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct Implementation {
-    /// Whether the plugin implements the event entry point.
-    pub on_event: bool,
-    /// Whether it implements the action entry point.
-    pub execute: bool,
-    /// Whether it has an activation entry point.
-    pub activate: bool,
-}
-
 /// What the checks need that is not in the manifest.
 #[derive(Debug, Clone, Default)]
 pub struct ManifestContext {
@@ -339,36 +319,8 @@ pub struct ManifestContext {
     /// `None` skips the existence check, which is what the schema-level validation wants: a manifest can be
     /// checked for self-consistency before anything has been unpacked.
     ///
-    /// # Why a slice and not a set
-    ///
-    /// This field is part of a stable crate's public signature, and a public `HashSet` is a promise about the
-    /// implementation: replacing it with a `BTreeSet` would be a breaking change, and that replacement is exactly what
-    /// a determinism problem calls for. The check it feeds is a membership test over a handful of paths, so the
-    /// container's choice buys nothing and costs a promise.
-    ///
-    /// A slice also takes what a caller has: a package's file list comes from walking a directory, and a `Vec` is what
-    /// that produces.
+    /// A package walk produces a short ordered list; validation only needs membership checks.
     pub present_artifacts: Option<Vec<String>>,
-    /// Which entry points the implementation provides.
-    pub implementation: Option<Implementation>,
-}
-
-/// How thorough the check is.
-///
-/// Two levels because they run in different places with different information. The loader has the package on
-/// disk and the module parsed; the CLI has the source tree. A check that needs something neither has is not
-/// in either level.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-#[non_exhaustive]
-pub enum ValidationLevel {
-    /// What the manifest alone can be held to: schema, names, namespaces, capability syntax, runtime shape.
-    ///
-    /// Runs at load and in the CLI.
-    Schema,
-    /// Everything, including the checks that need the package and the parsed module.
-    ///
-    /// Runs where a caller supplies a [`ManifestContext`] with the artifacts and the implementation.
-    Verify,
 }
 
 /// The digest a consent decision is recorded against.

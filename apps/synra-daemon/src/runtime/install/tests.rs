@@ -53,7 +53,10 @@ fn package(root: &Path, name: &str, manifest: &str, artifacts: &[(&str, &[u8])])
 }
 
 fn wasm() -> &'static [u8] {
-    b"\0asm\x01\0\0\0"
+    static COMPONENT: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    COMPONENT
+        .get_or_init(|| synra_testkit::component::inert_component().expect("a valid component"))
+        .as_slice()
 }
 
 /// A manifest with a UI half, naming both artifacts.

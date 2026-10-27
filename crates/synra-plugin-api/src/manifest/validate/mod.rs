@@ -12,7 +12,7 @@ mod presentation;
 mod reading;
 
 use crate::manifest::error::ManifestError;
-use crate::manifest::types::{Manifest, ManifestContext, ValidationLevel};
+use crate::manifest::types::{Manifest, ManifestContext};
 
 impl Manifest {
     /// Every check the manifest alone can be held to.
@@ -20,7 +20,7 @@ impl Manifest {
     /// # Errors
     ///
     /// The first [`ManifestError`] found.
-    pub fn validate(&self, level: ValidationLevel, context: &ManifestContext) -> Result<(), ManifestError> {
+    pub fn validate(&self, context: &ManifestContext) -> Result<(), ManifestError> {
         self.check_identity()?;
         self.check_runtime(context)?;
         let capabilities = self.check_capabilities()?;
@@ -33,9 +33,6 @@ impl Manifest {
         self.check_size_limits()?;
         self.check_versions(context)?;
 
-        if level >= ValidationLevel::Verify {
-            self.check_implementation(context)?;
-        }
         Ok(())
     }
 }
