@@ -946,16 +946,15 @@ mod proptests {
             }
         }
 
-        /// Lookup agrees with the table: every command is findable by its own name, and a name that differs is not
-        /// found. A lookup that matched loosely would let a typo reach a real command.
+        /// Lookup is exact. A suffix may form another registered command, but must never loosely match its prefix.
         #[test]
         fn lookup_agrees_with_the_table(index in 0usize..COMMANDS.len(), suffix in "[a-zA-Z_]{1,4}") {
             let command = COMMANDS[index];
             prop_assert_eq!(CommandRegistry::find(command.name).map(|found| found.name), Some(command.name));
 
             let altered = format!("{}{}", command.name, suffix);
-            if altered != command.name {
-                prop_assert!(CommandRegistry::find(&altered).is_none(), "{altered} was found");
+            if let Some(found) = CommandRegistry::find(&altered) {
+                prop_assert_eq!(found.name, altered.as_str(), "lookup must not match a prefix");
             }
         }
 
