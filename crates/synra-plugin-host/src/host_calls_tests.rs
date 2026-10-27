@@ -73,7 +73,6 @@ fn every_function_in_the_contract_reaches_the_host_rather_than_an_unknown_functi
             "event-emit",
             r#"{"event":"_plugin.@acme/chat.something","payload":"{}"}"#,
         ),
-        ("event-subscribe", "a.*"),
         (
             "device-send",
             r#"{"target":"00000000-0000-4000-8000-000000000001","event":"_plugin.@acme/chat.something","payload":"{}"}"#,
@@ -113,13 +112,12 @@ fn every_function_in_the_contract_reaches_the_host_rather_than_an_unknown_functi
         }
     }
 
-    // The deliberate refusals: this host has no callback table, so it cannot deliver events to a plugin; it has no
-    // WebSocket; and the stub holds no secret — which is `notFound` rather than a failure, because an absent secret is an
+    // The deliberate refusals: this host has no WebSocket, and the stub holds no secret — which is `notFound`
+    // rather than a failure, because an absent secret is an
     // ordinary answer.
     assert_eq!(
         refusals,
         vec![
-            ("event-subscribe".to_owned(), CallError::NOT_IMPLEMENTED),
             ("network-websocket".to_owned(), CallError::HOST_FAILED),
             ("secret-get".to_owned(), "notFound"),
         ]
@@ -127,38 +125,19 @@ fn every_function_in_the_contract_reaches_the_host_rather_than_an_unknown_functi
 }
 
 #[test]
-fn subscribing_to_events_is_refused_rather_than_reported_as_recorded() {
-    // ★ This call used to answer `Ok("")` — success — with a comment saying "what this answers is that the pattern was
-    // recorded". **Nothing was recorded**: there is no callback table, and the design's own answer is a guest-export
-    // callback table, which is a contract change rather than a line here.
-    //
-    // The failure a plugin could not detect is the point. A subscriber that never receives an event cannot tell "nothing
-    // has happened yet" from "this host delivers nothing", so a plugin would ship a feature that silently does nothing
-    // and its author would have no way to find out.
-    let host = Stub::with_devices(&[]);
+fn runtime_subscription_is_not_a_host_import() {
+    let host = Stub::default();
     let grants = all_capabilities();
     let budget = budget();
     let mut audit = Vec::new();
     let mut calls = session(&host, &grants, &budget, &mut audit);
-
     let refused = calls
         .call("synra:plugin/host#event-subscribe", "a.*")
-        .expect_err("a subscription that cannot be kept is not a success");
-
-    assert_eq!(refused.code, CallError::NOT_IMPLEMENTED);
-    // And the audit says the honest thing: the capability was **held** — the gate let the call through — and the
-    // operation itself failed. `Denied` would say the user had not granted it, which would send them looking for a
-    // permission they already gave.
-    assert!(
-        audit
-            .iter()
-            .any(|entry| entry.outcome == AuditOutcome::Failed),
-        "a call the gate allowed and the host could not do is recorded as failed: {audit:?}"
-    );
-    assert!(
-        !audit.iter().any(|entry| entry.outcome == AuditOutcome::Denied),
-        "nothing was denied: {audit:?}"
-    );
+        .expect_err("no callback registration import");
+    assert_eq!(refused.code, CallError::UNKNOWN_FUNCTION);
+    assert!(host.called().is_empty());
+    // An unknown import has no capability to audit; never invent a granted capability for it.
+    assert!(audit.is_empty());
 }
 
 #[test]
@@ -172,6 +151,9 @@ fn work_carries_whether_it_may_act() {
 
     assert!(!Work::CanHandle { item_json: "{}".to_owned() }.allows_side_effects());
     for work in [
+        Work::Event {
+            event_json: "{}".to_owned(),
+        },
         Work::Deactivate,
         Work::Activate { config_json: "{}".to_owned() },
         Work::Tick { tick_json: "{}".to_owned() },
@@ -208,10 +190,22 @@ fn every_action_shaped_name_is_one_the_contract_declares() {
     // And every declared function is either in the list or has been looked at: the ones deliberately absent are named
     // here, so adding a function to the contract and not to either list fails this test.
     const NOT_ACTION_SHAPED: &[&str] = &[
-        "env-sdk-version", "env-host-kind", "env-locale", "env-dark-mode", "env-can",
-        "platform-capabilities", "plugin-id", "log", "event-subscribe", "device-list",
-        "storage-get", "storage-keys", "storage-quota", "secret-get", "transfer-status",
-        "platform-read-clipboard", "action-list",
+        "env-sdk-version",
+        "env-host-kind",
+        "env-locale",
+        "env-dark-mode",
+        "env-can",
+        "platform-capabilities",
+        "plugin-id",
+        "log",
+        "device-list",
+        "storage-get",
+        "storage-keys",
+        "storage-quota",
+        "secret-get",
+        "transfer-status",
+        "platform-read-clipboard",
+        "action-list",
     ];
     for name in &declared {
         assert!(
@@ -375,7 +369,7 @@ fn the_host_implements_every_function_the_contract_declares_and_no_others() {
     assert_eq!(implemented.len(), provided().len());
     // The count is written down as well as derived, because a *contract* change is a decision rather than a
     // consequence: a function added to the WIT file without anybody noticing is what this number is here to catch.
-    assert_eq!(implemented.len(), 35, "the contract's own count");
+    assert_eq!(implemented.len(), 34, "the contract's own count");
     for (function, import) in &implemented {
         assert!(import.ends_with(&format!("#{function}")), "{function} -> {import}");
         assert!(provides(import));

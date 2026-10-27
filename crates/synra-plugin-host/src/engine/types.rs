@@ -134,6 +134,11 @@ pub enum Work {
         /// The tick's payload, as JSON.
         tick_json: String,
     },
+    /// `lifecycle.on-event`, selected by the manifest and authorized by the current host context.
+    Event {
+        /// The complete event context, encoded as JSON by the host.
+        event_json: String,
+    },
     /// `share.can-handle`. Runs without side effects, and before the user has chosen anything.
     CanHandle {
         /// The share, as JSON.
@@ -160,7 +165,11 @@ impl Work {
     #[must_use]
     pub const fn interface(&self) -> &'static str {
         match self {
-            Self::Activate { .. } | Self::Deactivate | Self::Migrate { .. } | Self::Tick { .. } => "lifecycle",
+            Self::Activate { .. }
+            | Self::Deactivate
+            | Self::Migrate { .. }
+            | Self::Tick { .. }
+            | Self::Event { .. } => "lifecycle",
             Self::CanHandle { .. } | Self::Execute { .. } => "share",
             Self::InvokeAction { .. } => "actions",
         }
@@ -174,6 +183,7 @@ impl Work {
             Self::Deactivate => "deactivate",
             Self::Migrate { .. } => "migrate",
             Self::Tick { .. } => "on-tick",
+            Self::Event { .. } => "on-event",
             Self::CanHandle { .. } => "can-handle",
             Self::Execute { .. } => "execute",
             Self::InvokeAction { .. } => "invoke",

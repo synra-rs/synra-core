@@ -50,6 +50,19 @@ fn rust_guest_round_trips_through_the_sdk_and_generated_host() {
         .unwrap();
     assert_eq!(result, CallOutcome::Ok("1.0.0".to_owned()));
     assert_eq!(instance.host_calls(), 1);
+    let event_json =
+        serde_json::json!({"event":"_plugin.@acme/rust-guest.ready","payload":{"text":"中文🖱️"}})
+            .to_string();
+    let result = instance
+        .call(
+            &Work::Event {
+                event_json: event_json.clone(),
+            },
+            CallBudget::unlimited(),
+        )
+        .unwrap();
+    assert_eq!(result, CallOutcome::Ok(event_json));
+    assert_eq!(instance.host_calls(), 1);
     let result = instance
         .call(
             &Work::CanHandle {

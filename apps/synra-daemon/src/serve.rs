@@ -557,8 +557,11 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
     // ★ And the store reports every write's duration to the same recorder. Installed here, once, rather than at each call
     // site — the store's write methods are the one funnel every write goes through.
     crate::runtime::observe_db_writes(&mut shared_db.lock(), &metrics);
-    let plugins = match crate::runtime::build_set(&shared_db, &metrics) {
-        Ok(set) => Arc::new(Mutex::new(set)),
+    let plugins = match crate::runtime::build_set(&shared_db, &metrics)
+        .map_err(|error| error.to_string())
+        .and_then(|set| set.into_shared().map_err(|error| error.to_string()))
+    {
+        Ok(set) => set,
         Err(error) => {
             eprintln!("synra-daemon: the plugin host could not start: {error}");
             return ExitCode::FAILURE;

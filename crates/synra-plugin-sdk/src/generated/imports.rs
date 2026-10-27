@@ -26,8 +26,6 @@ pub const ENV_CAN_IMPORT: &str = "synra:plugin/host#env-can";
 pub const LOG_IMPORT: &str = "synra:plugin/host#log";
 /// The import name for `event-emit`.
 pub const EVENT_EMIT_IMPORT: &str = "synra:plugin/host#event-emit";
-/// The import name for `event-subscribe`.
-pub const EVENT_SUBSCRIBE_IMPORT: &str = "synra:plugin/host#event-subscribe";
 /// The import name for `device-list`.
 pub const DEVICE_LIST_IMPORT: &str = "synra:plugin/host#device-list";
 /// The import name for `device-send`.

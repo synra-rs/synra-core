@@ -56,6 +56,24 @@ impl Default for PluginVersionRecord<'_> {
 }
 
 impl SynraDb {
+    /// Read the exact manifest of a currently installed active version, only when a consumer needs it.
+    ///
+    /// # Errors
+    /// A classified database failure when metadata cannot be read.
+    pub fn active_plugin_manifest(
+        &self,
+        plugin_id: &str,
+        version: &str,
+    ) -> Result<Option<String>, DbError> {
+        match self.connection.query_row(
+            "SELECT manifest FROM plugin_versions WHERE plugin_id = ?1 AND version = ?2 AND active = 1",
+            params![plugin_id, version], |row| row.get(0),
+        ) {
+            Ok(manifest) => Ok(Some(manifest)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(error) => Err(DbError::Statement { why: error.to_string() }),
+        }
+    }
     /// Records the version that is now active and deactivates whatever was active before.
     ///
     /// # Errors

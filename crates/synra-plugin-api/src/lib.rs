@@ -30,6 +30,7 @@
 
 pub mod boundary;
 pub mod manifest;
+pub mod payload;
 pub mod publisher;
 pub mod revocation;
 pub mod update;

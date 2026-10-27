@@ -1,10 +1,10 @@
 synra:plugin@1.0.0
 world plugin
-import host (35 function(s))
-export lifecycle (4 function(s))
+import host (34 function(s))
+export lifecycle (5 function(s))
 export share (2 function(s))
 export actions (1 function(s))
-28 gated function(s), 7 ungated, 24 distinct capabilit(ies)
+27 gated function(s), 7 ungated, 23 distinct capabilit(ies)
 
 ungated:
   env-sdk-version: reads a fact about the environment
@@ -23,7 +23,6 @@ gated:
   device-list: device:list
   device-send: device:send:*
   event-emit: event:emit:*
-  event-subscribe: event:subscribe:*
   log: log:*
   network-fetch: network:fetch:*
   network-websocket: network:websocket:*
@@ -53,7 +52,6 @@ capabilities:
   device:list
   device:send:*
   event:emit:*
-  event:subscribe:*
   file:transfer:read
   file:transfer:send
   log:*

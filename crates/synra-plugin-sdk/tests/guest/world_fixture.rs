@@ -7,6 +7,10 @@ use synra_plugin_sdk::{Error, Outcome, exports, host};
 struct Fixture;
 
 impl exports::synra::plugin::lifecycle::Guest for Fixture {
+    fn on_event(event_json: String) -> Outcome {
+        Outcome::Ok(event_json)
+    }
+
     fn activate(_config_json: String) -> Outcome {
         Outcome::Ok(host::env_sdk_version())
     }

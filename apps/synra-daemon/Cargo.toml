@@ -38,10 +38,11 @@ serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+tempfile = "3"
 # Independent SQLite corruption for production recovery tests.
 rusqlite = { version = "0.40", features = ["bundled"] }
 synra-net = { path = "../../crates/synra-net" }
-synra-testkit = { path = "../../crates/synra-testkit" }
+synra-testkit = { path = "../../crates/synra-testkit", features = ["wasm-fixtures"] }
 # A UI half is a `ui.zip`, so the install test has to be able to make one.
 zip = { version = "2", default-features = false, features = ["deflate"] }
 # And a registry package is a gzip'd tar, so the registry-install test has to be able to make one.

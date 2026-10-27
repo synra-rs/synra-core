@@ -134,13 +134,6 @@ interface host {
     /// @capability("event:emit:*")
     event-emit: func(event: string, payload: string) -> outcome;
 
-    /// Subscribe to events matching a pattern.
-    ///
-    /// Delivery is a guest export: the host holds the callback table. There is no host-observable object a plugin
-    /// could share, because a Wasm sandbox has no such thing.
-    /// @capability("event:subscribe:*")
-    event-subscribe: func(pattern: string) -> outcome;
-
     // ── device:list / device:send[:target] / device:broadcast ───────────────────────────────────────
 
     /// Every device this kernel can see.
@@ -329,6 +322,11 @@ interface lifecycle {
 
     /// A timer the plugin asked for has fired.
     on-tick: func(tick-json: string) -> outcome;
+
+    /// Handle one event selected by the manifest's handles and the current receive grant.
+    /// The host supplies the verified origin, request and trace, with the JSON payload.
+    /// Event handlers use the normal instance policy and execution budget; they do not register callbacks.
+    on-event: func(event-json: string) -> outcome;
 }
 
 /// Handling a share, which is how a plugin says "this is mine".

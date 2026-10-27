@@ -235,7 +235,7 @@ mod tests {
             .collect();
         assert_eq!(
             declared.len(),
-            35,
+            34,
             "the contract's own count: {}",
             declared.len()
         );
@@ -248,7 +248,6 @@ mod tests {
             generated::imports::ENV_CAN_IMPORT,
             generated::imports::LOG_IMPORT,
             generated::imports::EVENT_EMIT_IMPORT,
-            generated::imports::EVENT_SUBSCRIBE_IMPORT,
             generated::imports::DEVICE_LIST_IMPORT,
             generated::imports::DEVICE_SEND_IMPORT,
             generated::imports::DEVICE_BROADCAST_IMPORT,

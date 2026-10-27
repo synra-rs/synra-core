@@ -78,6 +78,7 @@ pub fn build_set(
         std::sync::Arc::clone(db),
         env!("CARGO_PKG_VERSION"),
     ));
+    let events = host.events();
 
     // ★ And the audit gets its durable half, which it has never had.
     //
@@ -116,6 +117,7 @@ pub fn build_set(
     // a recorder built inside this function and dropped on return would be a metrics subsystem nobody can see, which is
     // exactly what these metrics were before there was a producer at all.
     Ok(PluginSet::new(backend, host)
+        .with_event_delivery(events)
         .with_audit_sink(sink)
         .with_metrics(std::sync::Arc::clone(metrics)))
 }

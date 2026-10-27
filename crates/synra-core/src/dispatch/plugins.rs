@@ -187,6 +187,7 @@ pub struct PluginSpec {
 
 /// One loaded plugin: its compiled form, its grants, and the pool its instances come from.
 struct Loaded {
+    execution: Arc<crate::plugin_events::context::Execution>,
     version: String,
     /// Whether the user denied part of what this plugin asked for, kept so clearing a fault can re-grant honestly.
     partially_denied: bool,
@@ -300,6 +301,8 @@ impl Authority {
 /// second store — it is the same store under a second name, which is how two callers end up corrupting one guest's
 /// state. The backend is shared deliberately and cheaply; the set of instances is not shared at all.
 pub struct PluginSet {
+    runtime_id: synra_protocol::RequestId,
+    events: Option<Arc<crate::plugin_events::EventService>>,
     backend: Backend,
     loaded: HashMap<PluginId, Loaded>,
     /// Where a plugin's effects reach.
@@ -366,7 +369,83 @@ impl fmt::Debug for PluginSet {
     }
 }
 
+impl Drop for PluginSet {
+    fn drop(&mut self) {
+        if let Some(events) = &self.events {
+            events.stop_runtime(self.runtime_id);
+        }
+    }
+}
+
 impl PluginSet {
+    /// Use the same bounded local event service as this set's native host adapter.
+    #[must_use]
+    pub fn with_event_delivery(mut self, events: Arc<crate::plugin_events::EventService>) -> Self {
+        self.events = Some(events);
+        self
+    }
+
+    /// Share the runtime and bind its event worker before activating plugins.
+    ///
+    /// # Errors
+    /// Refuses reusing an event service for another runtime or after shutdown.
+    pub fn into_shared(self) -> Result<Arc<Mutex<Self>>, synra_protocol::SynraError> {
+        let runtime = self.runtime_id;
+        let events = self.events.clone();
+        let metrics = self.metrics.clone();
+        let shared = Arc::new(Mutex::new(self));
+        if let Some(events) = events {
+            events.bind(runtime, Arc::downgrade(&shared), metrics)?;
+        }
+        Ok(shared)
+    }
+
+    pub(crate) fn event_executions(&self) -> Vec<Arc<crate::plugin_events::context::Execution>> {
+        let mut executions: Vec<_> = self
+            .loaded
+            .values()
+            .filter(|loaded| matches!(loaded.lifecycle.state(), State::Active { .. }))
+            .map(|loaded| Arc::clone(&loaded.execution))
+            .collect();
+        executions.sort_by(|left, right| left.plugin.cmp(&right.plugin));
+        executions
+    }
+
+    pub(crate) fn event_execution_current(
+        &self,
+        execution: &Arc<crate::plugin_events::context::Execution>,
+    ) -> bool {
+        self.loaded.get(&execution.plugin).is_some_and(|loaded| {
+            Arc::ptr_eq(&loaded.execution, execution)
+                && matches!(loaded.lifecycle.state(), State::Active { .. })
+        })
+    }
+
+    pub(crate) fn call_event(
+        &mut self,
+        execution: &Arc<crate::plugin_events::context::Execution>,
+        grants: CapabilitySet,
+        event_json: String,
+        budget: CallBudget,
+        trace: synra_protocol::TraceId,
+    ) -> Result<CallOutcome, PluginSetError> {
+        if !self.event_execution_current(execution) {
+            return Err(PluginSetError::NotLoaded {
+                id: execution.plugin.clone(),
+            });
+        }
+        if let Some(loaded) = self.loaded.get_mut(&execution.plugin) {
+            loaded.authority.grants = grants;
+        }
+        self.call_traced(
+            &execution.plugin,
+            &synra_plugin_host::Work::Event { event_json },
+            budget,
+            u64::try_from(synra_store::sqlite::now_ms()).unwrap_or_default(),
+            Some(trace),
+        )
+    }
+
     /// The health a loaded plugin is in **right now**.
     ///
     /// ★ Why this accessor had to exist for the ladder to mean anything.
@@ -403,6 +482,8 @@ impl PluginSet {
     #[must_use]
     pub fn new(backend: Backend, host: Arc<dyn synra_plugin_host::host_calls::Host>) -> Self {
         Self {
+            runtime_id: synra_protocol::RequestId::new(),
+            events: None,
             backend,
             loaded: HashMap::new(),
             host,
@@ -669,7 +750,9 @@ impl PluginSet {
 
         let mut lifecycle = Lifecycle::installed(spec.version.clone());
         lifecycle
-            .apply(Transition::Validate { manifest_digest })
+            .apply(Transition::Validate {
+                manifest_digest: manifest_digest.clone(),
+            })
             .map_err(|error| PluginSetError::Lifecycle(error.to_string()))?;
         lifecycle
             .apply(Transition::Grant { partially_denied })
@@ -680,6 +763,13 @@ impl PluginSet {
         self.loaded.insert(
             spec.id.clone(),
             Loaded {
+                execution: Arc::new(crate::plugin_events::context::Execution {
+                    runtime: self.runtime_id,
+                    generation: synra_protocol::RequestId::new(),
+                    plugin: spec.id.clone(),
+                    version: spec.version.clone(),
+                    manifest_digest,
+                }),
                 version: spec.version,
                 partially_denied,
                 lifecycle,
@@ -837,6 +927,7 @@ impl PluginSet {
         if let State::Faulted { reason, .. } = loaded.lifecycle.state() {
             return Err(PluginSetError::Faulted { id: id.clone(), reason: reason.clone() });
         }
+        let _execution = crate::plugin_events::context::enter(Arc::clone(&loaded.execution));
         let handle = match loaded.pool.acquire(None, now_ms) {
             Ok(handle) => handle,
             // A plugin at its instance limit is reported, not waited on. The caller turns this into something the user

@@ -35,6 +35,9 @@ use parking_lot::Mutex;
 use synra_plugin_host::host_calls::{CallError, Host, PlatformAction};
 use synra_protocol::ids::PluginId;
 
+#[cfg(test)]
+mod event_tests;
+
 /// One plugin's fetcher, and the hosts it was built for.
 ///
 /// ★ A name rather than the type written out at the field: the tuple means "this client, for exactly these hosts", and
@@ -44,6 +47,7 @@ type FetchClients = Mutex<std::collections::HashMap<PluginId, (Vec<String>, Arc<
 
 /// The daemon's answer to a plugin's host calls.
 pub(crate) struct KernelHost {
+    events: Arc<synra_core::plugin_events::EventService>,
     /// What this machine can do with a URL, a path or a notification.
     ///
     /// ★ Why the *host* answers this rather than a blanket refusal.
@@ -73,10 +77,15 @@ pub(crate) struct KernelHost {
 }
 
 impl KernelHost {
+    pub(crate) fn events(&self) -> Arc<synra_core::plugin_events::EventService> {
+        Arc::clone(&self.events)
+    }
     /// A host over the daemon's own state.
     #[must_use]
     pub(crate) fn new(db: Arc<Mutex<synra_store::SynraDb>>, version: impl Into<String>) -> Self {
+        let events = synra_core::plugin_events::EventService::new(Arc::clone(&db));
         Self {
+            events,
             db,
             version: version.into(),
             // The default policies: strict, and the ones a headless daemon should hold. Nothing configures them yet, and
@@ -322,8 +331,8 @@ impl Host for KernelHost {
             .collect()
     }
 
-    fn event_emit(&self, _p: &PluginId, _e: &str, _payload: &str) -> Result<(), CallError> {
-        Err(not_implemented("event emission"))
+    fn event_emit(&self, plugin: &PluginId, event: &str, payload: &str) -> Result<(), CallError> {
+        self.events.emit_call(plugin, event, payload)
     }
 
     fn device_send(&self, _p: &PluginId, _t: &str, _e: &str, _pl: &str) -> Result<(), CallError> {
@@ -613,7 +622,6 @@ mod tests {
         let plugin = id("@acme/notes");
 
         for refusal in [
-            host.event_emit(&plugin, "x", "{}"),
             host.device_send(&plugin, "d", "x", "{}"),
             host.secret_get(&plugin, "k").map(|_| ()),
             host.transfer_status(&plugin, "t").map(|_| ()),

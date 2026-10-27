@@ -46,7 +46,7 @@ wit-component = "0.247"
 wit-parser = "0.247"
 # Fault injection removes metadata through a second real SQLite connection.
 rusqlite = { version = "0.40", features = ["bundled"] }
-synra-testkit = { path = "../synra-testkit" }
+synra-testkit = { path = "../synra-testkit", features = ["wasm-fixtures"] }
 ed25519-dalek.workspace = true
 proptest.workspace = true
 rstest.workspace = true

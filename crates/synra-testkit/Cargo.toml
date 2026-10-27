@@ -9,7 +9,13 @@ repository.workspace = true
 authors.workspace = true
 publish = false
 
+[features]
+wasm-fixtures = ["dep:wat", "dep:wit-component", "dep:wit-parser"]
+
 [dependencies]
+wat = { version = "=1.262.0", optional = true }
+wit-component = { version = "0.247", optional = true }
+wit-parser = { version = "0.247", optional = true }
 synra-protocol = { path = "../synra-protocol" }
 synra-capability = { path = "../synra-capability" }
 synra-net = { path = "../synra-net" }
@@ -20,6 +26,7 @@ bytes.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 parking_lot.workspace = true
 tempfile = "3"
 

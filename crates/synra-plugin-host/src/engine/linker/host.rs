@@ -63,7 +63,6 @@ impl host::Host for StoreData {
     }
 
     outcome_one! {
-        event_subscribe => "event-subscribe",
         storage_get => "storage-get",
         storage_delete => "storage-delete",
         secret_get => "secret-get",

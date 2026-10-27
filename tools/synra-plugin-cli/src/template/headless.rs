@@ -7,6 +7,10 @@ use synra_plugin_sdk::{Error, Outcome, exports};
 struct Plugin;
 
 impl exports::synra::plugin::lifecycle::Guest for Plugin {
+    fn on_event(_event_json: String) -> Outcome {
+        refused()
+    }
+
     fn activate(_config_json: String) -> Outcome {
         Outcome::Ok(String::new())
     }

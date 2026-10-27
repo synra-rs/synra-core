@@ -29,6 +29,10 @@ impl EngineInstance {
                 function,
             })?;
         match work {
+            Work::Event { event_json } => {
+                let (answer,) = self.invoke::<_, (Outcome,)>(export, (event_json.as_str(),))?;
+                Ok(outcome(answer))
+            }
             Work::Deactivate => {
                 self.invoke::<(), ()>(export, ())?;
                 Ok(CallOutcome::Ok(String::new()))

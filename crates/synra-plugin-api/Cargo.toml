@@ -14,6 +14,8 @@ synra-capability = { path = "../synra-capability" }
 
 serde.workspace = true
 serde_json.workspace = true
+# Event schemas compile locally; plugins cannot resolve HTTP or filesystem references.
+jsonschema = { version = "=0.60.1", default-features = false }
 thiserror.workspace = true
 # The signature on a published package. Named rather than re-exported: a plugin author who signs with this crate
 # should be able to see which implementation of ed25519 they are trusting.

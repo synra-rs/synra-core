@@ -47,6 +47,8 @@
 pub mod authentication;
 pub mod clock;
 pub mod pair;
+#[cfg(feature = "wasm-fixtures")]
+pub mod plugin_events;
 pub mod transport;
 
 // The allocation counter lives in its own crate, because it is the workspace's only `unsafe` code and `forbid` cannot

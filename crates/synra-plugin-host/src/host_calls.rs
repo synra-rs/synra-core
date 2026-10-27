@@ -454,8 +454,8 @@ impl<'a> HostCalls<'a> {
     /// 3. **Is it within the rate limit.**
     /// 4. **The call.**
     ///
-    /// Every outcome is recorded, refusals included: "which plugin tried to do what it could not" is the question an
-    /// audit log is read to answer.
+    /// Calls associated with capabilities are audited, including refusals. Unknown imports and ungated queries
+    /// have no capability to record, so no capability is fabricated for them.
     pub fn call(&mut self, import_name: &str, argument: &str) -> CallResult {
         let Some(gate) = host_surface::gate(import_name) else {
             let error = CallError::unknown(import_name);
@@ -583,24 +583,6 @@ impl<'a> HostCalls<'a> {
                 host.event_emit(plugin, &parsed.event, &parsed.payload)?;
                 Ok(String::new())
             }
-            "event-subscribe" => {
-                // ★ This used to answer `Ok("")`, with a comment saying "what this answers is that the pattern was
-                // recorded". **Nothing was recorded.** There is no callback table, and the `Host` trait this would have
-                // to tell has no method for it — so the call validated its argument, returned success, and left the
-                // plugin believing it was subscribed.
-                //
-                // That is worse than a refusal in a way a plugin cannot detect: a subscriber that never receives an
-                // event has no way to tell "nothing has happened yet" from "this host cannot deliver anything", and the
-                // audit trail would show a granted capability being used successfully for a feature that does not
-                // exist. Design [09](09-plugin-system.md) §4 says the subscription is a guest-export callback table,
-                // which is a contract change rather than a line here — so until that exists, this refuses.
-                let _ = argument;
-                Err(CallError::new(
-                    CallError::NOT_IMPLEMENTED,
-                    "this host has no callback table, so it cannot deliver events to a plugin",
-                ))
-            }
-
             // ── Devices ───────────────────────────────────────────────────────────────────────────────
             "device-list" => Ok(json_devices(&host.devices())),
             "device-send" => {
@@ -757,42 +739,42 @@ impl<'a> HostCalls<'a> {
     }
 
     /// The host functions that change something outside the plugin.
-///
-/// # ★ Why this list exists, and why it is written by hand
-///
-/// Because "side effect" is not a property the gate table records. The generated table says which *capability* a function
-/// needs; whether the function merely reads or actually acts is a judgement about what it does, and only a reader of the
-/// contract can make it.
-///
-/// The list is written with that in mind: it holds the functions whose whole purpose is an effect on the world — sending,
-/// writing, opening, fetching, transferring, invoking. What is deliberately **absent** is as important as what is here:
-/// `log` records a line in the kernel's own log, `event-subscribe` keeps a pattern, `env-*` reads a fact, `storage-get`
-/// and `secret-get` read. None of those is something a user would be surprised to learn happened while a share was being
-/// matched, and refusing them would break plugins that legitimately log or look up their own settings during matching.
-///
-/// It is an associated constant rather than a free one because that is where it landed when it was written; the
-/// substance is unchanged. It is checked against the contract by a test, so a function added to the WIT file is either listed here or fails the
-/// suite — which is the only thing that keeps a hand-written list honest.
-const ACTION_SHAPED: &'static [&'static str] = &[
-    "event-emit",
-    "device-send",
-    "device-broadcast",
-    "storage-set",
-    "storage-delete",
-    "secret-set",
-    "secret-delete",
-    "network-fetch",
-    "network-websocket",
-    "transfer-send",
-    "platform-open-url",
-    "platform-open-path",
-    "platform-reveal-path",
-    "platform-simulate-keys",
-    "platform-notify",
-    "platform-write-clipboard",
-    "action-declare",
-    "action-invoke",
-];
+    ///
+    /// # ★ Why this list exists, and why it is written by hand
+    ///
+    /// Because "side effect" is not a property the gate table records. The generated table says which *capability* a function
+    /// needs; whether the function merely reads or actually acts is a judgement about what it does, and only a reader of the
+    /// contract can make it.
+    ///
+    /// The list is written with that in mind: it holds the functions whose whole purpose is an effect on the world — sending,
+    /// writing, opening, fetching, transferring, invoking. What is deliberately **absent** is as important as what is here:
+    /// `log` records a line in the kernel's own log, `env-*` reads a fact, `storage-get`
+    /// and `secret-get` read. None of those is something a user would be surprised to learn happened while a share was being
+    /// matched, and refusing them would break plugins that legitimately log or look up their own settings during matching.
+    ///
+    /// It is an associated constant rather than a free one because that is where it landed when it was written; the
+    /// substance is unchanged. It is checked against the contract by a test, so a function added to the WIT file is either listed here or fails the
+    /// suite — which is the only thing that keeps a hand-written list honest.
+    const ACTION_SHAPED: &'static [&'static str] = &[
+        "event-emit",
+        "device-send",
+        "device-broadcast",
+        "storage-set",
+        "storage-delete",
+        "secret-set",
+        "secret-delete",
+        "network-fetch",
+        "network-websocket",
+        "transfer-send",
+        "platform-open-url",
+        "platform-open-path",
+        "platform-reveal-path",
+        "platform-simulate-keys",
+        "platform-notify",
+        "platform-write-clipboard",
+        "action-declare",
+        "action-invoke",
+    ];
 
     /// Refuses an event a plugin may not emit.
     ///

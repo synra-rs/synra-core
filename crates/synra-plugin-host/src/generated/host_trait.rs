@@ -24,8 +24,6 @@ pub trait Host {
     fn log(level: LogLevel, message: String, ctx: Option<String>);
     /// `event-emit`. Requires `event:emit:*`. The contract documents it.
     fn event_emit(event: String, payload: String) -> Outcome;
-    /// `event-subscribe`. Requires `event:subscribe:*`. The contract documents it.
-    fn event_subscribe(pattern: String) -> Outcome;
     /// `device-list`. Requires `device:list`. The contract documents it.
     fn device_list() -> Vec<DeviceTarget>;
     /// `device-send`. Requires `device:send:*`. The contract documents it.

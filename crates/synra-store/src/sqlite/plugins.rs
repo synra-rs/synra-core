@@ -5,6 +5,23 @@ use crate::records::{PluginActionRow, PluginGrantRow, PluginRow, RowError};
 use super::{DbError, SynraDb};
 
 impl SynraDb {
+    /// Whether persisted enablement and consent allow attempting execution; this is not runtime liveness.
+    ///
+    /// # Errors
+    /// A classified storage failure if the decision cannot be read.
+    pub fn plugin_is_allowed(&self, plugin_id: &str) -> Result<bool, DbError> {
+        match self.connection.query_row(
+            "SELECT enabled = 1 AND trusted = 1 FROM plugins WHERE plugin_id = ?1",
+            rusqlite::params![plugin_id],
+            |row| row.get(0),
+        ) {
+            Ok(allowed) => Ok(allowed),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
+            Err(error) => Err(DbError::Statement {
+                why: error.to_string(),
+            }),
+        }
+    }
     /// Every plugin the kernel knows about, ordered by identifier.
     ///
     /// # Errors

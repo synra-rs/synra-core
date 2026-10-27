@@ -181,6 +181,7 @@ struct Shared {
 /// A wildcard would let it key on its name alone, quietly, and the fixture would stop distinguishing its payload.
 fn key_for(work: &Work) -> String {
     let payload = match work {
+        Work::Event { event_json } => event_json,
         Work::Activate { config_json } => config_json.as_str(),
         Work::Deactivate => "",
         Work::Migrate { from_version, to_version } => {
