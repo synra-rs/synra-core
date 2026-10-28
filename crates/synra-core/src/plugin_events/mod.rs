@@ -1,4 +1,4 @@
-//! Local plugin event admission and bounded asynchronous delivery through real guest entry points.
+//! Authenticated plugin event admission and bounded asynchronous delivery through real guest entry points.
 
 use crate::dispatch::PluginSet;
 use parking_lot::{Condvar, Mutex};
@@ -14,7 +14,13 @@ use synra_protocol::{
 
 pub(crate) mod context;
 mod policy;
+mod remote;
 mod worker;
+
+pub use remote::{
+    MAX_REMOTE_RECEIPTS, REMOTE_RECEIPT_EVENT, REMOTE_RECEIPT_TTL, RemoteAdmission,
+    answer_remote_event,
+};
 
 #[cfg(test)]
 mod tests;
@@ -38,10 +44,35 @@ struct EventContext<'a> {
     payload: &'a serde_json::Value,
 }
 
+enum Origin {
+    Local(Arc<context::Execution>),
+    Remote {
+        plugin: PluginId,
+        authority: crate::peer::authenticated::RequestAuthority,
+        runtime: RequestId,
+    },
+}
+
+impl Origin {
+    fn plugin(&self) -> &PluginId {
+        match self {
+            Self::Local(execution) => &execution.plugin,
+            Self::Remote { plugin, .. } => plugin,
+        }
+    }
+
+    fn runtime(&self) -> RequestId {
+        match self {
+            Self::Local(execution) => execution.runtime,
+            Self::Remote { runtime, .. } => *runtime,
+        }
+    }
+}
+
 struct Pending {
     event: EventName,
     from: DeviceId,
-    source: Arc<context::Execution>,
+    source: Origin,
     request: RequestId,
     trace: TraceId,
     payload: serde_json::Value,
@@ -101,6 +132,7 @@ struct State {
     refused: u64,
     unhandled: u64,
     metrics: Option<Arc<synra_observe::metrics::RingRecorder>>,
+    remote_receipts: VecDeque<remote::Receipt>,
 }
 
 /// Shared by a native host adapter and its plugin runtime; never calls a guest under a queue or DB lock.
@@ -147,6 +179,7 @@ impl EventService {
                 refused: 0,
                 unhandled: 0,
                 metrics: None,
+                remote_receipts: VecDeque::new(),
             }),
             wake: Condvar::new(),
         })
@@ -249,9 +282,34 @@ impl EventService {
                 "eventChainLimit",
             )
         })?;
+        self.enqueue(Pending {
+            event,
+            from,
+            source: Origin::Local(source),
+            request: RequestId::new(),
+            trace: synra_observe::trace_scope::current().unwrap_or_default(),
+            payload: payload_value,
+            bytes: payload.len(),
+            deadline: Instant::now() + EVENT_TTL,
+            cause,
+        })
+    }
+
+    fn enqueue(self: &Arc<Self>, pending: Pending) -> Result<(), SynraError> {
         let mut state = self.state.lock();
+        self.enqueue_locked(&mut state, pending)?;
+        drop(state);
+        self.wake.notify_one();
+        Ok(())
+    }
+
+    fn enqueue_locked(
+        self: &Arc<Self>,
+        state: &mut State,
+        pending: Pending,
+    ) -> Result<(), SynraError> {
         if state.stopping
-            || state.runtime != Some(source.runtime)
+            || state.runtime != Some(pending.source.runtime())
             || state.plugins.strong_count() == 0
         {
             return Err(refusal(
@@ -261,7 +319,7 @@ impl EventService {
             ));
         }
         if state.pending.len() >= MAX_PENDING
-            || state.bytes.saturating_add(payload.len()) > MAX_QUEUED_BYTES
+            || state.bytes.saturating_add(pending.bytes) > MAX_QUEUED_BYTES
         {
             return Err(refusal(
                 ErrorCode::RateLimited,
@@ -285,20 +343,8 @@ impl EventService {
                 ));
             }
         }
-        state.bytes += payload.len();
-        state.pending.push_back(Pending {
-            event,
-            from,
-            source,
-            request: RequestId::new(),
-            trace: synra_observe::trace_scope::current().unwrap_or_default(),
-            payload: payload_value,
-            bytes: payload.len(),
-            deadline: Instant::now() + EVENT_TTL,
-            cause,
-        });
-        drop(state);
-        self.wake.notify_one();
+        state.bytes += pending.bytes;
+        state.pending.push_back(pending);
         Ok(())
     }
 

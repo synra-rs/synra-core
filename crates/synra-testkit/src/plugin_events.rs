@@ -124,8 +124,8 @@ fn component(receiver: bool, looping: bool) -> Result<Vec<u8>, String> {
         r#"(call $host (i32.const 3072) (i32.const 8) (local.get 0) (local.get 1) (i32.const 512))
         (if (i32.load8_u (i32.const 512)) (then (return (i32.const 512))))
         (global.set $count (i32.add (global.get $count) (i32.const 1)))
-        (i32.store8 (i32.const 2048) (i32.add (i32.const 48) (global.get $count)))
-        (call $host (i32.const 3100) (i32.const 5) (i32.const 2048) (i32.const 1) (i32.const 512))
+        (local.set $digits (call $decimal (global.get $count)))
+        (call $host (i32.const 3100) (i32.const 5) (local.get $digits) (i32.sub (i32.const 2058) (local.get $digits)) (i32.const 512))
         (i32.const 512)"#
             .to_owned()
     } else if looping {
@@ -150,6 +150,14 @@ fn component(receiver: bool, looping: bool) -> Result<Vec<u8>, String> {
       (data (i32.const 1024) "{encoded}")
       (data (i32.const 3072) "received") (data (i32.const 3100) "calls")
       (data (i32.const 4096) "{{\22text\22:\22loop\22}}")
+      (func $decimal (param $number i32) (result i32)
+        (local $cursor i32) (local.set $cursor (i32.const 2058))
+        (loop $digits
+          (local.set $cursor (i32.sub (local.get $cursor) (i32.const 1)))
+          (i32.store8 (local.get $cursor) (i32.add (i32.const 48) (i32.rem_u (local.get $number) (i32.const 10))))
+          (local.set $number (i32.div_u (local.get $number) (i32.const 10)))
+          (br_if $digits (local.get $number)))
+        (local.get $cursor))
       (func (export "cabi_realloc") (param i32 i32 i32 i32) (result i32)
         (local $ptr i32) (local.set $ptr (global.get $next))
         (global.set $next (i32.add (global.get $next) (i32.mul (local.get 3) (i32.const 4)))) (local.get $ptr))
@@ -157,7 +165,7 @@ fn component(receiver: bool, looping: bool) -> Result<Vec<u8>, String> {
       (func (export "synra:plugin/lifecycle@1.0.0#deactivate"))
       (func (export "synra:plugin/lifecycle@1.0.0#migrate") (param i32 i32 i32 i32) (result i32) (i32.const 0))
       (func (export "synra:plugin/lifecycle@1.0.0#on-tick") (param i32 i32) (result i32) (i32.const 0))
-      (func (export "synra:plugin/lifecycle@1.0.0#on-event") (param i32 i32) (result i32) {handler})
+      (func (export "synra:plugin/lifecycle@1.0.0#on-event") (param i32 i32) (result i32) (local $digits i32) {handler})
       (func (export "synra:plugin/share@1.0.0#can-handle") (param i32 i32) (result i32) (i32.const 0))
       (func (export "synra:plugin/share@1.0.0#execute") (param i32 i32 i32 i32) (result i32) (i32.const 0))
       (func (export "synra:plugin/actions@1.0.0#invoke") (param i32 i32 i32 i32) (result i32) {action}))"#

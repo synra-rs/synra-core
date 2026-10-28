@@ -832,10 +832,17 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
             // `INTENT_INVOKE` arrived, was counted and was dropped: the sender waited for an outcome that no side produced.
             let on_kernel_events: Arc<synra_core::listener::KernelEventCallback> = {
                 let plugins = Arc::clone(&receive_plugins);
+                let plugin_events = plugins.lock().event_service();
                 let board = Arc::clone(&receive_board);
                 let local = local_device;
-                Arc::new(move |envelope: &synra_protocol::envelope::Envelope, _authority: &synra_core::peer::authenticated::RequestAuthority| {
+                Arc::new(move |envelope: &synra_protocol::envelope::Envelope, authority: &synra_core::peer::authenticated::RequestAuthority| {
                     let now = synra_store::sqlite::now_ms();
+                    if envelope.event.is_plugin() {
+                        return match synra_core::plugin_events::answer_remote_event(plugin_events.as_ref(), envelope, authority, now) {
+                            Ok(receipt) => synra_core::listener::KernelEventOutcome::Receipt(Box::new(receipt)),
+                            Err(error) => synra_core::listener::KernelEventOutcome::Refused(error.to_string()),
+                        };
+                    }
                     crate::runtime::intent::handle_event(&plugins, &board, local, envelope, now)
                 })
             };

@@ -385,6 +385,12 @@ impl PluginSet {
         self
     }
 
+    /// Clone the bound event admission service without retaining the plugin runtime lock.
+    #[must_use]
+    pub fn event_service(&self) -> Option<Arc<crate::plugin_events::EventService>> {
+        self.events.clone()
+    }
+
     /// Share the runtime and bind its event worker before activating plugins.
     ///
     /// # Errors

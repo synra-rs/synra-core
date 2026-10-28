@@ -22,13 +22,13 @@ fn pending() -> Pending {
     Pending {
         event: EventName::parse("_plugin.@acme/emitter.ready").unwrap(),
         from: DeviceId::new(),
-        source: Arc::new(context::Execution {
+        source: Origin::Local(Arc::new(context::Execution {
             runtime,
             generation: RequestId::new(),
             plugin: PluginId::parse("@acme/emitter").unwrap(),
             version: "1.0.0".to_owned(),
             manifest_digest: "fixture".to_owned(),
-        }),
+        })),
         request: RequestId::new(),
         trace: TraceId::new(),
         payload: serde_json::json!({"text":"private"}),
@@ -138,8 +138,11 @@ fn causal_limits_are_shared_across_parallel_branches_and_scopes_restore_identity
     let pending = pending();
     assert!(context::current().is_none());
     {
-        let _scope = context::enter(Arc::clone(&pending.source));
-        assert!(Arc::ptr_eq(&context::current().unwrap(), &pending.source));
+        let Origin::Local(source) = &pending.source else {
+            panic!("local fixture");
+        };
+        let _scope = context::enter(Arc::clone(source));
+        assert!(Arc::ptr_eq(&context::current().unwrap(), source));
     }
     assert!(context::current().is_none());
     let cause = context::Cause::root(RequestId::new());

@@ -9,6 +9,8 @@ use synra_plugin_host::{
 use synra_protocol::{ErrorCode, TraceId};
 use synra_testkit::plugin_events::{DEVICE, EVENT, EventPlugin};
 
+mod remote;
+
 struct Rig {
     db: Arc<Mutex<synra_store::SynraDb>>,
     set: Arc<Mutex<PluginSet>>,

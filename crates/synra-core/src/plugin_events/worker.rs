@@ -1,4 +1,4 @@
-use super::{EventContext, EventService, Pending, context, policy, refusal};
+use super::{EventContext, EventService, Origin, Pending, context, policy, refusal};
 use crate::dispatch::PluginSet;
 use parking_lot::Mutex;
 use std::{
@@ -71,21 +71,13 @@ impl EventService {
         }
         let targets = {
             let set = plugins.lock();
-            if !set.event_execution_current(&pending.source) {
-                return Err(stopped());
-            }
+            self.check_source(pending, &set)?;
             set.event_executions()
         };
-        let (source_policy, source_grants) = self.policy(&pending.source)?;
-        policy::require(
-            &source_grants,
-            &format!("event:emit:{}", pending.event.as_str()),
-        )?;
-        source_policy.emitted(pending.event.as_str(), &pending.payload)?;
         let event_json = serde_json::to_string(&EventContext {
             event: &pending.event,
             from: pending.from,
-            sender_plugin_id: &pending.source.plugin,
+            sender_plugin_id: pending.source.plugin(),
             request_id: pending.request,
             trace_id: pending.trace,
             payload: &pending.payload,
@@ -157,15 +149,11 @@ impl EventService {
         if stopping {
             return Err(stopped());
         }
-        if !set.event_execution_current(&pending.source) || !set.event_execution_current(target) {
+        if !set.event_execution_current(target) {
             return Err(stopped());
         }
         // Recheck persisted authority at the execution boundary, then release DB locks before Wasm.
-        let (_, source_grants) = self.policy(&pending.source)?;
-        policy::require(
-            &source_grants,
-            &format!("event:emit:{}", pending.event.as_str()),
-        )?;
+        self.check_source(pending, &set)?;
         let (_, grants) = self.policy(target)?;
         policy::require(
             &grants,
@@ -193,6 +181,22 @@ impl EventService {
         .map_err(|error| SynraError::new(error.code(), error.to_string()))?
         .into_result()
         .map(|_| ())
+    }
+
+    fn check_source(&self, pending: &Pending, set: &PluginSet) -> Result<(), SynraError> {
+        match &pending.source {
+            Origin::Local(source) => {
+                if !set.event_execution_current(source) {
+                    return Err(stopped());
+                }
+                let (policy, grants) = self.policy(source)?;
+                policy::require(&grants, &format!("event:emit:{}", pending.event.as_str()))?;
+                policy.emitted(pending.event.as_str(), &pending.payload)
+            }
+            Origin::Remote { authority, .. } => authority
+                .check(authority.local(), pending.from)
+                .map_err(|error| super::remote::authorization(&error)),
+        }
     }
 }
 

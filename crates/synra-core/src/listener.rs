@@ -128,6 +128,8 @@ pub enum KernelEventOutcome {
     Handled,
     /// The answer to send back on the same link.
     Reply(Box<Envelope>),
+    /// Queue admission receipt; send on the requesting link only, never dial back or persist as an outcome.
+    Receipt(Box<Envelope>),
     /// The event was understood and refused, with a sentence for the log.
     Refused(String),
 }
@@ -563,7 +565,8 @@ pub fn handle_within_with(
                         // and sent the result on a second connection would be answering a question nobody is listening for.
                         None if event == synra_protocol::event::events::INTENT_INVOKE
                             || event == synra_protocol::event::events::INTENT_CANCEL
-                            || event == synra_protocol::event::events::INTENT_RESULT =>
+                            || event == synra_protocol::event::events::INTENT_RESULT
+                            || event.starts_with(synra_protocol::event::PLUGIN_PREFIX) =>
                         {
                             let Some(envelope) = request else {
                                 eprintln!(
@@ -854,6 +857,10 @@ fn answer_kernel_event(
     };
     match outcome {
         KernelEventOutcome::Handled => events.push(format!("handled {event}")),
+        KernelEventOutcome::Receipt(receipt) => match link.send(&receipt) {
+            Ok(()) => events.push(format!("receipt sent {event}")),
+            Err(error) => events.push(format!("receipt failed {event}: {error}")),
+        },
         KernelEventOutcome::Reply(reply) => {
             events.push(format!("answered {event}"));
             if let Err(error) = link.send(&reply) {
