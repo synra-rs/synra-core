@@ -463,6 +463,18 @@ fn a_config_patch_round_trips() {
 }
 
 #[test]
+fn an_empty_config_snapshot_keeps_the_required_override_list() {
+    let snapshot = ConfigSnapshot {
+        values: serde_json::json!({}),
+        overridden: Vec::new(),
+    };
+    let json = serde_json::to_value(&snapshot).expect("serialises");
+    assert_eq!(json, serde_json::json!({ "values": {}, "overridden": [] }));
+    let back: ConfigSnapshot = serde_json::from_value(json).expect("deserialises");
+    assert_eq!(back, snapshot);
+}
+
+#[test]
 fn a_config_snapshot_carries_which_keys_were_overridden() {
     // So the settings screen can mark a value the user changed from the default.
     let snapshot = ConfigSnapshot {

@@ -19,7 +19,6 @@ pub struct ConfigSnapshot {
     /// Every setting, keyed by its dotted path.
     pub values: serde_json::Value,
     /// Which keys came from a file rather than the defaults, for the screen to mark.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub overridden: Vec<String>,
 }
 
