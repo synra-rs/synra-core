@@ -1,8 +1,5 @@
 use std::io::{self, Read, Write};
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::Arc;
 use std::time::Duration;
 
 use parking_lot::Mutex;
@@ -10,14 +7,13 @@ use synra_net::authentication::{AuthenticatedStream, AuthenticationError};
 use synra_protocol::DeviceId;
 use synra_store::SynraDb;
 
+use super::RequestAuthority;
 use crate::link::{LinkError, LinkStream};
 use crate::peer_trust::PeerApproval;
 
 pub(super) struct AuthorizedStream {
     tls: AuthenticatedStream,
-    approval: PeerApproval,
-    db: Arc<Mutex<SynraDb>>,
-    denied: AtomicBool,
+    authority: RequestAuthority,
     handshaking: bool,
 }
 
@@ -27,15 +23,12 @@ impl AuthorizedStream {
         approval: PeerApproval,
         db: Arc<Mutex<SynraDb>>,
     ) -> Result<Self, LinkError> {
-        let stream = Self {
+        let authority = RequestAuthority::new(&tls, approval, db)?;
+        Ok(Self {
             tls,
-            approval,
-            db,
-            denied: AtomicBool::new(false),
+            authority,
             handshaking: true,
-        };
-        stream.check()?;
-        Ok(stream)
+        })
     }
 
     pub(super) fn start_budget(&mut self, timeout: Duration) -> Result<(), AuthenticationError> {
@@ -56,24 +49,7 @@ impl AuthorizedStream {
     }
 
     fn check_authorization(&self, local: DeviceId, peer: DeviceId) -> Result<(), LinkError> {
-        if self.denied.load(Ordering::Relaxed) {
-            return Err(LinkError::Unauthorized);
-        }
-        let result = if local != self.tls.local_identity().device_id() {
-            Err(LinkError::Unauthorized)
-        } else {
-            match self.approval.allows(&self.db, &self.tls, peer) {
-                Ok(true) => Ok(()),
-                Ok(false) => Err(LinkError::Unauthorized),
-                Err(error) => Err(LinkError::AuthorizationUnavailable {
-                    why: error.to_string(),
-                }),
-            }
-        };
-        if result.is_err() {
-            self.denied.store(true, Ordering::Relaxed);
-        }
-        result
+        self.authority.check(local, peer)
     }
 }
 
@@ -85,7 +61,7 @@ impl std::fmt::Debug for AuthorizedStream {
 
 impl LinkStream for AuthorizedStream {
     fn authorize(&self, local: DeviceId, peer: DeviceId) -> Result<(), LinkError> {
-        if self.denied.load(Ordering::Relaxed) {
+        if self.authority.is_denied() {
             return Err(LinkError::Unauthorized);
         }
         if !self.handshaking {
@@ -100,6 +76,10 @@ impl LinkStream for AuthorizedStream {
                 .map_err(|error| budget_error(&error))?;
         }
         Ok(())
+    }
+
+    fn request_authority(&self) -> Option<RequestAuthority> {
+        (!self.handshaking).then(|| self.authority.clone())
     }
 
     fn set_read_deadline(&self, timeout: Duration) -> Result<(), LinkError> {

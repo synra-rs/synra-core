@@ -47,6 +47,11 @@ impl PeerApproval {
         {
             return Ok(false);
         }
+        self.current(db)
+    }
+
+    /// Checks the original approval after its TLS identities were captured by the authenticated link.
+    pub(crate) fn current(&self, db: &Mutex<SynraDb>) -> Result<bool, TrustError> {
         db.lock()
             .peer_trust_current(&self.local_id, self.local.certificate_der(), &self.record)
             .map_err(|error| TrustError::Database(error.to_string()))

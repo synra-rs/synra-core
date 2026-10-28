@@ -139,12 +139,20 @@ pub enum KernelEventOutcome {
 /// Because running an action needs the plugin set and the intent board, which belong to the host; the listener owns the
 /// connection, not the runtime. The callback is the same seam `FinishedCallback` uses, and it exists for the same reason:
 /// a reply belongs on the connection that asked, so the answer has to be produced **while the link is still open**.
-pub type KernelEventCallback = dyn Fn(&Envelope) -> KernelEventOutcome + Send + Sync;
+/// The captured authority accompanies the envelope so deferred consumers can recheck it without
+/// refreshing the connection to a newer approval. The listener refuses unauthenticated links.
+pub type KernelEventCallback = dyn Fn(&Envelope, &crate::peer::authenticated::RequestAuthority) -> KernelEventOutcome
+    + Send
+    + Sync;
 
 /// A kernel-event callback for a host that runs no kernel events.
 #[must_use]
 pub fn no_kernel_events() -> Arc<KernelEventCallback> {
-    Arc::new(|_event: &Envelope| KernelEventOutcome::Ignored)
+    Arc::new(
+        |_event: &Envelope, _authority: &crate::peer::authenticated::RequestAuthority| {
+            KernelEventOutcome::Ignored
+        },
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -837,7 +845,14 @@ fn answer_kernel_event(
     data_dir: &Path,
 ) {
     let event = envelope.event.as_str();
-    match on_kernel_events(envelope) {
+    let outcome = match link.request_authority().and_then(|authority| {
+        authority.authorize(envelope)?;
+        Ok(authority)
+    }) {
+        Ok(authority) => on_kernel_events(envelope, &authority),
+        Err(error) => KernelEventOutcome::Refused(error.to_string()),
+    };
+    match outcome {
         KernelEventOutcome::Handled => events.push(format!("handled {event}")),
         KernelEventOutcome::Reply(reply) => {
             events.push(format!("answered {event}"));

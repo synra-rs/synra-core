@@ -174,6 +174,13 @@ pub enum Inbound {
 /// separate `read_bytes`/`write_bytes` methods would be a second spelling of two traits that already exist and are already
 /// implemented by everything a caller might bring.
 pub trait LinkStream: Read + Write + Send + std::fmt::Debug {
+    /// Captured authority for business work that may outlive a frame read.
+    ///
+    /// Plaintext and memory transports return none; successful byte IO is never proof of identity.
+    fn request_authority(&self) -> Option<crate::peer::authenticated::RequestAuthority> {
+        None
+    }
+
     /// Rechecks authorization for these actual link identities before delivering or sending a frame.
     ///
     /// Memory fixtures and legacy transports have no authority to check. Authenticated transports
@@ -340,6 +347,23 @@ impl PeerLink {
     #[must_use]
     pub const fn peer(&self) -> DeviceId {
         self.peer
+    }
+
+    /// Retains this authenticated link's original identities and authorization for deferred work.
+    ///
+    /// Recheck the returned context against each request immediately before execution admission.
+    /// It does not retain the socket or extend an IO timeout, request deadline or input-session lease.
+    /// # Errors
+    /// Plaintext links, revoked approvals and unavailable authorization storage are refused.
+    pub fn request_authority(
+        &self,
+    ) -> Result<crate::peer::authenticated::RequestAuthority, LinkError> {
+        let authority = self
+            .stream
+            .request_authority()
+            .ok_or(LinkError::Unauthorized)?;
+        authority.check(self.local, self.peer)?;
+        Ok(authority)
     }
 
     /// What both ends agreed on.

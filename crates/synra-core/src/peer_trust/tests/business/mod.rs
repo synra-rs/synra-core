@@ -8,6 +8,7 @@ use synra_protocol::frame::{Frame, FrameBody, FrameDecoder, FrameEncoder, FrameK
 use synra_protocol::handshake::{Hello, PairingState, SessionNonce};
 use synra_protocol::session::PlatformKind;
 
+mod authority;
 mod rejection;
 
 fn profile(device: &Device) -> LocalPeer {
@@ -132,6 +133,8 @@ fn explicit_identity_repair_revokes_live_links_and_requires_new_mutual_pairing()
         let right = Device::new();
         let _ = pair(&left, &right);
         let (mut old_link, _remote_link) = links(&left, &right);
+        let queued_authority = old_link.request_authority().unwrap();
+        let queued_request = envelope(right.id(), left.id(), "device.queued");
         let previous = left.db.lock().device_credential().unwrap().unwrap();
         if missing_registration {
             let connection = rusqlite::Connection::open(&left.path).unwrap();
@@ -151,6 +154,10 @@ fn explicit_identity_repair_revokes_live_links_and_requires_new_mutual_pairing()
         assert_eq!(repaired.cleanup.unwrap(), 0);
         left.credentials = repaired.credentials;
         assert!(left.approvals().is_empty());
+        assert_eq!(
+            queued_authority.authorize(&queued_request),
+            Err(LinkError::Unauthorized)
+        );
         assert_eq!(old_link.ping(), Err(LinkError::Unauthorized));
         assert_eq!(
             old_link.send_chunk(0, b"old authority"),

@@ -569,22 +569,30 @@ fn a_kernel_event_is_answered_on_the_connection_that_asked() {
     let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let events: Arc<synra_core::listener::KernelEventCallback> = {
         let asked = Arc::clone(&asked);
-        Arc::new(move |envelope: &synra_protocol::envelope::Envelope| {
-            assert_eq!(envelope.event.as_str(), "_synra.intent.invoke");
-            asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            let event = synra_protocol::event::EventName::parse("_synra.intent.result")
-                .expect("an event name");
-            // Answered by the device the request was addressed to, on the connection it arrived on.
-            let reply = synra_protocol::envelope::Envelope::reply_to(
-                envelope,
-                event,
-                envelope.target,
-                2_000,
-                None::<&serde_json::Value>,
-            )
-            .expect("a reply");
-            synra_core::listener::KernelEventOutcome::Reply(Box::new(reply))
-        })
+        Arc::new(
+            move |envelope: &synra_protocol::envelope::Envelope,
+                  authority: &synra_core::peer::authenticated::RequestAuthority| {
+                assert_eq!(envelope.event.as_str(), "_synra.intent.invoke");
+                assert_eq!(authority.local(), envelope.target);
+                assert_eq!(authority.peer(), envelope.from);
+                authority
+                    .authorize(envelope)
+                    .expect("current request authority");
+                asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let event = synra_protocol::event::EventName::parse("_synra.intent.result")
+                    .expect("an event name");
+                // Answered by the device the request was addressed to, on the connection it arrived on.
+                let reply = synra_protocol::envelope::Envelope::reply_to(
+                    envelope,
+                    event,
+                    envelope.target,
+                    2_000,
+                    None::<&serde_json::Value>,
+                )
+                .expect("a reply");
+                synra_core::listener::KernelEventOutcome::Reply(Box::new(reply))
+            },
+        )
     };
     let progress: Arc<synra_core::listener::ProgressCallback> = Arc::new(|_event| {});
     let offer: Arc<synra_core::inbound::OfferCallback> = Arc::new(synra_core::inbound::auto_accept);

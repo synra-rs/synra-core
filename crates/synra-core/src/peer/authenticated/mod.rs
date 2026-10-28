@@ -4,7 +4,10 @@
 //! pass through the same authorization gate as new reads. Hosts must use this entry point instead of
 //! the legacy plaintext helpers; discovery and first pairing remain separate restricted workflows.
 
+mod authority;
 mod stream;
+
+pub use authority::RequestAuthority;
 
 use std::net::TcpStream;
 use std::sync::Arc;

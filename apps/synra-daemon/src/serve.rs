@@ -834,7 +834,7 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
                 let plugins = Arc::clone(&receive_plugins);
                 let board = Arc::clone(&receive_board);
                 let local = local_device;
-                Arc::new(move |envelope: &synra_protocol::envelope::Envelope| {
+                Arc::new(move |envelope: &synra_protocol::envelope::Envelope, _authority: &synra_core::peer::authenticated::RequestAuthority| {
                     let now = synra_store::sqlite::now_ms();
                     crate::runtime::intent::handle_event(&plugins, &board, local, envelope, now)
                 })
