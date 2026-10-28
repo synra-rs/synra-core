@@ -184,7 +184,13 @@ pub fn gated() -> Vec<(&'static str, &'static str)> {
 /// refusal naming the string.
 #[must_use]
 pub fn is_declared_capability(capability: &str) -> bool {
-    CAPABILITIES.contains(&capability)
+    let Ok(candidate) = synra_capability::Capability::parse(capability) else {
+        return false;
+    };
+    CAPABILITIES
+        .iter()
+        .filter_map(|family| synra_capability::Capability::parse(family).ok())
+        .any(|family| family.matches(&candidate))
 }
 
 /// The capabilities a set of import names would need.
@@ -404,6 +410,10 @@ mod tests {
         // ★ The failure this check exists for: a well-formed string that no host function needs. The plugin installs,
         // the user grants it, and every call fails because the capability held is not the one checked.
         assert!(is_declared_capability("log:*"));
+        assert!(is_declared_capability("log:info"));
+        assert!(is_declared_capability("action:declare:debug"));
+        assert!(is_declared_capability("network:fetch:example.com"));
+        assert!(!is_declared_capability("action:unknown:debug"));
         assert!(!is_declared_capability("storag:local:read"));
         assert!(!is_declared_capability("log"));
         assert!(!is_declared_capability(""));

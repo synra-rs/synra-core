@@ -76,6 +76,9 @@ pub mod quota;
 pub mod registry;
 pub mod verify;
 
+/// The implemented host SDK version, independent of a plugin's requested compatibility floor.
+pub const SDK_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 pub use host_calls::{
     CallError, CallResult, Host, HostCalls, PlatformAction, implemented as implemented_calls,
 };
