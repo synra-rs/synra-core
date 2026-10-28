@@ -124,7 +124,7 @@ fn a_plugin_that_refuses_to_activate_is_not_left_loaded() {
 
     let summary = load_installed_with_config(
         &mut set,
-        &db,
+        &parking_lot::Mutex::new(db),
         &plugins,
         &synra_observe::crash::StartupVerdict::Clean,
         &synra_plugin_api::revocation::RevocationList::empty(),
@@ -154,7 +154,7 @@ fn a_plugin_the_user_enabled_and_confirmed_loads_with_the_granted_capabilities()
     let (mut set, _backend) = set();
     let summary = load_installed(
         &mut set,
-        &db,
+        &parking_lot::Mutex::new(db),
         &plugins,
         &synra_observe::crash::StartupVerdict::Clean,
         &synra_plugin_api::revocation::RevocationList::empty(),
@@ -199,7 +199,7 @@ fn safe_mode_loads_nothing_and_says_why() {
     let (mut set, _backend) = set();
     let summary = load_installed(
         &mut set,
-        &db,
+        &parking_lot::Mutex::new(db),
         &plugins,
         &safe,
         &synra_plugin_api::revocation::RevocationList::empty(),
@@ -225,7 +225,7 @@ fn a_plugin_without_a_recorded_decision_is_refused_rather_than_run_with_its_requ
     let (mut set, _backend) = set();
     let summary = load_installed(
         &mut set,
-        &db,
+        &parking_lot::Mutex::new(db),
         &plugins,
         &synra_observe::crash::StartupVerdict::Clean,
         &synra_plugin_api::revocation::RevocationList::empty(),
@@ -251,7 +251,7 @@ fn a_manifest_that_changed_since_consent_needs_confirming_again() {
     let (mut set, _backend) = set();
     let summary = load_installed(
         &mut set,
-        &db,
+        &parking_lot::Mutex::new(db),
         &plugins,
         &synra_observe::crash::StartupVerdict::Clean,
         &synra_plugin_api::revocation::RevocationList::empty(),
@@ -276,6 +276,7 @@ fn a_revoked_version_is_disabled_in_the_store_and_refused() {
     .expect("a revocation list");
 
     let (mut set, _backend) = set();
+    let db = parking_lot::Mutex::new(db);
     let summary = load_installed(
         &mut set,
         &db,
@@ -287,8 +288,16 @@ fn a_revoked_version_is_disabled_in_the_store_and_refused() {
     let reason = summary.refusal_for("@bad/plugin").expect("a refusal");
     assert!(reason.contains("malicious code"), "{reason}");
     assert!(reason.contains("disabled"), "{reason}");
-    let row = db.plugins().expect("the table").into_iter().find(|row| row.plugin_id == "@bad/plugin");
-    assert!(!row.expect("the row").enabled, "a revoked plugin stays enabled and is tried again next start");
+    let row = db
+        .lock()
+        .plugins()
+        .expect("the table")
+        .into_iter()
+        .find(|row| row.plugin_id == "@bad/plugin");
+    assert!(
+        !row.expect("the row").enabled,
+        "a revoked plugin stays enabled and is tried again next start"
+    );
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -315,7 +324,7 @@ fn a_ui_only_plugin_is_refused_because_it_has_no_headless_half() {
     let (mut set, _backend) = set();
     let summary = load_installed(
         &mut set,
-        &db,
+        &parking_lot::Mutex::new(db),
         &plugins,
         &synra_observe::crash::StartupVerdict::Clean,
         &synra_plugin_api::revocation::RevocationList::empty(),
@@ -338,7 +347,7 @@ fn a_plugin_that_is_not_enabled_is_neither_loaded_nor_refused() {
     let (mut set, _backend) = set();
     let summary = load_installed(
         &mut set,
-        &db,
+        &parking_lot::Mutex::new(db),
         &plugins,
         &synra_observe::crash::StartupVerdict::Clean,
         &synra_plugin_api::revocation::RevocationList::empty(),
@@ -362,7 +371,7 @@ fn loading_one_plugin_records_it_without_claiming_the_rest() {
     let mut summary = LoadedSummary::default();
     let id = load_plugin(
         &mut set,
-        &db,
+        &parking_lot::Mutex::new(db),
         &plugins,
         "@acme/hello",
         &synra_plugin_api::revocation::RevocationList::empty(),
@@ -404,7 +413,7 @@ fn a_missing_artifact_is_refused_with_the_reason_the_author_needs() {
     let (mut set, _backend) = set();
     let summary = load_installed(
         &mut set,
-        &db,
+        &parking_lot::Mutex::new(db),
         &plugins,
         &synra_observe::crash::StartupVerdict::Clean,
         &synra_plugin_api::revocation::RevocationList::empty(),

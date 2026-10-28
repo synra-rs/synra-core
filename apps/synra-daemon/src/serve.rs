@@ -656,8 +656,7 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
         // problem rather than refusing to start.
         let now = i64::try_from(now_ms()).unwrap_or(i64::MAX);
         let verdict = crashes.verdict(now);
-        // ★ The environment is read **before** the store lock is taken. `KernelHost::locale` reads a setting, which
-        // needs the store; reading it while the loader holds the store was a same-thread deadlock.
+        // Snapshot the environment once. The loader releases its short store reads before guest activation.
         let activation = {
             let set = plugins.lock();
             synra_core::plugin::activation_config(set.host().as_ref())
@@ -666,7 +665,7 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
             let mut set = plugins.lock();
             crate::runtime::load_installed_with_config(
                 &mut set,
-                &shared_db.lock(),
+                &shared_db,
                 std::path::Path::new(&plan.plugins_dir),
                 &verdict,
                 &revocations,

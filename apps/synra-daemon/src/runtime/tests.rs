@@ -1296,7 +1296,7 @@ fn revoking_one_plugin_leaves_the_others_alone() {
     let (mut set, _backend) = loader();
     let summary = crate::runtime::load_installed(
         &mut set,
-        &runtime.db(),
+        &runtime.db,
         &runtime.plugins_dir,
         &synra_observe::crash::StartupVerdict::Clean,
         &list,
@@ -1348,7 +1348,7 @@ fn a_revoked_installed_version_is_refused_and_disabled() {
     let (mut set, _backend) = loader();
     let without = crate::runtime::load_installed(
         &mut set,
-        &runtime.db(),
+        &runtime.db,
         &runtime.plugins_dir,
         &synra_observe::crash::StartupVerdict::Clean,
         &synra_plugin_api::revocation::RevocationList::empty(),
@@ -1362,7 +1362,7 @@ fn a_revoked_installed_version_is_refused_and_disabled() {
     let (mut set, _backend) = loader();
     let summary = crate::runtime::load_installed(
         &mut set,
-        &runtime.db(),
+        &runtime.db,
         &runtime.plugins_dir,
         &synra_observe::crash::StartupVerdict::Clean,
         &list,
@@ -1414,7 +1414,7 @@ fn an_enabled_and_trusted_plugin_is_actually_loaded() {
     let (mut set, _backend) = loader();
     let summary = crate::runtime::load_installed(
         &mut set,
-        &runtime.db(),
+        &runtime.db,
         &runtime.plugins_dir,
         &synra_observe::crash::StartupVerdict::Clean,
         &synra_plugin_api::revocation::RevocationList::empty(),
@@ -1456,7 +1456,7 @@ fn a_plugin_the_user_never_answered_about_is_not_loaded_even_when_it_is_trusted(
     let (mut set, _backend) = loader();
     let summary = crate::runtime::load_installed(
         &mut set,
-        &runtime.db(),
+        &runtime.db,
         &runtime.plugins_dir,
         &synra_observe::crash::StartupVerdict::Clean,
         &synra_plugin_api::revocation::RevocationList::empty(),
@@ -1501,7 +1501,7 @@ fn a_plugin_whose_manifest_changed_after_consent_needs_confirming_again() {
     let (mut set, _backend) = loader();
     let summary = crate::runtime::load_installed(
         &mut set,
-        &runtime.db(),
+        &runtime.db,
         &runtime.plugins_dir,
         &synra_observe::crash::StartupVerdict::Clean,
         &synra_plugin_api::revocation::RevocationList::empty(),
@@ -1538,7 +1538,7 @@ fn the_grants_a_plugin_runs_with_are_the_ones_the_user_gave_it() {
     let (mut set, _backend) = loader();
     let summary = crate::runtime::load_installed(
         &mut set,
-        &runtime.db(),
+        &runtime.db,
         &runtime.plugins_dir,
         &synra_observe::crash::StartupVerdict::Clean,
         &synra_plugin_api::revocation::RevocationList::empty(),
@@ -1611,7 +1611,7 @@ fn safe_mode_loads_nothing_and_says_why() {
 
     let summary = crate::runtime::load_installed(
         &mut set,
-        &runtime.db(),
+        &runtime.db,
         &runtime.plugins_dir,
         &safe,
         &synra_plugin_api::revocation::RevocationList::empty(),
@@ -1657,7 +1657,7 @@ fn a_plugin_the_user_never_trusted_is_not_loaded_and_not_refused() {
     let (mut set, _backend) = loader();
     let summary = crate::runtime::load_installed(
         &mut set,
-        &runtime.db(),
+        &runtime.db,
         &runtime.plugins_dir,
         &synra_observe::crash::StartupVerdict::Clean,
         &synra_plugin_api::revocation::RevocationList::empty(),
@@ -1700,7 +1700,7 @@ fn one_broken_plugin_does_not_stop_the_others() {
     let (mut set, _backend) = loader();
     let summary = crate::runtime::load_installed(
         &mut set,
-        &runtime.db(),
+        &runtime.db,
         &runtime.plugins_dir,
         &synra_observe::crash::StartupVerdict::Clean,
         &synra_plugin_api::revocation::RevocationList::empty(),
@@ -1742,7 +1742,7 @@ fn a_ui_only_plugin_is_refused_rather_than_loaded_because_it_has_no_headless_hal
     let (mut set, _backend) = loader();
     let summary = crate::runtime::load_installed(
         &mut set,
-        &runtime.db(),
+        &runtime.db,
         &runtime.plugins_dir,
         &synra_observe::crash::StartupVerdict::Clean,
         &synra_plugin_api::revocation::RevocationList::empty(),
@@ -1774,7 +1774,7 @@ fn the_report_says_what_was_loaded_and_not_a_constant() {
     let (mut set, _backend) = loader();
     let summary = crate::runtime::load_installed(
         &mut set,
-        &runtime.db(),
+        &runtime.db,
         &runtime.plugins_dir,
         &synra_observe::crash::StartupVerdict::Clean,
         &synra_plugin_api::revocation::RevocationList::empty(),
@@ -1798,7 +1798,7 @@ fn the_report_names_a_plugin_it_could_not_load() {
     let (mut set, _backend) = loader();
     let summary = crate::runtime::load_installed(
         &mut set,
-        &runtime.db(),
+        &runtime.db,
         &runtime.plugins_dir,
         &synra_observe::crash::StartupVerdict::Clean,
         &synra_plugin_api::revocation::RevocationList::empty(),
@@ -2163,7 +2163,7 @@ fn consent_records_one_decision_per_capability_and_unlocks_the_plugin() {
     let (mut set, _backend) = loader();
     let summary = crate::runtime::load_installed(
         &mut set,
-        &runtime.db(),
+        &runtime.db,
         &runtime.plugins_dir,
         &synra_observe::crash::StartupVerdict::Clean,
         &synra_plugin_api::revocation::RevocationList::empty(),
@@ -2199,7 +2199,7 @@ fn partial_consent_loads_the_plugin_with_only_what_was_allowed() {
     let (mut set, _backend) = loader();
     let summary = crate::runtime::load_installed(
         &mut set,
-        &runtime.db(),
+        &runtime.db,
         &runtime.plugins_dir,
         &synra_observe::crash::StartupVerdict::Clean,
         &synra_plugin_api::revocation::RevocationList::empty(),
@@ -2574,7 +2574,7 @@ fn the_plugin_report_carries_the_live_rung_as_well_as_the_row() {
     // Loaded into the runtime's **own** set, because that is the one the report reads.
     let _ = crate::runtime::load_installed(
         &mut runtime.plugins.lock(),
-        &runtime.db(),
+        &runtime.db,
         &runtime.plugins_dir,
         &synra_observe::crash::StartupVerdict::Clean,
         &synra_plugin_api::revocation::RevocationList::empty(),

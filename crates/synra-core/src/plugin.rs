@@ -152,7 +152,7 @@ impl LoadedSummary {
 #[must_use]
 pub fn load_installed(
     set: &mut PluginSet,
-    db: &synra_store::SynraDb,
+    db: &parking_lot::Mutex<synra_store::SynraDb>,
     plugins_dir: &Path,
     verdict: &StartupVerdict,
     revocations: &synra_plugin_api::revocation::RevocationList,
@@ -164,14 +164,12 @@ pub fn load_installed(
 ///
 /// # ★ Why the config is a parameter rather than read here
 ///
-/// Because a host's `locale()` may reach the database, and the caller is **already holding that database lock** when it
-/// hands the store to this function. Reading it here was a same-thread deadlock in the daemon: `activate` asked the host
-/// for its locale, the host locked the store, and the loader was still holding it. A host therefore snapshots the
-/// environment before taking the lock and passes the JSON in.
+/// The host snapshots its environment once for the pass. The loader owns each short database read and releases its
+/// guard before filesystem work, engine compilation and guest activation, whose host calls may use the same store.
 #[must_use]
 pub fn load_installed_with_config(
     set: &mut PluginSet,
-    db: &synra_store::SynraDb,
+    db: &parking_lot::Mutex<synra_store::SynraDb>,
     plugins_dir: &Path,
     verdict: &StartupVerdict,
     revocations: &synra_plugin_api::revocation::RevocationList,
@@ -187,7 +185,7 @@ pub fn load_installed_with_config(
         return summary;
     }
 
-    let Ok(rows) = db.plugins() else {
+    let Ok(rows) = db.lock().plugins() else {
         // The table being unreadable is the host's problem, and it is reported through its own status line; here it
         // means "nothing could be loaded" rather than "nothing is installed".
         return summary;
@@ -217,7 +215,7 @@ pub fn load_installed_with_config(
 /// wrote, and each one is something the user or the author needs to read rather than an error code to map elsewhere.
 pub fn load_plugin(
     set: &mut PluginSet,
-    db: &synra_store::SynraDb,
+    db: &parking_lot::Mutex<synra_store::SynraDb>,
     plugins_dir: &Path,
     plugin_id: &str,
     revocations: &synra_plugin_api::revocation::RevocationList,
@@ -227,11 +225,10 @@ pub fn load_plugin(
 
 /// The same load, with the activation config the caller already read.
 ///
-/// See [`load_installed_with_config`] for why this is a parameter: a host's environment may need the store, and the
-/// store's lock is held by the caller for the whole call.
+/// The caller passes the shared mutex, never a held database guard. Guest activation can call back into the store.
 pub fn load_plugin_with_config(
     set: &mut PluginSet,
-    db: &synra_store::SynraDb,
+    db: &parking_lot::Mutex<synra_store::SynraDb>,
     plugins_dir: &Path,
     plugin_id: &str,
     revocations: &synra_plugin_api::revocation::RevocationList,
@@ -262,7 +259,7 @@ pub fn load_plugin_with_config(
     //    missing consent would send its author looking for a permission problem.
     if let Some(reason) = revocations.revokes(plugin_id, &manifest.version) {
         let now = synra_store::sqlite::now_ms();
-        if let Err(error) = db.set_plugin_enabled(plugin_id, false, now) {
+        if let Err(error) = db.lock().set_plugin_enabled(plugin_id, false, now) {
             // Reported rather than swallowed: the plugin is not loaded either way, but a user whose store refused the write
             // will see it enabled again next start, and that is a thing they need to be told.
             eprintln!("synra: {plugin_id} is revoked and could not be disabled in the store: {error}");
@@ -291,8 +288,10 @@ pub fn load_plugin_with_config(
     //
     // The digest is over the bytes on disk, so a manifest that was edited rather than replaced is caught too.
     let digest = synra_plugin_api::manifest_digest(&manifest_text);
-    let decisions =
-        db.plugin_grants(plugin_id).map_err(|error| format!("the decisions could not be read: {error}"))?;
+    let decisions = db
+        .lock()
+        .plugin_grants(plugin_id)
+        .map_err(|error| format!("the decisions could not be read: {error}"))?;
     if decisions.is_empty() && !manifest.capabilities.is_empty() {
         // Trusted with nothing recorded is the state a pre-consent build left behind, and it is not an authorisation.
         return Err("it has not been confirmed by the user".to_owned());

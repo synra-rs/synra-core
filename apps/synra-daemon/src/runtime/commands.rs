@@ -353,18 +353,16 @@ impl Kernel for Runtime {
                         .is_some_and(|row| row.should_run())
                 };
                 if should_run {
-                    // Read the environment before the store lock: `KernelHost::locale` reads a setting, and the loader
-                    // is about to hold that same lock.
+                    // Snapshot the environment; the loader owns short store reads and releases them before guest code.
                     let activation = {
                         let set = self.plugins.lock();
                         synra_core::plugin::activation_config(set.host().as_ref())
                     };
                     let outcome = {
                         let mut set = self.plugins.lock();
-                        let db = self.db.lock();
                         synra_core::plugin::load_plugin_with_config(
                             &mut set,
-                            &db,
+                            &self.db,
                             &self.plugins_dir,
                             plugin_id,
                             &self.revocations,

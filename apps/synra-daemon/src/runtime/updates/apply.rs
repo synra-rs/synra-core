@@ -211,16 +211,15 @@ fn reload(
             runtime.plugin_loads.lock().record_unloaded(id);
             return Ok(());
         }
-        let result = synra_core::plugin::load_plugin_with_config(
+        drop(db);
+        synra_core::plugin::load_plugin_with_config(
             set,
-            &db,
+            &runtime.db,
             &runtime.plugins_dir,
             id.as_str(),
             &runtime.revocations,
             activation,
-        );
-        drop(db);
-        result
+        )
     };
     match loaded {
         Ok(id) => runtime.plugin_loads.lock().record_loaded(id),
