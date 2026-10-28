@@ -6,10 +6,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use wasmtime::component::{Component, Instance, Linker};
+use wasmtime::component::{Instance, Linker};
 
 mod artifact;
 pub(super) mod bindings;
+mod compile;
 mod config;
 mod imports;
 mod invoke;
@@ -292,6 +293,7 @@ fn classify(
 #[derive(Clone)]
 pub struct WasmtimeBackend {
     engine: Engine,
+    compiler: Arc<compile::Compiler>,
     kind: BackendKind,
     /// The epoch deadlines are measured against. Held so a caller can prove the engine it built is the one an
     /// executor's ticker advances, rather than a private counter nothing moves.
@@ -378,6 +380,7 @@ impl WasmtimeBackend {
 
         Ok(Self {
             engine,
+            compiler: Arc::new(compile::Compiler::default()),
             kind,
             epoch,
             ticker: None,
@@ -455,10 +458,7 @@ impl WasmBackend for WasmtimeBackend {
                 ),
             });
         }
-        let component =
-            Component::new(&self.engine, wasm).map_err(|error| BackendError::Compile {
-                detail: format!("{error:#}"),
-            })?;
+        let component = self.compiler.compile(&self.engine, wasm)?;
 
         // ★ The import check happens here rather than at the first call. A component importing a function this host
         // does not provide is one built against a host that has it, and letting it link would move the failure to a
