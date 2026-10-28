@@ -6,9 +6,7 @@ use std::path::{Component, Path, PathBuf};
 use synra_plugin_api::Manifest;
 
 use super::component::{ComponentInfo, inspect};
-use super::limits::{
-    MAX_MANIFEST_BYTES, MAX_UI_BYTES, MAX_UI_ENTRIES, MAX_UI_FILES, MAX_WASM_BYTES,
-};
+use super::limits::{MAX_MANIFEST_BYTES, MAX_WASM_BYTES};
 
 /// Facts read from a plugin directory, preserving read and validation failures.
 #[derive(Debug, Clone)]
@@ -25,8 +23,7 @@ impl Target {
     /// Reads the manifest and its declared artifacts without executing guest code.
     #[must_use]
     pub fn read(directory: &Path) -> Self {
-        let manifest_json = read_file(directory, "manifest.json", MAX_MANIFEST_BYTES)
-            .and_then(|bytes| String::from_utf8(bytes).map_err(|error| error.to_string()));
+        let manifest_json = read_manifest(directory);
         let manifest = manifest_json
             .as_ref()
             .ok()
@@ -35,19 +32,27 @@ impl Target {
             .as_ref()
             .and_then(|manifest| manifest.runtime.headless.as_ref())
             .ok_or_else(|| "no headless component is declared in a readable manifest".to_owned())
-            .and_then(|headless| read_file(directory, &headless.artifact, MAX_WASM_BYTES))
+            .and_then(|headless| {
+                synra_plugin_ui::artifact::check_package_artifact_path(&headless.artifact)
+                    .map_err(|error| error.to_string())?;
+                read_file(directory, &headless.artifact, MAX_WASM_BYTES)
+            })
             .and_then(|bytes| inspect(&bytes));
         let ui_bundle = manifest
             .as_ref()
             .and_then(|manifest| manifest.runtime.ui.as_ref())
             .ok_or_else(|| "no UI bundle is declared in a readable manifest".to_owned())
             .and_then(|ui| {
+                synra_plugin_ui::artifact::check_package_artifact_path(&ui.artifact)
+                    .map_err(|error| error.to_string())?;
                 let bundle = contained(directory, &ui.artifact)?;
-                let entry = contained(&bundle, &ui.entry)?;
-                if !entry.is_file() {
-                    return Err(format!("{} is not a UI entry file", entry.display()));
-                }
-                read_bundle(&bundle)
+                synra_plugin_ui::artifact::inspect_ui(
+                    &bundle,
+                    &ui.entry,
+                    synra_plugin_ui::artifact::ArchiveLimits::artifact(),
+                )
+                .map(|artifact| (artifact.len(), artifact.total_bytes()))
+                .map_err(|error| error.to_string())
             });
         Self {
             manifest_json,
@@ -107,47 +112,7 @@ fn read_file(root: &Path, relative: &str, limit: u64) -> Result<Vec<u8>, String>
     Ok(bytes)
 }
 
-fn read_bundle(directory: &Path) -> Result<(usize, u64), String> {
-    let mut files = 0usize;
-    let mut bytes = 0u64;
-    let mut entries = 0usize;
-    let mut stack = vec![directory.to_path_buf()];
-    while let Some(current) = stack.pop() {
-        for entry in std::fs::read_dir(&current)
-            .map_err(|error| format!("{}: {error}", current.display()))?
-        {
-            let entry = entry.map_err(|error| error.to_string())?;
-            entries = entries.saturating_add(1);
-            if entries > MAX_UI_ENTRIES {
-                return Err(format!("UI traversal exceeds {MAX_UI_ENTRIES} entries"));
-            }
-            let resolved =
-                std::fs::canonicalize(entry.path()).map_err(|error| error.to_string())?;
-            if !resolved.starts_with(directory) || resolved == directory {
-                return Err(format!(
-                    "{} resolves outside the UI bundle or forms a root cycle",
-                    entry.path().display()
-                ));
-            }
-            let kind = entry.file_type().map_err(|error| error.to_string())?;
-            if kind.is_dir() {
-                stack.push(entry.path());
-            } else if kind.is_file() {
-                files = files.saturating_add(1);
-                bytes = bytes
-                    .saturating_add(entry.metadata().map_err(|error| error.to_string())?.len());
-                if files > MAX_UI_FILES || bytes > MAX_UI_BYTES {
-                    return Err(format!(
-                        "UI bundle exceeds limits: {files} files and {bytes} bytes"
-                    ));
-                }
-            } else {
-                return Err(format!(
-                    "{} is not a regular UI file or directory",
-                    entry.path().display()
-                ));
-            }
-        }
-    }
-    Ok((files, bytes))
+pub(crate) fn read_manifest(directory: &Path) -> Result<String, String> {
+    read_file(directory, "manifest.json", MAX_MANIFEST_BYTES)
+        .and_then(|bytes| String::from_utf8(bytes).map_err(|error| error.to_string()))
 }

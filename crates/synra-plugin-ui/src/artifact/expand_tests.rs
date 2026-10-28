@@ -63,9 +63,9 @@ fn a_windows_drive_letter_is_refused() {
             other => panic!("{path} was accepted: {other:?}"),
         }
     }
-    // And a name that merely *contains* a colon is fine, because only the first component can be a drive.
+    // An inner colon is also refused: on Windows it can address an alternate data stream.
     let entries = vec![Entry::file("assets/a:b.js", 10)];
-    assert!(plan(&entries, ArchiveLimits::default()).is_ok());
+    assert!(plan(&entries, ArchiveLimits::default()).is_err());
 }
 
 #[test]
@@ -317,7 +317,14 @@ fn the_limits_are_the_design_documents_numbers() {
     assert_eq!(limits.max_single_file, 64 * 1024 * 1024);
     assert!((limits.max_compression_ratio - 200.0).abs() < f64::EPSILON);
     assert_eq!(limits.max_path_depth, 16);
-    assert_eq!(ArchiveLimits::artifact(), limits);
+    assert_eq!(
+        ArchiveLimits::artifact().max_total_uncompressed,
+        super::super::MAX_ARTIFACT_BYTES
+    );
+    assert_eq!(
+        ArchiveLimits::artifact().max_single_file,
+        super::super::MAX_ARTIFACT_FILE_BYTES
+    );
     assert_eq!(ArchiveLimits::new(), limits);
 }
 

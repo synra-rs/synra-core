@@ -9,13 +9,12 @@ use std::path::{Path, PathBuf};
 
 use crate::template::TemplateKind;
 
+pub(crate) mod bundle;
 pub mod component;
+mod ui;
 
 /// The Rust core-module target; the SDK supplies host imports and the CLI supplies component encoding.
 pub const WASM_TARGET: &str = "wasm32-unknown-unknown";
-
-/// The `package.json` script a UI plugin's build runs.
-pub const UI_BUILD_SCRIPT: &str = "build";
 
 /// One command to run.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,7 +27,7 @@ pub struct Step {
     pub in_dir: PathBuf,
     /// What this step is for, in a sentence an author reads.
     pub why: String,
-    /// Component destination relative to the plugin root, when this is a Cargo build.
+    /// Component destination relative to the package root, when this is a Cargo build.
     pub component: Option<PathBuf>,
 }
 
@@ -110,16 +109,11 @@ pub enum BuildError {
         reason: String,
     },
 
-    /// A UI plugin has no `package.json`, so there is no build script to run.
-    ///
-    /// Refused rather than defaulted to a bundler: the one an author picked is the one their project already works
-    /// with, and a tool that chose for them would produce an artifact their project does not reproduce.
-    #[error("{path} declares no `{script}` script, so there is nothing to run")]
-    NoUiBuildScript {
-        /// The file that was missing or incomplete.
-        path: String,
-        /// The script name.
-        script: String,
+    /// UI build metadata is invalid.
+    #[error("invalid UI build configuration: {reason}")]
+    UiConfiguration {
+        /// The invalid metadata or path.
+        reason: String,
     },
 }
 
@@ -132,8 +126,12 @@ pub struct BuildPlan {
     pub kind: TemplateKind,
     /// The commands, in order.
     pub steps: Vec<Step>,
-    /// The artifacts the build is expected to produce, relative to the root.
+    /// Artifacts inside the completed `dist/` package.
     pub expected: Vec<PathBuf>,
+    /// Manifest snapshot copied to the completed package.
+    pub manifest_json: String,
+    /// Source assets relative to the project, separate from the package artifact.
+    pub ui_source: Option<PathBuf>,
 }
 
 impl BuildPlan {
@@ -148,12 +146,21 @@ impl BuildPlan {
     /// # Errors
     ///
     /// [`BuildError`] when there is no manifest, it does not parse, it declares no runtime, or a UI plugin has no
-    /// build script.
+    /// build configuration.
     pub fn resolve(root: &Path) -> Result<Self, BuildError> {
         let manifest_path = root.join("manifest.json");
-        let text = std::fs::read_to_string(&manifest_path).map_err(|_| BuildError::NoManifest {
-            path: manifest_path.display().to_string(),
-        })?;
+        if !manifest_path
+            .try_exists()
+            .map_err(|error| BuildError::BadManifest {
+                reason: error.to_string(),
+            })?
+        {
+            return Err(BuildError::NoManifest {
+                path: manifest_path.display().to_string(),
+            });
+        }
+        let text = crate::verify::read_manifest(root)
+            .map_err(|reason| BuildError::BadManifest { reason })?;
         let manifest = synra_plugin_api::manifest::Manifest::from_json(&text).map_err(|error| {
             BuildError::BadManifest {
                 reason: error.to_string(),
@@ -198,40 +205,25 @@ impl BuildPlan {
             expected.push(PathBuf::from(&headless.artifact));
         }
 
+        let mut ui_source = None;
         if let Some(ui) = ui {
-            // The script is the author's, read from their `package.json`: this tool does not choose a bundler, because
-            // the one they picked is the one their project already works with.
-            let package = root.join("package.json");
-            let text =
-                std::fs::read_to_string(&package).map_err(|_| BuildError::NoUiBuildScript {
-                    path: package.display().to_string(),
-                    script: UI_BUILD_SCRIPT.to_owned(),
-                })?;
-            let value: serde_json::Value =
-                serde_json::from_str(&text).map_err(|_| BuildError::NoUiBuildScript {
-                    path: package.display().to_string(),
-                    script: UI_BUILD_SCRIPT.to_owned(),
-                })?;
-            let has_script = value
-                .get("scripts")
-                .and_then(|scripts| scripts.get(UI_BUILD_SCRIPT))
-                .is_some();
-            if !has_script {
-                return Err(BuildError::NoUiBuildScript {
-                    path: package.display().to_string(),
-                    script: UI_BUILD_SCRIPT.to_owned(),
-                });
+            let (source, command) =
+                ui::configuration(root).map_err(|reason| BuildError::UiConfiguration { reason })?;
+            ui_source = Some(source);
+            if let Some(command) = command {
+                steps.push(command);
             }
-
-            steps.push(Step {
-                program: "npm".to_owned(),
-                args: vec!["run".to_owned(), UI_BUILD_SCRIPT.to_owned()],
-                in_dir: PathBuf::new(),
-                component: None,
-                why: "run the interface's own build, which writes the bundle the manifest names"
-                    .to_owned(),
-            });
             expected.push(PathBuf::from(&ui.artifact));
+        }
+        for artifact in &expected {
+            let name = artifact.to_str().ok_or_else(|| BuildError::BadManifest {
+                reason: "artifact path must be UTF-8".to_owned(),
+            })?;
+            synra_plugin_ui::artifact::check_package_artifact_path(name).map_err(|error| {
+                BuildError::BadManifest {
+                    reason: error.to_string(),
+                }
+            })?;
         }
 
         Ok(Self {
@@ -239,6 +231,8 @@ impl BuildPlan {
             kind,
             steps,
             expected,
+            manifest_json: text,
+            ui_source,
         })
     }
 
@@ -269,8 +263,8 @@ impl BuildPlan {
         self.expected
             .iter()
             .map(|artifact| {
-                let full = self.root.join(artifact);
-                let exists = full.exists();
+                let full = self.root.join("dist").join(artifact);
+                let exists = full.is_file();
                 (artifact.clone(), exists)
             })
             .collect()
@@ -382,15 +376,7 @@ mod tests {
 
         /// A `package.json` with a build script.
         fn package_with_build(&self) {
-            self.write(
-                "package.json",
-                r#"{ "scripts": { "build": "vite build" } }"#,
-            );
-        }
-
-        /// A `package.json` without one.
-        fn package_without_build(&self) {
-            self.write("package.json", r#"{ "scripts": { "dev": "vite" } }"#);
+            self.write("Cargo.toml", "[package.metadata.synra.ui]\nsource = 'ui/dist'\ncommand = ['npm', 'run', 'build']\n");
         }
     }
 
@@ -502,31 +488,22 @@ mod tests {
     }
 
     #[test]
-    fn a_ui_plugin_with_no_build_script_is_refused_rather_than_defaulted() {
-        // ★ Refused rather than defaulted to a bundler. A tool that chose one would produce an artifact the author's
-        // own project does not reproduce, and the difference would appear as a plugin that behaves differently when
-        // they build it themselves.
-        let dir = Cleanup::new("no-script");
-        dir.hybrid("plugin.wasm", "dist");
-        dir.package_without_build();
-
-        match BuildPlan::resolve(dir.path()) {
-            Err(BuildError::NoUiBuildScript { path, script }) => {
-                assert!(path.contains("package.json"), "{path}");
-                assert_eq!(script, "build");
-            }
-            other => panic!("expected a refusal, got {other:?}"),
-        }
+    fn a_static_hybrid_needs_no_package_manager() {
+        let dir = Cleanup::new("static-ui");
+        dir.hybrid("plugin.wasm", "ui.zip");
+        let plan = BuildPlan::resolve(dir.path()).unwrap();
+        assert_eq!(plan.steps.len(), 1);
+        assert_eq!(plan.ui_source, Some(PathBuf::from("ui")));
     }
 
     #[test]
-    fn a_ui_plugin_with_no_package_json_is_refused_the_same_way() {
-        // The two are the same problem from the author's side: there is nothing to run.
-        let dir = Cleanup::new("no-package");
-        dir.hybrid("plugin.wasm", "dist");
+    fn malformed_explicit_ui_commands_are_refused() {
+        let dir = Cleanup::new("bad-ui-command");
+        dir.hybrid("plugin.wasm", "ui.zip");
+        dir.write("Cargo.toml", "[package.metadata.synra.ui]\ncommand = []\n");
         assert!(matches!(
             BuildPlan::resolve(dir.path()),
-            Err(BuildError::NoUiBuildScript { .. })
+            Err(BuildError::UiConfiguration { .. })
         ));
     }
 
@@ -566,7 +543,7 @@ mod tests {
         let plan = BuildPlan::resolve(dir.path()).expect("resolves");
         assert_eq!(plan.missing(), vec![PathBuf::from("plugin.wasm")]);
 
-        dir.write("plugin.wasm", "");
+        dir.write("dist/plugin.wasm", "");
         let plan = BuildPlan::resolve(dir.path()).expect("resolves");
         assert!(plan.missing().is_empty(), "{:?}", plan.missing());
         assert_eq!(plan.outcome_lines(), vec!["built plugin.wasm".to_owned()]);
@@ -685,9 +662,8 @@ mod tests {
             BuildError::BadManifest {
                 reason: "missing field `id`".to_owned(),
             },
-            BuildError::NoUiBuildScript {
-                path: "/p/package.json".to_owned(),
-                script: "build".to_owned(),
+            BuildError::UiConfiguration {
+                reason: "command must be a nonempty argv array".to_owned(),
             },
         ];
         for error in errors {

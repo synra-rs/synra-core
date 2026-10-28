@@ -75,7 +75,14 @@ pub(super) fn write(
         .map_err(|error| InstallRefusal::new("write", format!("{}: {error}", staging.display())))?;
     let mut failure: Option<String> = None;
     for (name, bytes) in &files {
-        if let Err(error) = std::fs::write(staging.join(name), bytes) {
+        let target = staging.join(name);
+        if let Some(parent) = target.parent()
+            && let Err(error) = std::fs::create_dir_all(parent)
+        {
+            failure = Some(format!("{name}: {error}"));
+            break;
+        }
+        if let Err(error) = std::fs::write(target, bytes) {
             failure = Some(format!("{name}: {error}"));
             break;
         }

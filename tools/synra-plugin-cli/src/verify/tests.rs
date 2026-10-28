@@ -383,7 +383,7 @@ fn the_verdicts_have_words_a_person_reads() {
 fn the_bounds_are_the_ones_the_artifact_layer_uses() {
     // Asserted so a change here and not there is a failure rather than two bounds that disagree about the same
     // plugin, one of which the kernel enforces.
-    assert_eq!(MAX_UI_BYTES, 32 * 1024 * 1024);
+    assert_eq!(MAX_UI_BYTES, synra_plugin_ui::MAX_ARTIFACT_BYTES);
     assert_eq!(MAX_UI_FILES, 2_000);
     // Through a binding, so the comparison is not a constant expression the compiler folds away — and because the
     // relationship is the point: a Wasm bound above the bundle bound would let a plugin the kernel refuses to load

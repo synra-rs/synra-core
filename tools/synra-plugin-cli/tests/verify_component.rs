@@ -234,7 +234,14 @@ fn invalid_nested_function_bodies_do_not_pass_on_interface_metadata_alone() {
 fn missing_escaping_and_oversized_artifacts_cannot_hide_behind_a_valid_default_file() {
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("plugin.wasm"), fixture::component()).unwrap();
-    for artifact in ["missing.wasm", "../plugin.wasm", ""] {
+    std::fs::write(root.path().join("Source.JSON"), fixture::component()).unwrap();
+    for artifact in [
+        "missing.wasm",
+        "../plugin.wasm",
+        "",
+        "Source.JSON",
+        "plugin.wasm:stream",
+    ] {
         manifest(root.path(), artifact, &[]);
         let (status, report) = verify(root.path());
         assert!(!status.success(), "{report}");
@@ -251,13 +258,30 @@ fn missing_escaping_and_oversized_artifacts_cannot_hide_behind_a_valid_default_f
 }
 
 #[test]
-fn ui_entry_paths_sizes_and_directory_links_are_checked_in_the_declared_bundle() {
+fn ui_archives_entries_limits_and_links_are_checked_by_the_actual_command() {
+    use std::io::Write as _;
     let root = tempfile::tempdir().unwrap();
     manifest(root.path(), "plugin.wasm", &[]);
     std::fs::write(root.path().join("plugin.wasm"), fixture::component()).unwrap();
-    let bundle = root.path().join("frontend");
-    std::fs::create_dir(&bundle).unwrap();
-    std::fs::write(bundle.join("start.html"), "hello").unwrap();
+    let bundle = root.path().join("frontend.zip");
+    let write_zip = |path: &Path, link: bool| {
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+        writer
+            .start_file("start.html", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(b"hello").unwrap();
+        if link {
+            writer
+                .add_symlink(
+                    "escape",
+                    "../private",
+                    zip::write::SimpleFileOptions::default(),
+                )
+                .unwrap();
+        }
+        writer.finish().unwrap();
+    };
+    write_zip(&bundle, false);
     let manifest_path = root.path().join("manifest.json");
     let mut source: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
@@ -268,33 +292,37 @@ fn ui_entry_paths_sizes_and_directory_links_are_checked_in_the_declared_bundle()
         .unwrap()
         .insert(
             "ui".to_owned(),
-            serde_json::json!({ "artifact": "frontend", "entry": "start.html" }),
+            serde_json::json!({ "artifact": "frontend.zip", "entry": "start.html" }),
         );
     std::fs::write(&manifest_path, source.to_string()).unwrap();
     let (status, report) = verify(root.path());
     assert!(status.success(), "{report}");
-    *source.pointer_mut("/runtime/ui/entry").unwrap() = serde_json::json!("missing.html");
-    std::fs::write(&manifest_path, source.to_string()).unwrap();
-    let (status, report) = verify(root.path());
-    assert!(!status.success(), "{report}");
+    for entry in ["missing.html", "../plugin.wasm"] {
+        *source.pointer_mut("/runtime/ui/entry").unwrap() = serde_json::json!(entry);
+        std::fs::write(&manifest_path, source.to_string()).unwrap();
+        let (status, report) = verify(root.path());
+        assert!(!status.success(), "{report}");
+    }
     *source.pointer_mut("/runtime/ui/entry").unwrap() = serde_json::json!("start.html");
     std::fs::write(&manifest_path, source.to_string()).unwrap();
-    let large = bundle.join("large.bin");
-    std::fs::File::create(&large)
+    std::fs::File::create(&bundle)
         .unwrap()
-        .set_len(synra_plugin_cli::MAX_UI_BYTES + 1)
+        .set_len(synra_plugin_ui::artifact::MAX_ARCHIVE_BYTES + 1)
         .unwrap();
     let (status, report) = verify(root.path());
     assert!(!status.success(), "{report}");
-    assert!(report.to_string().contains("limits"), "{report}");
-    std::fs::remove_file(large).unwrap();
-    let private = root.path().join("private");
-    std::fs::create_dir(&private).unwrap();
-    std::fs::write(private.join("secret"), "outside the UI").unwrap();
-    directory_link(&private, &bundle.join("escape"));
+    assert!(report.to_string().contains("limit"), "{report}");
+    write_zip(&bundle, true);
     let (status, report) = verify(root.path());
     assert!(!status.success(), "{report}");
-    assert!(report.to_string().contains("outside the UI"), "{report}");
+    let outside = tempfile::tempdir().unwrap();
+    write_zip(&outside.path().join("ui.zip"), false);
+    directory_link(outside.path(), &root.path().join("escape"));
+    *source.pointer_mut("/runtime/ui/artifact").unwrap() = serde_json::json!("escape/ui.zip");
+    std::fs::write(&manifest_path, source.to_string()).unwrap();
+    let (status, report) = verify(root.path());
+    assert!(!status.success(), "{report}");
+    assert!(report.to_string().contains("outside"), "{report}");
 }
 
 #[cfg(windows)]

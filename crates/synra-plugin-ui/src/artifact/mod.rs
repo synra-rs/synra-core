@@ -19,11 +19,12 @@
 //! Deliberately. A path that could never be *served* is also one that is never written, and two checks would
 //! eventually disagree — with the one that disagreed being the one nobody was looking at.
 
-mod limits;
+mod archive;
 mod bundle;
 mod expand;
-mod unpack;
+mod limits;
 mod serving;
+mod unpack;
 
 #[cfg(test)]
 mod tests;
@@ -31,11 +32,12 @@ mod tests;
 #[cfg(test)]
 mod proptests;
 
+pub use archive::{inspect_ui, inspect_ui_bytes};
 pub use bundle::{UiArtifact, UiArtifactIndex};
 pub use expand::{ArchiveLimits, Entry, EntryKind, Expansion, plan};
 pub use limits::{
-    ArtifactError, ArtifactFile, MAX_ARTIFACT_BYTES, MAX_ARTIFACT_FILE_BYTES, MAX_ARTIFACT_FILES,
-    MAX_ARTIFACT_PATH_LEN, PathRefusal,
+    ArtifactError, ArtifactFile, MAX_ARCHIVE_BYTES, MAX_ARTIFACT_BYTES, MAX_ARTIFACT_FILE_BYTES,
+    MAX_ARTIFACT_FILES, MAX_ARTIFACT_PATH_LEN, PathRefusal,
 };
-pub use serving::{check_path, content_type_for};
+pub use serving::{check_package_artifact_path, check_path, content_type_for};
 pub use unpack::{UnpackError, bundle_dir, unpack};

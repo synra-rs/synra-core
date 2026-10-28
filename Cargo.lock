@@ -2448,6 +2448,7 @@ dependencies = [
  "clap",
  "ed25519-dalek",
  "flate2",
+ "fs2",
  "rand_core 0.6.4",
  "rstest",
  "serde",
@@ -2457,8 +2458,10 @@ dependencies = [
  "synra-fetch",
  "synra-plugin-api",
  "synra-plugin-host",
+ "synra-plugin-ui",
  "synra-protocol",
  "synra-registry",
+ "synra-store",
  "tar",
  "tempfile",
  "thiserror",
@@ -2466,6 +2469,7 @@ dependencies = [
  "wasmparser 0.247.0",
  "wit-component",
  "wit-parser 0.247.0",
+ "zip",
 ]
 
 [[package]]
@@ -2516,6 +2520,7 @@ dependencies = [
  "synra-capability",
  "synra-plugin-api",
  "synra-protocol",
+ "tempfile",
  "thiserror",
  "zip",
 ]

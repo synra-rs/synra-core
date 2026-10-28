@@ -24,4 +24,5 @@ pub use check::verify;
 pub use component::ComponentInfo;
 pub use limits::{MAX_UI_BYTES, MAX_UI_FILES, MAX_WASM_BYTES};
 pub use target::Target;
+pub(crate) use target::read_manifest;
 pub use verdict::{Finding, Verdict, VerifyReport};

@@ -15,7 +15,7 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use super::{ArchiveLimits, ArtifactError, check_path};
+use super::{ArchiveLimits, ArtifactError, EntryKind};
 
 /// What can go wrong writing a bundle out.
 #[derive(Debug, thiserror::Error)]
@@ -39,65 +39,92 @@ pub enum UnpackError {
 /// **A refused archive leaves nothing behind**: the files written before the refusal are removed again, so a caller does not
 /// have to guess which half of a bundle reached the disk. The caller still owns the destination directory — this removes the
 /// files it wrote, not directories that were already there.
-pub fn unpack(archive: &Path, dest: &Path, limits: ArchiveLimits) -> Result<Vec<PathBuf>, UnpackError> {
-    let mut written: Vec<PathBuf> = Vec::new();
-    match write_all(archive, dest, limits, &mut written) {
-        Ok(()) => Ok(written),
-        Err(error) => {
-            // Best effort, and deliberately ignoring the failures: the caller is already being told about one error, and a
-            // second one about a file it cannot use says nothing it can act on.
-            for path in written.iter().rev() {
-                let _ = std::fs::remove_file(path);
-            }
-            Err(error)
-        }
-    }
-}
-
-/// The body, collecting what it writes so [`unpack`] can undo it.
-fn write_all(
+pub fn unpack(
     archive: &Path,
     dest: &Path,
     limits: ArchiveLimits,
-    written: &mut Vec<PathBuf>,
-) -> Result<(), UnpackError> {
-    let mut zip = zip::ZipArchive::new(std::fs::File::open(archive)?)?;
-    if zip.len() > limits.max_entries {
-        return Err(ArtifactError::TooManyFiles { found: zip.len(), limit: limits.max_entries }.into());
+) -> Result<Vec<PathBuf>, UnpackError> {
+    let mut archive =
+        super::archive::Archive::open(archive, limits, limits.max_total_uncompressed)?;
+    let root_exists = match std::fs::symlink_metadata(dest) {
+        Ok(metadata) => {
+            if !metadata.is_dir()
+                || metadata.file_type().is_symlink()
+                || std::fs::read_dir(dest)?.next().is_some()
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "unpack destination must be absent or an empty real directory",
+                )
+                .into());
+            }
+            true
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(error.into()),
+    };
+    let mut written = Vec::new();
+    let mut directories = Vec::new();
+    let result = (|| {
+        if !root_exists {
+            create_directories(dest, &mut directories)?;
+        }
+        write_all(&mut archive, dest, &mut written, &mut directories)
+    })();
+    if let Err(error) = result {
+        for path in written.iter().rev() {
+            let _ = std::fs::remove_file(path);
+        }
+        for path in directories.iter().rev() {
+            let _ = std::fs::remove_dir(path);
+        }
+        return Err(error);
     }
+    Ok(written)
+}
 
-    let mut total = 0u64;
-    for index in 0..zip.len() {
-        let mut entry = zip.by_index(index)?;
-        if !entry.is_file() {
+fn create_directories(path: &Path, made: &mut Vec<PathBuf>) -> Result<(), std::io::Error> {
+    if path.is_dir() {
+        return Ok(());
+    }
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        create_directories(parent, made)?;
+    }
+    std::fs::create_dir(path)?;
+    made.push(path.to_path_buf());
+    Ok(())
+}
+
+fn write_all(
+    archive: &mut super::archive::Archive<std::io::Cursor<Vec<u8>>>,
+    dest: &Path,
+    written: &mut Vec<PathBuf>,
+    directories: &mut Vec<PathBuf>,
+) -> Result<(), UnpackError> {
+    for index in 0..archive.expansion.len() {
+        let entry = archive
+            .expansion
+            .entries
+            .get(index)
+            .ok_or_else(|| std::io::Error::other("ZIP plan entry is missing"))?;
+        let target = dest.join(&entry.path);
+        if entry.kind == EntryKind::Directory {
+            create_directories(&target, directories)?;
             continue;
         }
-        let name = entry.name().to_owned();
-        // ★ Before anything else: the name is the attack surface. `check_path` refuses `..`, absolute paths, backslashes
-        // and null bytes — the four ways a zip entry escapes a directory or lies about where it points.
-        check_path(&name)?;
-
-        if entry.size() > limits.max_single_file {
-            return Err(ArtifactError::TooLarge { found: entry.size(), limit: limits.max_single_file }.into());
-        }
-        total += entry.size();
-        if total > limits.max_total_uncompressed {
-            return Err(ArtifactError::TooLarge { found: total, limit: limits.max_total_uncompressed }.into());
-        }
-
-        let target = dest.join(&name);
-        // ★ Checked **after** the join, because that is where a `..` would have taken effect. `check_path` already refuses
-        // one; this refuses a path that got here anyway, which is what a second guard is for.
-        if !target.starts_with(dest) {
-            return Err(ArtifactError::BadPath { path: name, reason: super::PathRefusal::Traversal }.into());
-        }
         if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent)?;
+            create_directories(parent, directories)?;
         }
-        let mut file = std::fs::File::create(&target)?;
-        std::io::copy(&mut entry, &mut file)?;
-        file.flush()?;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&target)?;
         written.push(target);
+        archive.copy(index, &mut file)?;
+        file.flush()?;
     }
     Ok(())
 }
@@ -118,7 +145,8 @@ mod tests {
 
     /// An archive holding these entries, written beside the test's scratch space.
     fn archive(label: &str, entries: &[(&str, &[u8])]) -> PathBuf {
-        let path = std::env::temp_dir().join(format!("synra-ui-{label}-{}.zip", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("synra-ui-{label}-{}.zip", std::process::id()));
         let file = std::fs::File::create(&path).expect("a file");
         let mut writer = zip::ZipWriter::new(file);
         for (name, bytes) in entries {
@@ -143,27 +171,43 @@ mod tests {
         // ★ The installer rolls back through the list this function answers with, so every entry has to be a real file inside
         // the destination: a path that does not exist is a rollback that silently leaves the file behind, and one outside
         // the destination is a rollback that deletes somebody else's data.
-        let zip = archive("unpack-list", &[("index.html", b"<p>"), ("assets/app.js", b"export {}")]);
+        let zip = archive(
+            "unpack-list",
+            &[("index.html", b"<p>"), ("assets/app.js", b"export {}")],
+        );
         let dest = scratch("unpack-list-dest");
 
         let written = unpack(&zip, &dest, ArchiveLimits::artifact()).expect("it unpacks");
 
         assert_eq!(written.len(), 2);
         for path in &written {
-            assert!(path.starts_with(&dest), "{} is inside the destination", path.display());
+            assert!(
+                path.starts_with(&dest),
+                "{} is inside the destination",
+                path.display()
+            );
             assert!(path.is_file(), "{} exists", path.display());
         }
     }
 
     #[test]
     fn a_bundle_is_written_out() {
-        let zip = archive("unpack-ok", &[("index.html", b"<!doctype html>"), ("assets/app.js", b"export {}")]);
+        let zip = archive(
+            "unpack-ok",
+            &[
+                ("index.html", b"<!doctype html>"),
+                ("assets/app.js", b"export {}"),
+            ],
+        );
         let dest = scratch("unpack-ok-dest");
 
         let written = unpack(&zip, &dest, ArchiveLimits::artifact()).expect("it unpacks");
 
         assert_eq!(written.len(), 2);
-        assert_eq!(std::fs::read(dest.join("index.html")).expect("the page"), b"<!doctype html>");
+        assert_eq!(
+            std::fs::read(dest.join("index.html")).expect("the page"),
+            b"<!doctype html>"
+        );
         assert!(dest.join("assets/app.js").exists(), "and its resource");
     }
 
@@ -171,36 +215,71 @@ mod tests {
     fn an_entry_that_leaves_the_directory_is_refused() {
         // ★ The request that would overwrite the device's key. Nothing is written: `check_path` refuses the entry before the
         // join, so the destination stays as empty as it started.
-        let zip = archive("unpack-slip", &[("index.html", b"ok"), ("../identity.toml", b"stolen")]);
+        let zip = archive(
+            "unpack-slip",
+            &[("index.html", b"ok"), ("../identity.toml", b"stolen")],
+        );
         let dest = scratch("unpack-slip-dest");
 
-        let refused = unpack(&zip, &dest, ArchiveLimits::artifact()).expect_err("it must not unpack");
+        let refused =
+            unpack(&zip, &dest, ArchiveLimits::artifact()).expect_err("it must not unpack");
 
-        assert!(matches!(refused, UnpackError::Artifact(ArtifactError::BadPath { .. })), "got {refused:?}");
-        assert!(!dest.parent().unwrap_or(&dest).join("identity.toml").exists(), "nothing escaped");
+        assert!(
+            matches!(
+                refused,
+                UnpackError::Artifact(ArtifactError::BadPath { .. })
+            ),
+            "got {refused:?}"
+        );
+        assert!(
+            !dest
+                .parent()
+                .unwrap_or(&dest)
+                .join("identity.toml")
+                .exists(),
+            "nothing escaped"
+        );
     }
 
     #[test]
     fn a_refused_archive_leaves_nothing_behind() {
         // ★ The property the installer needs: a bundle that is refused halfway must not leave half of itself in staging. The
         // first entry is written before the second is refused, so this only passes if `unpack` undoes its own work.
-        let zip = archive("unpack-undo", &[("index.html", b"written first"), ("../identity.toml", b"refused second")]);
+        let zip = archive(
+            "unpack-undo",
+            &[
+                ("index.html", b"written first"),
+                ("../identity.toml", b"refused second"),
+            ],
+        );
         let dest = scratch("unpack-undo-dest");
 
         unpack(&zip, &dest, ArchiveLimits::artifact()).expect_err("it is refused");
 
-        assert!(!dest.join("index.html").exists(), "the file written before the refusal is gone");
+        assert!(
+            !dest.join("index.html").exists(),
+            "the file written before the refusal is gone"
+        );
     }
 
     #[test]
     fn a_bundle_over_its_file_limit_is_refused() {
-        let zip = archive("unpack-many", &[("a.js", b"1"), ("b.js", b"2"), ("c.js", b"3")]);
+        let zip = archive(
+            "unpack-many",
+            &[("a.js", b"1"), ("b.js", b"2"), ("c.js", b"3")],
+        );
         let dest = scratch("unpack-many-dest");
         let mut limits = ArchiveLimits::artifact();
         limits.max_entries = 2;
 
         let refused = unpack(&zip, &dest, limits).expect_err("too many files");
 
-        assert!(matches!(refused, UnpackError::Artifact(ArtifactError::TooManyFiles { .. })), "got {refused:?}");
+        assert!(
+            matches!(
+                refused,
+                UnpackError::Artifact(ArtifactError::TooManyFiles { .. })
+            ),
+            "got {refused:?}"
+        );
     }
 }

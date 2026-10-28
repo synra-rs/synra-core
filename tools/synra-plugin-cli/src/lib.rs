@@ -63,7 +63,7 @@ pub(crate) mod test_component;
 pub use args::{
     BuildArgs, Cli, Command, NewArgs, PackArgs, PublishArgs, SignArgs, UploadArgs, VerifyArgs,
 };
-pub use build::{BuildError, BuildPlan, Step, UI_BUILD_SCRIPT, WASM_TARGET};
+pub use build::{BuildError, BuildPlan, Step, WASM_TARGET};
 pub use execute::{Executed, execute, is_dry_run};
 pub use pack::{pack_plugin, write_archive};
 pub use publish::publish_plugin;

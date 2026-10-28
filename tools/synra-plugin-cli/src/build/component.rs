@@ -32,7 +32,12 @@ pub fn encode(module: &[u8]) -> Result<Vec<u8>, String> {
 ///
 /// # Errors
 /// Fails on a compiler error, ambiguous artifact, invalid module, unsafe destination or output IO error.
-pub fn build(root: &Path, step: &Step, destination: &Path) -> Result<(), String> {
+pub fn build(
+    root: &Path,
+    output_root: &Path,
+    step: &Step,
+    destination: &Path,
+) -> Result<(), String> {
     if destination.as_os_str().is_empty()
         || destination.is_absolute()
         || destination
@@ -60,7 +65,7 @@ pub fn build(root: &Path, step: &Step, destination: &Path) -> Result<(), String>
         .read_to_end(&mut module)
         .map_err(|error| format!("{}: {error}", source.display()))?;
     let component = encode(&module)?;
-    let destination = root.join(destination);
+    let destination = output_root.join(destination);
     if std::fs::canonicalize(&destination).ok() == Some(source) {
         return Err("the component destination must differ from Cargo's core module".to_owned());
     }
@@ -193,7 +198,13 @@ mod tests {
             why: String::new(),
             component: None,
         };
-        let error = build(Path::new("."), &step, Path::new("../outside.wasm")).unwrap_err();
+        let error = build(
+            Path::new("."),
+            Path::new("dist"),
+            &step,
+            Path::new("../outside.wasm"),
+        )
+        .unwrap_err();
         assert!(error.contains("relative file path"), "{error}");
     }
 }

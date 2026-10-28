@@ -32,7 +32,7 @@
 //! Hard links are refused for the same reason plus one more: a hard link's target is a path, and making one would let
 //! an archive give itself a second name for a file the user owns.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 use super::limits::{ArtifactError, MAX_ARTIFACT_PATH_LEN, PathRefusal};
 use super::serving::check_path;
@@ -60,7 +60,7 @@ pub struct ArchiveLimits {
 
 /// The design document's defaults.
 ///
-/// Sixty-four mebibytes of content in at most four thousand entries, no entry larger than sixteen mebibytes, no entry
+/// Generic expansion permits 256 MiB in at most 4096 entries, with at most 64 MiB per entry. No entry
 /// expanding by more than two hundred times its compressed size, and no path deeper than sixteen components. A real
 /// interface is dozens of files and a few hundred kilobytes, so every one of these is generous by an order of
 /// magnitude — which is what makes a refusal informative rather than arbitrary.
@@ -86,7 +86,11 @@ impl ArchiveLimits {
     /// Limits for an artifact tree, which is what the design document's numbers describe.
     #[must_use]
     pub fn artifact() -> Self {
-        Self::default()
+        Self {
+            max_total_uncompressed: super::MAX_ARTIFACT_BYTES,
+            max_single_file: super::MAX_ARTIFACT_FILE_BYTES,
+            ..Self::default()
+        }
     }
 
     /// Limits for a plugin package: the whole `.synra` archive, not one artifact inside it.
@@ -260,13 +264,32 @@ pub fn plan(entries: &[Entry], limits: ArchiveLimits) -> Result<Expansion, Artif
         return Err(ArtifactError::TooManyFiles { found: entries.len(), limit: limits.max_entries });
     }
 
-    let mut seen: HashSet<&str> = HashSet::with_capacity(entries.len());
+    let mut seen: HashMap<String, EntryKind> = HashMap::with_capacity(entries.len());
     for entry in entries {
         check_entry(entry, limits)?;
         // A duplicate is refused rather than overwritten: an archive with two entries under one name is one whose
         // extraction order decides the contents, and nothing about it says which the author meant.
-        if !seen.insert(entry.path.as_str()) {
-            return Err(ArtifactError::DuplicatePath { path: entry.path.clone() });
+        if seen
+            .insert(
+                entry.path.trim_end_matches('/').to_ascii_lowercase(),
+                entry.kind,
+            )
+            .is_some()
+        {
+            return Err(ArtifactError::DuplicatePath {
+                path: entry.path.clone(),
+            });
+        }
+    }
+    for entry in entries {
+        let path = entry.path.trim_end_matches('/').to_ascii_lowercase();
+        if path.rmatch_indices('/').any(|(at, _)| {
+            path.get(..at)
+                .is_some_and(|parent| seen.get(parent) == Some(&EntryKind::File))
+        }) {
+            return Err(ArtifactError::DuplicatePath {
+                path: entry.path.clone(),
+            });
         }
     }
 

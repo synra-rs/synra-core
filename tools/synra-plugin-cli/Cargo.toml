@@ -26,6 +26,11 @@ tempfile = "3"
 
 synra-protocol = { path = "../../crates/synra-protocol" }
 synra-plugin-api = { path = "../../crates/synra-plugin-api" }
+synra-plugin-ui = { path = "../../crates/synra-plugin-ui" }
+synra-store = { path = "../../crates/synra-store" }
+toml_edit = "=0.25.17"
+fs2 = "0.4"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 synra-plugin-host = { path = "../../crates/synra-plugin-host" }
 # `publish` checks a tarball with the unpacker the installing side runs, so "the archive is well formed" means what it
 # means at install time.
@@ -57,7 +62,6 @@ tar = "0.4"
 rstest.workspace = true
 wasmparser = { version = "=0.247.0", default-features = false, features = ["component-model"] }
 wit-component = { version = "=0.247.0", features = ["dummy-module"] }
-toml_edit = "=0.25.17"
 
 [lints]
 workspace = true

@@ -3,6 +3,105 @@ use synra_plugin_host::{
     BackendError, BackendKind, CompiledArtifact, Enforcement, PluginInstance, WasmBackend,
 };
 
+fn hybrid_source(root: &Path, entry: &str) -> PathBuf {
+    use std::io::Write as _;
+    let source = root.join("source");
+    std::fs::create_dir_all(source.join("artifacts")).unwrap();
+    let manifest = serde_json::json!({
+        "id":"@acme/hybrid", "version":"1.0.0", "title":"Hybrid",
+        "publisher":{"id":"acme"}, "sdk":{"min":"1.0.0"}, "wit":synra_plugin_host::host_world(),
+        "capabilities":[], "runtime":{
+            "headless":{"artifact":"artifacts/plugin.wasm","stateful":false},
+            "ui":{"artifact":"artifacts/ui.zip","entry":entry}
+        }
+    });
+    std::fs::write(source.join("manifest.json"), manifest.to_string()).unwrap();
+    std::fs::write(
+        source.join("artifacts/plugin.wasm"),
+        synra_testkit::component::inert_component().unwrap(),
+    )
+    .unwrap();
+    let mut zip =
+        zip::ZipWriter::new(std::fs::File::create(source.join("artifacts/ui.zip")).unwrap());
+    zip.start_file(
+        "assets/index.html",
+        zip::write::SimpleFileOptions::default(),
+    )
+    .unwrap();
+    zip.write_all(b"<h1>Real UI</h1>").unwrap();
+    zip.finish().unwrap();
+    source
+}
+
+#[test]
+fn invalid_ui_entry_is_refused_before_compilation_or_installation_writes() {
+    let root = tempfile::tempdir().unwrap();
+    let source = hybrid_source(root.path(), "missing.html");
+    let mut db = synra_store::SynraDb::open(&root.path().join("db.sqlite")).unwrap();
+    db.migrate().unwrap();
+    let plugins = root.path().join("plugins");
+    let backend = Backend::new(std::sync::Arc::new(NeverCompile));
+    let error = from_directory(
+        &mut db,
+        &backend,
+        &plugins,
+        &source,
+        1,
+        HostFacts::desktop(),
+    )
+    .unwrap_err();
+    assert_eq!(error.stage, "ui-artifact", "{}", error.reason);
+    assert!(db.plugins().unwrap().is_empty());
+    assert!(!plugins.exists());
+    assert!(!root.path().join(".install-staging").exists());
+}
+
+#[rstest::rstest]
+#[case(false)]
+#[case(true)]
+fn complete_hybrid_install_and_database_failure_use_real_archive_bytes(#[case] fail_record: bool) {
+    let root = tempfile::tempdir().unwrap();
+    let source = hybrid_source(root.path(), "assets/index.html");
+    let db_path = root.path().join("db.sqlite");
+    let mut db = synra_store::SynraDb::open(&db_path).unwrap();
+    db.migrate().unwrap();
+    if fail_record {
+        let connection = rusqlite::Connection::open(&db_path).unwrap();
+        connection.execute_batch("CREATE TRIGGER fail_install BEFORE INSERT ON plugin_versions BEGIN SELECT RAISE(FAIL, 'injected record failure'); END;").unwrap();
+    }
+    let plugins = root.path().join("plugins");
+    let backend = Backend::new(std::sync::Arc::new(
+        synra_plugin_host::ScriptedBackend::new(),
+    ));
+    let result = from_directory(
+        &mut db,
+        &backend,
+        &plugins,
+        &source,
+        1,
+        HostFacts::desktop(),
+    );
+    if fail_record {
+        assert_eq!(result.unwrap_err().stage, "record");
+        assert!(db.plugins().unwrap().is_empty());
+        assert!(!plugins.join("acme+hybrid").exists());
+    } else {
+        let installed = result.unwrap();
+        assert_eq!(
+            std::fs::read(installed.path.join("ui/assets/index.html")).unwrap(),
+            b"<h1>Real UI</h1>"
+        );
+        assert!(installed.path.join("artifacts/plugin.wasm").is_file());
+        assert_eq!(db.plugins().unwrap().len(), 1);
+    }
+    assert_eq!(
+        std::fs::read_dir(root.path().join(".install-staging"))
+            .unwrap()
+            .count(),
+        0
+    );
+}
+
 /// A failed static admission must never reach this engine.
 struct NeverCompile;
 

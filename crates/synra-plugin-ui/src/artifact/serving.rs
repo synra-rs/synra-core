@@ -44,11 +44,57 @@ pub fn check_path(path: &str) -> Result<(), ArtifactError> {
         if component == "." {
             return Err(refuse(PathRefusal::BadCharacter));
         }
-        if component.chars().any(|ch| ch.is_control()) {
+        if component
+            .chars()
+            .any(|ch| ch.is_control() || matches!(ch, ':' | '<' | '>' | '"' | '|' | '?' | '*'))
+            || component.ends_with(['.', ' '])
+            || reserved_component(component)
+        {
             return Err(refuse(PathRefusal::BadCharacter));
         }
     }
 
+    Ok(())
+}
+
+fn reserved_component(component: &str) -> bool {
+    let stem = component.split('.').next().unwrap_or_default();
+    ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"]
+        .iter()
+        .any(|name| stem.eq_ignore_ascii_case(name))
+        || ["COM", "LPT"].iter().any(|prefix| {
+            stem.get(..3)
+                .is_some_and(|name| name.eq_ignore_ascii_case(prefix))
+                && stem.get(3..).is_some_and(|suffix| {
+                    matches!(
+                        suffix,
+                        "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+                    )
+                })
+        })
+}
+
+/// Check a runtime artifact path without allowing it to shadow package metadata or extracted UI files.
+///
+/// # Errors
+/// Reports malformed paths or a case-insensitive collision with a reserved package root name.
+pub fn check_package_artifact_path(path: &str) -> Result<(), ArtifactError> {
+    check_path(path)?;
+    let root = path.split('/').next().unwrap_or_default();
+    if [
+        "manifest.json",
+        "signature.json",
+        "source.json",
+        ".synra-build.json",
+        "ui",
+    ]
+    .iter()
+    .any(|name| root.eq_ignore_ascii_case(name))
+    {
+        return Err(ArtifactError::ReservedPackagePath {
+            path: path.to_owned(),
+        });
+    }
     Ok(())
 }
 

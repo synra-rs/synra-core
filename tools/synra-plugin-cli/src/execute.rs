@@ -19,7 +19,6 @@
 //! same and only the flag says whether to carry it out.
 
 use std::path::Path;
-use std::process::Command;
 
 use crate::args::Cli;
 use crate::run::Outcome;
@@ -174,44 +173,9 @@ fn write_files(root: &Path, files: &[(String, String)]) -> Executed {
 
 /// Runs a build's commands and checks what they produced.
 fn run_steps(plan: &crate::build::BuildPlan) -> Executed {
-    for step in &plan.steps {
-        if let Some(destination) = &step.component {
-            if let Err(error) = crate::build::component::build(&plan.root, step, destination) {
-                return Executed::failed(vec![error]);
-            }
-            continue;
-        }
-        let status = Command::new(&step.program)
-            .args(&step.args)
-            .current_dir(plan.root.join(&step.in_dir))
-            .status();
-
-        match status {
-            Ok(status) if status.success() => {}
-            Ok(status) => {
-                // The step's own `why` is not repeated: the author just watched it run, and what they need is which
-                // command failed.
-                return Executed::failed(vec![format!(
-                    "`{}` exited with {status}",
-                    step.command_line()
-                )]);
-            }
-            Err(error) => {
-                return Executed::failed(vec![format!(
-                    "`{}` could not be run: {error}",
-                    step.command_line()
-                )]);
-            }
-        }
-    }
-
-    // ★ Checked after the commands, and the reason `build` knows what to expect: a build script that silently
-    // succeeded at nothing exits zero, and the only thing that catches it is looking for the artifact.
-    let lines = plan.outcome_lines();
-    if plan.missing().is_empty() {
-        Executed::ok(lines)
-    } else {
-        Executed::failed(lines)
+    match crate::build::bundle::run(plan) {
+        Ok(lines) => Executed::ok(lines),
+        Err(error) => Executed::failed(vec![error]),
     }
 }
 
@@ -364,7 +328,7 @@ mod tests {
         // the check that follows the commands is asserted on its own.
         let dir = Cleanup::new("built");
         dir.plugin();
-        dir.write("plugin.wasm", b"the module");
+        dir.write("dist/plugin.wasm", b"the module");
 
         let plan = BuildPlan::resolve(dir.path()).expect("resolves");
         assert!(plan.missing().is_empty());

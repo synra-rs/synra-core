@@ -55,7 +55,7 @@ pub use replacement::{PreparedReplacement, prepare_replacement};
 ///
 /// The design document's ceiling for a Wasm artifact. It is checked on the file's metadata **and** on the bytes that
 /// were read, because the two are not the same number when something is writing to the file while it is read.
-pub(crate) const MAX_ARTIFACT_BYTES: u64 = 32 * 1024 * 1024;
+pub(crate) const MAX_ARTIFACT_BYTES: u64 = synra_plugin_ui::artifact::MAX_ARCHIVE_BYTES;
 
 /// The largest package, added up.
 ///
@@ -244,7 +244,7 @@ fn prepare(
     let mut digests = Digests::new();
     let mut total = manifest_json.len() as u64;
     for name in artifact_names(&manifest) {
-        if !is_plain_file_name(&name) {
+        if !is_artifact_path(&name) {
             return Err(InstallRefusal::new(
                 "manifest",
                 format!("`{name}` is not a file name inside the package"),
@@ -347,6 +347,21 @@ fn prepare(
     let trust = trust_store(db);
     let report = verify::verify(&candidate, &trust)
         .map_err(|(stage, error)| InstallRefusal::new(stage.as_str(), error.to_string()))?;
+
+    // Inspect the verified snapshot before compilation or installation writes.
+    if let Some(ui) = manifest.runtime.ui.as_ref() {
+        let bytes = files
+            .iter()
+            .find(|(name, _)| name == &ui.artifact)
+            .map(|(_, bytes)| bytes.as_slice())
+            .ok_or_else(|| InstallRefusal::new("ui-artifact", "declared UI archive is missing"))?;
+        synra_plugin_ui::artifact::inspect_ui_bytes(
+            bytes,
+            &ui.entry,
+            synra_plugin_ui::artifact::ArchiveLimits::artifact(),
+        )
+        .map_err(|error| InstallRefusal::new("ui-artifact", error.to_string()))?;
+    }
 
     // Only packages that passed the complete verification pipeline reach native compilation.
     // This checks the selected engine without instantiating the guest or invoking callbacks.
@@ -761,34 +776,26 @@ pub fn artifact_names(manifest: &Manifest) -> Vec<String> {
     names
 }
 
-/// Whether a manifest-supplied name is a file name inside the package.
-///
-/// # Why this is checked rather than trusted
-///
-/// Because the manifest is third-party data. `../../.ssh/authorized_keys` is a string that joins to a path, and a join
-/// that follows it reads and installs a file from outside the package — the same class of escape an archive unpacker
-/// has to refuse. Separators, drive-relative names and `.`/`..` are the whole of the rule a flat package needs.
-fn is_plain_file_name(name: &str) -> bool {
-    !name.is_empty()
-        && name != "."
-        && name != ".."
-        && !name.contains(['/', '\\', ':'])
+/// A portable relative artifact path that cannot shadow package metadata or the derived UI tree.
+fn is_artifact_path(name: &str) -> bool {
+    synra_plugin_ui::artifact::check_package_artifact_path(name).is_ok()
 }
 
-/// Removes a directory this module made, without a recursive delete.
-///
-/// # Why not `remove_dir_all`
-///
-/// Because the workspace's structural guard says only the sandbox may delete a directory tree (11 §D2), and it is
-/// right: a recursive delete is the operation that turns a path mistake into somebody's lost files. Everything in a
-/// staging directory here is a file this function wrote, so the exact list is known — a `remove_file` for each, then
-/// the now-empty `remove_dir`. No recursion, no glob, and nothing that could walk somewhere else.
-///
-/// The empty `remove_dir` is what reports a directory that contains something this module did not put there: the caller
-/// ignores the result, so a leftover is left rather than a stranger's file deleted.
+/// Remove owned install output: sandbox the derived UI removal, then remove only known files and empty parents.
 fn discard(directory: &Path, files: &[(String, Vec<u8>)]) {
+    // This is a directory created by this installer. Only the sandbox removes the
+    // derived UI tree; artifact parent directories are removed only when empty.
+    let _ = synra_store::remove_tree(directory, &synra_plugin_ui::artifact::bundle_dir(directory));
     for (name, _) in files {
-        let _ = std::fs::remove_file(directory.join(name));
+        let path = directory.join(name);
+        let _ = std::fs::remove_file(&path);
+        let mut parent = path.parent();
+        while let Some(path) =
+            parent.filter(|path| *path != directory && path.starts_with(directory))
+        {
+            let _ = std::fs::remove_dir(path);
+            parent = path.parent();
+        }
     }
     let _ = std::fs::remove_dir(directory);
 }

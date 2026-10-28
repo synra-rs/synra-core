@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 /// attack exhausts, and a listing of a million entries is memory the kernel never agreed to hold.
 pub const MAX_ARTIFACT_FILES: usize = 2_000;
 
+/// Maximum encoded size of a UI ZIP, matching the installer's artifact budget.
+pub const MAX_ARCHIVE_BYTES: u64 = 32 * 1024 * 1024;
+
 /// The most bytes a UI artifact may hold in total.
 ///
 /// Sixty-four mebibytes. Well beyond a hand-written interface and well inside what a user expects an application to
@@ -27,6 +30,12 @@ pub const MAX_ARTIFACT_FILE_BYTES: u64 = MAX_ARTIFACT_BYTES;
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 #[non_exhaustive]
 pub enum ArtifactError {
+    /// A runtime artifact would shadow package metadata or the derived UI directory.
+    #[error("runtime artifact {path:?} shadows a reserved package path")]
+    ReservedPackagePath {
+        /// The artifact path supplied by the manifest.
+        path: String,
+    },
     /// The bundle holds more files than the bound.
     #[error("the artifact holds {found} files, and the limit is {limit}")]
     TooManyFiles {

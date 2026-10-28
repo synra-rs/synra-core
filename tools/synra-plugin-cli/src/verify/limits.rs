@@ -18,15 +18,11 @@ pub const MAX_WASM_BYTES: u64 = synra_plugin_host::engine::MAX_COMPONENT_BYTES a
 
 /// The most bytes a UI bundle may be.
 ///
-/// Thirty-two mebibytes, which is the bound the UI artifact layer uses. Larger means the bundle is shipping something
-/// it should be fetching, or a source map that belongs in a debug build.
-pub const MAX_UI_BYTES: u64 = 32 * 1024 * 1024;
+/// Uses the serving layer\'s uncompressed content budget. Encoded ZIP bytes have a separate shared limit.
+pub const MAX_UI_BYTES: u64 = synra_plugin_ui::MAX_ARTIFACT_BYTES;
 
 /// The most files a UI bundle may hold.
-pub const MAX_UI_FILES: usize = 2_000;
+pub const MAX_UI_FILES: usize = synra_plugin_ui::MAX_ARTIFACT_FILES;
 
 /// The most bytes read from manifest.json before parsing it.
 pub(super) const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
-
-/// Bounds empty directories as well as files while traversing a UI bundle.
-pub(super) const MAX_UI_ENTRIES: usize = MAX_UI_FILES * 2;

@@ -73,7 +73,7 @@ impl TemplateKind {
       "stateful": false
     },
     "ui": {
-      "artifact": "ui",
+      "artifact": "ui.zip",
       "entry": "index.html"
     }
   }"#
@@ -351,15 +351,17 @@ fn manifest_json(plugin_id: &str, version: &str, title: &str, kind: TemplateKind
 /// A README that says what to do next.
 fn readme(plugin_id: &str, kind: TemplateKind) -> String {
     let build = match kind {
-        TemplateKind::Headless => "`synra-plugin build` compiles the Wasm artifact.",
+        TemplateKind::Headless => {
+            "`synra-plugin build` writes a complete package with the Wasm artifact into `dist/`."
+        }
         TemplateKind::Hybrid => {
-            "`synra-plugin build` produces both halves: the Wasm artifact and the `ui/` bundle."
+            "`synra-plugin build` packages static `ui/` assets into `ui.zip` alongside the Wasm artifact in `dist/`."
         }
     };
     format!(
         "# {plugin_id}\n\nA {kind} plugin for Synra.\n\n{build}\n\n## Next\n\n1. Edit `manifest.json`: the title, the \
          description, the publisher, and the capabilities the plugin needs.\n2. Implement the entry points the \
-         manifest names.\n3. `synra-plugin verify` before publishing — it checks the manifest, the artifact's size and \
+         manifest names.\n3. `synra-plugin verify --dir dist` before publishing — it checks the manifest, the artifact's size and \
          the imports the kernel refuses.\n",
         kind = kind.as_str(),
     )
@@ -367,7 +369,7 @@ fn readme(plugin_id: &str, kind: TemplateKind) -> String {
 
 /// Ignore the build output, so an author's first commit is their source.
 fn gitignore() -> String {
-    "target/\n*.wasm\n*.zip\n*.sig\ndist/\n".to_owned()
+    "target/\n*.wasm\n*.zip\n*.sig\ndist/\n.synra-build*\n".to_owned()
 }
 
 /// The Rust half of a headless plugin.
@@ -408,15 +410,7 @@ fn ui_document(title: &str) -> String {
   </head>
   <body>
     <h1 id="title">{title}</h1>
-    <p>The plugin's interface. `window.synra` is the only way to reach the kernel from here.</p>
-    <script type="module">
-      // `window.synra` is a frozen facade: every method is one kernel call, validated on the kernel's side with this
-      // page's own session credential. There is no other way out of the sandbox, and nothing the page can read to
-      // impersonate another.
-      const title = document.title
-      const identity = await window.synra.identity()
-      document.getElementById('title').textContent = title + ' — ' + identity.displayName
-    </script>
+    <p>The plugin interface. Connect host capabilities through the Synra UI SDK.</p>
   </body>
 </html>
 "#
@@ -654,12 +648,11 @@ mod tests {
     }
 
     #[test]
-    fn the_interface_reaches_the_kernel_only_through_the_facade() {
-        // The one thing an author must not get wrong: `window.synra` is a closed facade, and a scaffold that used
-        // `invoke` directly would be teaching the wrong shape — and require a token it cannot have.
+    fn the_interface_does_not_invent_a_host_facade() {
+        // The static scaffold must render without inventing an unsupported injected host global.
         let ui = scaffold(TemplateKind::Hybrid).as_map();
         let document = ui.get("ui/index.html").expect("a document");
-        assert!(document.contains("window.synra"), "{document}");
+        assert!(!document.contains("window.synra"), "{document}");
         assert!(
             !document.contains("__TAURI__"),
             "the scaffold reached past the facade:\n{document}"
