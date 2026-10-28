@@ -17,13 +17,14 @@
 //! | `catalog` | the tables this build's schema defines |
 //! | `outcome` | how a migration outcome reads in a log line |
 
-mod migrations;
-mod state;
-mod schema;
-mod version;
-mod health;
 mod catalog;
+mod health;
+mod migrations;
 mod outcome;
+mod plugin_authority;
+mod schema;
+mod state;
+mod version;
 
 #[cfg(test)]
 mod tests;

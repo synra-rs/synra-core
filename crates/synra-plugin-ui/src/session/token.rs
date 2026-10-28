@@ -91,8 +91,7 @@ pub struct UiSessionToken {
     /// would be dropped. Reported rather than assumed, because "the WebView exists" and "the page is listening" are
     /// different facts and a plugin that misses its first event is a plugin with a bug nobody can reproduce.
     ///
-    /// Atomic because `validate` holds the map's *read* guard: taking the write lock there would drop the guard the
-    /// returned session borrows from, so the flag moves through an interior-mutability cell instead.
+    /// Atomic because the readiness handler and registry diagnostics share the same token through an `Arc`.
     pub(super) ready: core::sync::atomic::AtomicBool,
 }
 

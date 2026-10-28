@@ -62,13 +62,19 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 2,
         name: "plugins",
         statements: &[
+            "CREATE TABLE plugin_authority_clock (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                revision INTEGER NOT NULL CHECK (typeof(revision) = 'integer' AND revision >= 0)
+            )",
+            "INSERT INTO plugin_authority_clock (id, revision) VALUES (1, 0)",
             "CREATE TABLE plugins (
                 plugin_id       TEXT PRIMARY KEY,
                 enabled         INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
                 trusted         INTEGER NOT NULL DEFAULT 0 CHECK (trusted IN (0, 1)),
                 health          TEXT NOT NULL DEFAULT 'unknown',
                 installed_at_ms INTEGER NOT NULL,
-                updated_at_ms   INTEGER NOT NULL
+                updated_at_ms   INTEGER NOT NULL,
+                authority_revision INTEGER NOT NULL DEFAULT 0
             )",
             // One row per version, so an upgrade keeps the previous artifact until the new one is confirmed.
             "CREATE TABLE plugin_versions (
@@ -99,6 +105,7 @@ pub const MIGRATIONS: &[Migration] = &[
                 description TEXT,
                 PRIMARY KEY (plugin_id, name)
             )",
+            super::plugin_authority::TRIGGERS,
             "CREATE TABLE plugin_deps (
                 plugin_id     TEXT NOT NULL REFERENCES plugins(plugin_id) ON DELETE CASCADE,
                 depends_on    TEXT NOT NULL,

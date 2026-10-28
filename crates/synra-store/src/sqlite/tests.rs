@@ -699,7 +699,13 @@ fn the_counts_report_every_table_including_an_absent_one() {
     let db = migrated();
     let counts = db.counts().expect("counts");
     assert!(counts.iter().all(|(_, count)| count.is_some()), "{counts:?}");
-    assert!(counts.iter().all(|(_, count)| count == &Some(0)));
+    for (table, count) in &counts {
+        assert_eq!(
+            *count,
+            Some(i64::from(table == "plugin_authority_clock")),
+            "{table}"
+        );
+    }
 }
 
 #[test]

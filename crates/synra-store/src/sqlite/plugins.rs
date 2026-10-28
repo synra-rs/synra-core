@@ -225,9 +225,13 @@ impl SynraDb {
         manifest_digest: &str,
     ) -> Result<usize, DbError> {
         timed_write!(self, "plugin", {
-            let mut statement = self
-                .connection
-                .prepare(
+            let transaction =
+                self.connection
+                    .unchecked_transaction()
+                    .map_err(|error| DbError::Statement {
+                        why: error.to_string(),
+                    })?;
+            let mut statement = transaction.prepare(
                     "INSERT INTO plugin_grants (plugin_id, capability, granted, decided_ms, manifest_digest) \
                      VALUES (?1, ?2, ?3, ?4, ?5) \
                      ON CONFLICT(plugin_id, capability) DO UPDATE SET \
@@ -244,6 +248,10 @@ impl SynraDb {
                     .map_err(|error| DbError::Statement { why: error.to_string() })?;
                 written += 1;
             }
+            drop(statement);
+            transaction.commit().map_err(|error| DbError::Statement {
+                why: error.to_string(),
+            })?;
             Ok(written)
         })
     }

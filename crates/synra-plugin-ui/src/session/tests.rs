@@ -129,15 +129,23 @@ fn the_grants_are_the_ones_frozen_at_activation() {
 // ── Readiness ─────────────────────────────────────────────────────────────────────────────────
 
 #[test]
-fn a_session_is_not_ready_until_a_call_arrives() {
+fn validation_does_not_mark_a_document_ready() {
     // "The WebView exists" and "the page is listening" are different facts, and a plugin that misses its first
     // event is one with a bug nobody can reproduce.
     let (registry, nonce) = with_chat();
     assert_eq!(registry.report().ready, 0, "nothing should be ready yet");
     assert_eq!(registry.report().ready, 0);
 
-    let session = registry.validate(nonce, &chat(), "1.0.0", 2_000).expect("validates");
-    assert!(session.is_ready(), "the first call marks the page ready");
+    let session = registry
+        .validate(nonce, &chat(), "1.0.0", 2_000)
+        .expect("validates");
+    assert!(
+        !session.is_ready(),
+        "authority inspection does not prove listeners are installed"
+    );
+    assert_eq!(registry.report().ready, 0);
+    session.token().mark_ready();
+    assert!(session.is_ready());
     assert_eq!(registry.report().ready, 1);
 }
 
@@ -294,7 +302,11 @@ fn session_refusals_explain_themselves() {
 fn the_report_carries_no_nonces() {
     // A diagnostic bundle leaves the machine, and a nonce in one is a token somebody else could present.
     let (registry, nonce) = with_chat();
-    registry.validate(nonce, &chat(), "1.0.0", 2_000).expect("validates");
+    registry
+        .validate(nonce, &chat(), "1.0.0", 2_000)
+        .expect("validates")
+        .token()
+        .mark_ready();
 
     let report = registry.report();
     assert_eq!(report.live, 1);

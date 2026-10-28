@@ -151,13 +151,8 @@ impl UiSessionRegistry {
         running_version: &str,
         now_ms: u64,
     ) -> Result<ValidatedSession, SessionRefusal> {
-        // The guard is held for the whole validation and the returned value borrows from it, which is what makes a
-        // revocation that races with a call impossible: the revocation waits, and the call sees either the token or
-        // its absence.
-        // The map is consulted and its guard released before anything else happens, so a revocation does not wait
-        // behind a validation. The token stays alive because the session holds an `Arc` to it.
-        // The map is consulted and its guard released before anything else happens, so a revocation does not wait
-        // behind a validation. The token stays alive because the session holds an `Arc` to it.
+        // Copy the token under the read lock. Validation is read-only; a host marks readiness only after
+        // the document explicitly reports that its listeners are installed.
         let found = {
             let sessions = self.sessions.read();
             sessions.get(&nonce).map(std::sync::Arc::clone)
@@ -185,11 +180,6 @@ impl UiSessionRegistry {
                 running: running_version.to_owned(),
             });
         }
-
-        // A call proves the page is listening, so the first one marks it ready. Written through the map's read guard,
-        // which is why the flag is atomic: taking the write lock here would drop the guard the returned value borrows
-        // from.
-        token.mark_ready();
 
         Ok(ValidatedSession { nonce, token })
     }

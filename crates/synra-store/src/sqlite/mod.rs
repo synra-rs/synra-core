@@ -52,6 +52,8 @@ mod sync;
 pub use retries::IntentRetryRow;
 mod versions;
 pub use versions::PluginVersionRecord;
+mod plugin_authority;
+pub use plugin_authority::{PluginAuthority, PluginUiSnapshot};
 mod plugins;
 mod publishers;
 mod restore;
