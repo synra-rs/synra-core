@@ -408,9 +408,14 @@ pub enum Incoming {
 ///
 /// ALPN names travel unencrypted in the clear, which is what makes this work at all. A hello that has not fully arrived
 /// yet simply does not match: the connection is then treated as business, where a wrong ALPN is refused anyway.
+///
+/// ★ The window is two kilobytes, not one packet's worth. A hello carries a session ticket and a certificate list beside
+/// the protocol names, and those push the name further in than a bare hello would put it. A window too small does not
+/// fail loudly — it classifies a pairing dial as business, and the caller is told its ALPN was wrong instead of being
+/// asked to pair.
 fn offers_pairing(stream: &TcpStream) -> bool {
     let wanted = synra_net::authentication::pairing::PAIRING_ALPN;
-    let mut probe = [0_u8; 512];
+    let mut probe = [0_u8; 2048];
     let Ok(read) = stream.peek(&mut probe) else {
         return false;
     };
