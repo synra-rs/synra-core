@@ -263,10 +263,8 @@ pub fn serve_with(
         let taken = { host.lock().try_accept() };
 
         match taken {
-            // A first-pairing dial is answered on its own thread, with the introduced-stream handshake that records the
-            // caller's certificate instead of demanding it up front. Its own thread because the answer waits for a person
-            // to compare six digits on two screens — holding the loop, or the host lock, for that would stop this device
-            // from accepting anything else for the whole pairing window.
+            // ★ An accepted socket is answered on its own thread: a handshake is IO, and the loop that accepts must
+            // not be one handshake behind. Nothing about identity is checked here any more — the link is plaintext.
             Ok(Some(stream)) => {
                 let host = Arc::clone(host);
                 // Each connection gets its own copy of the path, because a thread cannot borrow the loop's.

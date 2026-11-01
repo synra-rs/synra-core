@@ -11,7 +11,6 @@ pub struct HostFacts {
     /// The WebView's version, when the host could read it.
     pub webview_version: Option<String>,
     /// Whether the platform keychain answered a test round trip.
-    pub keyring_available: Option<bool>,
     /// Whether the Wasm runtime initialised.
     pub wasm_backend_available: Option<bool>,
     /// The platform's firewall advice, when there is any to give.

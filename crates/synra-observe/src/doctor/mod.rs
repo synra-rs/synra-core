@@ -34,7 +34,7 @@ mod targets;
 
 pub use host::{
     MAX_CLOCK_SKEW_SECS, MIN_WEBVIEW_MAJOR, clock_skew_within_tolerance, probe_clock_sanity,
-    probe_keyring_available, probe_wasm_backend, probe_webview_version,
+    probe_wasm_backend, probe_webview_version,
 };
 pub use network::{
     probe_firewall_hint, probe_network_interfaces, probe_port_available, probe_udp_port_available,
@@ -62,7 +62,6 @@ pub fn run_probes(targets: &ProbeTargets, host: &HostFacts) -> ProbeReport {
     report.push(probe_disk_space(&targets.data_dir));
     report.push(probe_clock_sanity());
     report.push(probe_webview_version(host));
-    report.push(probe_keyring_available(host));
     report.push(probe_wasm_backend(host));
     report.push(probe_plugin_dir(&targets.plugins_dir));
     report

@@ -80,19 +80,6 @@ pub fn probe_webview_version(host: &HostFacts) -> ProbeResult {
     }
 }
 
-/// Whether the platform keychain works.
-#[must_use]
-pub fn probe_keyring_available(host: &HostFacts) -> ProbeResult {
-    match host.keyring_available {
-        Some(true) => ProbeResult::ok("keyring", "the platform keychain answered"),
-        Some(false) => ProbeResult::fail(
-            "keyring",
-            "the platform keychain did not answer",
-            "unlock your login keychain; without it, pairing secrets cannot be stored securely",
-        ),
-        None => ProbeResult::unknown("keyring", "the keychain was not tested"),
-    }
-}
 
 /// Whether the Wasm runtime initialised.
 #[must_use]

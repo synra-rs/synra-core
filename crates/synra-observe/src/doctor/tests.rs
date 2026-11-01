@@ -30,7 +30,6 @@ fn targets() -> ProbeTargets {
 fn hosts() -> HostFacts {
     HostFacts {
         webview_version: Some("120.0.0".to_owned()),
-        keyring_available: Some(true),
         wasm_backend_available: Some(true),
         firewall_hint: None,
     }
@@ -339,20 +338,6 @@ fn a_missing_webview_report_is_inconclusive_rather_than_a_failure() {
     assert!(result.detail.contains("did not report"));
 }
 
-#[test]
-fn keyring_states_map_to_the_right_status() {
-    assert_eq!(
-        probe_keyring_available(&HostFacts { keyring_available: Some(true), ..Default::default() }).status,
-        ProbeStatus::Ok
-    );
-    let locked = probe_keyring_available(&HostFacts {
-        keyring_available: Some(false),
-        ..Default::default()
-    });
-    assert_eq!(locked.status, ProbeStatus::Fail);
-    assert!(locked.suggestion.is_some());
-    assert_eq!(probe_keyring_available(&HostFacts::default()).status, ProbeStatus::Warn);
-}
 
 #[test]
 fn wasm_backend_states_map_to_the_right_status() {
@@ -413,7 +398,6 @@ fn the_whole_suite_reports_every_probe() {
         "disk_space",
         "clock_sanity",
         "webview_version",
-        "keyring",
         "wasm_backend",
         "plugin_dir",
     ] {
