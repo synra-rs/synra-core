@@ -135,6 +135,10 @@ impl PairingService {
     /// any lock is worth holding. Sharing the `Arc` also keeps the certificate and key in the one place every other
     /// connection on this device already takes them from.
     #[must_use]
+    pub fn credentials(&self) -> Arc<DeviceCredentials> {
+        Arc::clone(&self.credentials)
+    }
+
     /// The database this service writes trust records into.
     ///
     /// # Why a caller outside this service needs it
@@ -145,9 +149,6 @@ impl PairingService {
     #[must_use]
     pub fn database(&self) -> Arc<Mutex<SynraDb>> {
         Arc::clone(&self.db)
-    }
-    pub fn credentials(&self) -> Arc<DeviceCredentials> {
-        Arc::clone(&self.credentials)
     }
 
     /// Public certificate invitation, to transfer only through the intended device's trusted display.
