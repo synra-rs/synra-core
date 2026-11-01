@@ -162,38 +162,7 @@ mod tests {
             .unwrap()
     }
 
-    #[test]
-    fn missing_identity_restores_the_retained_device_id_without_restoring_authority() {
-        let db = initialized();
-        db.claim_device_credential("original", b"certificate", "test")
-            .unwrap();
-        db.connection.execute("DELETE FROM identity", []).unwrap();
-        assert!(db.device_credential().unwrap().is_none());
-        assert!(db.create_identity_if_absent(&proposed()).unwrap());
-        assert_eq!(db.identity().unwrap().unwrap().device_id, "original");
-        assert!(
-            !db.claim_device_credential("original", b"new certificate", "test")
-                .unwrap()
-        );
-        let state = db.device_credential_state().unwrap().unwrap();
-        assert!(state.enrollment.is_none());
-        assert_eq!(
-            state.recovery_enrollment.unwrap().certificate(),
-            b"certificate"
-        );
-    }
 
-    #[test]
-    fn loss_before_first_enrollment_preserves_id_and_can_finish_initial_setup() {
-        let db = initialized();
-        db.connection.execute("DELETE FROM identity", []).unwrap();
-        db.write_identity(&proposed()).unwrap();
-        assert_eq!(db.identity().unwrap().unwrap().device_id, "original");
-        assert!(
-            db.claim_device_credential("original", b"first", "test")
-                .unwrap()
-        );
-    }
 
     #[test]
     fn missing_identity_and_history_refuse_both_creation_entry_points() {

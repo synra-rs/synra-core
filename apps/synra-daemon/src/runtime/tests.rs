@@ -50,7 +50,6 @@ fn runtime_shared(
     (runtime_over(dir, std::sync::Arc::clone(&shared)), shared)
 }
 
-/// A runtime over a database the caller already holds.
 ///
 /// ★ Why this exists: two runtimes over one store is what a **restart** is, and there is no other way to test that what a
 /// daemon wrote down is what the next daemon reads. A fixture that built its own database every time could only ever test
@@ -89,10 +88,6 @@ fn runtime_over(
         discovery: None,
         scan_until_ms: std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0)),
         db: std::sync::Arc::clone(&shared_db),
-        pairing: std::sync::Arc::new(synra_core::pairing::PairingDesk::new(
-            local_id,
-            synra_protocol::session::SessionTimeouts::default().pairing,
-        )),
         // A scripted engine rather than a real one: these tests are about what the daemon *reports*, and a unit test
         // that compiles Wasmtime to assert a JSON field would be a slower version of the same test.
         plugins: std::sync::Arc::new(parking_lot::Mutex::new(
@@ -2635,8 +2630,6 @@ fn a_share_nothing_can_answer_is_counted_as_refused() {
     }
 }
 
-mod authenticated_transfers;
-mod first_pairing;
 
 #[test]
 fn a_store_write_is_counted_with_its_kind() {
@@ -2692,5 +2685,3 @@ fn the_remote_wait_outlasts_a_plugins_execution_budget() {
         "a dispatched action is awaited for less time than a plugin may run"
     );
 }
-#[cfg(windows)]
-mod credential_repair;

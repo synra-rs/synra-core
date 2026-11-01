@@ -765,17 +765,6 @@ impl Kernel for Runtime {
         Ok(change.to_json())
     }
 
-    fn credentials(
-        &self,
-        action: &synra_control::CredentialAction,
-    ) -> Result<serde_json::Value, Refusal> {
-        self.credential_action(action)
-    }
-
-    /// Starts or inspects the shared restricted pairing workflow without a business connection.
-    fn pairing(&self, action: &synra_control::PairingAction) -> Result<serde_json::Value, Refusal> {
-        self.pairing_action(action)
-    }
 }
 
 /// What this host does that the kernel trait has no place for.

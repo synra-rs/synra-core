@@ -32,17 +32,11 @@ use crate::db::{Health, PRAGMAS, latest_version};
 use crate::records::RowError;
 
 mod audit;
-mod credential_repair;
-mod credentials;
-pub use credential_repair::{MAX_RETIRED_DEVICE_CREDENTIALS, RetiredDeviceCredential};
 mod devices;
 mod identities;
-pub use credentials::{DeviceCredentialRecord, DeviceCredentialState};
 mod intents;
 mod migrations;
 mod pairing;
-mod peer_trust;
-pub use peer_trust::{PeerTrustAttempt, PeerTrustReservation, TrustedPeerRecord};
 mod replacement;
 mod retries;
 pub use replacement::PluginReplacement;

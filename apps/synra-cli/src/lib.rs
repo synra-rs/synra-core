@@ -50,7 +50,7 @@ pub mod session;
 
 pub use args::{
     Cli, Command, DbAction, DbArgs, DevicesArgs, DoctorArgs, IntentAction, IntentArgs, LogsArgs,
-    OutputFormat, PairAction, PairArgs, Payload, PayloadError, PluginAction, PluginArgs,
+    OutputFormat, Payload, PayloadError, PluginAction, PluginArgs,
     PublisherAction, SendArgs, ShareArgs,
 };
 pub use channel::{Question, Shape, ask, outcome_of, question_for, transport_failure};

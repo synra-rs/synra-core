@@ -21,12 +21,10 @@
 
 pub mod catalog;
 mod commands;
-mod credentials;
 mod devices;
 pub mod install;
 pub mod intent;
 pub(crate) mod intents;
-mod pairing;
 pub(crate) mod plugin_host;
 mod plugin_settings;
 mod plugins;

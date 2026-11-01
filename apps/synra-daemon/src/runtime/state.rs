@@ -68,15 +68,6 @@ pub struct Runtime {
     /// connection means the ordering of writes is a property of this code rather than of a lock.
     pub db: std::sync::Arc<parking_lot::Mutex<synra_store::SynraDb>>,
 
-    /// The pairing prompts waiting for a user, shared with the transport threads.
-    ///
-    /// # Why the runtime holds it
-    ///
-    /// Because two things need it and neither can reach the other: the transport thread that raised a prompt is blocked
-    /// on the socket, and the command that answers one arrives on the control channel. The desk is what they share, so it
-    /// lives in the process's state rather than inside the loop that happens to create it.
-    pub pairing: std::sync::Arc<synra_core::pairing::PairingDesk>,
-
     /// The plugins this daemon can ask, behind its own lock.
     ///
     /// # Why it is behind a lock of its own rather than inside [`Runtime::host`]

@@ -605,15 +605,6 @@ mod tests {
         ) -> Result<serde_json::Value, Refusal> {
             self.answer("logs")
         }
-        fn credentials(
-            &self,
-            _action: &crate::CredentialAction,
-        ) -> Result<serde_json::Value, Refusal> {
-            self.answer("credentials")
-        }
-        fn pairing(&self, _action: &crate::PairingAction) -> Result<serde_json::Value, Refusal> {
-            self.answer("pairing")
-        }
     }
 
     /// A temporary directory that removes itself.

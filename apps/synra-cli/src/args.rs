@@ -24,8 +24,6 @@
 //! which is why a new kernel feature tends to land inside an existing group rather than adding a command.
 
 use clap::{Args, Parser, Subcommand};
-mod credentials;
-pub use credentials::{CredentialAction, CredentialArgs};
 
 /// The kernel's command-line host.
 ///
@@ -69,11 +67,9 @@ pub enum Command {
     /// List the devices this kernel has seen.
     Devices(DevicesArgs),
     /// Ask a device to pair with this one.
-    Pair(PairArgs),
     /// Show the kernel's state and its links.
     Status,
     /// Inspect or explicitly repair this device identity and revoke its old pairings.
-    Identity(CredentialArgs),
     /// Send text or a file to a device.
     Send(SendArgs),
     /// Manage plugins.
@@ -180,63 +176,7 @@ pub struct DevicesArgs {
     pub cached: bool,
 }
 
-/// Options for `pair`.
-#[derive(Debug, Args)]
-pub struct PairArgs {
-    /// Export, explicitly approve an invitation, inspect progress, or cancel one bounded task.
-    #[command(subcommand)]
-    pub action: PairAction,
-}
 
-/// Actions for a two-way trusted out-of-band invitation exchange.
-#[derive(Debug, Subcommand)]
-pub enum PairAction {
-    /// Export this device's public invitation for the intended peer.
-    Invite,
-    /// Approve an invitation copied from the intended device and return a temporary response.
-    Listen {
-        /// Intended peer id or unambiguous discovery name.
-        device: String,
-        /// Invitation obtained through a trusted out-of-band path.
-        #[arg(long)]
-        invitation: String,
-    },
-    /// Approve the peer's response copied back through a trusted out-of-band path.
-    Connect {
-        /// Intended peer id or unambiguous discovery name.
-        device: String,
-        /// Public responder invitation.
-        #[arg(long)]
-        reply: String,
-    },
-    /// Inspect the current or last pairing task; this does not grant trust.
-    Status,
-    /// Cancel one task before its durable authorization commits.
-    Cancel {
-        /// Local task generation returned by listen or connect.
-        request_id: synra_protocol::RequestId,
-    },
-}
-
-impl From<&PairAction> for synra_control::PairingAction {
-    fn from(action: &PairAction) -> Self {
-        match action {
-            PairAction::Invite => Self::Invite,
-            PairAction::Listen { device, invitation } => Self::Listen {
-                device: device.clone(),
-                invitation: invitation.clone(),
-            },
-            PairAction::Connect { device, reply } => Self::Connect {
-                device: device.clone(),
-                reply: reply.clone(),
-            },
-            PairAction::Status => Self::Status,
-            PairAction::Cancel { request_id } => Self::Cancel {
-                request_id: *request_id,
-            },
-        }
-    }
-}
 
 /// Options for `send`.
 #[derive(Debug, Args)]

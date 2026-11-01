@@ -53,11 +53,7 @@
     )
 )]
 
-mod credentials;
 pub mod endpoint;
-mod pairing;
-pub use credentials::CredentialAction;
-pub use pairing::PairingAction;
 pub mod server;
 
 use serde::{Deserialize, Serialize};
@@ -139,11 +135,6 @@ pub enum Request {
     /// The kernel's state and its links.
     Status,
 
-    /// Explicit local identity-key repair and cleanup.
-    Credentials {
-        /// Maintenance action after the local channel handshake.
-        action: CredentialAction,
-    },
 
     /// The devices the kernel has seen.
     Devices {
@@ -404,11 +395,6 @@ pub enum Request {
         trace: Option<String>,
     },
 
-    /// Runs an explicit out-of-band pairing action over this authenticated local control channel.
-    Pairing {
-        /// The complete action and its bounded operands.
-        action: PairingAction,
-    },
 }
 
 impl Request {
@@ -439,8 +425,6 @@ impl Request {
             Self::IntentDecide { .. } => "intentDecide",
             Self::IntentSnapshot { .. } => "intentSnapshot",
             Self::Logs { .. } => "logs",
-            Self::Pairing { .. } => "pairing",
-            Self::Credentials { .. } => "credentials",
         }
     }
 

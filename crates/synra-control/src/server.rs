@@ -415,15 +415,6 @@ pub trait Kernel {
         trace: Option<&str>,
     ) -> Result<serde_json::Value, Refusal>;
 
-    /// Executes an explicit restricted first-pairing action from the authenticated local user.
-    /// # Errors
-    /// Refuses invalid invitations, unavailable credentials, occupied tasks and failed cancellation.
-    fn pairing(&self, action: &crate::PairingAction) -> Result<serde_json::Value, Refusal>;
-
-    /// Inspects or explicitly repairs local device credentials.
-    /// # Errors
-    /// Refuses stale confirmation, unavailable backends and failed persistence.
-    fn credentials(&self, action: &crate::CredentialAction) -> Result<serde_json::Value, Refusal>;
 }
 
 /// What the handler decided about a connection.
@@ -572,7 +563,6 @@ impl Server {
 
         let result = match request {
             Request::Status => kernel.status(),
-            Request::Credentials { action } => kernel.credentials(action),
             Request::Devices {
                 include_unpaired,
                 scan_ms,
@@ -624,7 +614,6 @@ impl Server {
                 verbose,
                 trace,
             } => kernel.logs(*lines, *verbose, trace.as_deref()),
-            Request::Pairing { action } => kernel.pairing(action),
             // Answered above, and unreachable here. Written as a refusal rather than a `panic!` because a handler that
             // can panic on a request is one a hostile client can take down — and this channel is reachable by anything
             // that can open the socket.
@@ -768,17 +757,6 @@ mod tests {
         ) -> Result<serde_json::Value, Refusal> {
             self.asked.borrow_mut().push((false, lines, verbose));
             self.logs.clone()
-        }
-        fn credentials(
-            &self,
-            action: &crate::CredentialAction,
-        ) -> Result<serde_json::Value, Refusal> {
-            Ok(serde_json::json!({"action": action}))
-        }
-
-        fn pairing(&self, action: &crate::PairingAction) -> Result<serde_json::Value, Refusal> {
-            self.asked.borrow_mut().push((false, 0, false));
-            Ok(serde_json::json!({ "action": action }))
         }
     }
 
@@ -931,66 +909,7 @@ mod tests {
         assert_eq!(asked[1], (false, 25, true), "logs did not get its operands");
     }
 
-    #[test]
-    fn every_identity_maintenance_action_requires_the_local_handshake() {
-        for action in [
-            crate::CredentialAction::Status,
-            crate::CredentialAction::Cleanup,
-            crate::CredentialAction::Repair {
-                expected_fingerprint: "displayed".to_owned(),
-            },
-        ] {
-            let request = Request::Credentials {
-                action: action.clone(),
-            };
-            let (refused, _) = run(&Fake::ok(), std::slice::from_ref(&request));
-            assert!(!refused[0].is_ok());
-            let (accepted, _) = run(&Fake::ok(), &[hello(), request]);
-            assert_eq!(
-                accepted[1],
-                Response::ok(serde_json::json!({"action": action}))
-            );
-        }
-    }
 
-    #[test]
-    fn every_request_is_answerable_after_the_handshake() {
-        // Every variant, because a `match` that forgot one would answer it with the `Internal` fallback — and the
-        // request a user happened to send is the one that breaks.
-        let (responses, state) = run(
-            &Fake::ok(),
-            &[
-                hello(),
-                Request::Status,
-                Request::Devices {
-                    include_unpaired: false,
-                    scan_ms: None,
-                },
-                Request::SendText {
-                    to: "dev_a".to_owned(),
-                    text: "hi".to_owned(),
-                },
-                Request::SendFile {
-                    to: "dev_a".to_owned(),
-                    path: "/tmp/a".to_owned(),
-                },
-                Request::Plugins,
-                Request::Logs {
-                    lines: 10,
-                    verbose: false,
-                    trace: None,
-                },
-            ],
-        );
-        assert_eq!(state, SessionState::Open);
-        assert_eq!(responses.len(), 7);
-        for (index, response) in responses.iter().enumerate().skip(1) {
-            assert!(
-                response.is_ok(),
-                "request {index} was refused: {response:?}"
-            );
-        }
-    }
 
     #[test]
     fn a_kernels_refusal_becomes_a_response_with_its_code_and_retryability() {
@@ -1284,40 +1203,4 @@ mod tests {
         assert!(!text.contains('{'), "{text}");
     }
 
-    #[test]
-    fn pairing_actions_reach_the_kernel_only_after_local_authentication() {
-        let actions = [
-            crate::PairingAction::Invite,
-            crate::PairingAction::Listen {
-                device: "Peer".to_owned(),
-                invitation: "trusted public invitation".to_owned(),
-            },
-            crate::PairingAction::Connect {
-                device: "Peer".to_owned(),
-                reply: "trusted public reply".to_owned(),
-            },
-            crate::PairingAction::Status,
-            crate::PairingAction::Cancel {
-                request_id: synra_protocol::RequestId::new(),
-            },
-        ];
-        for action in actions {
-            let request = Request::Pairing {
-                action: action.clone(),
-            };
-            let kernel = Fake::ok();
-            let (denied, _) = run(&kernel, std::slice::from_ref(&request));
-            assert!(matches!(denied.first(), Some(Response::Failed { .. })));
-            assert!(kernel.asked.borrow().is_empty());
-            let (accepted, _) = run(&kernel, &[hello(), request.clone()]);
-            assert_eq!(
-                accepted.get(1),
-                Some(&Response::ok(serde_json::json!({ "action": action })))
-            );
-            let bytes = crate::encode(&request).unwrap();
-            let mut decoder = Decoder::new();
-            decoder.push(&bytes);
-            assert_eq!(decoder.next_message::<Request>().unwrap(), Some(request));
-        }
-    }
 }

@@ -18,7 +18,6 @@ use synra_control::Listener;
 use crate::args::{ClaimFile, refresh_claim};
 use crate::runtime::{Runtime, now_ms};
 
-mod network;
 
 /// How often the claim is refreshed.
 ///
@@ -472,13 +471,7 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
         }
     };
 
-    // ★ The pairing desk, built before the runtime that holds it and shared with the transport threads. A prompt is
-    // raised by the connection a peer dialled and answered by a user on no connection at all, so the structure that
-    // holds it has to outlive the connection that made it.
-    let pairing = Arc::new(synra_core::pairing::PairingDesk::new(
-        local_id,
-        synra_protocol::session::SessionTimeouts::default().pairing,
-    ));
+
     // ★ The crash store, and the panic hook that fills it, are set up before anything that can crash.
     //
     // The order matters and is the whole reason this is up here rather than beside the safe-mode check below: a hook
@@ -541,7 +534,6 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
     // interface was configured with — so the handle has to exist first. It used to be wrapped much later, which is part
     // of why the host had nothing to be built from and no session was ever installed.
     let shared_db = Arc::new(Mutex::new(db));
-    network::configure(&mut host, Arc::clone(&shared_db), local_peer);
     // ★ A second handle, because the first one does not survive to where the history is written: `shared_db` is
     // cloned into `remembered` further down and that holder outlives this function's own use of it. Two `Arc`s to
     // one database is the ordinary way to say "two owners".
@@ -706,7 +698,6 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
         discovery: discovery.clone(),
         scan_until_ms: Arc::clone(&scan_until_ms),
         db: Arc::clone(&shared_db),
-        pairing,
         plugins,
         plugin_loads,
         // ★ The same document the load pass above consulted. `enable` runs long after start-up and must not load a
@@ -778,7 +769,6 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
         let data_dir = runtime.data_dir.clone();
         // The runtime's own desk, not a second one: a prompt raised by the transport must be the prompt a control command
         // answers, and two desks would mean a user answering a request the waiting connection never hears about.
-        let desk = Arc::clone(&runtime.pairing);
         // ★ Cloned before the task closure: the closure owns what it captures, and the listener below still needs the
         // runtime. A `runtime.plugins` moved into the closure would make `serve_one(&runtime)` a use after move.
         let receive_plugins = Arc::clone(&runtime.plugins);
@@ -835,10 +825,10 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
                 let plugin_events = plugins.lock().event_service();
                 let board = Arc::clone(&receive_board);
                 let local = local_device;
-                Arc::new(move |envelope: &synra_protocol::envelope::Envelope, authority: &synra_core::peer::authenticated::RequestAuthority| {
+                Arc::new(move |envelope: &synra_protocol::envelope::Envelope, peer: &synra_protocol::ids::DeviceId| {
                     let now = synra_store::sqlite::now_ms();
                     if envelope.event.is_plugin() {
-                        return match synra_core::plugin_events::answer_remote_event(plugin_events.as_ref(), envelope, authority, now) {
+                        return match synra_core::plugin_events::answer_remote_event(plugin_events.as_ref(), envelope, peer, local, now) {
                             Ok(receipt) => synra_core::listener::KernelEventOutcome::Receipt(Box::new(receipt)),
                             Err(error) => synra_core::listener::KernelEventOutcome::Refused(error.to_string()),
                         };
@@ -850,7 +840,6 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
                 &peers,
                 token,
                 &data_dir,
-                &desk,
                 &router,
                 &on_finished,
                 &on_kernel_events,

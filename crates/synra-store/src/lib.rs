@@ -5,7 +5,6 @@
 //! * [`paths`] — the directory layout. Wrong here and a file is written where nothing reads it.
 //! * [`db`] — the schema and its migrations. Wrong here and a user's data is a shape no code expects.
 //! * [`sandbox`] — what a plugin may reach. Wrong here and one plugin reads another's data, or the user's.
-//! * [`secrets`] — keys and tokens. Wrong here and a credential is on disk in a form somebody else can read.
 //!
 //! # What is not here
 //!
@@ -59,7 +58,6 @@ pub mod records;
 pub mod sqlite;
 pub mod paths;
 pub mod sandbox;
-pub mod secrets;
 mod backup;
 pub use backup::{
     BackupError, BackupManifest, BackupSummary, ENTRIES as BACKUP_ENTRIES, FORMAT as BACKUP_FORMAT,
@@ -79,13 +77,9 @@ pub use sqlite::{
     PluginUiSnapshot, PluginUpdateCheck, PluginVersionRecord, RestoreReport, SynraDb,
     WriteObserver, migration_versions, restore_from,
 };
-pub use sqlite::{PublisherRow, TRUST_REVOKED, TRUST_SEEN, TRUST_TRUSTED};
 mod plugin_files;
 
+pub use sqlite::{PublisherRow, TRUST_REVOKED, TRUST_SEEN, TRUST_TRUSTED};
 pub use plugin_files::{PluginFiles, Removal, Sweep, remove_tree};
 pub use paths::{DB_FILE_NAME, PathError, Paths, is_within, sanitise_component};
 pub use sandbox::{CACHE, FILES, PluginDataRoot, SandboxMeta, SUBDIRECTORIES};
-pub use secrets::{
-    MemoryBackend, SecretBackend, SecretBackendKind, SecretBytes, SecretError, SecretKey,
-    SecretStrength,
-};

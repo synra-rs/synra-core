@@ -73,20 +73,6 @@ pub fn question_for(
             request: Request::Status,
             shape,
         }),
-        // ★ The command that names the missing producer: until this existed, pairing could be answered but never
-        // asked for, so a device could only be paired by the other side starting the exchange.
-        Command::Pair(args) => Some(Question {
-            request: Request::Pairing {
-                action: (&args.action).into(),
-            },
-            shape,
-        }),
-        Command::Identity(args) => Some(Question {
-            request: Request::Credentials {
-                action: (&args.action).into(),
-            },
-            shape,
-        }),
         Command::Devices(args) => Some(Question {
             // ★ Both flags are carried, not dropped. A `--all` or a `--scan-ms` that did not arrive is a command whose
             // flag is silently ignored, and the output looks plausible either way — which is the failure mode a
@@ -733,7 +719,6 @@ fn roll_back(
     }
 }
 
-/// The identifiers in a `Plugins` answer.
 ///
 /// An answer this build does not recognise is treated as "nothing installed", which leaves the reinstall to fail at the
 /// install with the kernel's own sentence rather than inventing a reason here.
@@ -778,7 +763,7 @@ pub fn transport_failure(error: &synra_control::SocketError) -> crate::session::
 mod tests {
     use super::*;
     use crate::args::{
-        Command, DbAction, DbArgs, DevicesArgs, LogsArgs, OutputFormat, PairArgs, SendArgs,
+        Command, DbAction, DbArgs, DevicesArgs, LogsArgs, OutputFormat, SendArgs,
     };
 
     fn devices_args(all: bool) -> DevicesArgs {
@@ -1585,45 +1570,5 @@ mod tests {
         assert!(ErrorCode::TransportNotOpen.retryable());
     }
 
-    #[test]
-    fn the_pair_command_names_the_device_it_was_given() {
-        // The command that names the missing producer: pairing could be answered before this existed, but never asked
-        // for. The assertion is on the operand, because a device name that did not reach the request is a command whose
-        // argument is silently ignored — and the output would look plausible either way.
-        let question = question_for(
-            &Command::Pair(PairArgs {
-                action: crate::args::PairAction::Listen {
-                    device: "Laptop".to_owned(),
-                    invitation: "trusted invitation".to_owned(),
-                },
-            }),
-            None,
-            || None,
-        )
-        .expect("a question");
-        assert_eq!(
-            question.request,
-            Request::Pairing {
-                action: synra_control::PairingAction::Listen {
-                    device: "Laptop".to_owned(),
-                    invitation: "trusted invitation".to_owned()
-                }
-            }
-        );
-    }
 
-    #[test]
-    fn the_pair_command_honours_the_output_flag() {
-        // A user asking for JSON gets JSON. Pinned to prose here would be the wrong answer to the question they asked,
-        // which is the mistake `status` made once.
-        let question = question_for(
-            &Command::Pair(PairArgs {
-                action: crate::args::PairAction::Status,
-            }),
-            Some(OutputFormat::Json),
-            || None,
-        )
-        .expect("a question");
-        assert_eq!(question.shape, Shape::Json);
-    }
 }
