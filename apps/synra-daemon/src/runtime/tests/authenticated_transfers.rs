@@ -151,7 +151,7 @@ fn a_file_that_reaches_the_other_side_is_measured() {
                         std::sync::Arc::new(|_| false);
                     return synra_core::listener::handle_within_with(
                         &listener,
-                        stream,
+                        business(stream),
                         inbox.path(),
                         std::time::Duration::from_secs(5),
                         &test_desk(),
@@ -251,7 +251,7 @@ fn a_bundle_arrives_as_a_bundle() {
                 Ok(Some(stream)) => {
                     return synra_core::listener::handle_within(
                         &listener,
-                        stream,
+                        business(stream),
                         inbox.path(),
                         std::time::Duration::from_secs(5),
                         &test_desk(),
@@ -327,4 +327,18 @@ fn a_bundle_arrives_as_a_bundle() {
         !held[0].digest.is_empty(),
         "the digest the receiver confirmed is missing"
     );
+}
+
+/// The stream an accepted connection carries, asserting it came for business rather than pairing.
+///
+/// # Why this is an assertion and not a cast
+///
+/// These tests drive an ordinary authenticated link; a connection that arrived offering the pairing protocol would be a
+/// different code path, and silently taking its socket would make the test pass while proving nothing. Failing loudly
+/// keeps the two apart.
+fn business(incoming: synra_core::host::Incoming) -> std::net::TcpStream {
+    match incoming {
+        synra_core::host::Incoming::Business(stream) => stream,
+        synra_core::host::Incoming::Pairing(_) => panic!("a link test never dials for pairing"),
+    }
 }

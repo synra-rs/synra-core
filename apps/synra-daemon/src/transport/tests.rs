@@ -204,7 +204,7 @@ fn accept_within(host: &Arc<Mutex<Host>>, timeout: Duration) -> Option<std::net:
         // The guard is dropped at the end of this statement, so nothing is held across the sleep or the loop.
         let taken = host.lock().try_accept();
         match taken {
-            Ok(Some(stream)) => return Some(stream),
+            Ok(Some(stream)) => return Some(business(stream)),
             Ok(None) => {}
             Err(error) => panic!("the listener could not accept: {error}"),
         }
@@ -362,7 +362,7 @@ fn an_inbound_connection_is_handshaked_and_its_message_is_read() {
                 Ok(Some(stream)) => {
                     return handle_within(
                         &Arc::clone(&host),
-                        stream,
+                        business(stream),
                         inbox.path(),
                         Duration::from_secs(5),
                         &test_desk(),
@@ -728,4 +728,17 @@ fn a_link_is_reported_as_open_only_when_it_knows_its_peer() {
         Flags::no_timeout(),
     );
     assert!(!is_open(&unnamed));
+}
+
+/// The socket an accepted connection carries, asserting it came for business rather than pairing.
+///
+/// # Why this is an assertion and not a cast
+///
+/// These tests exercise an ordinary authenticated link. A connection offering the pairing protocol is a different code
+/// path, and quietly taking its socket would let a test pass without proving anything about the behaviour it names.
+fn business(incoming: synra_core::host::Incoming) -> std::net::TcpStream {
+    match incoming {
+        synra_core::host::Incoming::Business(stream) => stream,
+        synra_core::host::Incoming::Pairing(_) => panic!("a transport test never dials for pairing"),
+    }
 }
