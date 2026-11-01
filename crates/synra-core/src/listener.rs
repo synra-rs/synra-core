@@ -34,8 +34,7 @@ use parking_lot::Mutex;
 // The types this module's own API is expressed in, re-exported so a caller can name them without reaching past it.
 use crate::SessionError;
 use crate::host::Host;
-use crate::host::Incoming;
-pub use crate::inbound::{Decision, Inbox, PairingAnswer};
+pub use crate::inbound::{Decision, Inbox};
 use crate::late_queue::LateQueue;
 use crate::link::{LinkError, PeerLink};
 use synra_protocol::envelope::Envelope;
@@ -144,7 +143,7 @@ pub enum KernelEventOutcome {
 /// a reply belongs on the connection that asked, so the answer has to be produced **while the link is still open**.
 /// The captured authority accompanies the envelope so deferred consumers can recheck it without
 /// refreshing the connection to a newer approval. The listener refuses unauthenticated links.
-pub type KernelEventCallback = dyn Fn(&Envelope, &crate::peer::authenticated::RequestAuthority) -> KernelEventOutcome
+pub type KernelEventCallback = dyn Fn(&Envelope, &synra_protocol::ids::DeviceId) -> KernelEventOutcome
     + Send
     + Sync;
 
@@ -152,7 +151,7 @@ pub type KernelEventCallback = dyn Fn(&Envelope, &crate::peer::authenticated::Re
 #[must_use]
 pub fn no_kernel_events() -> Arc<KernelEventCallback> {
     Arc::new(
-        |_event: &Envelope, _authority: &crate::peer::authenticated::RequestAuthority| {
+        |_event: &Envelope, _authority: &synra_protocol::ids::DeviceId| {
             KernelEventOutcome::Ignored
         },
     )
@@ -192,7 +191,6 @@ pub fn serve(
     host: &Arc<Mutex<Host>>,
     cancel: &crate::supervisor::Cancellation,
     data_dir: &Path,
-    desk: &Arc<crate::pairing::PairingDesk>,
     router: &Arc<crate::dispatch::orchestrate::Router>,
     on_finished: &FinishedCallback,
     on_kernel_events: &Arc<KernelEventCallback>,
@@ -205,7 +203,6 @@ pub fn serve(
         host,
         cancel,
         data_dir,
-        desk,
         router,
         on_finished,
         &on_progress,
@@ -227,7 +224,6 @@ pub fn serve_with(
     host: &Arc<Mutex<Host>>,
     cancel: &crate::supervisor::Cancellation,
     data_dir: &Path,
-    desk: &Arc<crate::pairing::PairingDesk>,
     router: &Arc<crate::dispatch::orchestrate::Router>,
     on_finished: &FinishedCallback,
     on_progress: &Arc<ProgressCallback>,
@@ -239,7 +235,6 @@ pub fn serve_with(
     let data_dir = data_dir.to_path_buf();
     // Cloned per connection below, because the desk is shared: a prompt raised on one connection is answered by a user
     // who is not on that connection at all.
-    let shared_desk = Arc::clone(desk);
     let shared_offer = Arc::clone(offer);
     // Cloned per connection like the desk, and for the same reason: a share arriving on one connection is routed with the
     // kernel's plugins and intents, not with a per-connection copy of them.
@@ -272,35 +267,10 @@ pub fn serve_with(
             // caller's certificate instead of demanding it up front. Its own thread because the answer waits for a person
             // to compare six digits on two screens — holding the loop, or the host lock, for that would stop this device
             // from accepting anything else for the whole pairing window.
-            Ok(Some(Incoming::Pairing(stream))) => {
-                let host = Arc::clone(host);
-                let desk = Arc::clone(&shared_desk);
-                std::thread::spawn(move || {
-                    let credentials = { host.lock().pairing_credentials() };
-                    let Ok(credentials) = credentials else {
-                        // No enrolled identity means nothing to present, so there is no handshake to have. The dialer is
-                        // told by the closed socket rather than by a refusal this side cannot send before TLS.
-                        return;
-                    };
-                    let now_ms = synra_store::sqlite::now_ms();
-                    let database = { host.lock().pairing_service().map(|service| service.database()) };
-                    let Ok(database) = database else {
-                        // The grant needs the same database the invitation path writes, so without the service there is
-                        // nothing to record an agreement in — and an agreement nothing records is not a pairing.
-                        return;
-                    };
-                    if let Err(error) =
-                        crate::pairing::transport::answer(stream, &credentials, &desk, &database, now_ms)
-                    {
-                        eprintln!("synra-daemon: a pairing dial could not be answered: {error}");
-                    }
-                });
-            }
-            Ok(Some(Incoming::Business(stream))) => {
+            Ok(Some(stream)) => {
                 let host = Arc::clone(host);
                 // Each connection gets its own copy of the path, because a thread cannot borrow the loop's.
                 let inbox_root = data_dir.clone();
-                let desk = Arc::clone(&shared_desk);
                 let offer = Arc::clone(&shared_offer);
                 let router = Arc::clone(&shared_router);
                 let should_cancel = Arc::clone(&shared_cancel);
@@ -322,7 +292,6 @@ pub fn serve_with(
                         &host,
                         stream,
                         &inbox_root,
-                        &desk,
                         &router,
                         &on_finished,
                         &on_progress,
@@ -358,7 +327,6 @@ pub fn handle(
     host: &Arc<Mutex<Host>>,
     stream: std::net::TcpStream,
     data_dir: &Path,
-    desk: &Arc<crate::pairing::PairingDesk>,
     router: &Arc<crate::dispatch::orchestrate::Router>,
     on_finished: &FinishedCallback,
 ) -> Served {
@@ -368,7 +336,6 @@ pub fn handle(
         host,
         stream,
         data_dir,
-        desk,
         router,
         on_finished,
         &on_progress,
@@ -386,7 +353,6 @@ pub fn handle_with(
     host: &Arc<Mutex<Host>>,
     stream: std::net::TcpStream,
     data_dir: &Path,
-    desk: &Arc<crate::pairing::PairingDesk>,
     router: &Arc<crate::dispatch::orchestrate::Router>,
     on_finished: &FinishedCallback,
     on_progress: &Arc<ProgressCallback>,
@@ -399,7 +365,6 @@ pub fn handle_with(
         stream,
         data_dir,
         synra_protocol::limits::HELLO_TIMEOUT,
-        desk,
         router,
         on_finished,
         on_progress,
@@ -424,7 +389,6 @@ pub fn handle_within(
     stream: std::net::TcpStream,
     data_dir: &Path,
     timeout: Duration,
-    desk: &Arc<crate::pairing::PairingDesk>,
     router: &Arc<crate::dispatch::orchestrate::Router>,
     on_finished: &FinishedCallback,
 ) -> Served {
@@ -435,7 +399,6 @@ pub fn handle_within(
         stream,
         data_dir,
         timeout,
-        desk,
         router,
         on_finished,
         &on_progress,
@@ -456,7 +419,6 @@ pub fn handle_within_with(
     stream: std::net::TcpStream,
     data_dir: &Path,
     timeout: Duration,
-    desk: &Arc<crate::pairing::PairingDesk>,
     router: &Arc<crate::dispatch::orchestrate::Router>,
     on_finished: &FinishedCallback,
     on_progress: &Arc<ProgressCallback>,
@@ -551,7 +513,6 @@ pub fn handle_within_with(
             &mut link,
             synra_store::sqlite::now_ms(),
             PATIENCE,
-            desk,
             &peer_address,
             offer.as_ref(),
         ) {
@@ -668,22 +629,7 @@ pub fn handle_within_with(
                     // produced itself — a second request from the same device, or one that could not be read — goes back
                     // immediately. A request that is on the desk blocks *this* thread on the channel until a user decides,
                     // wherever that user is: the answer arrives through the desk, not through this connection.
-                    let answered = match answer {
-                        Some(PairingAnswer::Now(response)) => Some(response),
-                        Some(PairingAnswer::Waiting(_)) => {
-                            println!("{peer} is asking to pair");
-                            answer
-                                .as_ref()
-                                .and_then(PairingAnswer::take_waiter)
-                                .map(|waiter| {
-                                    waiter.wait(
-                                        synra_protocol::session::SessionTimeouts::default().pairing,
-                                    )
-                                })
-                        }
-                        None => None,
-                    };
-
+            let answered = answer;
                     if let Some(answered) = answered {
                         // ★ A failure to answer is reported and does not end the link. The peer asked a question this
                         // kernel could not reply to; closing the connection would take any transfer on it down for a
@@ -877,12 +823,11 @@ fn answer_kernel_event(
     data_dir: &Path,
 ) {
     let event = envelope.event.as_str();
-    let outcome = match link.request_authority().and_then(|authority| {
-        authority.authorize(envelope)?;
-        Ok(authority)
-    }) {
-        Ok(authority) => on_kernel_events(envelope, &authority),
-        Err(error) => KernelEventOutcome::Refused(error.to_string()),
+    let caller = link.peer();
+    let outcome = if envelope.from != caller {
+        KernelEventOutcome::Refused("the event names a device this connection is not".to_owned())
+    } else {
+        on_kernel_events(envelope, &caller)
     };
     match outcome {
         KernelEventOutcome::Handled => events.push(format!("handled {event}")),

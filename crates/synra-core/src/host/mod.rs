@@ -45,7 +45,6 @@
 
 mod clock;
 mod connections;
-pub use connections::Incoming;
 mod error;
 mod kernel;
 mod records;

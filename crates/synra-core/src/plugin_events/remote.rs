@@ -1,7 +1,7 @@
 //! Authenticated remote admission and bounded receipt deduplication; success means queued only.
 
 use super::{EVENT_TTL, EventService, Origin, Pending, context, policy, refusal};
-use crate::{link::LinkError, peer::authenticated::RequestAuthority};
+use crate::link::LinkError;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -35,7 +35,6 @@ pub enum RemoteAdmission {
 pub(super) struct Receipt {
     from: DeviceId,
     request: RequestId,
-    generation: RequestId,
     digest: [u8; 32],
     expires: Instant,
 }
@@ -52,11 +51,9 @@ impl EventService {
     pub fn receive_remote(
         self: &Arc<Self>,
         request: &Envelope,
-        authority: &RequestAuthority,
+        peer: &synra_protocol::ids::DeviceId,
     ) -> Result<(), SynraError> {
-        authority
-            .authorize(request)
-            .map_err(|error| authorization(&error))?;
+        belongs_to(request, peer)?;
         let (owner, _) = request.event.plugin_scope().ok_or_else(|| {
             refusal(
                 ErrorCode::InvalidArgument,
@@ -90,14 +87,6 @@ impl EventService {
         }
         synra_plugin_api::payload::check_budget(&value)
             .map_err(|error| policy::payload_error(&error))?;
-        let identity = self.db.lock().identity().map_err(policy::storage)?;
-        if identity.is_none_or(|identity| identity.device_id != authority.local().to_string()) {
-            return Err(refusal(
-                ErrorCode::CapabilityDenied,
-                "event runtime and authenticated local identity differ",
-                "identityMismatch",
-            ));
-        }
         let ttl = request.ttl_ms.map_or(EVENT_TTL, |millis| {
             Duration::from_millis(u64::from(millis)).min(EVENT_TTL)
         });
@@ -127,13 +116,6 @@ impl EventService {
             .iter()
             .find(|receipt| receipt.from == request.from && receipt.request == request.request_id)
         {
-            if prior.generation != authority.generation() {
-                return Err(refusal(
-                    ErrorCode::CapabilityDenied,
-                    "the request belongs to another approval generation",
-                    "requestAuthorityChanged",
-                ));
-            }
             return if prior.digest == digest {
                 Ok(())
             } else {
@@ -162,10 +144,10 @@ impl EventService {
             &mut state,
             Pending {
                 event: request.event.clone(),
-                from: authority.peer(),
+                from: request.from,
                 source: Origin::Remote {
                     plugin,
-                    authority: authority.clone(),
+                    peer: *peer,
                     runtime,
                 },
                 request: request.request_id,
@@ -179,7 +161,6 @@ impl EventService {
         state.remote_receipts.push_back(Receipt {
             from: request.from,
             request: request.request_id,
-            generation: authority.generation(),
             digest,
             expires: now + REMOTE_RECEIPT_TTL,
         });
@@ -196,14 +177,13 @@ impl EventService {
 pub fn answer_remote_event(
     service: Option<&Arc<EventService>>,
     request: &Envelope,
-    authority: &RequestAuthority,
+    peer: &synra_protocol::ids::DeviceId,
+    local: synra_protocol::ids::DeviceId,
     now_ms: i64,
 ) -> Result<Envelope, SynraError> {
     let result = match service {
-        Some(service) => service.receive_remote(request, authority),
-        None => authority
-            .authorize(request)
-            .map_err(|error| authorization(&error))
+        Some(service) => service.receive_remote(request, peer),
+        None => belongs_to(request, peer)
             .and_then(|()| {
                 Err(refusal(
                     ErrorCode::Unsupported,
@@ -219,13 +199,34 @@ pub fn answer_remote_event(
     Envelope::reply_to(
         request,
         EventName::parse(REMOTE_RECEIPT_EVENT).map_err(policy::invalid)?,
-        authority.local(),
+        local,
         now_ms,
         Some(&answer),
     )
     .map_err(policy::invalid)
 }
 
+/// Whether the request really came from the device on this connection.
+///
+/// # Why this is all that is left of authorization
+///
+/// It used to be a signed approval checked against a stored generation. With transport encryption gone
+/// ([ADR-025](../../../../design-docs/20-adr.md)) a connection can only claim an identity, so the check is the claim itself:
+/// the envelope's `from` must be the device this link handshook with. That catches a peer addressing work in another
+/// device's name on its own link, and nothing more — it is not authentication and must not be described as such.
+fn belongs_to(
+    request: &Envelope,
+    peer: &synra_protocol::ids::DeviceId,
+) -> Result<(), SynraError> {
+    if request.from != *peer {
+        return Err(refusal(
+            ErrorCode::CapabilityDenied,
+            "the request names a device this connection is not",
+            "foreignDevice",
+        ));
+    }
+    Ok(())
+}
 pub(super) fn authorization(error: &LinkError) -> SynraError {
     let code = if matches!(error, LinkError::AuthorizationUnavailable { .. }) {
         ErrorCode::Internal

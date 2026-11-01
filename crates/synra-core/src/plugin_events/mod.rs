@@ -48,7 +48,7 @@ enum Origin {
     Local(Arc<context::Execution>),
     Remote {
         plugin: PluginId,
-        authority: crate::peer::authenticated::RequestAuthority,
+        peer: synra_protocol::ids::DeviceId,
         runtime: RequestId,
     },
 }

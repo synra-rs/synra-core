@@ -9,25 +9,26 @@ use crate::link::PeerLink;
 use crate::sessions::RegistryEvent;
 
 use super::{Host, HostError, millis_reading};
-use crate::peer::authenticated::AuthenticatedPeer;
-use crate::peer::{Flags, Negotiated};
+use crate::peer::{Flags, LocalPeer, Negotiated};
 
-/// A validated authentication snapshot, cloned before network IO so no host mutex is held.
+/// What a dialer needs before any IO: this device's own announcement.
+///
+/// # Why there is nothing else here
+///
+/// It used to carry a credential-backed TLS factory, and a failure to build one made the whole host unable to connect.
+/// With transport encryption gone ([ADR-025](../../../../design-docs/20-adr.md)) a handshake needs exactly one thing from
+/// this side — who we say we are — so the struct keeps that and loses the way of being uninitialised.
 #[derive(Clone)]
 pub struct DialConfig {
-    network: Result<AuthenticatedPeer, String>,
+    ours: LocalPeer,
 }
 
 impl DialConfig {
-    fn ready(&self) -> Result<&AuthenticatedPeer, HostError> {
-        self.network
-            .as_ref()
-            .map_err(|why| HostError::NetworkUnavailable { why: why.clone() })
-    }
-
-    /// Authenticates an accepted socket outside the host lock, retaining its credential generation.
+    /// Completes a handshake on a socket already taken from the listener.
+    ///
     /// # Errors
-    /// Refuses unavailable credentials, unapproved peers, invalid TLS and mismatched Hello identities.
+    ///
+    /// [`HostError::Handshake`] when the peer's announcement is malformed or the version is one this build cannot speak.
     pub fn accept_stream(
         &self,
         stream: TcpStream,
@@ -38,17 +39,21 @@ impl DialConfig {
             address: SocketAddr::from(([0, 0, 0, 0], 0)),
             why: error.to_string(),
         })?;
-        let (link, negotiated) = self
-            .ready()?
-            .accept(
-                stream,
-                now_ms,
-                now_ms / 1000,
-                flags
-                    .timeout
-                    .unwrap_or(synra_protocol::limits::HELLO_TIMEOUT),
-            )
-            .map_err(connection_error)?;
+        let (stream, negotiated) = crate::peer::accept_stream(
+            stream,
+            &self.ours,
+            now_ms,
+            flags,
+            |_token, _peer| synra_protocol::handshake::PairingState::Unknown,
+        )
+        .map_err(HostError::Handshake)?;
+        let link = PeerLink::new(
+            stream,
+            self.ours.device_id,
+            negotiated.device_id,
+            negotiated.agreed.clone(),
+            flags,
+        );
         Ok(Dialled {
             link,
             negotiated,
@@ -56,7 +61,6 @@ impl DialConfig {
         })
     }
 }
-
 /// An authenticated application handshake waiting to be recorded in the host.
 #[derive(Debug)]
 pub struct Dialled {
@@ -75,61 +79,28 @@ pub fn dial_peer(
     peer: DeviceId,
     now_ms: u64,
 ) -> Result<Dialled, HostError> {
-    let (link, negotiated) = ours
-        .ready()?
-        .dial(
-            address,
-            peer,
-            now_ms,
-            now_ms / 1000,
-            flags
-                .timeout
-                .unwrap_or(synra_protocol::limits::HELLO_TIMEOUT),
-        )
-        .map_err(connection_error)?;
+    let (stream, negotiated) = crate::peer::dial(address, &ours.ours, None, now_ms, flags)
+        .map_err(HostError::Handshake)?;
+    let link = PeerLink::new(
+        stream,
+        ours.ours.device_id,
+        negotiated.device_id,
+        negotiated.agreed.clone(),
+        flags,
+    );
+    let _ = peer;
     Ok(Dialled {
         link,
         negotiated,
         address,
     })
 }
-
-fn connection_error(error: crate::peer::authenticated::SecurePeerError) -> HostError {
-    use crate::peer::authenticated::SecurePeerError;
-    use synra_net::authentication::AuthenticationError;
-    match error {
-        SecurePeerError::Authentication(AuthenticationError::Transport(why)) => {
-            HostError::Handshake(crate::peer::HandshakeError::Transport { why })
-        }
-        SecurePeerError::Authentication(AuthenticationError::TimedOut) => {
-            HostError::Link(crate::link::LinkError::TimedOut)
-        }
-        SecurePeerError::Handshake(error) => HostError::Handshake(error),
-        SecurePeerError::Authorization(error) => HostError::Link(error),
-        SecurePeerError::Trust(crate::peer_trust::TrustError::Database(why)) => {
-            HostError::Link(crate::link::LinkError::AuthorizationUnavailable { why })
-        }
-        other => HostError::Authentication {
-            why: other.to_string(),
-        },
-    }
-}
-
 // The rest of `impl Host`, whose first part is in `kernel`.
 impl Host {
     /// Clones authentication and profile metadata for network IO outside the host mutex.
     #[must_use]
     pub fn dialling_parts(&self) -> (DialConfig, Flags) {
-        let network = self
-            .network
-            .as_ref()
-            .map_err(Clone::clone)
-            .and_then(|network| {
-                network
-                    .for_profile(self.local.clone())
-                    .map_err(|error| error.to_string())
-            });
-        (DialConfig { network }, self.flags)
+        (DialConfig { ours: self.local.clone() }, self.flags)
     }
 
     /// Records an authenticated connection without network IO.
@@ -167,7 +138,7 @@ impl Host {
         );
         let ready = self
             .sessions
-            .agree(key, negotiated.agreed, now_ms)
+            .agree(key, negotiated.agreed.clone(), now_ms)
             .map_err(|error| HostError::Bind {
                 address,
                 why: error.to_string(),
@@ -228,7 +199,7 @@ impl Host {
     ///
     /// [`HostError::Bind`] when this host is not listening, or when the listener cannot accept. A would-block is reported
     /// as `Ok(None)` rather than as an error, because "nothing is waiting" is not a failure.
-    pub fn try_accept(&self) -> Result<Option<Incoming>, HostError> {
+    pub fn try_accept(&self) -> Result<Option<TcpStream>, HostError> {
         let Some(listener) = &self.listener else {
             return Err(HostError::Bind {
                 address: SocketAddr::from(([0, 0, 0, 0], 0)),
@@ -251,11 +222,7 @@ impl Host {
                             .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0))),
                         why: format!("the connection could not be made blocking: {error}"),
                     })?;
-                Ok(Some(if offers_pairing(&stream) {
-                    Incoming::Pairing(stream)
-                } else {
-                    Incoming::Business(stream)
-                }))
+                Ok(Some(stream))
             }
             // Nothing waiting. Not a failure: the caller loops and asks again.
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
@@ -380,54 +347,3 @@ impl Dialled {
     }
 }
 
-/// What an accepted connection asked to be.
-///
-/// # Why the listener has to know before the handshake
-///
-/// The two kinds of connection are authenticated in opposite ways. A business connection must name its peer, so it is
-/// refused unless the presented certificate matches an approved one. A first-pairing connection cannot: the whole point is
-/// to obtain that certificate, so it is answered by `IntroducedStream` instead, which records the certificate and lets a
-/// person decide from the six digits.
-///
-/// One socket cannot be both, and the decision has to be made before the handshake because the two use different client
-/// certificate verifiers. The ALPN the caller put in its hello is the answer, and it is readable in the clear.
-pub enum Incoming {
-    /// An ordinary connection from a device that must already be approved.
-    Business(TcpStream),
-    /// A device asking to pair, whose certificate is not known yet.
-    Pairing(TcpStream),
-}
-
-/// Whether this connection's hello offers the pairing protocol.
-///
-/// # Why a peek at the bytes rather than a parsed hello
-///
-/// The handshake has already been decided by the time rustls looks at it, so the protocol has to be read from the socket
-/// before rustls is given the socket. `peek` leaves the bytes in place, so the handshake that follows sees the hello
-/// untouched and neither side knows this happened.
-///
-/// ALPN names travel unencrypted in the clear, which is what makes this work at all. A hello that has not fully arrived
-/// yet simply does not match: the connection is then treated as business, where a wrong ALPN is refused anyway.
-///
-/// ★ The window is two kilobytes, not one packet's worth. A hello carries a session ticket and a certificate list beside
-/// the protocol names, and those push the name further in than a bare hello would put it. A window too small does not
-/// fail loudly — it classifies a pairing dial as business, and the caller is told its ALPN was wrong instead of being
-/// asked to pair.
-fn offers_pairing(stream: &TcpStream) -> bool {
-    let wanted = synra_net::authentication::pairing::PAIRING_ALPN;
-    let mut probe = [0_u8; 2048];
-    // ★ A peer that connects and says nothing must not hold this thread. `peek` on a blocking socket waits for the first
-    // byte, and this runs on the one thread that accepts everything — so an idle client would stop the listener from
-    // accepting anything at all, which is exactly what the daemon's deadline test reported as a hang. A short read
-    // timeout turns "said nothing" into "offered no pairing protocol", which is what it is; the business handshake that
-    // follows keeps its own deadline.
-    let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(250)));
-    let peeked = stream.peek(&mut probe);
-    let _ = stream.set_read_timeout(None);
-    let Ok(read) = peeked else {
-        return false;
-    };
-    probe[..read]
-        .windows(wanted.len())
-        .any(|window| window == wanted)
-}

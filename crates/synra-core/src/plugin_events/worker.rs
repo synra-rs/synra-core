@@ -193,9 +193,19 @@ impl EventService {
                 policy::require(&grants, &format!("event:emit:{}", pending.event.as_str()))?;
                 policy.emitted(pending.event.as_str(), &pending.payload)
             }
-            Origin::Remote { authority, .. } => authority
-                .check(authority.local(), pending.from)
-                .map_err(|error| super::remote::authorization(&error)),
+            // A remote event may only run as the device whose connection it arrived on. There is no approval behind this
+            // any more, so it is an equality on the handshake's device id and nothing more.
+            Origin::Remote { peer, .. } => {
+                if pending.from == *peer {
+                    Ok(())
+                } else {
+                    Err(super::refusal(
+                        synra_protocol::ErrorCode::CapabilityDenied,
+                        "the queued event names another device",
+                        "foreignDevice",
+                    ))
+                }
+            }
         }
     }
 }

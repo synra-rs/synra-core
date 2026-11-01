@@ -41,7 +41,6 @@
     )
 )]
 
-pub mod authentication;
 pub mod backoff;
 pub mod liveness;
 pub mod write_queue;

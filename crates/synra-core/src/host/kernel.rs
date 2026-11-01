@@ -26,7 +26,6 @@ pub struct Host {
     /// Flags a handshake runs under.
     pub(super) flags: Flags,
     /// Authentication is unavailable until persistent credentials have been initialized.
-    pub(super) network: Result<crate::peer::authenticated::AuthenticatedPeer, String>,
     /// Envelopes sent, for a report.
     pub(super) sent: u64,
     /// Where this host's numbers go, when anybody is keeping them.
@@ -50,39 +49,6 @@ impl std::fmt::Debug for Host {
 }
 
 impl Host {
-    /// Captured runtime identity, copied before maintenance reads or native backend IO.
-    #[must_use]
-    pub fn credential_fingerprint(&self) -> Option<[u8; 32]> {
-        self.network
-            .as_ref()
-            .ok()
-            .map(crate::peer::authenticated::AuthenticatedPeer::credential_fingerprint)
-    }
-
-    /// Copies the restricted pairing service without performing network IO under the host lock.
-    /// # Errors
-    /// Refuses when persistent authenticated networking could not be initialized.
-    pub fn pairing_service(
-        &self,
-    ) -> Result<std::sync::Arc<crate::peer_trust::PairingService>, HostError> {
-        self.network
-            .as_ref()
-            .map(crate::peer::authenticated::AuthenticatedPeer::pairing)
-            .map_err(|why| HostError::NetworkUnavailable { why: why.clone() })
-    }
-
-    /// This identity's own credentials, for a first-pairing handshake on its own thread.
-    ///
-    /// # Errors
-    ///
-    /// Matches [`Self::pairing_service`]: an uninitialised network has no identity to present.
-    pub fn pairing_credentials(
-        &self,
-    ) -> Result<std::sync::Arc<synra_net::authentication::DeviceCredentials>, HostError> {
-        self.pairing_service()
-            .map(|service| service.credentials())
-    }
-
     /// A host that is not listening.
     #[must_use]
     pub fn new(identity: Identity, local: LocalPeer) -> Self {
@@ -93,7 +59,6 @@ impl Host {
             sessions: SessionRegistry::new(),
             listener: None,
             flags: Flags::production(),
-            network: Err("device authentication has not been initialized".to_owned()),
             sent: 0,
             metrics: None,
         }
@@ -105,18 +70,6 @@ impl Host {
         let mut host = Self::new(identity, local);
         host.flags = flags;
         host
-    }
-
-    /// Installs a credential-backed network configuration; failures leave this host unable to connect.
-    pub fn configure_network(
-        &mut self,
-        network: Result<crate::peer::authenticated::AuthenticatedPeer, String>,
-    ) {
-        self.network = network.and_then(|network| {
-            network
-                .for_profile(self.local.clone())
-                .map_err(|error| error.to_string())
-        });
     }
 
     /// Sends this host's numbers to a recorder.

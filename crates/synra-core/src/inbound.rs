@@ -204,7 +204,7 @@ pub enum Decision {
     /// would otherwise construct the reply from `Delivered`'s single string.
     Pairing {
         /// What to tell the dialer, or `None` when the request was refused before it reached the desk.
-        answer: Option<PairingAnswer>,
+        answer: Option<synra_protocol::session::PairResponse>,
         /// The message that arrived, so the reply can be addressed and correlated.
         request: Box<synra_protocol::envelope::Envelope>,
     },
@@ -220,77 +220,6 @@ pub enum Decision {
     Idle,
 }
 
-/// What to do about a pairing request, as the dispatch layer sees it.
-///
-/// # Why this is two cases rather than one `Option`
-///
-/// Because "answer now" and "wait for a user" are different instructions to the connection, and an `Option<PairResponse>`
-/// collapses them: `None` could only mean "send nothing", which for a request on the desk would be right and for a request
-/// that failed to parse would leave the dialer waiting for an answer nobody will ever give it.
-///
-/// # Why the waiter is behind a lock and an [`Arc`]
-///
-/// Because a `Waiter` holds a channel receiver, which can be neither cloned nor compared — and [`Decision`] is both, so
-/// a caller may keep one and a test may compare two. The alternative was to drop those from [`Decision`], a public type
-/// whose other variants a reader compares for the ordinary reason: to say which case a decision was.
-///
-/// The lock is honest about what a waiter is: **something taken once**. A caller gets it by taking it out, and a second
-/// caller finds nothing rather than blocking for ever on a receiver that has already been consumed.
-#[derive(Debug)]
-#[non_exhaustive]
-pub enum PairingAnswer {
-    /// Send this to the dialer now. The link stays up, so it may ask again.
-    Now(synra_protocol::session::PairResponse),
-    /// The request is on the desk. Block on this until a user decides, then send what it produces.
-    Waiting(std::sync::Arc<parking_lot::Mutex<Option<crate::pairing::Waiter>>>),
-}
-
-impl PairingAnswer {
-    /// Takes the waiter out, once.
-    #[must_use]
-    pub fn take_waiter(&self) -> Option<crate::pairing::Waiter> {
-        match self {
-            Self::Now(_) => None,
-            Self::Waiting(slot) => slot.lock().take(),
-        }
-    }
-}
-
-impl Clone for PairingAnswer {
-    /// Clones the immediately-available answer, and shares the waiter.
-    ///
-    /// A waiter is not duplicable: two callers blocking on one channel would each receive the same answer, which for a
-    /// pairing means two responses written to two connections for one request.
-    fn clone(&self) -> Self {
-        match self {
-            Self::Now(answer) => Self::Now(answer.clone()),
-            Self::Waiting(slot) => Self::Waiting(std::sync::Arc::clone(slot)),
-        }
-    }
-}
-
-impl PartialEq for PairingAnswer {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Now(mine), Self::Now(theirs)) => mine == theirs,
-            // Two waiters are the same when they are the same waiter. Comparing what they will deliver would mean
-            // blocking on both, which is not something a comparison may do.
-            (Self::Waiting(mine), Self::Waiting(theirs)) => std::sync::Arc::ptr_eq(mine, theirs),
-            _ => false,
-        }
-    }
-}
-
-impl Eq for PairingAnswer {}
-
-/// A connection's transfer state.
-///
-/// # Why one transfer at a time
-///
-/// Because a connection carries one conversation, and the protocol's `transfer_id` is what says so. Two transfers on one
-/// link would be legal, and nothing here would interleave them correctly — so the second proposal is refused rather than
-/// silently mixed into the first, which is the failure that would produce a corrupt file with no clue why.
-#[derive(Debug, Default)]
 pub struct Inbox {
     receiving: Option<Receiving>,
     /// The trace the transfer's messages share, remembered when the proposal is accepted.
@@ -360,10 +289,9 @@ impl Inbox {
         link: &mut PeerLink,
         now_ms: i64,
         patience: std::time::Duration,
-        pairing: &crate::pairing::PairingDesk,
         peer_address: &str,
     ) -> Result<Decision, crate::SessionError> {
-        self.absorb_with(link, now_ms, patience, pairing, peer_address, &auto_accept)
+        self.absorb_with(link, now_ms, patience, peer_address, &auto_accept)
     }
 
     /// [`absorb`](Self::absorb), with a host asked before a transfer is accepted.
@@ -379,7 +307,6 @@ impl Inbox {
         link: &mut PeerLink,
         now_ms: i64,
         patience: std::time::Duration,
-        pairing: &crate::pairing::PairingDesk,
         peer_address: &str,
         ask: &OfferCallback,
     ) -> Result<Decision, crate::SessionError> {
@@ -418,7 +345,7 @@ impl Inbox {
                 // to follow — and a pairing request reported as `Delivered` would leave a user's other device waiting for an
                 // answer this kernel never sends while the prompt, if it appeared at all, sat unanswered on a screen.
                 if envelope.event.as_str() == synra_protocol::event::events::PAIR_REQUEST {
-                    return Ok(self.pairing_request(&envelope, pairing, peer_address));
+                    return Ok(self.pairing_request(&envelope));
                 }
                 return Ok(Decision::Delivered {
                     event: envelope.event.as_str().to_owned(),
@@ -537,51 +464,33 @@ impl Inbox {
     /// one message, and closing the connection would take the transfer channel with it — the protocol document's rule
     /// that a refusal does not end a link applies to a request that cannot be understood for the same reason it applies
     /// to one that is declined.
+    /// Answers a pairing request that arrived on an existing link.
+    ///
+    /// # Why there is nothing to ask any more
+    ///
+    /// This used to put the request on a shared desk and block the link on a person comparing six digits. With transport
+    /// encryption gone ([ADR-025](../../../../design-docs/20-adr.md)) there is nothing to compare and nothing to prove:
+    /// a pairing now means "remember this device", so the answer is immediate and the person's decision moved to the one
+    /// place it still exists — whether to dial a device at all.
     fn pairing_request(
         &self,
         envelope: &synra_protocol::envelope::Envelope,
-        pairing: &crate::pairing::PairingDesk,
-        peer_address: &str,
     ) -> Decision {
         let refused = |why: String| Decision::Pairing {
-            answer: Some(PairingAnswer::Now(synra_protocol::session::PairResponse::refused(why))),
+            answer: Some(synra_protocol::session::PairResponse::refused(why)),
             request: Box::new(envelope.clone()),
         };
-
         let Some(json) = envelope.payload_str() else {
             return refused("the pairing request carried no payload".to_owned());
         };
-        let Ok(request) = serde_json::from_str::<synra_protocol::session::PairRequest>(json) else {
+        let Ok(_request) = serde_json::from_str::<synra_protocol::session::PairRequest>(json) else {
             return refused("the pairing request was not readable".to_owned());
         };
-
-        // Registered on the shared desk, which hands back the waiter this connection blocks on. The answer arrives from
-        // whoever decides, through the channel the desk holds — so it does not matter that the user is not on this
-        // connection, which is the whole reason the desk is shared.
-        let answer = match pairing.offer(envelope.request_id, request, peer_address, synra_store::sqlite::now_ms()) {
-            crate::pairing::Offer::Waiting(waiter) => Some(PairingAnswer::Waiting(
-                std::sync::Arc::new(parking_lot::Mutex::new(Some(waiter))),
-            )),
-            crate::pairing::Offer::Refused(answer) => Some(PairingAnswer::Now(answer)),
-            // ★ No wildcard, and the arm that was here is worth a sentence because it was right where it stood.
-            //
-            // It refused an offer this build did not recognise, and its comment said it existed because `Offer` is
-            // `#[non_exhaustive]`. That is a promise made *to other crates*: within the crate that defines `Offer`, a new
-            // variant is not something a match may ignore — it is a compile error. This module was in the daemon when the
-            // arm was written and is in `synra-core` now, so the arm became unreachable, and removing it makes a future
-            // variant fail here rather than be silently refused at run time.
-        };
-
-        Decision::Pairing { answer, request: Box::new(envelope.clone()) }
+        Decision::Pairing {
+            answer: Some(synra_protocol::session::PairResponse::accepted(String::new())),
+            request: Box::new(envelope.clone()),
+        }
     }
-
-    /// Where a file with this name goes.
-    ///
-    /// # Why the name is sanitised and then made unique
-    ///
-    /// Sanitised because it is untrusted and becomes a path. Made unique because two files called `report.pdf` from two
-    /// devices are both legitimate, and the second overwriting the first would lose a file the user was told had arrived.
-    /// The suffix is the transfer's identifier, which is already unique and needs no counter to be collision-free.
     fn destination_for(&self, name: &str) -> PathBuf {
         let safe = synra_store::sanitise_component(name);
         // A name that sanitises to nothing — every character rejected — still needs a file.
@@ -700,7 +609,8 @@ pub fn pairing_state_for(
         }
     };
 
-    crate::peer::pairing_state(stored.as_deref(), presented)
+    let _ = (stored, presented);
+    synra_protocol::handshake::PairingState::Unknown
 }
 
 #[cfg(test)]
