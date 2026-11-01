@@ -450,7 +450,12 @@ pub fn handle_within_with(
     flags.timeout = Some(timeout.min(flags.timeout.unwrap_or(timeout)));
     // Authentication, database approval queries and Hello all run outside the host guard.
     let authenticated = configuration.accept_stream(stream, flags, now);
-    let handshake = authenticated.and_then(|accepted| host.lock().adopt_with_events(accepted, now));
+    let handshake = authenticated.and_then(|accepted| {
+        // ★ Written before adoption, because adoption consumes the announcement and this is the only place the
+        // accepted side learns who the peer says it is. The dialling side records its own at the end of a dial.
+        record_accept(&data_dir, &accepted, i64::try_from(now).unwrap_or(0));
+        host.lock().adopt_with_events(accepted, now)
+    });
 
     let (mut link, _events) = match handshake {
         Ok(pair) => pair,
@@ -1007,4 +1012,48 @@ pub type FinishedCallback =
 #[must_use]
 pub fn no_answer() -> FinishedCallback {
     Arc::new(|_| None)
+}
+
+/// Writes down who completed a handshake on a socket this side accepted.
+///
+/// # Why the accepting side records too
+///
+/// A device list is one list. If only the dialling side wrote its row, the same link would look paired on one screen and
+/// unpaired on the other, and "forget" would offer to remove a row that was never created. Both ends see the same
+/// announcement, so both ends keep the same record.
+///
+/// # Why a failed write is not an error
+///
+/// The socket is open and about to carry traffic; refusing it because a bookkeeping row could not be written would
+/// throw away a working connection over a display detail.
+fn record_accept(data_dir: &std::path::Path, accepted: &crate::host::Dialled, now_ms: i64) {
+    use synra_protocol::session::PlatformKind;
+
+    let Ok(db) = synra_store::SynraDb::open(&data_dir.join(synra_store::DB_FILE_NAME)) else {
+        return;
+    };
+    let negotiated = accepted.negotiated();
+    let platform = match negotiated.platform {
+        PlatformKind::Android => "android",
+        PlatformKind::Ios => "ios",
+        _ => "desktop",
+    };
+    let record = synra_store::Paired {
+        device_id: negotiated.device_id.to_string(),
+        display_name: negotiated.display_name.clone(),
+        platform: platform.to_owned(),
+        features: serde_json::to_string(
+            &negotiated
+                .agreed
+                .common
+                .iter()
+                .map(|feature| feature.as_str())
+                .collect::<Vec<_>>(),
+        )
+        .unwrap_or_else(|_| "[]".to_owned()),
+        link_token: String::new(),
+        address: Some(accepted.address().to_string()),
+        paired_at_ms: now_ms,
+    };
+    let _ = db.pair_device(&record);
 }
