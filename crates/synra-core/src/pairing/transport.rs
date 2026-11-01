@@ -74,7 +74,7 @@ pub fn answer(
     // The certificate is read *before* the answer is awaited: the handshake is the only moment it is available, and a
     // waiter that returns after the answer must not need the connection to report what it saw.
     let peer_certificate = session.peer_certificate().to_vec();
-    let response = match desk.offer(RequestId::new(), request, &address, now_ms) {
+    let response = match desk.offer_with_certificate(RequestId::new(), request, Some(peer_certificate.clone()), &address, now_ms) {
         Offer::Refused(response) => response,
         Offer::Waiting(waiter) => waiter.wait(PATIENCE),
     };

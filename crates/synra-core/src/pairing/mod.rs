@@ -69,6 +69,14 @@ pub struct PendingPairing {
     pub request_id: RequestId,
     /// The request as it arrived.
     pub request: PairRequest,
+    /// The certificate the requester proved possession of, when it arrived over a pairing connection.
+    ///
+    /// # Why this is carried rather than re-read later
+    ///
+    /// It exists only during the handshake; by the time an answer is written the connection has been used. A record built
+    /// from anything else would pair this device to a key nobody holds. `None` means the request came over an already
+    /// authenticated link, which carried no new certificate to keep.
+    pub certificate: Option<Vec<u8>>,
     /// The token this side will expect if the user accepts.
     ///
     /// Chosen when the request arrives rather than when it is answered, so the value a user is shown and the value

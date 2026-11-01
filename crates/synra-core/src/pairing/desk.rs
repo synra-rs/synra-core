@@ -159,10 +159,23 @@ impl PairingDesk {
     /// [`Offer::Waiting`] with the waiter this connection should block on, or [`Offer::Refused`] with the answer to send
     /// now. A second request from a device that already has one pending is refused as [`PairRefusal::Busy`], and the
     /// first prompt is left alone.
-    pub fn offer(
+    pub fn offer(&self, request_id: RequestId, request: PairRequest, address: &str, now_ms: i64) -> Offer {
+        self.offer_with_certificate(request_id, request, None, address, now_ms)
+    }
+
+    /// The same offer, carrying the certificate the requester proved possession of.
+    ///
+    /// # Why this is a second entry point rather than an argument
+    ///
+    /// The two callers know different things. A request over an authenticated link has already been approved by that link,
+    /// and its certificate is not part of what it hands over. A first pairing is the opposite: the certificate is the
+    /// whole point, and it exists only during the handshake that carried the request. An argument one caller always passes
+    /// as `None` is a decision masquerading as a parameter; two names say it once.
+    pub fn offer_with_certificate(
         &self,
         request_id: RequestId,
         request: PairRequest,
+        certificate: Option<Vec<u8>>,
         address: &str,
         now_ms: i64,
     ) -> Offer {
@@ -181,6 +194,7 @@ impl PairingDesk {
         let pending = PendingPairing {
             request_id,
             request,
+            certificate,
             token: LinkToken::random(),
             verification_code: code,
             address: address.to_owned(),
