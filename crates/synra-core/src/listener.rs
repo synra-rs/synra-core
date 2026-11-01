@@ -268,10 +268,28 @@ pub fn serve_with(
         let taken = { host.lock().try_accept() };
 
         match taken {
-            // A first-pairing dial is answered on its own thread with the introduced-stream handshake, which records the
-            // caller's certificate instead of demanding it up front. Until that handler is wired here, the socket is closed
-            // rather than handed to the business handshake, which would refuse it with a far less useful error.
-            Ok(Some(Incoming::Pairing(stream))) => drop(stream),
+            // A first-pairing dial is answered on its own thread, with the introduced-stream handshake that records the
+            // caller's certificate instead of demanding it up front. Its own thread because the answer waits for a person
+            // to compare six digits on two screens — holding the loop, or the host lock, for that would stop this device
+            // from accepting anything else for the whole pairing window.
+            Ok(Some(Incoming::Pairing(stream))) => {
+                let host = Arc::clone(host);
+                let desk = Arc::clone(&shared_desk);
+                std::thread::spawn(move || {
+                    let credentials = { host.lock().pairing_credentials() };
+                    let Ok(credentials) = credentials else {
+                        // No enrolled identity means nothing to present, so there is no handshake to have. The dialer is
+                        // told by the closed socket rather than by a refusal this side cannot send before TLS.
+                        return;
+                    };
+                    let now_ms = synra_store::sqlite::now_ms();
+                    if let Err(error) =
+                        crate::pairing::transport::answer(stream, &credentials, &desk, now_ms)
+                    {
+                        eprintln!("synra-daemon: a pairing dial could not be answered: {error}");
+                    }
+                });
+            }
             Ok(Some(Incoming::Business(stream))) => {
                 let host = Arc::clone(host);
                 // Each connection gets its own copy of the path, because a thread cannot borrow the loop's.
