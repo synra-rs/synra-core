@@ -76,8 +76,6 @@ pub enum Domain {
     Identity,
     /// The device view, derived from discovery, trust and transport.
     Devices,
-    /// Pairing.
-    Pairing,
     /// Intent routing.
     Intent,
     /// File transfers.
@@ -102,7 +100,6 @@ impl Domain {
         match self {
             Self::Identity => "identity_",
             Self::Devices => "devices_",
-            Self::Pairing => "pairing_",
             Self::Intent => "intent_",
             Self::Transfer => "transfer_",
             Self::Plugins => "plugins_",
@@ -116,7 +113,6 @@ impl Domain {
     pub const ALL: &'static [Self] = &[
         Self::Identity,
         Self::Devices,
-        Self::Pairing,
         Self::Intent,
         Self::Transfer,
         Self::Plugins,
@@ -207,9 +203,6 @@ commands! {
     // ── identity ──
     "identity_get" => Identity, Host, One, false;
     "identity_set_display_name" => Identity, Host, Unit, true;
-    "identity_credentials" => Identity, Host, One, false;
-    "identity_repair" => Identity, Host, One, true;
-    "identity_cleanup" => Identity, Host, One, true;
 
     // ── devices ──
     "devices_snapshot" => Devices, Host, One, false;
@@ -219,14 +212,6 @@ commands! {
     "devices_disconnect" => Devices, Host, Unit, true;
     "devices_forget" => Devices, Host, Unit, true;
 
-    // ── pairing ──
-    "pairing_status" => Pairing, Host, Maybe, false;
-    "pairing_cancel" => Pairing, Host, Unit, true;
-    // ★ The two halves that were missing: the request waiting for this person to decide, and their decision. Without
-    // them the desk accepted every incoming request and no one could answer, so a dialer always timed out.
-    "pairing_pending" => Pairing, Host, Many, false;
-"pairing_request" => Pairing, Host, One, true;
-    "pairing_answer" => Pairing, Host, Unit, true;
 
     // ── intent ──
     "intent_dispatch" => Intent, Host, One, true;
@@ -447,7 +432,6 @@ const fn domain_name(domain: Domain) -> &'static str {
     match domain {
         Domain::Identity => "identity",
         Domain::Devices => "devices",
-        Domain::Pairing => "pairing",
         Domain::Intent => "intent",
         Domain::Transfer => "transfer",
         Domain::Plugins => "plugins",
