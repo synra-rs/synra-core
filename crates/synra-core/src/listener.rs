@@ -283,8 +283,14 @@ pub fn serve_with(
                         return;
                     };
                     let now_ms = synra_store::sqlite::now_ms();
+                    let database = { host.lock().pairing_service().map(|service| service.database()) };
+                    let Ok(database) = database else {
+                        // The grant needs the same database the invitation path writes, so without the service there is
+                        // nothing to record an agreement in — and an agreement nothing records is not a pairing.
+                        return;
+                    };
                     if let Err(error) =
-                        crate::pairing::transport::answer(stream, &credentials, &desk, now_ms)
+                        crate::pairing::transport::answer(stream, &credentials, &desk, &database, now_ms)
                     {
                         eprintln!("synra-daemon: a pairing dial could not be answered: {error}");
                     }

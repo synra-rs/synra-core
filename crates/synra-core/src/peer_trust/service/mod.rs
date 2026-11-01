@@ -135,6 +135,17 @@ impl PairingService {
     /// any lock is worth holding. Sharing the `Arc` also keeps the certificate and key in the one place every other
     /// connection on this device already takes them from.
     #[must_use]
+    /// The database this service writes trust records into.
+    ///
+    /// # Why a caller outside this service needs it
+    ///
+    /// The first-pairing path reaches the same `PairingTask` the invitation path uses, and that task needs the database
+    /// to reserve, bind and activate. Handing out a second handle to the same connection would be a second writer with no
+    /// reason to exist.
+    #[must_use]
+    pub fn database(&self) -> Arc<Mutex<SynraDb>> {
+        Arc::clone(&self.db)
+    }
     pub fn credentials(&self) -> Arc<DeviceCredentials> {
         Arc::clone(&self.credentials)
     }

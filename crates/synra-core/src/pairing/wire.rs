@@ -31,6 +31,14 @@ pub enum WireError {
     Io,
     /// The frame was empty, over the limit, or its body was not the message expected.
     Malformed,
+    /// Both sides agreed, but the durable grant that makes the agreement matter was refused.
+    ///
+    /// # Why this is not folded into `Io`
+    ///
+    /// The connection worked. What failed is the record that turns a conversation into permission, and a caller that saw
+    /// `Io` would go looking at networks for a fault that lives in the trust journal — or, worse, would report a pairing
+    /// as complete while the two devices still refuse each other.
+    Trust,
 }
 
 impl std::fmt::Display for WireError {
@@ -38,6 +46,7 @@ impl std::fmt::Display for WireError {
         formatter.write_str(match self {
             Self::Io => "the pairing connection failed",
             Self::Malformed => "the pairing message was not understood",
+            Self::Trust => "the pairing agreement could not be recorded",
         })
     }
 }

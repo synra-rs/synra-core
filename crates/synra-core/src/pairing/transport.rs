@@ -21,15 +21,19 @@
 //! recorded at an address it does not live at.
 
 use std::net::TcpStream;
+use std::sync::Arc;
 use std::time::Duration;
 
+use parking_lot::Mutex;
 use synra_net::authentication::DeviceCredentials;
-use synra_net::authentication::pairing::PAIRING_ALPN;
 use synra_net::authentication::IntroducedStream;
+use synra_net::authentication::pairing::{PAIRING_ALPN, PairingChannel};
 use synra_protocol::ids::{DeviceId, RequestId};
 use synra_protocol::session::{PairRequest, PairResponse};
+use synra_store::SynraDb;
 
 use super::{Offer, PairingDesk, wire};
+use crate::peer_trust::PairingTask;
 
 /// How long a first-pairing exchange is given, in both directions.
 ///
@@ -60,6 +64,7 @@ pub fn answer(
     stream: TcpStream,
     credentials: &DeviceCredentials,
     desk: &PairingDesk,
+    db: &Arc<Mutex<SynraDb>>,
     now_ms: i64,
 ) -> Result<Answered, wire::WireError> {
     let address = stream
@@ -79,12 +84,39 @@ pub fn answer(
         Offer::Waiting(waiter) => waiter.wait(PATIENCE),
     };
     wire::write(&mut session, &response)?;
+    // ★ The answer above is this protocol's reply, not permission. The grant is what a later connection checks, so it is
+    // written here, on the connection the person actually approved — and a refusal to record it is reported, because a
+    // pairing that only looked successful would leave two devices refusing each other with nothing to show for it.
+    if response.accepted {
+        grant(db, credentials, session, peer, now_ms)?;
+    }
     Ok(Answered {
         accepted: response.accepted,
         peer,
         peer_certificate,
         address,
     })
+}
+
+/// Records the pair both people just agreed to, on the connection they agreed over.
+///
+/// # Errors
+///
+/// [`wire::WireError::Trust`] when the certificate cannot be adopted, the task slot is taken, or the durable grant fails.
+fn grant(
+    db: &Arc<Mutex<SynraDb>>,
+    credentials: &DeviceCredentials,
+    session: IntroducedStream,
+    peer: DeviceId,
+    now_ms: i64,
+) -> Result<(), wire::WireError> {
+    let now_seconds = u64::try_from(now_ms / 1000).unwrap_or_default();
+    let channel = PairingChannel::adopt(session, credentials, peer, now_seconds)
+        .map_err(|_| wire::WireError::Trust)?;
+    let task = PairingTask::begin(Arc::clone(db), channel, now_ms).map_err(|_| wire::WireError::Trust)?;
+    task.finish(true, PATIENCE, || synra_store::sqlite::now_ms())
+        .map_err(|_| wire::WireError::Trust)?;
+    Ok(())
 }
 
 /// Puts one request to a device and reports what it said.
@@ -97,9 +129,17 @@ pub fn ask(
     credentials: &DeviceCredentials,
     target: DeviceId,
     request: &PairRequest,
+    db: &Arc<Mutex<SynraDb>>,
+    now_ms: i64,
 ) -> Result<PairResponse, wire::WireError> {
     let mut session = IntroducedStream::connect(stream, credentials, target, PATIENCE, PAIRING_ALPN, None)
         .map_err(|_| wire::WireError::Io)?;
     wire::write(&mut session, request)?;
-    wire::read(&mut session)
+    let response: PairResponse = wire::read(&mut session)?;
+    // ★ The asker records the pair too. Both sides run the same exchange on the same connection, so a grant that only one
+    // of them wrote would be a half pair — trusted by the device that decided and refused by the device that asked.
+    if response.accepted {
+        grant(db, credentials, session, target, now_ms)?;
+    }
+    Ok(response)
 }
