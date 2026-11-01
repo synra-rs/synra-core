@@ -14,10 +14,11 @@
 mod confirmation;
 mod invitation;
 
+use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::{Duration, Instant};
 
-use super::{AuthenticatedStream, AuthenticationError, DeviceCredentials, PeerIdentity};
+use super::{AuthenticatedStream, IntroducedStream, AuthenticationError, DeviceCredentials, PeerIdentity};
 
 pub use invitation::{MAX_INVITATION_BYTES, decode_invitation, encode_invitation};
 
@@ -64,7 +65,7 @@ pub enum PairingError {
 /// The owner must discard it when its UI task is cancelled or expires. Calling [`Self::confirm`]
 /// after expiry fails even if the socket is still connected; no evidence can be issued late.
 pub struct PairingChannel {
-    stream: AuthenticatedStream,
+    stream: Link,
     local: PeerIdentity,
     expires: Instant,
 }
@@ -90,7 +91,7 @@ impl PairingChannel {
             PAIRING_ALPN,
             cancelled,
         )?;
-        Self::new(stream, local.public_identity().clone())
+        Self::new(Link::Pinned(stream), local.public_identity().clone())
     }
 
     /// Accepts only the one certificate approved for this local pairing task.
@@ -113,10 +114,34 @@ impl PairingChannel {
             PAIRING_ALPN,
             cancelled,
         )?;
-        Self::new(stream, local.public_identity().clone())
+        Self::new(Link::Pinned(stream), local.public_identity().clone())
     }
 
-    fn new(stream: AuthenticatedStream, local: PeerIdentity) -> Result<Self, PairingError> {
+    /// Takes over a connection whose certificate arrived inside the handshake itself.
+    ///
+    /// # Why this is the only way a first pairing gets a channel
+    ///
+    /// `connect` and `accept` both start from a certificate somebody already approved. A first pairing has none — the peer
+    /// presented one and a person accepted six digits that stand in for it. Re-running a pinned handshake is impossible on
+    /// a socket that has already completed one, so the channel has to be adopted rather than built.
+    ///
+    /// The identity is derived from the certificate that was *presented*, never from the caller's description of it:
+    /// `DeviceId` says which device is expected, and the certificate must belong to that device.
+    ///
+    /// # Errors
+    /// Refuses self-pairing or a certificate that does not carry the expected device id.
+    pub fn adopt(
+        introduced: IntroducedStream,
+        local: &DeviceCredentials,
+        peer: synra_protocol::ids::DeviceId,
+        now_seconds: u64,
+    ) -> Result<Self, PairingError> {
+        let identity = PeerIdentity::from_certificate(peer, introduced.peer_certificate(), now_seconds)
+            .map_err(PairingError::from)?;
+        distinct(local, &identity)?;
+        Self::new(Link::Introduced(introduced, identity), local.public_identity().clone())
+    }
+    fn new(stream: Link, local: PeerIdentity) -> Result<Self, PairingError> {
         let expires = Instant::now()
             .checked_add(MAX_CONSENT_TIME)
             .ok_or(AuthenticationError::TimedOut)?;
@@ -134,7 +159,7 @@ impl PairingChannel {
 
     /// The exact authenticated identity to display in the local approval prompt.
     #[must_use]
-    pub const fn peer_identity(&self) -> &PeerIdentity {
+    pub fn peer_identity(&self) -> &PeerIdentity {
         self.stream.peer_identity()
     }
 
@@ -212,7 +237,7 @@ impl PairingChannel {
 /// Both users consented; the connection remains restricted while the service persists that fact.
 /// Dropping this value aborts the pairing and closes its only socket.
 pub struct ConsentExchange {
-    stream: AuthenticatedStream,
+    stream: Link,
     consent: MutualConsent,
     expires: Instant,
 }
@@ -315,4 +340,78 @@ fn distinct(local: &DeviceCredentials, peer: &PeerIdentity) -> Result<(), Pairin
         ));
     }
     Ok(())
+}
+
+/// The connection a pairing channel runs on.
+///
+/// # Why two kinds of connection share one type
+///
+/// A pairing that started from an invitation holds a certificate it already approved, so its channel is an
+/// `AuthenticatedStream` — pinned, matched against the approved list, and refused if the peer presents anything else.
+///
+/// A first pairing has no list to match: the certificate arrives *in* the handshake, and the six digits two screens show
+/// are what stands in for the list. Its channel is therefore an `IntroducedStream` — the same TLS session, the same
+/// channel binding, but a peer this side has only just met.
+///
+/// Both need to run the same consent exchange and the same durable grant, and that code is written against the methods
+/// below rather than against either type. Keeping the difference inside this enum is what lets one grant path serve both,
+/// instead of two grant paths that must be kept in step by hand.
+enum Link {
+    Pinned(AuthenticatedStream),
+    Introduced(IntroducedStream, PeerIdentity),
+}
+
+impl Link {
+    fn peer_identity(&self) -> &PeerIdentity {
+        match self {
+            Self::Pinned(stream) => stream.peer_identity(),
+            Self::Introduced(_, peer) => peer,
+        }
+    }
+
+    fn channel_binding(&self) -> Result<[u8; 32], AuthenticationError> {
+        match self {
+            Self::Pinned(stream) => stream.channel_binding(),
+            Self::Introduced(stream, _) => stream.channel_binding(),
+        }
+    }
+
+    fn start_budget(&self, timeout: Duration) -> Result<(), AuthenticationError> {
+        match self {
+            Self::Pinned(stream) => stream.start_budget(timeout),
+            Self::Introduced(stream, _) => stream.start_budget(timeout),
+        }
+    }
+
+    fn check_budget(&self) -> Result<(), AuthenticationError> {
+        match self {
+            Self::Pinned(stream) => stream.check_budget(),
+            Self::Introduced(stream, _) => stream.check_budget(),
+        }
+    }
+}
+
+impl Read for Link {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Self::Pinned(stream) => stream.read(buffer),
+            Self::Introduced(stream, _) => stream.read(buffer),
+        }
+    }
+}
+
+impl Write for Link {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        match self {
+            Self::Pinned(stream) => stream.write(buffer),
+            Self::Introduced(stream, _) => stream.write(buffer),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            Self::Pinned(stream) => stream.flush(),
+            Self::Introduced(stream, _) => stream.flush(),
+        }
+    }
 }

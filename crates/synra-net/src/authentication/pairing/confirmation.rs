@@ -3,7 +3,7 @@ use std::io::{Read, Write};
 use serde::{Deserialize, Serialize};
 use synra_protocol::DeviceId;
 
-use super::{AuthenticatedStream, MAX_CONSENT_BYTES, PairingError, PeerIdentity};
+use super::{MAX_CONSENT_BYTES, PairingError, PeerIdentity};
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -24,7 +24,7 @@ pub(super) enum Stage {
 }
 
 pub(super) fn exchange(
-    stream: &mut AuthenticatedStream,
+    stream: &mut super::Link,
     local: &PeerIdentity,
     binding: [u8; 32],
     approved: bool,
@@ -34,7 +34,7 @@ pub(super) fn exchange(
         stage,
         version: 1,
         from: local.device_id(),
-        target: stream.peer_device_id(),
+        target: stream.peer_identity().device_id(),
         binding,
         confirmed: approved,
     };
@@ -73,7 +73,7 @@ pub(super) fn exchange(
         .map_err(|_| PairingError::Rejected("invalid consent record"))?;
     if message.stage != stage
         || message.version != 1
-        || message.from != stream.peer_device_id()
+        || message.from != stream.peer_identity().device_id()
         || message.target != local.device_id()
         || message.binding != binding
     {

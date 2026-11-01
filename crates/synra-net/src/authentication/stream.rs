@@ -317,6 +317,41 @@ impl IntroducedStream {
     pub fn local(&self) -> &PeerIdentity {
         &self.local
     }
+
+    /// Starts a budget for the operations that follow, so a stalled peer cannot hold the caller's thread.
+    pub(super) fn start_budget(&self, timeout: Duration) -> Result<(), AuthenticationError> {
+        match &self.stream {
+            Stream::Client(stream) => stream.sock.start_budget(timeout),
+            Stream::Server(stream) => stream.sock.start_budget(timeout),
+        }
+    }
+
+    /// Whether the budget started above still has time left in it.
+    pub(super) fn check_budget(&self) -> Result<(), AuthenticationError> {
+        match &self.stream {
+            Stream::Client(stream) => stream.sock.remaining().map(|_| ()),
+            Stream::Server(stream) => stream.sock.remaining().map(|_| ()),
+        }
+    }
+
+    /// RFC 9266 channel binding for this exact connection.
+    ///
+    /// # Why an introduced connection can offer this at all
+    ///
+    /// The exporter is a property of the TLS session, and this session is complete and authenticated in the sense that
+    /// both sides proved possession of the keys they presented. What it has not done is *approve* the other side — which
+    /// is exactly the gap a pairing exchange closes, and the reason the binding is worth exporting: two screens comparing
+    /// digits are looking at two ends of one connection only if the exporters agree.
+    pub(super) fn channel_binding(&self) -> Result<[u8; 32], AuthenticationError> {
+        let label = b"EXPORTER-Channel-Binding";
+        let result = match &self.stream {
+            Stream::Client(stream) => stream.conn.export_keying_material([0; 32], label, Some(&[])),
+            Stream::Server(stream) => stream.conn.export_keying_material([0; 32], label, Some(&[])),
+        };
+        result.map_err(|_| {
+            AuthenticationError::Rejected("TLS channel binding unavailable".to_owned())
+        })
+    }
 }
 
 impl Read for IntroducedStream {
