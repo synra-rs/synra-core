@@ -47,7 +47,7 @@ impl AuthenticatedStream {
         peer: &PeerIdentity,
         timeout: Duration,
         alpn: &[u8],
-        cancelled: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+        cancelled: Option<Arc<std::sync::atomic::AtomicBool>>,
     ) -> Result<Self, AuthenticationError> {
         let socket = DeadlineSocket::new(socket, timeout, cancelled)?;
         let connection = handshake::connect(local, peer, alpn)?;
@@ -83,7 +83,7 @@ impl AuthenticatedStream {
         peers: &[PeerIdentity],
         timeout: Duration,
         alpn: &[u8],
-        cancelled: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+        cancelled: Option<Arc<std::sync::atomic::AtomicBool>>,
     ) -> Result<Self, AuthenticationError> {
         let socket = DeadlineSocket::new(socket, timeout, cancelled)?;
         let connection = handshake::accept(local, peers, alpn)?;
@@ -316,13 +316,6 @@ impl IntroducedStream {
     #[must_use]
     pub fn local(&self) -> &PeerIdentity {
         &self.local
-    }
-
-    pub(super) fn start_budget(&self, timeout: Duration) -> Result<(), AuthenticationError> {
-        match &self.stream {
-            Stream::Client(stream) => stream.sock.start_budget(timeout),
-            Stream::Server(stream) => stream.sock.start_budget(timeout),
-        }
     }
 }
 

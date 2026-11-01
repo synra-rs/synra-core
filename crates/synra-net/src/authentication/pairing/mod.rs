@@ -26,6 +26,10 @@ pub const MAX_CONSENT_TIME: Duration = Duration::from_secs(60);
 /// Maximum consent JSON payload; checked before allocating its receive buffer.
 pub const MAX_CONSENT_BYTES: usize = 1024;
 
+/// The ALPN name a first-pairing connection negotiates.
+///
+/// Readable in the clear inside the TLS hello, which is how the listener tells a pairing dial from a business one before
+/// any handshake happens — see `synra-core`'s `offers_pairing`.
 pub const PAIRING_ALPN: &[u8] = b"synra/pairing/1";
 
 /// Why an out-of-band invitation or a restricted consent exchange failed.
