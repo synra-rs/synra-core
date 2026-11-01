@@ -345,5 +345,23 @@ impl Dialled {
     pub fn into_link(self) -> PeerLink {
         self.link
     }
+
+    /// What the peer said about itself during the handshake.
+    ///
+    /// # Why this is readable now
+    ///
+    /// It used to be none of a caller's business: a connection was authorised by a certificate, and the announcement was
+    /// only checked against it. Without certificates ([ADR-025](../../../../design-docs/20-adr.md)) the announcement is
+    /// the whole of what this side knows about the peer, so a caller that keeps a device list has to read it.
+    #[must_use]
+    pub fn negotiated(&self) -> &Negotiated {
+        &self.negotiated
+    }
+
+    /// Where the peer answered, for a record that remembers how it was reached.
+    #[must_use]
+    pub fn address(&self) -> SocketAddr {
+        self.address
+    }
 }
 
