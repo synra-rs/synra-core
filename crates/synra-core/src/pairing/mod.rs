@@ -29,9 +29,11 @@ use synra_protocol::ids::{DeviceId, RequestId};
 
 pub mod desk;
 pub mod outbound;
+pub mod wire;
 
 pub use desk::{Offer, PairingDesk, Waiter};
 pub use outbound::{Answered, NotAnAnswer, OutboundPairing, PairingTarget};
+pub use wire::{MAX_MESSAGE_BYTES, WireError};
 use synra_protocol::session::PairRequest;
 
 /// What the kernel needs written down when a pairing is accepted.
