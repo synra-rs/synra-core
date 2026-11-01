@@ -22,9 +22,9 @@
 //!
 //! # Probes that need the host are injected
 //!
-//! A keyring, a WebView version and a firewall hint are different on every platform and only knowable from
+//! A WebView version and a firewall hint are different on every platform and only knowable from
 //! the application layer. They arrive as a [`HostFacts`] value rather than as calls into Tauri, so the whole
-//! probe suite is testable without a window, a keychain or a network stack.
+//! probe suite is testable without a window or a network stack.
 
 mod host;
 mod network;

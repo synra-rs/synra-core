@@ -1,8 +1,8 @@
 //! The first conversation two devices have.
 //!
-//! Production hosts use [`authenticated::AuthenticatedPeer`] through [`crate::host::DialConfig`].
-//! The plain byte-level helpers in this module exercise protocol negotiation; they do not prove
-//! identity or authorize business traffic and are not a production fallback.
+//! Production hosts reach these helpers through [`crate::host::DialConfig`]. The byte-level functions in this
+//! module are the whole handshake: two devices say hello, agree on a version and features, and nothing is
+//! claimed about who the other one is — see ADR-025.
 //!
 //! # What the handshake buys
 //!
