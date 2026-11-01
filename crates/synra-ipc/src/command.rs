@@ -220,9 +220,6 @@ commands! {
     "devices_forget" => Devices, Host, Unit, true;
 
     // ── pairing ──
-    "pairing_invite" => Pairing, Host, One, false;
-    "pairing_listen" => Pairing, Host, One, true;
-    "pairing_connect" => Pairing, Host, One, true;
     "pairing_status" => Pairing, Host, Maybe, false;
     "pairing_cancel" => Pairing, Host, Unit, true;
     // ★ The two halves that were missing: the request waiting for this person to decide, and their decision. Without
@@ -523,9 +520,6 @@ mod tests {
             "devices_disconnect",
             "devices_forget",
             // pairing
-            "pairing_invite",
-            "pairing_listen",
-            "pairing_connect",
             "pairing_status",
             "pairing_cancel",
             "pairing_pending",
