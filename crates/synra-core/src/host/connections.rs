@@ -228,7 +228,7 @@ impl Host {
     ///
     /// [`HostError::Bind`] when this host is not listening, or when the listener cannot accept. A would-block is reported
     /// as `Ok(None)` rather than as an error, because "nothing is waiting" is not a failure.
-    pub fn try_accept(&self) -> Result<Option<TcpStream>, HostError> {
+    pub fn try_accept(&self) -> Result<Option<Incoming>, HostError> {
         let Some(listener) = &self.listener else {
             return Err(HostError::Bind {
                 address: SocketAddr::from(([0, 0, 0, 0], 0)),
@@ -251,7 +251,11 @@ impl Host {
                             .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0))),
                         why: format!("the connection could not be made blocking: {error}"),
                     })?;
-                Ok(Some(stream))
+                Ok(Some(if offers_pairing(&stream) {
+                    Incoming::Pairing(stream)
+                } else {
+                    Incoming::Business(stream)
+                }))
             }
             // Nothing waiting. Not a failure: the caller loops and asks again.
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
@@ -374,4 +378,43 @@ impl Dialled {
     pub fn into_link(self) -> PeerLink {
         self.link
     }
+}
+
+/// What an accepted connection asked to be.
+///
+/// # Why the listener has to know before the handshake
+///
+/// The two kinds of connection are authenticated in opposite ways. A business connection must name its peer, so it is
+/// refused unless the presented certificate matches an approved one. A first-pairing connection cannot: the whole point is
+/// to obtain that certificate, so it is answered by `IntroducedStream` instead, which records the certificate and lets a
+/// person decide from the six digits.
+///
+/// One socket cannot be both, and the decision has to be made before the handshake because the two use different client
+/// certificate verifiers. The ALPN the caller put in its hello is the answer, and it is readable in the clear.
+pub enum Incoming {
+    /// An ordinary connection from a device that must already be approved.
+    Business(TcpStream),
+    /// A device asking to pair, whose certificate is not known yet.
+    Pairing(TcpStream),
+}
+
+/// Whether this connection's hello offers the pairing protocol.
+///
+/// # Why a peek at the bytes rather than a parsed hello
+///
+/// The handshake has already been decided by the time rustls looks at it, so the protocol has to be read from the socket
+/// before rustls is given the socket. `peek` leaves the bytes in place, so the handshake that follows sees the hello
+/// untouched and neither side knows this happened.
+///
+/// ALPN names travel unencrypted in the clear, which is what makes this work at all. A hello that has not fully arrived
+/// yet simply does not match: the connection is then treated as business, where a wrong ALPN is refused anyway.
+fn offers_pairing(stream: &TcpStream) -> bool {
+    let wanted = synra_net::authentication::pairing::PAIRING_ALPN;
+    let mut probe = [0_u8; 512];
+    let Ok(read) = stream.peek(&mut probe) else {
+        return false;
+    };
+    probe[..read]
+        .windows(wanted.len())
+        .any(|window| window == wanted)
 }

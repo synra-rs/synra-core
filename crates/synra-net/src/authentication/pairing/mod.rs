@@ -26,7 +26,7 @@ pub const MAX_CONSENT_TIME: Duration = Duration::from_secs(60);
 /// Maximum consent JSON payload; checked before allocating its receive buffer.
 pub const MAX_CONSENT_BYTES: usize = 1024;
 
-const PAIRING_ALPN: &[u8] = b"synra/pairing/1";
+pub const PAIRING_ALPN: &[u8] = b"synra/pairing/1";
 
 /// Why an out-of-band invitation or a restricted consent exchange failed.
 #[derive(Debug, thiserror::Error)]

@@ -34,6 +34,7 @@ use parking_lot::Mutex;
 // The types this module's own API is expressed in, re-exported so a caller can name them without reaching past it.
 use crate::SessionError;
 use crate::host::Host;
+use crate::host::Incoming;
 pub use crate::inbound::{Decision, Inbox, PairingAnswer};
 use crate::late_queue::LateQueue;
 use crate::link::{LinkError, PeerLink};
@@ -267,7 +268,11 @@ pub fn serve_with(
         let taken = { host.lock().try_accept() };
 
         match taken {
-            Ok(Some(stream)) => {
+            // A first-pairing dial is answered on its own thread with the introduced-stream handshake, which records the
+            // caller's certificate instead of demanding it up front. Until that handler is wired here, the socket is closed
+            // rather than handed to the business handshake, which would refuse it with a far less useful error.
+            Ok(Some(Incoming::Pairing(stream))) => drop(stream),
+            Ok(Some(Incoming::Business(stream))) => {
                 let host = Arc::clone(host);
                 // Each connection gets its own copy of the path, because a thread cannot borrow the loop's.
                 let inbox_root = data_dir.clone();
