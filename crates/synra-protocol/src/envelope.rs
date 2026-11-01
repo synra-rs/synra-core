@@ -777,7 +777,7 @@ mod tests {
     #[test]
     fn built_in_events_are_accepted_and_nonsense_is_not() {
         let (a, b) = (device(), device());
-        assert!(Envelope::outbound(spec(events::PAIR_REQUEST, a, b), None::<&()>).is_ok());
+        assert!(Envelope::outbound(spec(events::BYE, a, b), None::<&()>).is_ok());
 
         // `spec` asserts the name parses, so the negative cases check the parser directly.
         assert!(

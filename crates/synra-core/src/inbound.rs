@@ -196,19 +196,6 @@ pub enum Decision {
         /// would be inventing three facts to save a clone.
         request: Option<Box<synra_protocol::envelope::Envelope>>,
     },
-    /// A pairing request this kernel has an opinion about, and the answer to send back.
-    ///
-    /// # Why the envelope is not rebuilt from the event name
-    ///
-    /// Because a pairing answer is a *reply*: it carries the request's id, the request's trace, and is addressed to the
-    /// device that asked. All three come from the envelope that arrived, which is here and is not available to whoever
-    /// would otherwise construct the reply from `Delivered`'s single string.
-    Pairing {
-        /// What to tell the dialer, or `None` when the request was refused before it reached the desk.
-        answer: Option<synra_protocol::session::PairResponse>,
-        /// The message that arrived, so the reply can be addressed and correlated.
-        request: Box<synra_protocol::envelope::Envelope>,
-    },
     /// A message this connection has nothing to do with.
     Ignored,
     /// Nothing arrived and the wait is over, so the connection has nothing more to say.
@@ -341,14 +328,7 @@ impl Inbox {
                 });
             };
             if session::classify(&envelope) != Some(session::Message::Request) {
-                // ★ A pairing request is the one non-transfer message this kernel answers rather than merely reports. It is
-                // handled before the transfer path because it is not one: there is no file, no `transfer_id`, and no block
-                // to follow — and a pairing request reported as `Delivered` would leave a user's other device waiting for an
-                // answer this kernel never sends while the prompt, if it appeared at all, sat unanswered on a screen.
-                if envelope.event.as_str() == synra_protocol::event::events::PAIR_REQUEST {
-                    return Ok(self.pairing_request(&envelope));
-                }
-                return Ok(Decision::Delivered {
+return Ok(Decision::Delivered {
                     event: envelope.event.as_str().to_owned(),
                     share: share_of(&envelope),
                     request: Some(envelope.clone()),
@@ -457,41 +437,6 @@ impl Inbox {
         }
     }
 
-    /// Takes an arriving pairing request and produces the answer, if there is one yet.
-    ///
-    /// # Why a malformed request is refused rather than failed
-    ///
-    /// Because the link is not at fault. A peer that sends a pairing request this build cannot read has made a mistake in
-    /// one message, and closing the connection would take the transfer channel with it — the protocol document's rule
-    /// that a refusal does not end a link applies to a request that cannot be understood for the same reason it applies
-    /// to one that is declined.
-    /// Answers a pairing request that arrived on an existing link.
-    ///
-    /// # Why there is nothing to ask any more
-    ///
-    /// This used to put the request on a shared desk and block the link on a person comparing six digits. With transport
-    /// encryption gone ([ADR-025](../../../../design-docs/20-adr.md)) there is nothing to compare and nothing to prove:
-    /// a pairing now means "remember this device", so the answer is immediate and the person's decision moved to the one
-    /// place it still exists — whether to dial a device at all.
-    fn pairing_request(
-        &self,
-        envelope: &synra_protocol::envelope::Envelope,
-    ) -> Decision {
-        let refused = |why: String| Decision::Pairing {
-            answer: Some(synra_protocol::session::PairResponse::refused(why)),
-            request: Box::new(envelope.clone()),
-        };
-        let Some(json) = envelope.payload_str() else {
-            return refused("the pairing request carried no payload".to_owned());
-        };
-        let Ok(_request) = serde_json::from_str::<synra_protocol::session::PairRequest>(json) else {
-            return refused("the pairing request was not readable".to_owned());
-        };
-        Decision::Pairing {
-            answer: Some(synra_protocol::session::PairResponse::accepted()),
-            request: Box::new(envelope.clone()),
-        }
-    }
     fn destination_for(&self, name: &str) -> PathBuf {
         let safe = synra_store::sanitise_component(name);
         // A name that sanitises to nothing — every character rejected — still needs a file.

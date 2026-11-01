@@ -347,11 +347,6 @@ pub mod events {
     pub const ERROR: &str = "device.error";
 
     /// Asks to pair.
-    pub const PAIR_REQUEST: &str = "device.pairing.request";
-    /// Answers a pairing request.
-    pub const PAIR_RESPONSE: &str = "device.pairing.response";
-    /// Ends a pairing.
-    pub const UNPAIR: &str = "device.pairing.unpair";
     /// Asks a device which plugins it has.
     ///
     /// Internal rather than public: the answer is a list of what somebody installed, and a plugin able to see it would learn
@@ -386,9 +381,6 @@ pub mod events {
         PONG,
         BYE,
         ERROR,
-        PAIR_REQUEST,
-        PAIR_RESPONSE,
-        UNPAIR,
         INTENT_INVOKE,
         INTENT_RESULT,
         INTENT_CANCEL,
@@ -409,8 +401,6 @@ pub mod builtin {
     pub const DEVICE_OFFLINE: &str = "_synra.device.offline";
     /// One device's display name changed.
     pub const DEVICE_RENAMED: &str = "_synra.device.renamed";
-    /// A pairing was created or ended.
-    pub const PAIRING_CHANGED: &str = "_synra.pairing.changed";
 
     /// Shared content arrived that **no plugin claimed**.
     ///
@@ -461,7 +451,6 @@ pub mod builtin {
         DEVICE_CHANGED,
         DEVICE_OFFLINE,
         DEVICE_RENAMED,
-        PAIRING_CHANGED,
         SHARE_RECEIVED,
         INTENT_COMPLETED,
         INTENT_FAILED,
@@ -600,13 +589,13 @@ mod tests {
 
     #[test]
     fn host_events_parse_and_are_recognised() {
-        let name = EventName::parse(events::PAIR_REQUEST).expect("valid");
+        let name = EventName::parse(events::BYE).expect("valid");
         assert!(name.is_transport(), "device.* is the link protocol");
         assert!(!name.is_system(), "only _synra.* is the host event namespace");
         assert!(!name.is_plugin());
         assert!(!name.is_data_plane());
         assert_eq!(name.plugin_scope(), None);
-        assert_eq!(name.as_str(), "device.pairing.request");
+        assert_eq!(name.as_str(), "device.bye");
     }
 
     #[test]
@@ -754,7 +743,6 @@ mod tests {
     fn a_plugin_may_not_emit_host_events_by_default() {
         let chat = slug("chat");
         for reserved in [
-            events::PAIR_REQUEST,
             events::INTENT_INVOKE,
             builtin::TRANSFER_COMPLETED,
             "file.transfer.chunk",
@@ -791,7 +779,6 @@ mod tests {
         assert_eq!(ack(events::BYE), AckPolicy::FireAndForget);
 
         // Everything a user would notice losing.
-        assert_eq!(ack(events::PAIR_REQUEST), AckPolicy::Await);
         assert_eq!(ack(events::INTENT_INVOKE), AckPolicy::Await);
         assert_eq!(ack("_plugin.@acme/chat.text"), AckPolicy::Await);
         assert_eq!(ack(builtin::TRANSFER_COMPLETED), AckPolicy::Await);
@@ -833,7 +820,6 @@ mod tests {
         builtin::DEVICE_CHANGED,
         builtin::DEVICE_OFFLINE,
         builtin::DEVICE_RENAMED,
-        builtin::PAIRING_CHANGED,
         builtin::SHARE_RECEIVED,
         builtin::INTENT_COMPLETED,
         builtin::INTENT_FAILED,
@@ -855,9 +841,6 @@ mod tests {
         events::PONG,
         events::BYE,
         events::ERROR,
-        events::PAIR_REQUEST,
-        events::PAIR_RESPONSE,
-        events::UNPAIR,
         events::INTENT_INVOKE,
         events::INTENT_RESULT,
         events::INTENT_CANCEL,

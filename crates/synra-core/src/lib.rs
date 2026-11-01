@@ -113,7 +113,7 @@ pub use identity::{
 pub use kernel::{Kernel, KernelConfig, KernelError, KernelEvent, KernelSnapshot, NodeRole};
 pub use link::{Inbound, LinkError, PeerLink};
 pub use messaging::{
-    ClipboardText, MessageError, TEXT_MIME, pair_request, pair_response, text_from, text_to,
+    ClipboardText, MessageError, TEXT_MIME, text_from, text_to,
 };
 pub use peer::{Flags, HandshakeError, LocalPeer, Negotiated, accept, agree, dial};
 pub use plugin::{

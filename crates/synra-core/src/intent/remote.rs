@@ -10,7 +10,7 @@
 //!
 //! # Why the envelopes are built here rather than in a host
 //!
-//! The same reason [`crate::messaging::pair_request`] gives: the event name, the addressing and the trace have to be
+//! The same reason a request that carries a profile gives: the event name, the addressing and the trace have to be
 //! right, and a host is not the only thing that will want to ask. It is also what lets a test check the envelope without
 //! a socket — a request built inline in a command handler cannot be inspected without running the command.
 //!

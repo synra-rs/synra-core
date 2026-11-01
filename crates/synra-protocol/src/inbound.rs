@@ -478,10 +478,7 @@ fn is_transport(name: &EventName) -> bool {
 fn is_kernel(name: &EventName) -> bool {
     matches!(
         name.as_str(),
-        events::PAIR_REQUEST
-            | events::PAIR_RESPONSE
-            | events::UNPAIR
-            | events::INTENT_INVOKE
+        events::INTENT_INVOKE
             | events::INTENT_RESULT
             | events::INTENT_CANCEL
             | events::PLUGIN_QUERY
@@ -521,15 +518,6 @@ pub enum BuiltinEvent {
         device: crate::ids::DeviceId,
         /// Its new name.
         display_name: String,
-    },
-    /// A pairing was created or ended.
-    PairingChanged {
-        /// Which device.
-        device: crate::ids::DeviceId,
-        /// Whether it is paired now.
-        paired: bool,
-        /// Why, when it ended unexpectedly.
-        reason: Option<String>,
     },
     /// Shared content arrived that no plugin claimed.
     ShareReceived {
@@ -698,13 +686,7 @@ impl BuiltinEvent {
             builtin::DEVICE_RENAMED => Self::DeviceRenamed {
                 device: crate::ids::DeviceId::new(),
                 display_name: String::new(),
-            },
-            builtin::PAIRING_CHANGED => Self::PairingChanged {
-                device: crate::ids::DeviceId::new(),
-                paired: false,
-                reason: None,
-            },
-            builtin::SHARE_RECEIVED => Self::ShareReceived {
+            },builtin::SHARE_RECEIVED => Self::ShareReceived {
                 item: ShareItem {
                     from: crate::ids::DeviceId::new(),
                     mime: String::new(),
@@ -775,7 +757,6 @@ impl BuiltinEvent {
             Self::DeviceChanged { .. } => builtin::DEVICE_CHANGED,
             Self::DeviceOffline { .. } => builtin::DEVICE_OFFLINE,
             Self::DeviceRenamed { .. } => builtin::DEVICE_RENAMED,
-            Self::PairingChanged { .. } => builtin::PAIRING_CHANGED,
             Self::ShareReceived { .. } => builtin::SHARE_RECEIVED,
             Self::IntentCompleted(_) => builtin::INTENT_COMPLETED,
             Self::IntentFailed(_) => builtin::INTENT_FAILED,
@@ -1265,9 +1246,6 @@ mod tests {
         // intent the user dispatches.
         let (a, b) = (DeviceId::new(), DeviceId::new());
         for name in [
-            events::PAIR_REQUEST,
-            events::PAIR_RESPONSE,
-            events::UNPAIR,
             events::INTENT_INVOKE,
             events::INTENT_RESULT,
             events::INTENT_CANCEL,
@@ -1371,7 +1349,6 @@ mod tests {
 
         for inbound in [
             Inbound::classify(envelope("device.ping", a, b)),
-            Inbound::classify(envelope(events::PAIR_REQUEST, a, b)),
             Inbound::classify(envelope(builtin::DEVICE_CHANGED, a, b)),
             Inbound::classify(envelope("file.transfer.chunk", a, b)),
             Inbound::classify(original),

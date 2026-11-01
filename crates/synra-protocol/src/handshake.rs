@@ -14,7 +14,6 @@
 //!   unreadable frames.
 //! * **Features** — a peer that cannot do `TransferResume` would strand a partially transferred
 //!   file. The intersection is computed once, here, so no later code has to ask.
-//! * **Pairing** — an unpaired peer has no business sending anything. Checking at `Hello` means the
 //!   rest of the kernel can assume every message on an established link came from a paired device.
 //!
 use core::fmt;

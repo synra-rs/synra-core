@@ -626,52 +626,6 @@ pub fn handle_within_with(
                     }
                 }
                 Decision::Ignored => {}
-                Decision::Pairing { answer, request } => {
-                    events.push("pairing request".to_owned());
-                    // ★ One of two things, and the difference is the whole reason the desk is shared. A refusal the desk
-                    // produced itself — a second request from the same device, or one that could not be read — goes back
-                    // immediately. A request that is on the desk blocks *this* thread on the channel until a user decides,
-                    // wherever that user is: the answer arrives through the desk, not through this connection.
-            let answered = answer;
-                    if let Some(answered) = answered {
-                        // ★ A failure to answer is reported and does not end the link. The peer asked a question this
-                        // kernel could not reply to; closing the connection would take any transfer on it down for a
-                        // reason the user cannot see, and the dialer's own timeout already covers giving up.
-                        match synra_protocol::event::EventName::parse(
-                            synra_protocol::event::events::PAIR_RESPONSE,
-                        ) {
-                            Ok(event) => {
-                                match Envelope::reply_to(
-                                    &request,
-                                    event,
-                                    link.local(),
-                                    synra_store::sqlite::now_ms(),
-                                    Some(&answered),
-                                ) {
-                                    Ok(reply) => {
-                                        if let Err(error) = link.send(&reply) {
-                                            eprintln!(
-                                                "synra-daemon: the pairing answer could not be sent: {error}"
-                                            );
-                                        } else {
-                                            eprintln!(
-                                                "synra-daemon: {peer} asked to pair, and was answered"
-                                            );
-                                        }
-                                    }
-                                    Err(error) => eprintln!(
-                                        "synra-daemon: the pairing answer could not be built: {error}"
-                                    ),
-                                }
-                            }
-                            Err(error) => {
-                                eprintln!(
-                                    "synra-daemon: the pairing event name is invalid: {error}"
-                                );
-                            }
-                        }
-                    }
-                }
                 // Nothing arrived and the wait is over. The connection ends quietly: a peer that has gone silent has not
                 // done anything wrong, and `Served::ended` is for faults.
                 Decision::Idle => {
