@@ -225,6 +225,10 @@ commands! {
     "pairing_connect" => Pairing, Host, One, true;
     "pairing_status" => Pairing, Host, Maybe, false;
     "pairing_cancel" => Pairing, Host, Unit, true;
+    // ★ The two halves that were missing: the request waiting for this person to decide, and their decision. Without
+    // them the desk accepted every incoming request and no one could answer, so a dialer always timed out.
+    "pairing_pending" => Pairing, Host, Many, false;
+    "pairing_answer" => Pairing, Host, Unit, true;
 
     // ── intent ──
     "intent_dispatch" => Intent, Host, One, true;
@@ -524,6 +528,8 @@ mod tests {
             "pairing_connect",
             "pairing_status",
             "pairing_cancel",
+            "pairing_pending",
+            "pairing_answer",
             // intent
             "intent_dispatch",
             "intent_list",
