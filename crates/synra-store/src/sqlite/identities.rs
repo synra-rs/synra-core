@@ -10,71 +10,26 @@ impl SynraDb {
     /// # Errors
     /// Returns a database error if the insert fails; `false` preserves the existing identity unchanged.
     pub fn create_identity_if_absent(&self, identity: &IdentityRow) -> Result<bool, DbError> {
+        // ★ No bootstrap row and no history table any more. Both existed to remember "this database once had a
+        // credential, so a missing identity is a wipe rather than a first run". With credentials gone there is
+        // nothing to remember: an absent identity is simply a database that has not been set up.
         timed_write!(self, "identity-create", {
-            let transaction = rusqlite::Transaction::new_unchecked(
-                &self.connection,
-                rusqlite::TransactionBehavior::Immediate,
-            )
-            .map_err(|error| statement(&error))?;
-            let initialized: bool = transaction
-                .query_row(
-                    "SELECT initialized FROM identity_bootstrap WHERE id = 1",
-                    [],
-                    |row| row.get(0),
-                )
-                .map_err(|error| statement(&error))?;
-            let history: Option<String> = transaction
-                .query_row(
-                    "SELECT device_id FROM device_identity_history WHERE id = 1",
-                    [],
-                    |row| row.get(0),
-                )
-                .optional()
-                .map_err(|error| statement(&error))?;
-            let existing: bool = transaction
-                .query_row("SELECT EXISTS (SELECT 1 FROM identity)", [], |row| {
-                    row.get(0)
-                })
-                .map_err(|error| statement(&error))?;
-            if !existing && initialized && history.is_none() {
-                return Err(DbError::Statement {
-                    why: "local identity history is missing; restore a trusted database backup"
-                        .to_owned(),
-                });
-            }
-            let device_id = history.as_deref().unwrap_or(&identity.device_id);
-            let changed = transaction
+            let changed = self
+                .connection
                 .execute(
                     "INSERT INTO identity (id, device_id, display_name, platform, created_at_ms)
-                 VALUES (1, ?1, ?2, ?3, ?4) ON CONFLICT(id) DO NOTHING",
+                     VALUES (1, ?1, ?2, ?3, ?4) ON CONFLICT(id) DO NOTHING",
                     params![
-                        device_id,
+                        identity.device_id,
                         identity.display_name,
                         identity.platform,
                         identity.created_at_ms
                     ],
                 )
                 .map_err(|error| statement(&error))?;
-            if !initialized {
-                transaction
-                    .execute(
-                        "INSERT INTO device_identity_history (id, device_id)
-                     SELECT id, device_id FROM identity WHERE id = 1 ON CONFLICT(id) DO NOTHING",
-                        [],
-                    )
-                    .map_err(|error| statement(&error))?;
-                transaction
-                    .execute(
-                        "UPDATE identity_bootstrap SET initialized = 1 WHERE id = 1",
-                        [],
-                    )
-                    .map_err(|error| statement(&error))?;
-            }
-            transaction.commit().map_err(|error| statement(&error))?;
             Ok(changed == 1)
         })
     }
-
     /// This device's identity, if it has one.
     ///
     /// # Errors
@@ -164,16 +119,6 @@ mod tests {
 
 
 
-    #[test]
-    fn missing_identity_and_history_refuse_both_creation_entry_points() {
-        let db = initialized();
-        db.connection
-            .execute_batch("DELETE FROM identity; DELETE FROM device_identity_history;")
-            .unwrap();
-        assert!(db.create_identity_if_absent(&proposed()).is_err());
-        assert!(db.write_identity(&proposed()).is_err());
-        assert!(db.identity().unwrap().is_none());
-    }
 
     #[test]
     fn metadata_updates_cannot_replace_the_stable_device_id() {
@@ -185,20 +130,6 @@ mod tests {
         assert_eq!(db.identity().unwrap().unwrap(), same);
     }
 
-    #[test]
-    fn initialization_cannot_be_forgotten_or_reset() {
-        let db = initialized();
-        assert!(
-            db.connection
-                .execute("DELETE FROM identity_bootstrap", [])
-                .is_err()
-        );
-        assert!(
-            db.connection
-                .execute("UPDATE identity_bootstrap SET initialized = 0", [])
-                .is_err()
-        );
-    }
 
     #[test]
     fn concurrent_initial_claims_both_observe_one_durable_identity() {

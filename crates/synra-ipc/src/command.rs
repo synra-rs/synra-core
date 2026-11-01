@@ -494,9 +494,6 @@ mod tests {
             // identity
             "identity_get",
             "identity_set_display_name",
-            "identity_credentials",
-            "identity_repair",
-            "identity_cleanup",
             // devices
             "devices_snapshot",
             "devices_scan_start",
@@ -505,11 +502,6 @@ mod tests {
             "devices_disconnect",
             "devices_forget",
             // pairing
-            "pairing_status",
-            "pairing_cancel",
-            "pairing_pending",
-    "pairing_request",
-            "pairing_answer",
             // intent
             "intent_dispatch",
             "intent_list",
@@ -793,7 +785,7 @@ mod tests {
             .filter(|command| command.returns == ReturnShape::Maybe)
             .map(|command| command.name)
             .collect();
-        assert_eq!(optional, vec!["pairing_status", "plugins_check_update"]);
+        assert_eq!(optional, vec!["plugins_check_update"]);
     }
 
     #[test]

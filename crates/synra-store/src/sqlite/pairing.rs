@@ -158,18 +158,12 @@ impl SynraDb {
         timed_write!(self, "pairing", {
             let operation = || -> rusqlite::Result<bool> {
                 let transaction = self.connection.unchecked_transaction()?;
-                let grants = transaction
-                    .execute("DELETE FROM peer_trust WHERE peer_id = ?1", [device_id])?;
-                let pending = transaction.execute(
-                    "UPDATE pairing_attempt SET phase = 3 WHERE peer_id = ?1 AND phase IN (-1, 0, 1)",
-                    [device_id],
-                )?;
                 let paired = transaction.execute(
                     "DELETE FROM paired_devices WHERE device_id = ?1",
                     [device_id],
                 )?;
                 transaction.commit()?;
-                Ok(grants + pending + paired > 0)
+                Ok(paired > 0)
             };
             operation().map_err(|error| DbError::Statement {
                 why: error.to_string(),

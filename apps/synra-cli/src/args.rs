@@ -519,30 +519,6 @@ mod tests {
         for args in [
             vec!["synra", "devices"],
             vec!["synra", "status"],
-            vec!["synra", "pair", "invite"],
-            vec![
-                "synra",
-                "pair",
-                "listen",
-                "dev_a",
-                "--invitation",
-                "public invitation",
-            ],
-            vec![
-                "synra",
-                "pair",
-                "connect",
-                "dev_a",
-                "--reply",
-                "public responder invitation",
-            ],
-            vec!["synra", "pair", "status"],
-            vec![
-                "synra",
-                "pair",
-                "cancel",
-                "01a140ce-0000-7000-8000-000000000000",
-            ],
             vec!["synra", "send", "--to", "dev_a", "--text", "hi"],
             vec!["synra", "send", "--to", "dev_a", "--file", "a.txt"],
             vec!["synra", "plugin", "list"],
@@ -568,13 +544,6 @@ mod tests {
     #[test]
     fn an_unknown_command_is_refused() {
         assert!(parse(&["synra", "devices_"]).is_err());
-        // `pair` is a real command now, so it is refused for a different reason: it needs a device to ask. The two are
-        // distinct failures and both belong here, because a user who types a bare `pair` should be told what is missing
-        // rather than that the command does not exist.
-        assert!(
-            parse(&["synra", "pair"]).is_err(),
-            "pairing needs an explicit action"
-        );
         assert!(
             parse(&["synra"]).is_err(),
             "a bare invocation needs a subcommand"
@@ -1081,6 +1050,6 @@ mod tests {
         // Counted rather than named, so adding a command without adding it here is a failure — and the count is what
         // makes the list above (`every_documented_command_exists`) meaningful: a command that parses but is not on the
         // command surface would be one clap never dispatches to.
-        assert_eq!(Cli::command().get_subcommands().count(), 11);
+        assert_eq!(Cli::command().get_subcommands().count(), 9);
     }
 }
