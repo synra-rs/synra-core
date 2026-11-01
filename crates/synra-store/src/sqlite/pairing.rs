@@ -30,11 +30,7 @@ pub struct Paired {
     pub platform: String,
     /// The features the two ends agreed on, as the JSON array the column holds.
     pub features: String,
-    /// The token a later link from this device must present.
-    ///
-    /// Carried on the record rather than kept apart, because it is half of what a pairing *is*: a row that recorded a
-    /// device and no way to recognise it is a row that will ask the user to pair again.
-    pub link_token: String,
+
     /// Where the peer was reached, as `host:port`, or `None` when this side has no address for it.
     pub address: Option<String>,
     /// When the pairing was recorded.
@@ -42,7 +38,7 @@ pub struct Paired {
 }
 
 impl SynraDb {
-    /// Records a pairing, or replaces the token of one that already exists.
+    /// Records a pairing, or replaces the one that already exists.
     ///
     /// # Why the record is one argument
     ///
@@ -58,14 +54,13 @@ impl SynraDb {
             self.connection
                 .execute(
                     "INSERT INTO paired_devices \
-                         (device_id, display_name, platform, features, link_token, last_address, \
+                         (device_id, display_name, platform, features, last_address, \
                           paired_at_ms, last_seen_ms, blocked) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, 0) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, 0) \
                      ON CONFLICT(device_id) DO UPDATE SET \
                          display_name = excluded.display_name, \
                          platform     = excluded.platform, \
                          features     = excluded.features, \
-                         link_token   = excluded.link_token, \
                          last_address = excluded.last_address, \
                          paired_at_ms = excluded.paired_at_ms, \
                          last_seen_ms = excluded.last_seen_ms, \
@@ -75,7 +70,6 @@ impl SynraDb {
                         paired.display_name,
                         paired.platform,
                         paired.features,
-                        paired.link_token,
                         paired.address,
                         paired.paired_at_ms,
                     ],
@@ -87,42 +81,6 @@ impl SynraDb {
         })
     }
 
-    /// The token an outside dialler must present for `device_id`, if this device is paired with it.
-    ///
-    /// # Returns
-    ///
-    /// `None` when there is no paired row, which the handshake reports as a first-time pairing rather than a refusal.
-    /// A row whose token is `NULL` also answers `None`: the pairing exists but predates tokens, and the handshake
-    /// reports that as `Stale` rather than as a refusal, so the user can pair again instead of being told "no".
-    ///
-    /// # Errors
-    ///
-    /// [`DbError::Statement`] when the query cannot run.
-    pub fn link_token_for(&self, device_id: &str) -> Result<Option<String>, DbError> {
-        let mut statement = self
-            .connection
-            .prepare("SELECT link_token FROM paired_devices WHERE device_id = ?1")
-            .map_err(|error| DbError::Statement {
-                why: error.to_string(),
-            })?;
-        let mut rows = statement
-            .query(params![device_id])
-            .map_err(|error| DbError::Statement {
-                why: error.to_string(),
-            })?;
-        match rows.next() {
-            // No row is an answer, not a failure: it means this device was never paired with that one.
-            Ok(None) => Ok(None),
-            Ok(Some(row)) => row
-                .get::<_, Option<String>>(0)
-                .map_err(|error| DbError::Statement {
-                    why: error.to_string(),
-                }),
-            Err(error) => Err(DbError::Statement {
-                why: error.to_string(),
-            }),
-        }
-    }
 
     /// Whether a device is paired, without reading its token.
     ///

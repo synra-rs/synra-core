@@ -1,6 +1,6 @@
 //! The registry's tests.
 
-use synra_protocol::handshake::{Agreed, Feature, LinkToken};
+use synra_protocol::handshake::{Agreed, Feature};
 use synra_protocol::ids::{DeviceId, SessionId};
 use synra_protocol::limits;
 use synra_protocol::session::PlatformKind;
@@ -27,10 +27,6 @@ use super::state::{ClosureReason, LinkState};
         name.parse().expect("a valid session id")
     }
 
-    fn token(byte: u8) -> LinkToken {
-        LinkToken::from_bytes([byte; LinkToken::LEN])
-    }
-
     /// Opens a session for a device no other fixture uses.
     ///
     /// The identities are freshly generated, because `DeviceId` and `SessionId` are UUIDs and a test that wants to name
@@ -47,7 +43,6 @@ use super::state::{ClosureReason, LinkState};
             SessionId::new(),
             DeviceId::new(),
             PlatformKind::Desktop,
-            token(1),
             at,
         );
         key
@@ -59,7 +54,6 @@ use super::state::{ClosureReason, LinkState};
             SessionId::new(),
             device_id,
             PlatformKind::Desktop,
-            token(1),
             at,
         );
         key
@@ -97,14 +91,12 @@ use super::state::{ClosureReason, LinkState};
             session_id(SESSION_ONE),
             device(DEV_A),
             PlatformKind::Desktop,
-            token(1),
             1_000,
         );
         let (new, events) = registry.open(
             session_id(SESSION_TWO),
             device(DEV_A),
             PlatformKind::Desktop,
-            token(2),
             2_000,
         );
 
@@ -134,14 +126,12 @@ use super::state::{ClosureReason, LinkState};
             session_id(SESSION_ONE),
             device(DEV_A),
             PlatformKind::Desktop,
-            token(1),
             1_000,
         );
         registry.open(
             session_id(SESSION_TWO),
             device(DEV_A),
             PlatformKind::Desktop,
-            token(2),
             2_000,
         );
 
@@ -304,28 +294,11 @@ use super::state::{ClosureReason, LinkState};
         let key = opened(&mut registry, "a", 0);
         assert_eq!(registry.get(key).expect("key").heartbeat_deadline_ms(), 1_000);
 
-        registry.record_frame_in(key, &token(1), 800).expect("frame");
+        registry.record_frame_in(key, 800).expect("frame");
         assert_eq!(registry.get(key).expect("key").heartbeat_deadline_ms(), 1_800);
         assert_eq!(registry.get(key).expect("key").frames_in(), 1);
     }
 
-    #[test]
-    fn a_frame_with_the_wrong_token_is_refused() {
-        // ★ The reconnect case. The peer closed its old link and opened a new one, and a frame the old link sent just
-        // before it went away arrives after the new session is live. Applying it would let the dead link move the live
-        // session's state — for instance mark it as seen, keeping a session that is already gone alive for another
-        // timeout.
-        let mut registry = SessionRegistry::with_heartbeat_timeout(1_000);
-        let key = opened(&mut registry, "a", 0);
-
-        match registry.record_frame_in(key, &token(9), 500) {
-            Err(RegistryError::TokenMismatch { key: reported }) => assert_eq!(reported, key),
-            other => panic!("expected a refusal, got {other:?}"),
-        }
-        // And nothing moved.
-        assert_eq!(registry.get(key).expect("key").last_seen_ms(), 0);
-        assert_eq!(registry.get(key).expect("key").heartbeat_deadline_ms(), 1_000);
-    }
 
     #[test]
     fn a_sweep_closes_a_silent_peer_and_says_for_how_long() {
@@ -369,7 +342,7 @@ use super::state::{ClosureReason, LinkState};
         let a = opened(&mut registry, "a", 0);
         let b = opened(&mut registry, "b", 0);
         let fresh = opened(&mut registry, "c", 900);
-        registry.record_frame_in(fresh, &token(1), 950).expect("frame");
+        registry.record_frame_in(fresh, 950).expect("frame");
 
         let events = registry.sweep_expired(1_500);
         assert_eq!(events.len(), 2, "{events:?}");
@@ -469,7 +442,7 @@ use super::state::{ClosureReason, LinkState};
         for _ in 0..3 {
             registry.record_frame_out(key).expect("out");
         }
-        registry.record_frame_in(key, &token(1), 100).expect("in");
+        registry.record_frame_in(key, 100).expect("in");
 
         let session = registry.get(key).expect("key");
         assert_eq!(session.frames_out(), 3);
@@ -483,7 +456,7 @@ use super::state::{ClosureReason, LinkState};
         // wrong one for exactly the long-lived sessions that matter.
         let mut registry = SessionRegistry::new();
         let key = opened(&mut registry, "a", 1000);
-        registry.record_frame_in(key, &token(1), 3_600_000).expect("frame");
+        registry.record_frame_in(key, 3_600_000).expect("frame");
 
         let session = registry.get(key).expect("key");
         assert_eq!(session.age_ms(3_600_000), 3_599_000);
@@ -564,7 +537,6 @@ use super::state::{ClosureReason, LinkState};
             session_id(SESSION_TWO),
             device(DEV_A),
             PlatformKind::Desktop,
-            token(2),
             200,
         );
         assert!(!events.iter().any(|event| matches!(event, RegistryEvent::Replaced { .. })));

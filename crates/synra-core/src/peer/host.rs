@@ -1,4 +1,4 @@
-use synra_protocol::handshake::{Feature, Hello, HelloAck, PROTOCOL_VERSION, PairingState, SessionNonce};
+use synra_protocol::handshake::{Feature, Hello, HelloAck, PROTOCOL_VERSION, SessionNonce};
 use synra_protocol::ids::DeviceId;
 use synra_protocol::session::PlatformKind;
 
@@ -94,7 +94,6 @@ impl LocalPeer {
             nonce,
             features: self.features.clone(),
             requires: self.requires.clone(),
-            token: None,
             sequence,
             endpoints: Vec::new(),
         }
@@ -108,7 +107,7 @@ impl LocalPeer {
     /// that told a peer it was still paired when it was not — and the peer would then send work the other end cannot
     /// attribute.
     #[must_use]
-    pub fn hello_ack(&self, nonce: SessionNonce, pairing: PairingState, sequence: u64) -> HelloAck {
+    pub fn hello_ack(&self, nonce: SessionNonce, sequence: u64) -> HelloAck {
         HelloAck {
             protocol: PROTOCOL_VERSION,
             device_id: self.device_id,
@@ -118,7 +117,6 @@ impl LocalPeer {
             nonce,
             features: self.features.clone(),
             requires: self.requires.clone(),
-            pairing,
             refusal: None,
             sequence,
             endpoints: Vec::new(),

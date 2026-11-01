@@ -696,9 +696,7 @@ mod tests {
         let request =
             pair_request(from, to, &profile("This device"), TraceId::new(), 1_000).expect("builds");
 
-        let answer = synra_protocol::session::PairResponse::accepted(
-            "aa".repeat(synra_protocol::handshake::LinkToken::LEN),
-        );
+        let answer = synra_protocol::session::PairResponse::accepted();
         let response = pair_response(&request, to, &answer, 2_000).expect("builds");
 
         assert_eq!(response.event.as_str(), synra_protocol::event::events::PAIR_RESPONSE);

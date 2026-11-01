@@ -491,7 +491,6 @@ fn a_paired_device_that_is_also_heard_from_keeps_both_records() {
         display_name: "Study PC".to_owned(),
         platform: "linux".to_owned(),
         features: "[]".to_owned(),
-        link_token: "token".to_owned(),
         address: None,
         paired_at_ms: 400,
     })
@@ -766,7 +765,6 @@ fn every_error_explains_itself() {
 fn paired(
     device_id: &str,
     display_name: &str,
-    token: &str,
     address: Option<&str>,
     now_ms: i64,
 ) -> crate::sqlite::Paired {
@@ -775,27 +773,11 @@ fn paired(
         display_name: display_name.to_owned(),
         platform: "windows".to_owned(),
         features: "[]".to_owned(),
-        link_token: token.to_owned(),
         address: address.map(str::to_owned),
         paired_at_ms: now_ms,
     }
 }
 
-#[test]
-fn pairing_a_device_stores_the_token_a_later_link_must_present() {
-    let db = migrated();
-
-    assert_eq!(db.link_token_for("dev-1").expect("queries"), None, "nothing is paired to begin with");
-    assert!(!db.is_paired_with("dev-1").expect("queries"));
-
-    let mut record = paired("dev-1", "Laptop", "aa11", Some("10.0.0.4:51000"), 1_700);
-    record.features = r#"["TransferResume"]"#.to_owned();
-    db.pair_device(&record).expect("pairs");
-
-    assert_eq!(db.link_token_for("dev-1").expect("queries").as_deref(), Some("aa11"));
-    assert!(db.is_paired_with("dev-1").expect("queries"));
-    assert_eq!(db.paired_devices().expect("lists")[0].address.as_deref(), Some("10.0.0.4:51000"));
-}
 
 #[test]
 fn pairing_without_an_address_stores_none() {
@@ -803,23 +785,11 @@ fn pairing_without_an_address_stores_none() {
     // reached over something other than a socket — or a test — must not leave a value behind that a device list would
     // then render as a blank line where an address belongs.
     let db = migrated();
-    db.pair_device(&paired("dev-1", "Laptop", "tok", None, 1_000)).expect("pairs");
+    db.pair_device(&paired("dev-1", "Laptop", None, 1_000)).expect("pairs");
 
     assert_eq!(db.paired_devices().expect("lists")[0].address, None);
 }
 
-#[test]
-fn pairing_the_same_device_again_replaces_its_token() {
-    // The ordinary case, not an exception: a device is reset, its token is refused as stale, and the user pairs it
-    // again. An insert that failed the second time would turn a routine action into an error.
-    let db = migrated();
-    db.pair_device(&paired("dev-1", "Laptop", "first", None, 1_000)).expect("pairs");
-    db.pair_device(&paired("dev-1", "Laptop renamed", "second", None, 2_000)).expect("pairs again");
-
-    assert_eq!(db.link_token_for("dev-1").expect("queries").as_deref(), Some("second"));
-    assert_eq!(db.paired_devices().expect("lists").len(), 1, "pairing again must not add a second row");
-    assert_eq!(db.paired_devices().expect("lists")[0].display_name, "Laptop renamed");
-}
 
 #[test]
 fn pairing_again_clears_a_block() {
@@ -829,39 +799,17 @@ fn pairing_again_clears_a_block() {
     // The block is set with SQL rather than through a method because no method exists: nothing in the kernel blocks a
     // device yet, so a `set_device_blocked` would be unused public API written only to make this test read nicely.
     let db = migrated();
-    db.pair_device(&paired("dev-1", "Laptop", "tok", None, 1_000)).expect("pairs");
+    db.pair_device(&paired("dev-1", "Laptop", None, 1_000)).expect("pairs");
     db.connection
         .execute("UPDATE paired_devices SET blocked = 1 WHERE device_id = 'dev-1'", [])
         .expect("blocks");
     assert!(!db.is_paired_with("dev-1").expect("queries"), "a blocked device is not usable");
 
-    db.pair_device(&paired("dev-1", "Laptop", "tok2", None, 2_000)).expect("pairs again");
+    db.pair_device(&paired("dev-1", "Laptop", None, 2_000)).expect("pairs again");
     assert!(db.is_paired_with("dev-1").expect("queries"));
 }
 
-#[test]
-fn unpairing_removes_the_token_with_the_pairing() {
-    let db = migrated();
-    db.pair_device(&paired("dev-1", "Laptop", "tok", None, 1_000)).expect("pairs");
 
-    assert!(db.unpair_device("dev-1").expect("unpairs"));
-    assert_eq!(db.link_token_for("dev-1").expect("queries"), None);
-    assert!(!db.unpair_device("dev-1").expect("unpairs again"), "the second removal removes nothing");
-}
-
-#[test]
-fn a_pairing_from_before_tokens_reports_no_token_rather_than_failing() {
-    // Migration 6 added the column as nullable, so a row written before it exists with a null token. Reading that must
-    // be an answer — "paired, but must pair again" — not an error, because an error would refuse a link the user made.
-    let db = migrated();
-    db.pair_device(&paired("dev-1", "Laptop", "tok", None, 1_000)).expect("pairs");
-    db.connection
-        .execute("UPDATE paired_devices SET link_token = NULL WHERE device_id = 'dev-1'", [])
-        .expect("clears the token");
-
-    assert_eq!(db.link_token_for("dev-1").expect("queries"), None);
-    assert!(db.is_paired_with("dev-1").expect("queries"), "the pairing still exists");
-}
 
 /// A sighting of a device the fixture names, at a moment it names.
 ///
@@ -1197,10 +1145,10 @@ fn the_clipboard_capability_is_renamed_to_the_name_the_gate_checks() {
     // tables itself would drift from the migration list and stop noticing the step it is testing.
     let migration = MIGRATIONS
         .iter()
-        .find(|migration| migration.version == 11)
+        .find(|migration| migration.version == 10)
         .expect("the clipboard migration");
     let db = SynraDb::open_in_memory().expect("opens");
-    for earlier in MIGRATIONS.iter().filter(|migration| migration.version < 11) {
+    for earlier in MIGRATIONS.iter().filter(|migration| migration.version < 10) {
         for statement in earlier.statements {
             db.connection.execute_batch(statement).expect("an earlier migration");
         }

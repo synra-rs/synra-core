@@ -5,7 +5,7 @@
 
 use super::identity::SessionKey;
 use super::state::{ClosureReason, LinkState};
-use synra_protocol::handshake::{Agreed, LinkToken};
+use synra_protocol::handshake::{Agreed};
 use synra_protocol::ids::{DeviceId, SessionId};
 use synra_protocol::session::PlatformKind;
 /// One link to one peer.
@@ -15,7 +15,6 @@ pub struct PeerSession {
     pub(super) session_id: SessionId,
     pub(super) device_id: DeviceId,
     pub(super) platform: PlatformKind,
-    pub(super) link_token: LinkToken,
     pub(super) state: LinkState,
     pub(super) agreed: Option<Agreed>,
     pub(super) opened_at_ms: u64,
@@ -53,14 +52,6 @@ impl PeerSession {
     #[must_use]
     pub const fn platform(&self) -> PlatformKind {
         self.platform
-    }
-
-    /// The token this link was paired with.
-    #[must_use]
-    pub fn link_token(&self) -> LinkToken {
-        // Cloned rather than copied: the token is thirty-two bytes of keyed hash and the protocol deliberately does not
-        // make it `Copy`, because a token that can be copied implicitly is one that ends up in a log line.
-        self.link_token.clone()
     }
 
     /// How far the link has got.

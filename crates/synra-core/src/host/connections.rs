@@ -2,7 +2,6 @@ use std::net::{SocketAddr, TcpStream};
 use std::sync::Arc;
 
 use synra_protocol::envelope::Envelope;
-use synra_protocol::handshake::LinkToken;
 use synra_protocol::ids::{DeviceId, SessionId};
 
 use crate::link::PeerLink;
@@ -44,7 +43,6 @@ impl DialConfig {
             &self.ours,
             now_ms,
             flags,
-            |_token, _peer| synra_protocol::handshake::PairingState::Unknown,
         )
         .map_err(HostError::Handshake)?;
         let link = PeerLink::new(
@@ -79,7 +77,7 @@ pub fn dial_peer(
     peer: DeviceId,
     now_ms: u64,
 ) -> Result<Dialled, HostError> {
-    let (stream, negotiated) = crate::peer::dial(address, &ours.ours, None, now_ms, flags)
+    let (stream, negotiated) = crate::peer::dial(address, &ours.ours, now_ms, flags)
         .map_err(HostError::Handshake)?;
     let link = PeerLink::new(
         stream,
@@ -133,7 +131,6 @@ impl Host {
             SessionId::new(),
             negotiated.device_id,
             negotiated.platform,
-            LinkToken::from_bytes([0; LinkToken::LEN]),
             now_ms,
         );
         let ready = self

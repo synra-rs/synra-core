@@ -1051,7 +1051,6 @@ fn record_accept(data_dir: &std::path::Path, accepted: &crate::host::Dialled, no
                 .collect::<Vec<_>>(),
         )
         .unwrap_or_else(|_| "[]".to_owned()),
-        link_token: String::new(),
         address: Some(accepted.address().to_string()),
         paired_at_ms: now_ms,
     };

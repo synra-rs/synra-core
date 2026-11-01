@@ -1,7 +1,6 @@
 use std::net::{SocketAddr, TcpListener};
 
 use synra_protocol::discovery::DeviceAnnouncement;
-use synra_protocol::handshake::LinkToken;
 use synra_protocol::ids::DeviceId;
 
 use crate::discovery::{Absorbed, DiscoveryTable};
@@ -289,7 +288,6 @@ impl Host {
     pub fn record_inbound(
         &mut self,
         device_id: DeviceId,
-        token: &LinkToken,
         now_ms: u64,
     ) -> Result<(), crate::sessions::RegistryError> {
         // The key comes from the session rather than being constructed here: `SessionKey` is opaque on purpose, so a
@@ -301,7 +299,7 @@ impl Host {
             ));
         };
         let key = session.key();
-        self.sessions.record_frame_in(key, token, now_ms)
+        self.sessions.record_frame_in(key, now_ms)
     }
 
     /// Records that a device completed a handshake.

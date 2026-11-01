@@ -222,7 +222,6 @@ fn the_sweep_takes_only_what_it_is_for() {
         display_name: "Laptop".to_owned(),
         platform: "windows".to_owned(),
         features: "[]".to_owned(),
-        link_token: "token".to_owned(),
         address: None,
         paired_at_ms: 1_000,
     })

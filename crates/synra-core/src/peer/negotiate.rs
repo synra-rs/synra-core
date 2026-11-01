@@ -1,6 +1,6 @@
 //! What the two ends agree on: the features they have in common, and the session built from them.
 
-use synra_protocol::handshake::{Agreed, Feature, PairingState};
+use synra_protocol::handshake::{Agreed, Feature};
 use synra_protocol::ids::DeviceId;
 use synra_protocol::session::PlatformKind;
 
@@ -19,10 +19,6 @@ pub struct Negotiated {
     pub app_version: String,
     /// The features both ends announced.
     pub agreed: Agreed,
-    /// How the peer read our token, from our side of the exchange.
-    ///
-    /// `None` when we were the acceptor, because it is the dialer that presented a token.
-    pub pairing: Option<PairingState>,
 }
 impl Negotiated {
     /// Whether the link can carry work.

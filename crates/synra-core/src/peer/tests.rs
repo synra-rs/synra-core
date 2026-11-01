@@ -7,7 +7,7 @@ use std::net::{Ipv4Addr, TcpListener, TcpStream};
 
 use synra_protocol::frame::{Frame, FrameDecoder, FrameError, FrameKind};
 use synra_protocol::handshake::{
-    Agreed, Feature, Hello, HelloAck, LinkToken, PROTOCOL_VERSION, PairingState, SessionNonce,
+    Agreed, Feature, Hello, HelloAck, PROTOCOL_VERSION, SessionNonce,
 };
 use synra_protocol::ids::DeviceId;
 use synra_protocol::limits;
@@ -51,11 +51,11 @@ fn a_dialer_and_an_acceptor_complete_a_handshake() {
     let theirs = peer(DIALER, "Phone", PlatformKind::Android);
 
     let serving = std::thread::spawn(move || {
-        accept(&listener, &ours, 1, Flags::no_timeout(), |_, _| PairingState::Unknown)
+        accept(&listener, &ours, 1, Flags::no_timeout())
     });
 
     let (stream, negotiated) =
-        dial(address, &theirs, None, 1, Flags::no_timeout()).expect("completes");
+        dial(address, &theirs, 1, Flags::no_timeout()).expect("completes");
     drop(stream);
     let (_, accepted) = serving.join().expect("the thread finished").expect("accepts");
 
@@ -78,9 +78,9 @@ fn both_ends_agree_on_the_same_features() {
     let theirs = peer(DIALER, "Phone", PlatformKind::Android);
 
     let serving = std::thread::spawn(move || {
-        accept(&listener, &ours, 1, Flags::no_timeout(), |_, _| PairingState::Unknown)
+        accept(&listener, &ours, 1, Flags::no_timeout())
     });
-    let (stream, mine) = dial(address, &theirs, None, 1, Flags::no_timeout()).expect("completes");
+    let (stream, mine) = dial(address, &theirs, 1, Flags::no_timeout()).expect("completes");
     drop(stream);
     let (_, theirs_side) = serving.join().expect("finished").expect("accepts");
 
@@ -89,50 +89,7 @@ fn both_ends_agree_on_the_same_features() {
     assert!(!mine.agreed.common.is_empty(), "no features in common");
 }
 
-#[test]
-fn the_dialers_token_is_offered_to_the_acceptor() {
-    // ★ The pairing decision is the acceptor's, and it is made from the token the dialer presented. A layer that
-    // dropped the token would make every reconnection look like a first connection, and every pairing would be
-    // re-prompted.
-    let listener = listener();
-    let address = listener.local_addr().expect("an address");
-    let ours = peer(ACCEPTOR, "Laptop", PlatformKind::Desktop);
-    let theirs = peer(DIALER, "Phone", PlatformKind::Android);
-    let token = LinkToken::from_bytes([7u8; LinkToken::LEN]);
-    let offered = token.clone();
 
-    let serving = std::thread::spawn(move || {
-        accept(&listener, &ours, 1, Flags::no_timeout(), move |seen, _| {
-            // The assertion is inside the acceptor, because the token only exists there.
-            assert_eq!(seen, Some(&offered), "the token did not arrive");
-            PairingState::Current
-        })
-    });
-    let (stream, negotiated) =
-        dial(address, &theirs, Some(token), 1, Flags::no_timeout()).expect("completes");
-    drop(stream);
-    serving.join().expect("finished").expect("accepts");
-
-    // And the dialer learns how its token was read, which is what tells it whether the pairing survived.
-    assert_eq!(negotiated.pairing, Some(PairingState::Current));
-}
-
-#[test]
-fn an_acceptor_reports_no_pairing_state_because_it_decided_it() {
-    // The `pairing` field is the dialer's to read: the acceptor made the decision, so it has nothing to learn.
-    let listener = listener();
-    let address = listener.local_addr().expect("an address");
-    let ours = peer(ACCEPTOR, "Laptop", PlatformKind::Desktop);
-    let theirs = peer(DIALER, "Phone", PlatformKind::Android);
-
-    let serving = std::thread::spawn(move || {
-        accept(&listener, &ours, 1, Flags::no_timeout(), |_, _| PairingState::Unknown)
-    });
-    let (stream, _) = dial(address, &theirs, None, 1, Flags::no_timeout()).expect("completes");
-    drop(stream);
-    let (_, accepted) = serving.join().expect("finished").expect("accepts");
-    assert_eq!(accepted.pairing, None);
-}
 
 #[test]
 fn a_peer_that_hangs_up_before_saying_hello_is_reported_as_closed() {
@@ -143,7 +100,7 @@ fn a_peer_that_hangs_up_before_saying_hello_is_reported_as_closed() {
     let ours = peer(ACCEPTOR, "Laptop", PlatformKind::Desktop);
 
     let serving = std::thread::spawn(move || {
-        accept(&listener, &ours, 1, Flags::no_timeout(), |_, _| PairingState::Unknown)
+        accept(&listener, &ours, 1, Flags::no_timeout())
     });
 
     // A connection that sends nothing and closes.
@@ -170,7 +127,7 @@ fn a_dialer_that_reaches_a_socket_that_says_nothing_reports_closed_rather_than_w
         drop(stream);
     });
 
-    match dial(address, &theirs, None, 1, Flags::no_timeout()) {
+    match dial(address, &theirs, 1, Flags::no_timeout()) {
         Err(HandshakeError::Closed) => {}
         other => panic!("expected a closed connection, got {other:?}"),
     }
@@ -186,7 +143,7 @@ fn a_hello_that_is_not_a_hello_is_refused() {
     let ours = peer(ACCEPTOR, "Laptop", PlatformKind::Desktop);
 
     let serving = std::thread::spawn(move || {
-        accept(&listener, &ours, 1, Flags::no_timeout(), |_, _| PairingState::Unknown)
+        accept(&listener, &ours, 1, Flags::no_timeout())
     });
 
     let mut stream = TcpStream::connect(address).expect("connects");
@@ -207,7 +164,7 @@ fn a_hello_carrying_an_unreasonable_endpoint_list_is_refused() {
     let ours = peer(ACCEPTOR, "Laptop", PlatformKind::Desktop);
 
     let serving = std::thread::spawn(move || {
-        accept(&listener, &ours, 1, Flags::no_timeout(), |_, _| PairingState::Unknown)
+        accept(&listener, &ours, 1, Flags::no_timeout())
     });
 
     let mut stream = TcpStream::connect(address).expect("connects");
@@ -246,7 +203,7 @@ fn a_refusal_from_the_acceptor_reaches_the_dialer() {
             .expect("writes");
     });
 
-    match dial(address, &theirs, None, 1, Flags::no_timeout()) {
+    match dial(address, &theirs, 1, Flags::no_timeout()) {
         Err(HandshakeError::Refused { reason }) => assert!(!reason.is_empty()),
         other => panic!("expected a refusal, got {other:?}"),
     }
@@ -267,12 +224,12 @@ fn an_ack_echoing_a_different_nonce_is_refused() {
         let mut decoder = FrameDecoder::new();
         let _ = read_frame(&mut stream, &mut decoder, Flags::no_timeout()).expect("a hello");
         // A fresh nonce rather than the one that arrived.
-        let ack = ours.hello_ack(SessionNonce::random(), PairingState::Unknown, 1);
+        let ack = ours.hello_ack(SessionNonce::random(), 1);
         write_frame(&mut stream, &hello_ack_frame(&ack).expect("encodes"))
             .expect("writes");
     });
 
-    match dial(address, &theirs, None, 1, Flags::no_timeout()) {
+    match dial(address, &theirs, 1, Flags::no_timeout()) {
         Err(HandshakeError::NonceMismatch) => {}
         other => panic!("expected a nonce mismatch, got {other:?}"),
     }
@@ -294,13 +251,13 @@ fn an_ack_naming_a_different_protocol_is_refused() {
         let hello: Hello =
             json_payload(&read_frame(&mut stream, &mut decoder, Flags::no_timeout()).expect("a hello"), "Hello")
                 .expect("reads");
-        let mut ack = ours.hello_ack(hello.nonce, PairingState::Unknown, 1);
+        let mut ack = ours.hello_ack(hello.nonce, 1);
         ack.protocol = PROTOCOL_VERSION + 1;
         write_frame(&mut stream, &hello_ack_frame(&ack).expect("encodes"))
             .expect("writes");
     });
 
-    match dial(address, &theirs, None, 1, Flags::no_timeout()) {
+    match dial(address, &theirs, 1, Flags::no_timeout()) {
         Err(HandshakeError::VersionMismatch { theirs, ours }) => {
             assert_eq!(theirs, PROTOCOL_VERSION + 1);
             assert_eq!(ours, PROTOCOL_VERSION);
@@ -410,7 +367,7 @@ fn a_local_peer_builds_a_hello_and_an_ack_that_agree_with_each_other() {
     let ours = peer(ACCEPTOR, "Laptop", PlatformKind::Desktop);
     let nonce = SessionNonce::random();
     let hello = ours.hello(nonce, 3);
-    let ack = ours.hello_ack(nonce, PairingState::Unknown, 3);
+    let ack = ours.hello_ack(nonce, 3);
 
     assert_eq!(hello.device_id, ack.device_id);
     assert_eq!(hello.display_name, ack.display_name);
@@ -469,7 +426,6 @@ fn a_negotiated_link_knows_whether_it_is_usable() {
         platform: PlatformKind::Android,
         app_version: "0.1.0".to_owned(),
         agreed: Agreed { common: vec![Feature::EventStream], missing_required: Vec::new() },
-        pairing: None,
     };
     assert!(usable.is_usable());
 

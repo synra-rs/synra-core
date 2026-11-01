@@ -5,7 +5,7 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use crate::link::LinkStream;
 use synra_protocol::frame::{FrameDecoder, FrameKind};
 use synra_protocol::handshake::{
-    Hello, HelloAck, LinkToken, PROTOCOL_VERSION, PairingState, SessionNonce,
+    Hello, HelloAck, PROTOCOL_VERSION, SessionNonce,
 };
 use synra_protocol::ids::DeviceId;
 
@@ -26,7 +26,6 @@ use super::wire::{
 pub fn dial(
     address: SocketAddr,
     ours: &LocalPeer,
-    token: Option<LinkToken>,
     sequence: u64,
     flags: Flags,
 ) -> Result<(TcpStream, Negotiated), HandshakeError> {
@@ -37,14 +36,13 @@ pub fn dial(
             .map_err(|error| transport(&error))?;
     }
 
-    let (negotiated, _decoder) = dial_stream(&mut stream, ours, token, sequence, flags)?;
+    let (negotiated, _decoder) = dial_stream(&mut stream, ours, sequence, flags)?;
     Ok((stream, negotiated))
 }
 
 pub(super) fn dial_stream(
     stream: &mut impl LinkStream,
     ours: &LocalPeer,
-    token: Option<LinkToken>,
     sequence: u64,
     flags: Flags,
 ) -> Result<(Negotiated, FrameDecoder), HandshakeError> {
@@ -53,7 +51,6 @@ pub(super) fn dial_stream(
     // attempt.
     let nonce = SessionNonce::random();
     let mut hello = ours.hello(nonce, sequence);
-    hello.token = token;
 
     write_frame(stream, &hello_frame(&hello)?)?;
 
@@ -106,7 +103,6 @@ pub(super) fn dial_stream(
             platform: ack.platform,
             app_version: ack.app_version,
             agreed: agree(ours, &ack.features, &ack.requires),
-            pairing: Some(ack.pairing),
         },
         decoder,
     ))
@@ -128,10 +124,9 @@ pub fn accept(
     ours: &LocalPeer,
     sequence: u64,
     flags: Flags,
-    read_token: impl FnOnce(Option<&LinkToken>, DeviceId) -> PairingState,
 ) -> Result<(TcpStream, Negotiated), HandshakeError> {
     let (stream, _) = listener.accept().map_err(|error| transport(&error))?;
-    accept_stream(stream, ours, sequence, flags, read_token)
+    accept_stream(stream, ours, sequence, flags)
 }
 
 /// Completes a handshake on a connection that was already taken.
@@ -149,7 +144,6 @@ pub fn accept_stream(
     ours: &LocalPeer,
     sequence: u64,
     flags: Flags,
-    read_token: impl FnOnce(Option<&LinkToken>, DeviceId) -> PairingState,
 ) -> Result<(TcpStream, Negotiated), HandshakeError> {
     if let Some(timeout) = flags.timeout {
         stream
@@ -157,7 +151,7 @@ pub fn accept_stream(
             .map_err(|error| transport(&error))?;
     }
 
-    let (negotiated, _decoder) = accept_on(&mut stream, ours, sequence, flags, read_token)?;
+    let (negotiated, _decoder) = accept_on(&mut stream, ours, sequence, flags)?;
     Ok((stream, negotiated))
 }
 
@@ -166,7 +160,6 @@ pub(super) fn accept_on(
     ours: &LocalPeer,
     sequence: u64,
     flags: Flags,
-    read_token: impl FnOnce(Option<&LinkToken>, DeviceId) -> PairingState,
 ) -> Result<(Negotiated, FrameDecoder), HandshakeError> {
     let mut decoder = FrameDecoder::new();
     let frame = read_frame(stream, &mut decoder, flags)?;
@@ -181,9 +174,7 @@ pub(super) fn accept_on(
     stream
         .authorize(ours.device_id, hello.device_id)
         .map_err(|error| super::wire::link_error(&error))?;
-
-    let pairing = read_token(hello.token.as_ref(), hello.device_id);
-    let ack = ours.hello_ack(hello.nonce, pairing, sequence);
+    let ack = ours.hello_ack(hello.nonce, sequence);
     write_frame(stream, &hello_ack_frame(&ack)?)?;
 
     Ok((
@@ -193,8 +184,6 @@ pub(super) fn accept_on(
             platform: hello.platform,
             app_version: hello.app_version,
             agreed: agree(ours, &hello.features, &hello.requires),
-            // The dialer presented the token, so this side has no read of it to report.
-            pairing: None,
         },
         decoder,
     ))

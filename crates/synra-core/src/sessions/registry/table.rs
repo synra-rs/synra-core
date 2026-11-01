@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use synra_protocol::handshake::{Agreed, LinkToken};
+use synra_protocol::handshake::{Agreed};
 use synra_protocol::ids::{DeviceId, SessionId};
 use synra_protocol::limits;
 use synra_protocol::session::PlatformKind;
@@ -105,7 +105,6 @@ impl SessionRegistry {
         session_id: SessionId,
         device_id: DeviceId,
         platform: PlatformKind,
-        link_token: LinkToken,
         now_ms: u64,
     ) -> (SessionKey, Vec<RegistryEvent>) {
         let mut events = Vec::new();
@@ -129,7 +128,6 @@ impl SessionRegistry {
             session_id,
             device_id,
             platform,
-            link_token,
             state: LinkState::Connecting,
             agreed: None,
             opened_at_ms: now_ms,
@@ -235,16 +233,9 @@ impl SessionRegistry {
     pub fn record_frame_in(
         &mut self,
         key: SessionKey,
-        // By reference: the token is not consumed, and taking it by value would make every caller clone thirty-two
-        // bytes to prove it knows a secret it already has.
-        token: &LinkToken,
         now_ms: u64,
     ) -> Result<(), RegistryError> {
-        let session = self.session(key)?;
-        if &session.link_token != token {
-            return Err(RegistryError::TokenMismatch { key });
-        }
-        if session.state.is_over() {
+        let session = self.session(key)?;        if session.state.is_over() {
             let reason = session.closure.clone().unwrap_or(ClosureReason::Local { why: String::new() });
             return Err(RegistryError::AlreadyClosed { key, reason });
         }

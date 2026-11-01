@@ -46,7 +46,6 @@ pub mod args;
 mod control_gate;
 pub mod dispatch;
 pub mod lock;
-pub mod pairing;
 pub mod plan;
 pub mod runtime;
 pub mod serve;
@@ -58,7 +57,6 @@ pub use lock::{
     Claim, HEARTBEAT_INTERVAL_MS, HEARTBEAT_STALE_AFTER_MS, LOCK_FORMAT_VERSION, LockError,
     LockFile, LockOwner, decide,
 };
-pub use pairing::state_for;
 pub use startup::{
     Startup, StartupReport, begin, looks_like_a_data_dir, mark_clean_shutdown, now_ms, release,
     startup,

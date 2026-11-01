@@ -17,17 +17,6 @@
 //! * **Pairing** — an unpaired peer has no business sending anything. Checking at `Hello` means the
 //!   rest of the kernel can assume every message on an established link came from a paired device.
 //!
-//! # Stale pairings heal themselves
-//!
-//! A pairing token can be valid for one device and unknown to the other — the one that forgot was
-//! reset, reinstalled, or had its data cleared. The obvious handling, refusing the link, produces
-//! the worst outcome available: two devices that each believe they are paired and no way to fix it
-//! short of finding the unpair button.
-//!
-//! So the acceptor says *which kind* of mismatch it is ([`PairingState`]), and for
-//! [`PairingState::Stale`] the dialer falls back to pairing again. The user gets a prompt — something
-//! they can act on — instead of a connection that silently refuses.
-
 use core::fmt;
 
 use serde::{Deserialize, Serialize};
@@ -50,119 +39,6 @@ pub struct VersionMismatch {
     pub ours: u16,
     /// The version the peer announced.
     pub theirs: u16,
-}
-
-/// A reconnection credential.
-///
-/// Thirty-two bytes of keyed hash, not the pairing secret itself. What goes on the wire proves the
-/// sender knew the secret, so a token captured from a previous connection cannot be used to derive
-/// the secret, and cannot be replayed against a different peer.
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct LinkToken([u8; Self::LEN]);
-
-impl LinkToken {
-    /// How many bytes a token is.
-    pub const LEN: usize = 32;
-
-    /// Builds a token from bytes that came out of a keyed hash.
-    #[must_use]
-    pub const fn from_bytes(bytes: [u8; Self::LEN]) -> Self {
-        Self(bytes)
-    }
-
-    /// A fresh token, from the operating system's cryptographic random source.
-    ///
-    /// # Why this is not built the way [`SessionNonce::random`] is
-    ///
-    /// A nonce only has to be unique, so a UUID is the right tool and its timestamp is a feature: it sorts. A token is a
-    /// **credential** — whoever holds it can open a link — so it has to be unpredictable, and a UUID's version and
-    /// timestamp bits are neither random nor secret. `SessionNonce` is a `u128` of which roughly half the bits are
-    /// structured; reusing that here would leave a secret with a guessable shape.
-    ///
-    /// # Why a failure to read randomness is not handled here
-    ///
-    /// Because there is no safe alternative: a token derived from anything else is worse than no token, and returning
-    /// `Result` would push a decision onto every caller that has only one right answer. `OsRng` comes from the operating
-    /// system, and a system that cannot supply it cannot run this kernel at all.
-    #[must_use]
-    pub fn random() -> Self {
-        use rand_core::RngCore;
-
-        let mut bytes = [0u8; Self::LEN];
-        rand_core::OsRng.fill_bytes(&mut bytes);
-        Self(bytes)
-    }
-
-    /// The raw bytes, for comparison against a stored token.
-    #[must_use]
-    pub const fn as_bytes(&self) -> &[u8; Self::LEN] {
-        &self.0
-    }
-
-    /// Lowercase hex, which is how it appears on the wire.
-    #[must_use]
-    pub fn to_hex(&self) -> String {
-        let mut out = String::with_capacity(Self::LEN * 2);
-        for byte in self.0 {
-            // Writing into a `String` cannot fail, and two hex digits per byte is unambiguous.
-            let _ = fmt::Write::write_fmt(&mut out, format_args!("{byte:02x}"));
-        }
-        out
-    }
-
-    /// Parses the hex form.
-    ///
-    /// # Errors
-    ///
-    /// A description if the text is not [`Self::LEN`] bytes of hex.
-    pub fn from_hex(text: &str) -> Result<Self, &'static str> {
-        if text.len() != Self::LEN * 2 {
-            return Err("a link token is 64 hex characters");
-        }
-        let mut bytes = [0u8; Self::LEN];
-        // Destructuring pairs rather than indexing: `indexing_slicing` is denied workspace-wide, and
-        // a decoder for a credential should not rely on an annotation claiming it will not panic.
-        for (index, [high, low]) in text.as_bytes().as_chunks::<2>().0.iter().copied().enumerate() {
-            let high = hex_digit(high).ok_or("link token is not hex")?;
-            let low = hex_digit(low).ok_or("link token is not hex")?;
-            if let Some(slot) = bytes.get_mut(index) {
-                *slot = (high << 4) | low;
-            }
-        }
-        Ok(Self(bytes))
-    }
-}
-
-/// Decodes one hex digit.
-const fn hex_digit(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
-    }
-}
-
-/// A token is a credential, so it must not appear in logs or panic messages.
-impl fmt::Debug for LinkToken {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Deliberately not the value: a token in a log is a token in every log aggregator and bug
-        // report that collects them.
-        f.write_str("LinkToken(<redacted>)")
-    }
-}
-
-impl Serialize for LinkToken {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&self.to_hex())
-    }
-}
-
-impl<'de> Deserialize<'de> for LinkToken {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let text = String::deserialize(deserializer)?;
-        Self::from_hex(&text).map_err(serde::de::Error::custom)
-    }
 }
 
 /// A per-connection random value, so two connections are never confusable.
@@ -343,9 +219,6 @@ pub struct Hello {
     /// The features without which the sender would rather not connect.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub requires: Vec<Feature>,
-    /// Present when reconnecting to a device this one has paired with before.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub token: Option<LinkToken>,
     /// The dialer's monotonic handshake counter.
     ///
     /// A counter rather than a timestamp because it needs no clock agreement, and a `Hello` whose
@@ -427,37 +300,6 @@ pub enum HelloError {
     MissingRequired(Feature),
 }
 
-/// How well the acceptor recognises the dialer's pairing token.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-#[non_exhaustive]
-pub enum PairingState {
-    /// The token matches a pairing this device still holds.
-    Current,
-    /// The dialer presented a token, but this device has no record of that pairing.
-    ///
-    /// The case that must not be treated as a refusal: this device was reset, reinstalled, or had
-    /// its data cleared while the other still believed the pair existed. Reporting it lets the dialer
-    /// re-pair, which the user can act on.
-    Stale,
-    /// The dialer presented no token, so it is pairing for the first time.
-    Unknown,
-}
-
-impl PairingState {
-    /// Whether the link may carry business messages.
-    #[must_use]
-    pub const fn is_trusted(self) -> bool {
-        matches!(self, Self::Current)
-    }
-
-    /// Whether the dialer should fall back to pairing.
-    #[must_use]
-    pub const fn needs_pairing(self) -> bool {
-        !self.is_trusted()
-    }
-}
-
 /// Why the acceptor refused the link outright.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -520,8 +362,6 @@ pub struct HelloAck {
     /// What the acceptor requires.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub requires: Vec<Feature>,
-    /// How the acceptor reads the dialer's token.
-    pub pairing: PairingState,
     /// Set when the link is refused; when present, nothing else about this message matters.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub refusal: Option<RefusalReason>,
@@ -553,8 +393,6 @@ impl HelloAck {
             nonce,
             features: Vec::new(),
             requires: Vec::new(),
-            // A refused link is not paired, whatever the token said.
-            pairing: PairingState::Unknown,
             refusal: Some(reason),
             sequence: 0,
             endpoints: Vec::new(),
@@ -619,14 +457,6 @@ impl HelloAck {
 pub enum NextStep {
     /// The link is established and the pairing is current.
     Established(Agreed),
-    /// The peer accepted, but this device must pair again before business messages can flow.
-    ///
-    /// Not a failure: this is the self-healing path, and the caller is expected to prompt rather than
-    /// report an error.
-    RePair {
-        /// What the acceptor offered, so the features are not renegotiated after pairing.
-        agreed: Agreed,
-    },
     /// Do not connect, and do not retry on its own.
     Refused(RefusalReason),
     /// Try again later.
@@ -657,10 +487,7 @@ pub fn next_step(ack: &HelloAck, ours: &[Feature], required: &[Feature]) -> Next
         return NextStep::Refused(RefusalReason::MissingRequiredFeature);
     }
 
-    match ack.pairing {
-        PairingState::Current => NextStep::Established(agreed),
-        PairingState::Stale | PairingState::Unknown => NextStep::RePair { agreed },
-    }
+    NextStep::Established(agreed)
 }
 
 /// Replay protection for handshakes.
@@ -790,13 +617,12 @@ mod tests {
             nonce: SessionNonce(1),
             features: Feature::ALL.to_vec(),
             requires: Vec::new(),
-            token: None,
             sequence: 1,
             endpoints: Vec::new(),
         }
     }
 
-    fn accepted_ack(nonce: SessionNonce, pairing: PairingState) -> HelloAck {
+    fn accepted_ack(nonce: SessionNonce) -> HelloAck {
         HelloAck {
             protocol: PROTOCOL_VERSION,
             device_id: DeviceId::new(),
@@ -806,47 +632,10 @@ mod tests {
             nonce,
             features: Feature::ALL.to_vec(),
             requires: Vec::new(),
-            pairing,
             refusal: None,
             sequence: 1,
             endpoints: Vec::new(),
         }
-    }
-
-    #[test]
-    fn a_link_token_never_prints_its_value() {
-        // A token in a log is a token in every log aggregator and bug report that collects them.
-        let token = LinkToken::from_bytes([0xAB; LinkToken::LEN]);
-        let debug = format!("{token:?}");
-        assert!(!debug.contains("ab"), "{debug}");
-        assert!(debug.contains("redacted"), "{debug}");
-    }
-
-    #[test]
-    fn a_link_token_round_trips_through_hex() {
-        let token = LinkToken::from_bytes([0x5A; LinkToken::LEN]);
-        let hex = token.to_hex();
-        assert_eq!(hex.len(), LinkToken::LEN * 2);
-        assert_eq!(LinkToken::from_hex(&hex).expect("round trips"), token);
-
-        // Uppercase is accepted: hex arrives from logs and config files in both cases.
-        assert_eq!(LinkToken::from_hex(&hex.to_uppercase()).expect("accepts uppercase"), token);
-
-        assert!(LinkToken::from_hex("nope").is_err());
-        assert!(LinkToken::from_hex(&"z".repeat(64)).is_err());
-        assert!(LinkToken::from_hex(&"a".repeat(63)).is_err());
-    }
-
-    #[test]
-    fn a_link_token_round_trips_through_json() {
-        let token = LinkToken::from_bytes([0x11; LinkToken::LEN]);
-        let json = serde_json::to_string(&token).expect("serialises");
-        // Hex text, not an array of 32 numbers.
-        assert!(json.starts_with("\"1111"), "{json}");
-        let back: LinkToken = serde_json::from_str(&json).expect("deserialises");
-        assert_eq!(back, token);
-
-        assert!(serde_json::from_str::<LinkToken>("\"short\"").is_err());
     }
 
     #[test]
@@ -993,7 +782,6 @@ mod tests {
     #[test]
     fn a_hello_round_trips_through_json() {
         let mut hello = hello();
-        hello.token = Some(LinkToken::from_bytes([7; LinkToken::LEN]));
         hello.features = vec![Feature::EventStream, Feature::TransferResume];
         hello.requires = vec![Feature::EventStream];
         hello.endpoints = vec!["192.168.1.5:32100".to_owned(), "[::1]:32100".to_owned()];
@@ -1007,7 +795,7 @@ mod tests {
     #[test]
     fn optional_hello_fields_are_omitted_not_null() {
         let json = serde_json::to_string(&hello()).expect("serialises");
-        for absent in ["\"token\"", "\"requires\"", "\"endpoints\""] {
+        for absent in ["\"requires\"", "\"endpoints\""] {
             assert!(!json.contains(absent), "{absent} should be omitted: {json}");
         }
     }
@@ -1025,7 +813,7 @@ mod tests {
     #[test]
     fn an_ack_must_echo_the_nonce() {
         let nonce = SessionNonce(0x1234);
-        let ack = accepted_ack(nonce, PairingState::Current);
+        let ack = accepted_ack(nonce);
         assert_eq!(ack.validate(nonce), Ok(()));
 
         // A reply to a different attempt must not reach any other conclusion — including "the peer
@@ -1049,7 +837,6 @@ mod tests {
         );
 
         assert!(!ack.is_accepted());
-        assert!(!ack.pairing.is_trusted(), "a refused link is never paired");
         assert!(ack.validate(nonce).is_err(), "the caller must be told");
     }
 
@@ -1086,44 +873,13 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn a_stale_pairing_leads_to_re_pairing_rather_than_a_refusal() {
-        // The scenario: this device was reset while the peer still believed the pair existed. The
-        // user must get a prompt they can act on, not a connection that quietly refuses.
-        let nonce = SessionNonce(1);
-        let ack = accepted_ack(nonce, PairingState::Stale);
 
-        assert!(ack.validate(nonce).is_ok(), "it is a valid acceptance");
-        match next_step(&ack, Feature::ALL, &[]) {
-            NextStep::RePair { agreed } => {
-                assert!(agreed.supports(Feature::EventStream), "features are not renegotiated later");
-            }
-            other => panic!("expected a re-pair, got {other:?}"),
-        }
-    }
 
-    #[test]
-    fn an_unknown_pairing_leads_to_pairing() {
-        let ack = accepted_ack(SessionNonce(1), PairingState::Unknown);
-        assert!(matches!(next_step(&ack, Feature::ALL, &[]), NextStep::RePair { .. }));
-        assert!(PairingState::Unknown.needs_pairing());
-        assert!(!PairingState::Current.needs_pairing());
-        assert!(PairingState::Stale.needs_pairing());
-    }
-
-    #[test]
-    fn a_current_pairing_establishes_the_link() {
-        let ack = accepted_ack(SessionNonce(1), PairingState::Current);
-        match next_step(&ack, Feature::ALL, &[]) {
-            NextStep::Established(agreed) => assert!(agreed.is_usable()),
-            other => panic!("expected an established link, got {other:?}"),
-        }
-    }
 
     #[test]
     fn a_peer_that_cannot_meet_our_requirement_is_refused_before_use() {
         let nonce = SessionNonce(1);
-        let mut ack = accepted_ack(nonce, PairingState::Current);
+        let mut ack = accepted_ack(nonce);
         ack.features = vec![Feature::ClipboardSync];
 
         // Without a requirement the link is fine.
@@ -1212,14 +968,6 @@ mod tests {
         assert!(!RefusalReason::Malformed.is_retryable());
     }
 
-    #[test]
-    fn pairing_states_round_trip() {
-        for state in [PairingState::Current, PairingState::Stale, PairingState::Unknown] {
-            let json = serde_json::to_string(&state).expect("serialises");
-            let back: PairingState = serde_json::from_str(&json).expect("deserialises");
-            assert_eq!(back, state);
-        }
-    }
 
     #[test]
     fn session_nonces_are_never_zero() {
@@ -1273,15 +1021,6 @@ mod proptests {
             prop_assert_eq!(forward.is_usable(), forward.missing_required.is_empty());
         }
 
-        /// A token survives the round trip through its hex form for any bytes. Hex encoding is where
-        /// a bug silently corrupts a credential.
-        #[test]
-        fn tokens_round_trip_through_hex(bytes in proptest::array::uniform32(any::<u8>())) {
-            let token = LinkToken::from_bytes(bytes);
-            let hex = token.to_hex();
-            prop_assert_eq!(hex.len(), LinkToken::LEN * 2);
-            prop_assert_eq!(LinkToken::from_hex(&hex).expect("round trips"), token);
-        }
 
         /// A rebuildable hello either validates or reports why. It never panics, and anything that
         /// validates survives a trip through JSON unchanged.
@@ -1301,7 +1040,6 @@ mod proptests {
                 nonce: SessionNonce(1),
                 features,
                 requires: Vec::new(),
-                token: None,
                 sequence,
                 endpoints: Vec::new(),
             };
@@ -1346,18 +1084,3 @@ mod proptests {
     }
 }
 
-    #[test]
-    fn a_fresh_link_token_is_unpredictable_and_not_the_zero_value() {
-        // Two tokens in a row must differ: a token that repeated would let one paired device's credential open another's
-        // link, and a token of zero is what an absent one decays to on the wire, so the real thing must never be it.
-        let first = LinkToken::random();
-        let second = LinkToken::random();
-        assert_ne!(first, second);
-        assert_ne!(first.as_bytes(), &[0u8; LinkToken::LEN]);
-        assert_ne!(second.as_bytes(), &[0u8; LinkToken::LEN]);
-
-        // And it survives the text form that carries it through a pairing answer into the database.
-        let text = first.to_hex();
-        assert_eq!(text.len(), LinkToken::LEN * 2);
-        assert_eq!(LinkToken::from_hex(&text).expect("a fresh token parses back"), first);
-    }

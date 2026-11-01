@@ -194,17 +194,6 @@ pub const MIGRATIONS: &[Migration] = &[
     },
     Migration {
         version: 6,
-        name: "pairing-tokens",
-        statements: &[
-            // The secret a paired peer presents on the next link, so a handshake can answer "is this the device I paired
-            // with" rather than "someone is dialling". It is 32 bytes, stored as lowercase hex because that is how it
-            // travels on the wire, and nullable because a row written before this migration has no token: such a device
-            // is paired but must pair again, which the handshake reports as `Stale` rather than as a refusal.
-            "ALTER TABLE paired_devices ADD COLUMN link_token TEXT",
-        ],
-    },
-    Migration {
-        version: 7,
         name: "paired-address",
         statements: &[
             // Where a paired device was last reached, as `host:port`. Recorded because it is the one fact about a peer
@@ -216,7 +205,7 @@ pub const MIGRATIONS: &[Migration] = &[
         ],
     },
     Migration {
-        version: 8,
+        version: 7,
         name: "plugin-storage",
         statements: &[
             // ★ What a plugin keeps between runs, which until now was nothing at all.
@@ -247,7 +236,7 @@ pub const MIGRATIONS: &[Migration] = &[
         ],
     },
     Migration {
-        version: 9,
+        version: 8,
         name: "intent-documents",
         statements: &[
             // ★ The `intents` table could not hold an intent, and this is why it is rebuilt rather than added to.
@@ -290,7 +279,7 @@ pub const MIGRATIONS: &[Migration] = &[
         ],
     },
     Migration {
-        version: 10,
+        version: 9,
         name: "sync-log",
         statements: &[
             // ★ The record is the row, which is the shape v9 established for `intents` — and for the same reason.
@@ -315,7 +304,7 @@ pub const MIGRATIONS: &[Migration] = &[
         ],
     },
     Migration {
-        version: 11,
+        version: 10,
         name: "clipboard-capability",
         statements: &[
             // ★ One permission, one name. The gate has always required `platform:read-clipboard` /
@@ -344,7 +333,7 @@ pub const MIGRATIONS: &[Migration] = &[
         ],
     },
     Migration {
-        version: 12,
+        version: 11,
         name: "publisher-trust",
         statements: &[
             // What this device knows about the keys that sign packages. `trust` is one of `seen`, `trusted`, `revoked`:
@@ -362,7 +351,7 @@ pub const MIGRATIONS: &[Migration] = &[
         ],
     },
     Migration {
-        version: 13,
+        version: 12,
         name: "audit-trace",
         statements: &[
             // ★ The audit trail's `trace_id` was in the DTO from the first version and in no row: the session that makes a
@@ -373,7 +362,7 @@ pub const MIGRATIONS: &[Migration] = &[
         ],
     },
     Migration {
-        version: 14,
+        version: 13,
         name: "intent-retries",
         statements: &[
             // ★ The retry schedule was in memory, so every restart started the backoff from zero. A dispatch that had
@@ -393,7 +382,7 @@ pub const MIGRATIONS: &[Migration] = &[
         ],
     },
     Migration {
-        version: 15,
+        version: 14,
         name: "plugin-update-checks",
         statements: &["CREATE TABLE plugin_update_checks (
                 plugin_id TEXT PRIMARY KEY REFERENCES plugins(plugin_id) ON DELETE CASCADE,
@@ -405,7 +394,7 @@ pub const MIGRATIONS: &[Migration] = &[
             )"],
     },
     Migration {
-        version: 16,
+        version: 15,
         name: "plugin-signer",
         statements: &[
             // ★ A version row knew what bytes ran and nothing about who signed them. That made "revoke this key" a scan
@@ -421,7 +410,7 @@ pub const MIGRATIONS: &[Migration] = &[
         ],
     },
     Migration {
-        version: 17,
+        version: 16,
         name: "update-retries",
         statements: &[
             // ★ An automatic update that failed waited a whole day for the next attempt, which made a transient refusal —

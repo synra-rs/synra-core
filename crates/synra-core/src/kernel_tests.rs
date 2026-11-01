@@ -300,7 +300,6 @@ fn a_device_that_paired_is_in_the_snapshot_and_an_unknown_one_is_not() {
                 display_name: "Laptop".to_owned(),
                 platform: "windows".to_owned(),
                 features: "[]".to_owned(),
-                link_token: "aa11".to_owned(),
                 address: Some("10.0.0.4:51000".to_owned()),
                 paired_at_ms: 1_700,
             })
