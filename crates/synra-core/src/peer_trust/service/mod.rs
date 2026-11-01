@@ -127,6 +127,18 @@ impl PairingService {
         }
     }
 
+    /// This identity's own credentials, so a first-pairing connection can handshake off the host lock.
+    ///
+    /// # Why the service shares them
+    ///
+    /// A pairing connection waits for a person to read six digits on another screen and answer, which is far longer than
+    /// any lock is worth holding. Sharing the `Arc` also keeps the certificate and key in the one place every other
+    /// connection on this device already takes them from.
+    #[must_use]
+    pub fn credentials(&self) -> Arc<DeviceCredentials> {
+        Arc::clone(&self.credentials)
+    }
+
     /// Public certificate invitation, to transfer only through the intended device's trusted display.
     /// Exporting or parsing it never approves a remote identity.
     /// # Errors

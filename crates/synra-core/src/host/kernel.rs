@@ -71,6 +71,18 @@ impl Host {
             .map_err(|why| HostError::NetworkUnavailable { why: why.clone() })
     }
 
+    /// This identity's own credentials, for a first-pairing handshake on its own thread.
+    ///
+    /// # Errors
+    ///
+    /// Matches [`Self::pairing_service`]: an uninitialised network has no identity to present.
+    pub fn pairing_credentials(
+        &self,
+    ) -> Result<std::sync::Arc<synra_net::authentication::DeviceCredentials>, HostError> {
+        self.pairing_service()
+            .map(|service| service.credentials())
+    }
+
     /// A host that is not listening.
     #[must_use]
     pub fn new(identity: Identity, local: LocalPeer) -> Self {
