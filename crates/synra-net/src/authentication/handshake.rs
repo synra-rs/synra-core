@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rustls::{ClientConfig, Connection, ServerConfig};
+use synra_protocol::DeviceId;
 
 use super::credentials::{roots, server_name};
 use super::{ALPN, AuthenticationError, DeviceCredentials, MAX_APPROVED_PEERS, MAX_HANDSHAKE_TIME};
@@ -128,6 +129,187 @@ pub(super) fn complete(
         })?;
     socket.finish().map_err(|error| transport(&error))?;
     Ok(peer.clone())
+}
+
+/// Accepts whatever certificate the other side presents, and reports the one it saw.
+///
+/// # Why first pairing cannot pin, and why that is not a hole
+///
+/// Every other connection on this transport names its peer up front and refuses a different certificate. First pairing is
+/// the one exchange with no name yet: two devices have never met, so neither holds the other's certificate, and pinning
+/// is exactly what the exchange produces. Demanding a pin *before* it is circular — which is why the old flow made a
+/// person carry the string between two screens.
+///
+/// What replaces the pin is the six digits both screens show. They are derived from the two device ids, so the digits
+/// agree only when both sides are talking about the same two devices. A person compares them and answers; both
+/// certificates are recorded after that answer, and every later connection pins them the usual way. The trust decision
+/// still happens in front of a person — they just no longer act as the transport.
+///
+/// This type therefore verifies *nothing* by design. It exists so `complete_unverified` can read the certificate that
+/// was presented; it must never be used on a connection that already has an approved peer.
+#[derive(Debug)]
+struct TrustOnFirstUse {
+    provider: Arc<rustls::crypto::CryptoProvider>,
+    /// Always empty: this verifier has no authority to advertise, because it does not consult one.
+    hints: Vec<rustls::DistinguishedName>,
+}
+
+impl TrustOnFirstUse {
+    fn new(provider: Arc<rustls::crypto::CryptoProvider>) -> Self {
+        Self { provider, hints: Vec::new() }
+    }
+}
+
+impl rustls::client::danger::ServerCertVerifier for TrustOnFirstUse {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        // The signature check is *not* what is being waived. It only says the peer holds the key for the certificate it
+        // showed, which this side wants to be true regardless of whether it has seen that certificate before.
+        rustls::crypto::verify_tls12_signature(message, cert, dss, &self.provider.signature_verification_algorithms)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(message, cert, dss, &self.provider.signature_verification_algorithms)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.provider.signature_verification_algorithms.supported_schemes()
+    }
+}
+
+impl rustls::server::danger::ClientCertVerifier for TrustOnFirstUse {
+    fn root_hint_subjects(&self) -> &[rustls::DistinguishedName] {
+        &self.hints
+    }
+
+    fn verify_client_cert(
+        &self,
+        _end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::server::danger::ClientCertVerified, rustls::Error> {
+        Ok(rustls::server::danger::ClientCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(message, cert, dss, &self.provider.signature_verification_algorithms)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(message, cert, dss, &self.provider.signature_verification_algorithms)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.provider.signature_verification_algorithms.supported_schemes()
+    }
+}
+
+/// Opens a first-pairing connection to a device whose certificate this side has never seen.
+pub(super) fn connect_unverified(
+    local: &DeviceCredentials,
+    alpn: &[u8],
+    peer: DeviceId,
+) -> Result<Connection, AuthenticationError> {
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let mut config = ClientConfig::builder_with_provider(Arc::clone(&provider))
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .map_err(rejected)?
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(TrustOnFirstUse::new(provider)))
+        .with_client_auth_cert(
+            vec![local.public_identity().certificate.clone()],
+            local.key(),
+        )
+        .map_err(rejected)?;
+    config.alpn_protocols = vec![alpn.to_vec()];
+    config.resumption = rustls::client::Resumption::disabled();
+    config.enable_early_data = false;
+    rustls::ClientConnection::new(Arc::new(config), server_name(peer)?)
+        .map(Connection::Client)
+        .map_err(rejected)
+}
+
+/// Answers a first-pairing connection from a device whose certificate this side has never seen.
+pub(super) fn accept_unverified(
+    local: &DeviceCredentials,
+    alpn: &[u8],
+) -> Result<Connection, AuthenticationError> {
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let mut config = ServerConfig::builder_with_provider(Arc::clone(&provider))
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .map_err(rejected)?
+        .with_client_cert_verifier(Arc::new(TrustOnFirstUse::new(provider)))
+        .with_single_cert(
+            vec![local.public_identity().certificate.clone()],
+            local.key(),
+        )
+        .map_err(rejected)?;
+    config.alpn_protocols = vec![alpn.to_vec()];
+    config.send_tls13_tickets = 0;
+    config.max_early_data_size = 0;
+    rustls::ServerConnection::new(Arc::new(config))
+        .map(Connection::Server)
+        .map_err(rejected)
+}
+
+/// Finishes an unverified handshake and returns the certificate the peer presented.
+///
+/// The caller turns that into a [`PeerIdentity`] once the first message says which device sent it — the device id is not
+/// read out of the certificate here, because a first pairing must not trust a name the certificate merely claims.
+pub(super) fn complete_unverified(
+    connection: &mut Connection,
+    socket: &mut DeadlineSocket,
+    alpn: &[u8],
+) -> Result<Vec<u8>, AuthenticationError> {
+    connection.set_buffer_limit(Some(TLS_BUFFER_BYTES));
+    connection
+        .complete_io(socket)
+        .map_err(|error| transport(&error))?;
+    socket.remaining()?;
+    if connection.is_handshaking() || connection.alpn_protocol() != Some(alpn) {
+        return Err(AuthenticationError::Rejected(
+            "incomplete handshake or unexpected ALPN".to_owned(),
+        ));
+    }
+    let certificate = connection
+        .peer_certificates()
+        .and_then(|chain| chain.first())
+        .ok_or_else(|| {
+            AuthenticationError::Rejected("peer presented no certificate".to_owned())
+        })?;
+    let bytes = certificate.as_ref().to_vec();
+    socket.finish().map_err(|error| transport(&error))?;
+    Ok(bytes)
 }
 
 fn rejected(error: impl std::fmt::Display) -> AuthenticationError {

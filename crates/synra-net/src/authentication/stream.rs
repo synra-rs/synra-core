@@ -1,5 +1,6 @@
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
+use std::sync::Arc;
 use std::time::Duration;
 
 use rustls::{ClientConnection, Connection, ServerConnection, StreamOwned};
@@ -231,6 +232,121 @@ impl AuthenticatedStream {
         match &self.stream {
             Stream::Client(stream) => stream.sock.socket(),
             Stream::Server(stream) => stream.sock.socket(),
+        }
+    }
+}
+
+/// A first-pairing connection whose peer is not approved yet.
+///
+/// # Why this is a separate type and not an `AuthenticatedStream`
+///
+/// `AuthenticatedStream` must name its peer, and it gets that name by matching the presented certificate against an
+/// approved one. During first pairing there is nothing to match: this side has never seen the other's certificate, and
+/// obtaining it is the point of the exchange. So this type carries the certificate it saw instead of a verified
+/// identity, and the caller turns it into a [`PeerIdentity`] only after the first message says which device sent it and a
+/// person has accepted the six digits both screens show.
+///
+/// Separate on purpose: no other connection path can accidentally accept an unverified peer, because nothing else
+/// accepts this type at all.
+pub struct IntroducedStream {
+    stream: Stream,
+    certificate: Vec<u8>,
+    local: PeerIdentity,
+}
+
+impl IntroducedStream {
+    /// Dials a device for first pairing, without holding its certificate in advance.
+    ///
+    /// # Errors
+    /// Rejects IO errors, a wrong ALPN, a handshake that presents no certificate, and timeouts.
+    pub fn connect(
+        socket: TcpStream,
+        local: &DeviceCredentials,
+        peer: DeviceId,
+        timeout: Duration,
+        alpn: &[u8],
+        cancelled: Option<Arc<std::sync::atomic::AtomicBool>>,
+    ) -> Result<Self, AuthenticationError> {
+        let socket = DeadlineSocket::new(socket, timeout, cancelled)?;
+        let connection = handshake::connect_unverified(local, alpn, peer)?;
+        Self::establish(socket, connection, alpn, local.public_identity().clone())
+    }
+
+    /// Answers a first-pairing dial, without holding the caller's certificate in advance.
+    ///
+    /// # Errors
+    /// Matches [`Self::connect`].
+    pub fn accept(
+        socket: TcpStream,
+        local: &DeviceCredentials,
+        timeout: Duration,
+        alpn: &[u8],
+        cancelled: Option<Arc<std::sync::atomic::AtomicBool>>,
+    ) -> Result<Self, AuthenticationError> {
+        let socket = DeadlineSocket::new(socket, timeout, cancelled)?;
+        let connection = handshake::accept_unverified(local, alpn)?;
+        Self::establish(socket, connection, alpn, local.public_identity().clone())
+    }
+
+    fn establish(
+        mut socket: DeadlineSocket,
+        mut connection: Connection,
+        alpn: &[u8],
+        local: PeerIdentity,
+    ) -> Result<Self, AuthenticationError> {
+        let certificate = handshake::complete_unverified(&mut connection, &mut socket, alpn)?;
+        let stream = match connection {
+            Connection::Client(connection) => {
+                Stream::Client(Box::new(StreamOwned::new(connection, socket)))
+            }
+            Connection::Server(connection) => {
+                Stream::Server(Box::new(StreamOwned::new(connection, socket)))
+            }
+        };
+        Ok(Self { stream, certificate, local })
+    }
+
+    /// The certificate the peer presented. Untrusted until a person accepts the code.
+    #[must_use]
+    pub fn peer_certificate(&self) -> &[u8] {
+        &self.certificate
+    }
+
+    /// This side's own identity, for the record a pairing writes.
+    #[must_use]
+    pub fn local(&self) -> &PeerIdentity {
+        &self.local
+    }
+
+    pub(super) fn start_budget(&self, timeout: Duration) -> Result<(), AuthenticationError> {
+        match &self.stream {
+            Stream::Client(stream) => stream.sock.start_budget(timeout),
+            Stream::Server(stream) => stream.sock.start_budget(timeout),
+        }
+    }
+}
+
+impl Read for IntroducedStream {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        match &mut self.stream {
+            Stream::Client(stream) => stream.read(buffer),
+            Stream::Server(stream) => stream.read(buffer),
+        }
+    }
+}
+
+impl Write for IntroducedStream {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        match &mut self.stream {
+            Stream::Client(stream) => stream.write(buffer),
+            Stream::Server(stream) => stream.write(buffer),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        match &mut self.stream {
+            Stream::Client(stream) => stream.flush(),
+            Stream::Server(stream) => stream.flush(),
         }
     }
 }
