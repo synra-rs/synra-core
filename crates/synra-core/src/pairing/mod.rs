@@ -34,6 +34,7 @@ pub mod wire;
 
 pub use desk::{Offer, PairingDesk, Waiter};
 pub use outbound::{Answered, NotAnAnswer, OutboundPairing, PairingTarget};
+pub use transport::PATIENCE;
 pub use wire::{MAX_MESSAGE_BYTES, WireError};
 use synra_protocol::session::PairRequest;
 
