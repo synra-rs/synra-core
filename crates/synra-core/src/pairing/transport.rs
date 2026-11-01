@@ -143,3 +143,83 @@ pub fn ask(
     }
     Ok(response)
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+    use std::time::Instant;
+    use synra_protocol::session::{PeerProfile, PlatformKind};
+    use synra_testkit::authentication::NetworkFixture;
+
+    /// A profile for one fixture, the way a real dialer fills it in.
+    fn profile(fixture: &NetworkFixture, name: &str) -> PeerProfile {
+        PeerProfile {
+            device_id: fixture.credentials.public_identity().device_id(),
+            display_name: name.to_owned(),
+            platform: PlatformKind::Desktop,
+            app_version: "test".to_owned(),
+        }
+    }
+
+    /// Both devices must be trusted afterwards, or "paired" means nothing.
+    ///
+    /// # Why this test exists
+    ///
+    /// The screen showing two devices as paired is drawn from `paired_devices`; every later connection is allowed by
+    /// `trusted_peer_records`. A first pairing that wrote only the first table would look finished and behave as if it had
+    /// never happened, and nothing else in the suite would notice — the invitation tests write both tables through
+    /// `PairingService`, which is exactly the code the first-pairing path does not go through.
+    #[test]
+    fn a_first_pairing_leaves_both_sides_trusted() {
+        let a = NetworkFixture::unpaired(DeviceId::new(), "A").unwrap();
+        let b = NetworkFixture::unpaired(DeviceId::new(), "B").unwrap();
+        let b_id = b.credentials.public_identity().device_id();
+        let now_ms = i64::try_from(a.now_ms).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+
+        let desk = Arc::new(PairingDesk::new(b_id, PATIENCE));
+        let b_db = Arc::clone(&b.shared_db);
+        let b_credentials = Arc::clone(&b.credentials);
+        let server_desk = Arc::clone(&desk);
+        let server = std::thread::spawn(move || {
+            let (socket, _) = listener.accept().unwrap();
+            answer(socket, &b_credentials, &server_desk, &b_db, now_ms)
+        });
+
+        // The person on the asking device is looking at six digits and the person on the other one says yes.
+        let clicker = Arc::clone(&desk);
+        let clicking = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                if let Some((_, request)) = clicker.pending().first().copied() {
+                    assert!(clicker.answer(request, true, |_| Ok(())).is_some());
+                    return;
+                }
+                assert!(Instant::now() < deadline, "no prompt was ever raised");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        });
+
+        let a_db = Arc::clone(&a.shared_db);
+        let request = PairRequest {
+            profile: profile(&a, "A"),
+            user_hint: None,
+        };
+        let socket = TcpStream::connect(address).unwrap();
+        let response = ask(socket, &a.credentials, b_id, &request, &a_db, now_ms).unwrap();
+        assert!(response.accepted);
+        server.join().unwrap().unwrap();
+        clicking.join().unwrap();
+
+        for (fixture, name) in [(&a, "A"), (&b, "B")] {
+            let approved = crate::peer_trust::approved_peers(
+                &fixture.shared_db,
+                &fixture.credentials,
+                fixture.now_ms / 1000,
+            )
+            .unwrap();
+            assert_eq!(approved.len(), 1, "{name} did not record the pair");
+        }
+    }
+}
