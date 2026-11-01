@@ -29,6 +29,7 @@ use synra_protocol::ids::{DeviceId, RequestId};
 
 pub mod desk;
 pub mod outbound;
+pub mod transport;
 pub mod wire;
 
 pub use desk::{Offer, PairingDesk, Waiter};

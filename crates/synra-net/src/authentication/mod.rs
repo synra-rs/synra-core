@@ -17,7 +17,7 @@ pub mod pairing;
 mod stream;
 
 pub use credentials::{DeviceCredentials, PeerIdentity};
-pub use stream::AuthenticatedStream;
+pub use stream::{AuthenticatedStream, IntroducedStream};
 
 /// Maximum encoded size of a certificate or private key accepted at the credential boundary.
 pub const MAX_CREDENTIAL_BYTES: usize = 16 * 1024;
