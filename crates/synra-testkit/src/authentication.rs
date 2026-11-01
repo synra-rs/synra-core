@@ -1,64 +1,39 @@
-//! Real TLS credentials and a file database with explicitly preapproved trust facts for host tests.
+//! A real file database for tests that need two devices talking over real sockets.
 //!
-//! These fixtures never use an OS secret backend and do not prove the first-pairing protocol. Tests
-//! of that protocol must drive its production consent and receipt exchange separately.
+//! # What this used to be, and why it is smaller now
+//!
+//! It carried generated TLS credentials, per-identity key caching and a pre-approved peer, because a business connection
+//! could only be opened between two devices whose certificates each side had already stored. Transport encryption is gone
+//! ([ADR-025](../../../design-docs/20-adr.md)), so the only thing a socket test needs from a fixture is a migrated database
+//! file and a clock. The name stays because the call sites are the same tests.
+
+use std::sync::Arc;
 
 use parking_lot::Mutex;
-use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
-use synra_net::authentication::{AuthenticationError, DeviceCredentials, MAX_APPROVED_PEERS};
-use synra_protocol::{DeviceId, RequestId};
-use synra_store::sqlite::PeerTrustAttempt;
-use synra_store::{DbError, IdentityRow, SynraDb};
+use synra_protocol::ids::DeviceId;
+use synra_store::sqlite::{DbError, SynraDb};
+use synra_store::IdentityRow;
 
-/// A failure while preparing authenticated host test data.
+/// A fixture could not be prepared.
 #[derive(Debug, thiserror::Error)]
 pub enum FixtureError {
-    /// SQLite could not initialize the fixture.
+    /// The database refused to open, migrate or record the local identity.
     #[error(transparent)]
     Database(#[from] DbError),
-    /// A test identity row was malformed.
-    #[error(transparent)]
-    Identity(#[from] synra_store::records::RowError),
-    /// Test credentials could not be generated.
-    #[error(transparent)]
-    Authentication(#[from] AuthenticationError),
-    /// A temporary directory could not be created.
+    /// The temporary directory could not be created.
     #[error(transparent)]
     Io(#[from] std::io::Error),
-    /// A bounded fixture claim or an invalid test clock was refused.
-    #[error("authenticated fixture claim refused")]
+    /// An invalid test clock or identity was refused.
+    #[error("fixture claim refused")]
     Refused,
 }
 
-/// Process-local credentials shared by fixtures naming the same test identity; never persisted to a keychain.
-/// # Errors
-/// Refuses generation failures, invalid clocks and more than 256 distinct fixture identities.
-pub fn credentials_for(id: DeviceId) -> Result<Arc<DeviceCredentials>, FixtureError> {
-    static KEYS: OnceLock<Mutex<HashMap<DeviceId, Arc<DeviceCredentials>>>> = OnceLock::new();
-    let keys = KEYS.get_or_init(|| Mutex::new(HashMap::new()));
-    let cached = keys.lock().get(&id).cloned();
-    if let Some(cached) = cached {
-        return Ok(cached);
-    }
-    let now =
-        u64::try_from(synra_store::sqlite::now_ms() / 1000).map_err(|_| FixtureError::Refused)?;
-    let candidate = Arc::new(DeviceCredentials::generate(id, now)?);
-    let mut values = keys.lock();
-    if values.len() >= MAX_APPROVED_PEERS {
-        return Err(FixtureError::Refused);
-    }
-    Ok(Arc::clone(values.entry(id).or_insert(candidate)))
-}
-
-/// An independently owned file database and its authenticated local test credential.
+/// An independently owned file database for one test device.
 pub struct NetworkFixture {
     database: SynraDb,
-    /// A separate connection to the same real file, used by production authorization checks.
+    /// A separate connection to the same real file, for code that expects its own handle.
     pub shared_db: Arc<Mutex<SynraDb>>,
-    /// Test credential corresponding to the fixture's local enrollment.
-    pub credentials: Arc<DeviceCredentials>,
-    /// Epoch milliseconds at fixture creation, suitable for real TLS tests.
+    /// Epoch milliseconds at fixture creation, suitable for real socket tests.
     pub now_ms: u64,
     _directory: tempfile::TempDir,
 }
@@ -84,37 +59,20 @@ impl NetworkFixture {
         SynraDb::open(&self.root().join(synra_store::DB_FILE_NAME))
     }
 
-    /// Creates a migrated file database whose local identity explicitly approves the supplied peer.
+    /// A fixture for a test that names both ends.
+    ///
+    /// The peer is accepted and ignored: pairing no longer stores anything about what the other device looks like, so a
+    /// fixture that pre-arranged an approval would be preparing a fact the system has stopped having.
     /// # Errors
-    /// Refuses invalid identities, failed migration, enrollment or grant persistence.
+    /// Refuses failed migration or a refused local identity.
     pub fn new(local: DeviceId, peer: DeviceId, name: &str) -> Result<Self, FixtureError> {
-        let fixture = Self::unpaired(local, name)?;
-        let database = &fixture.database;
-        let credentials = &fixture.credentials;
-        let other = credentials_for(peer)?;
-        let now_ms = i64::try_from(fixture.now_ms).map_err(|_| FixtureError::Refused)?;
-        let attempt = PeerTrustAttempt {
-            request_id: RequestId::new().to_string(),
-            local_id: local.to_string(),
-            local_certificate: credentials.public_identity().certificate_der().to_vec(),
-            peer_id: peer.to_string(),
-            peer_certificate: other.public_identity().certificate_der().to_vec(),
-            binding: [7; 32],
-            expires_at_ms: now_ms.checked_add(60_000).ok_or(FixtureError::Refused)?,
-        };
-        if !database.claim_peer_trust(&attempt, now_ms, MAX_APPROVED_PEERS)?
-            || !database.store_peer_consent(&attempt, now_ms)?
-            || !database.activate_peer_trust(&attempt, now_ms)?
-        {
-            return Err(FixtureError::Refused);
-        }
-        Ok(fixture)
+        let _ = peer;
+        Self::unpaired(local, name)
     }
 
-    /// Creates only a ready local enrollment; no peer has ever been approved in this database.
-    /// This is a credential fixture, not evidence of a native secret backend.
+    /// Creates a migrated file database with a local identity and nothing else.
     /// # Errors
-    /// Refuses failed migration, local enrollment or credential generation.
+    /// Refuses failed migration or a refused local identity.
     pub fn unpaired(local: DeviceId, name: &str) -> Result<Self, FixtureError> {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join(synra_store::DB_FILE_NAME);
@@ -126,25 +84,13 @@ impl NetworkFixture {
             Some(name),
             Some("test"),
             Some(now_ms),
-        )?;
+        )
+        .map_err(|_| FixtureError::Refused)?;
         database.create_identity_if_absent(&identity)?;
-        let credentials = credentials_for(local)?;
-        if !database.claim_device_credential(
-            &local.to_string(),
-            credentials.public_identity().certificate_der(),
-            "test-fixture",
-        )? {
-            return Err(FixtureError::Refused);
-        }
-        let marker = database.device_credential()?.ok_or(FixtureError::Refused)?;
-        if !database.finish_device_credential(&marker)? {
-            return Err(FixtureError::Refused);
-        }
         let shared_db = Arc::new(Mutex::new(SynraDb::open(&path)?));
         Ok(Self {
             database,
             shared_db,
-            credentials,
             now_ms: u64::try_from(now_ms).map_err(|_| FixtureError::Refused)?,
             _directory: directory,
         })

@@ -35,14 +35,7 @@ fn host(id: &str, name: &str) -> (Host, synra_testkit::authentication::NetworkFi
         PlatformKind::Desktop,
         "0.1.0-test",
     );
-    let network = crate::peer::authenticated::AuthenticatedPeer::new(
-        Arc::clone(&db.shared_db),
-        Arc::clone(&db.credentials),
-        local.clone(),
-    )
-    .unwrap();
-    let mut host = Host::with_flags(identity, local, Flags::no_timeout());
-    host.configure_network(Ok(network));
+    let host = Host::with_flags(identity, local, Flags::no_timeout());
     (host, db)
 }
 
