@@ -416,7 +416,15 @@ pub enum Incoming {
 fn offers_pairing(stream: &TcpStream) -> bool {
     let wanted = synra_net::authentication::pairing::PAIRING_ALPN;
     let mut probe = [0_u8; 2048];
-    let Ok(read) = stream.peek(&mut probe) else {
+    // ★ A peer that connects and says nothing must not hold this thread. `peek` on a blocking socket waits for the first
+    // byte, and this runs on the one thread that accepts everything — so an idle client would stop the listener from
+    // accepting anything at all, which is exactly what the daemon's deadline test reported as a hang. A short read
+    // timeout turns "said nothing" into "offered no pairing protocol", which is what it is; the business handshake that
+    // follows keeps its own deadline.
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(250)));
+    let peeked = stream.peek(&mut probe);
+    let _ = stream.set_read_timeout(None);
+    let Ok(read) = peeked else {
         return false;
     };
     probe[..read]
