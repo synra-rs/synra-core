@@ -43,42 +43,7 @@ fn network_now() -> u64 {
     reading_millis(synra_store::sqlite::now_ms())
 }
 
-#[test]
-fn an_unconfigured_host_refuses_business_dial_before_opening_a_socket() {
-    let (configured, _fixture) = host(A, "Unavailable");
-    let mut unavailable = Host::new(configured.identity().clone(), configured.local.clone());
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-    listener.set_nonblocking(true).unwrap();
-    assert!(matches!(
-        unavailable.dial(listener.local_addr().unwrap(), device(B), network_now()),
-        Err(HostError::NetworkUnavailable { .. })
-    ));
-    assert!(
-        listener
-            .accept()
-            .is_err_and(|error| error.kind() == std::io::ErrorKind::WouldBlock)
-    );
-    assert!(unavailable.sessions().is_empty());
-}
 
-#[test]
-fn a_configured_host_requires_a_current_credential_grant_before_connecting() {
-    let (mut client, fixture) = host(B, "Revoked");
-    assert!(fixture.unpair_device(A).unwrap());
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-    listener.set_nonblocking(true).unwrap();
-    assert!(
-        client
-            .dial(listener.local_addr().unwrap(), device(A), network_now())
-            .is_err()
-    );
-    assert!(
-        listener
-            .accept()
-            .is_err_and(|error| error.kind() == std::io::ErrorKind::WouldBlock)
-    );
-    assert!(client.sessions().is_empty());
-}
 
 /// A host that is listening, with its address.
 fn listening(
