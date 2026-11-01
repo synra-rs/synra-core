@@ -5,8 +5,7 @@
 //! It carried generated TLS credentials, per-identity key caching and a pre-approved peer, because a business connection
 //! could only be opened between two devices whose certificates each side had already stored. Transport encryption is gone
 //! ([ADR-025](../../../design-docs/20-adr.md)), so the only thing a socket test needs from a fixture is a migrated database
-//! file and a clock. The name stays because the call sites are the same tests.
-
+//! file and a clock.
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -59,16 +58,6 @@ impl NetworkFixture {
         SynraDb::open(&self.root().join(synra_store::DB_FILE_NAME))
     }
 
-    /// A fixture for a test that names both ends.
-    ///
-    /// The peer is accepted and ignored: pairing no longer stores anything about what the other device looks like, so a
-    /// fixture that pre-arranged an approval would be preparing a fact the system has stopped having.
-    /// # Errors
-    /// Refuses failed migration or a refused local identity.
-    pub fn new(local: DeviceId, peer: DeviceId, name: &str) -> Result<Self, FixtureError> {
-        let _ = peer;
-        Self::unpaired(local, name)
-    }
 
     /// Creates a migrated file database with a local identity and nothing else.
     /// # Errors

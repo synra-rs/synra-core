@@ -24,10 +24,9 @@ fn device(name: &str) -> DeviceId {
 }
 
 /// A host with an identity and a local peer, and a migrated database behind the identity.
-fn host(id: &str, name: &str) -> (Host, synra_testkit::authentication::NetworkFixture) {
-    let other = if id == A { B } else { A };
-    let db = synra_testkit::authentication::NetworkFixture::new(device(id), device(other), name)
-        .expect("authenticated fixture");
+fn host(id: &str, name: &str) -> (Host, synra_testkit::fixtures::NetworkFixture) {
+    let db = synra_testkit::fixtures::NetworkFixture::unpaired(device(id), name)
+        .expect("fixture");
     let identity = Identity::load(&db, "test", 1_000).expect("identity");
     let local = LocalPeer::new(
         identity.device_id,
@@ -51,7 +50,7 @@ fn listening(
     name: &str,
 ) -> (
     Host,
-    synra_testkit::authentication::NetworkFixture,
+    synra_testkit::fixtures::NetworkFixture,
     SocketAddr,
 ) {
     let (mut host, db) = host(id, name);

@@ -44,7 +44,7 @@
     )
 )]
 
-pub mod authentication;
+pub mod fixtures;
 pub mod clock;
 #[cfg(feature = "wasm-fixtures")]
 pub mod component;

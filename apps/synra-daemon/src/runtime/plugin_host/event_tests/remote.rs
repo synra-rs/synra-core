@@ -14,7 +14,7 @@ use synra_protocol::{
     event::EventName,
     session::PlatformKind,
 };
-use synra_testkit::authentication::NetworkFixture;
+use synra_testkit::fixtures::NetworkFixture;
 
 const SOURCE: &str = "00000000-0000-4000-8000-000000000002";
 const TIMEOUT: Duration = Duration::from_secs(5);
@@ -38,8 +38,8 @@ impl RemoteRig {
     fn new() -> Self {
         let source_id: DeviceId = SOURCE.parse().unwrap();
         let target_id: DeviceId = DEVICE.parse().unwrap();
-        let source = NetworkFixture::new(source_id, target_id, "Source").unwrap();
-        let target = NetworkFixture::new(target_id, source_id, "Target").unwrap();
+        let source = NetworkFixture::unpaired(source_id, "Source").unwrap();
+        let target = NetworkFixture::unpaired(target_id, "Target").unwrap();
         let plugin = EventPlugin::receiver(None).unwrap();
         plugin.persist(&target.shared_db.lock()).unwrap();
         let host = Arc::new(KernelHost::new(Arc::clone(&target.shared_db), "test"));
