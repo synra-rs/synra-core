@@ -50,19 +50,6 @@ impl std::fmt::Debug for Host {
 }
 
 impl Host {
-    /// Where a device discovery has heard from can be dialled, if it is still in the table.
-    ///
-    /// # Why the dialler asks the live table rather than the database
-    ///
-    /// The store deliberately keeps no address for a device that has only been heard: the address in an announcement is
-    /// where it was then, and a row would go on claiming it long after the machine moved. A connection attempt is the one
-    /// caller that needs it *now*, which is exactly what the in-memory table holds — and an entry it has forgotten is one
-    /// where dialling would be a guess.
-    #[must_use]
-    pub fn locate(&self, device: synra_protocol::ids::DeviceId) -> Option<std::net::SocketAddr> {
-        self.discovery.get(device).map(|candidate| candidate.address)
-    }
-
     /// Captured runtime identity, copied before maintenance reads or native backend IO.
     #[must_use]
     pub fn credential_fingerprint(&self) -> Option<[u8; 32]> {
