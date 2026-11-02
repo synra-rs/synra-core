@@ -208,6 +208,7 @@ pub enum Decision {
     Idle,
 }
 
+/// What one connection has in flight: the transfer being received, if any.
 pub struct Inbox {
     receiving: Option<Receiving>,
     /// The trace the transfer's messages share, remembered when the proposal is accepted.

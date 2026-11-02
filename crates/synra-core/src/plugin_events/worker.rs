@@ -199,8 +199,8 @@ impl EventService {
                 if pending.from == *peer {
                     Ok(())
                 } else {
-                    Err(super::refusal(
-                        synra_protocol::ErrorCode::CapabilityDenied,
+                    Err(refusal(
+                        ErrorCode::CapabilityDenied,
                         "the queued event names another device",
                         "foreignDevice",
                     ))

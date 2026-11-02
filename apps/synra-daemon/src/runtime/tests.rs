@@ -68,7 +68,6 @@ fn runtime_over(
     let host = Host::new(identity.clone(), local_peer);
     // Read before the identity is moved into the host: the desk derives the verification code from it, and the fixture is
     // the only place a test's device identity comes from.
-    let local_id = identity.device_id;
     // ★ One handle, shared: the runtime reads it and so does the host a plugin's calls reach.
     Runtime {
         version: "0.1.0-test".to_owned(),

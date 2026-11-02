@@ -412,7 +412,6 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
     // ★ Read out before the identity is moved into the host, because the pairing desk needs it: the verification code a
     // user compares is derived from this device's identifier, so a desk built with a stale or defaulted one would show a
     // code the other screen does not match — which reads to a user as an attacker rather than as a bug.
-    let local_id = identity.device_id;
     println!("device {} ({})", identity.device_id, identity.display_name);
 
     // ★ The peer registry is built after the transport port is known, because the announcement carries the port a peer
@@ -429,7 +428,7 @@ pub fn serve(decision: &crate::Startup) -> ExitCode {
     // ★ The transport listener is what makes this device *reachable*. `dial` can only make outbound links, so without
     // this a device could send and never receive — and the announcement above would name a port nothing is listening on.
     // Bound here rather than in the library so the port is the one the announcement carries.
-    let (mut host, transport) = {
+    let (host, transport) = {
         let mut host = host;
         match crate::transport::bind(&mut host, plan.listen_port) {
             Ok(address) => {

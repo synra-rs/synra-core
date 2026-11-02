@@ -980,7 +980,7 @@ pub fn no_answer() -> FinishedCallback {
 ///
 /// The socket is open and about to carry traffic; refusing it because a bookkeeping row could not be written would
 /// throw away a working connection over a display detail.
-fn record_accept(data_dir: &std::path::Path, accepted: &crate::host::Dialled, now_ms: i64) {
+fn record_accept(data_dir: &Path, accepted: &crate::host::Dialled, now_ms: i64) {
     use synra_protocol::session::PlatformKind;
 
     let Ok(db) = synra_store::SynraDb::open(&data_dir.join(synra_store::DB_FILE_NAME)) else {

@@ -1,7 +1,6 @@
 //! Authenticated remote admission and bounded receipt deduplication; success means queued only.
 
 use super::{EVENT_TTL, EventService, Origin, Pending, context, policy, refusal};
-use crate::link::LinkError;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -51,7 +50,7 @@ impl EventService {
     pub fn receive_remote(
         self: &Arc<Self>,
         request: &Envelope,
-        peer: &synra_protocol::ids::DeviceId,
+        peer: &DeviceId,
     ) -> Result<(), SynraError> {
         belongs_to(request, peer)?;
         let (owner, _) = request.event.plugin_scope().ok_or_else(|| {
@@ -177,8 +176,8 @@ impl EventService {
 pub fn answer_remote_event(
     service: Option<&Arc<EventService>>,
     request: &Envelope,
-    peer: &synra_protocol::ids::DeviceId,
-    local: synra_protocol::ids::DeviceId,
+    peer: &DeviceId,
+    local: DeviceId,
     now_ms: i64,
 ) -> Result<Envelope, SynraError> {
     let result = match service {
@@ -216,7 +215,7 @@ pub fn answer_remote_event(
 /// device's name on its own link, and nothing more — it is not authentication and must not be described as such.
 fn belongs_to(
     request: &Envelope,
-    peer: &synra_protocol::ids::DeviceId,
+    peer: &DeviceId,
 ) -> Result<(), SynraError> {
     if request.from != *peer {
         return Err(refusal(
@@ -226,16 +225,4 @@ fn belongs_to(
         ));
     }
     Ok(())
-}
-pub(super) fn authorization(error: &LinkError) -> SynraError {
-    let code = if matches!(error, LinkError::AuthorizationUnavailable { .. }) {
-        ErrorCode::Internal
-    } else {
-        ErrorCode::CapabilityDenied
-    };
-    refusal(
-        code,
-        "the captured peer authorization is no longer available",
-        "peerAuthorityChanged",
-    )
 }

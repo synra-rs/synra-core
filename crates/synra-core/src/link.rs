@@ -260,11 +260,6 @@ pub struct PeerLink {
 }
 
 impl PeerLink {
-    pub(crate) fn with_decoder(mut self, decoder: FrameDecoder) -> Self {
-        self.decoder = decoder;
-        self
-    }
-
     /// Wraps a completed handshake.
     ///
     /// # Why the identifiers are arguments rather than read from the socket

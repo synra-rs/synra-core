@@ -567,17 +567,6 @@ mod tests {
     }
 
 
-    // ── Pairing envelopes ─────────────────────────────────────────────────────────────────────────
-
-    /// A profile this device would advertise.
-    fn profile(name: &str) -> synra_protocol::session::PeerProfile {
-        synra_protocol::session::PeerProfile {
-            device_id: device(A),
-            display_name: name.to_owned(),
-            platform: synra_protocol::session::PlatformKind::Desktop,
-            app_version: "0.1.0".to_owned(),
-        }
-    }
 
 
 

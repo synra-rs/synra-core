@@ -7,7 +7,6 @@ use synra_protocol::frame::{FrameDecoder, FrameKind};
 use synra_protocol::handshake::{
     Hello, HelloAck, PROTOCOL_VERSION, SessionNonce,
 };
-use synra_protocol::ids::DeviceId;
 
 use super::config::Flags;
 use super::errors::HandshakeError;
@@ -50,7 +49,7 @@ pub(super) fn dial_stream(
     // recorded or mis-routed message, and a dialer that accepted it would build a session on a reply to somebody else's
     // attempt.
     let nonce = SessionNonce::random();
-    let mut hello = ours.hello(nonce, sequence);
+    let hello = ours.hello(nonce, sequence);
 
     write_frame(stream, &hello_frame(&hello)?)?;
 
