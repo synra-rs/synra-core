@@ -17,7 +17,7 @@
 use std::time::{Duration, Instant};
 
 use synra_protocol::ids::DeviceId;
-use synra_protocol::pairing::{PairCode, PairRequest};
+use synra_protocol::pairing::PairCode;
 use synra_protocol::session::PlatformKind;
 
 /// 一份请求在没有答复时会失效。
@@ -195,7 +195,7 @@ impl Desk {
         peer_platform: PlatformKind,
         already_paired: bool,
         now: Instant,
-    ) -> Result<PairRequest, Refused> {
+    ) -> Result<Offer, Refused> {
         if !matches!(self.state, State::Idle | State::Done { .. }) {
             return Err(Refused::Busy);
         }
@@ -208,17 +208,13 @@ impl Desk {
             peer_name: peer_name.into(),
             peer_platform,
         };
-        let request = PairRequest::new(
-            offer.code,
-            offer.peer,
-            offer.peer_name.clone(),
-            offer.peer_platform,
-        );
         self.state = State::Waiting {
-            offer,
+            offer: offer.clone(),
             expires_at: now + PAIR_REQUEST_TTL,
         };
-        Ok(request)
+        // ★ 返回「桌上摆了什么」，不造信封：发起方的身份在这一层拿不到，
+        // 硬拼只会把「谁发的」写成「发给谁」。
+        Ok(offer)
     }
 
     /// 收到对端的请求。
@@ -450,7 +446,7 @@ impl Service {
         peer_name: impl Into<String>,
         peer_platform: PlatformKind,
         already_paired: bool,
-    ) -> Result<PairRequest, Refused> {
+    ) -> Result<Offer, Refused> {
         let answer = self
             .desk()
             .begin(peer, peer_name, peer_platform, already_paired, Instant::now());
@@ -615,12 +611,12 @@ mod tests {
     fn beginning_shows_a_code_and_waits() {
         let mut desk = desk();
         let peer = a_peer();
-        let request = desk
+        let offer = desk
             .begin(peer, "Pixel", PlatformKind::Android, false, Instant::now())
             .expect("an empty desk accepts a request");
         assert_eq!(desk.phase(), Phase::Waiting);
-        assert_eq!(request.code().expect("six digits"), desk.offer().expect("an offer").code);
-        assert_eq!(request.from, peer);
+        assert_eq!(offer.code, desk.offer().expect("an offer").code);
+        assert_eq!(offer.peer, peer);
     }
 
     #[test]

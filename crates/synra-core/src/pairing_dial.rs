@@ -16,8 +16,9 @@ use std::time::{Duration, Instant};
 use std::path::Path;
 
 use parking_lot::Mutex;
-use synra_protocol::ids::TraceId;
+use synra_protocol::ids::{DeviceId, TraceId};
 use synra_protocol::pairing::{PairRequest, PairResponse, PAIR_CANCEL, PAIR_RESPONSE};
+use synra_protocol::session::PlatformKind;
 
 use crate::host::Host;
 
@@ -54,12 +55,14 @@ pub enum DialError {
 pub fn dial(
     host: &std::sync::Arc<Mutex<Host>>,
     address: SocketAddr,
+    peer: DeviceId,
+    peer_name: &str,
+    peer_platform: PlatformKind,
     request: &PairRequest,
     data_dir: &Path,
 ) -> Result<Finished, DialError> {
-    // ★ 请求已经在桌上：外壳先 `begin` 拿到码，再把这同一份交进来。
-    // 这里再 `begin` 一次会得到 `Busy`——那正是"界面显示等待、实际从未拨号"的来源。
-    let peer = request.from;
+    // ★ `request` 里是发起方（本机）的身份，`peer` 是要连的那台。
+    // 两者不能互换：互换会让本机把自己写进记录，也会把答复的方向写反。
     let (local, desk) = {
         let host = host.lock();
         (host.local_peer().clone(), host.pairing())
@@ -112,9 +115,9 @@ pub fn dial(
     if finished == Finished::Paired {
         let _ = crate::pairing_record::record_paired(
             data_dir,
-            request.from,
-            &request.display_name,
-            request.platform,
+            peer,
+            peer_name,
+            peer_platform,
             Some(address.to_string()),
             now_ms,
         );
@@ -187,11 +190,4 @@ fn settled(desk: &crate::pairing::Service) -> Finished {
 /// 桌上没有本机发起的请求。
 pub fn code_of(desk: &crate::pairing::Service) -> Option<synra_protocol::pairing::PairCode> {
     desk.offer().map(|offer| offer.code)
-}
-
-/// 请求本身，供外壳在需要时重新拿一次。
-#[must_use]
-pub fn request_of(desk: &crate::pairing::Service) -> Option<PairRequest> {
-    desk.offer()
-        .map(|offer| PairRequest::new(offer.code, offer.peer, offer.peer_name, offer.peer_platform))
 }
