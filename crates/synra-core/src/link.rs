@@ -447,13 +447,18 @@ impl PeerLink {
         self.count_frame("frames_sent_total", envelope.event.as_str());
         // Payload only: a frame header is the transport's accounting, and it is not what the reader of `bytes_sent_total`
         // is asking about. Counted after the write, because a refused write moved nothing.
-        self.count_bytes(
-            "bytes_sent_total",
-            envelope
-                .payload
-                .as_ref()
-                .map_or(0, |payload| payload.get().len()),
-        );
+        let payload_len = envelope
+            .payload
+            .as_ref()
+            .map_or(0, |payload| payload.get().len());
+        self.count_bytes("bytes_sent_total", payload_len);
+        // ★ The debug tap sees the frame that actually went out, not the one the caller asked to send: a failed write
+        // returns above and produces no line, which is what a reader comparing both ends needs.
+        synra_observe::wire::emit(synra_observe::wire::WireEvent::sent(
+            self.peer.to_string(),
+            envelope.event.as_str(),
+            payload_len,
+        ));
         Ok(())
     }
 
@@ -483,6 +488,11 @@ impl PeerLink {
         self.send_frame(&frame)?;
         self.sent = self.sent.saturating_add(1);
         self.count_bytes("bytes_sent_total", data.len());
+        synra_observe::wire::emit(synra_observe::wire::WireEvent::sent(
+            self.peer.to_string(),
+            format!("chunk #{chunk_id}"),
+            data.len(),
+        ));
         Ok(())
     }
 
@@ -510,13 +520,16 @@ impl PeerLink {
                     let envelope = self.parse_envelope(&frame)?;
                     self.received = self.received.saturating_add(1);
                     self.count_frame("frames_received_total", envelope.event.as_str());
-                    self.count_bytes(
-                        "bytes_received_total",
-                        envelope
-                            .payload
-                            .as_ref()
-                            .map_or(0, |payload| payload.get().len()),
-                    );
+                    let received_len = envelope
+                        .payload
+                        .as_ref()
+                        .map_or(0, |payload| payload.get().len());
+                    self.count_bytes("bytes_received_total", received_len);
+                    synra_observe::wire::emit(synra_observe::wire::WireEvent::received(
+                        self.peer.to_string(),
+                        envelope.event.as_str(),
+                        received_len,
+                    ));
                     return Ok(Inbound::Envelope(Box::new(envelope)));
                 }
                 FrameKind::Chunk => {
@@ -527,6 +540,11 @@ impl PeerLink {
                     };
                     self.received = self.received.saturating_add(1);
                     self.count_bytes("bytes_received_total", chunk.data.len());
+                    synra_observe::wire::emit(synra_observe::wire::WireEvent::received(
+                        self.peer.to_string(),
+                        format!("chunk #{}", chunk.chunk_id),
+                        chunk.data.len(),
+                    ));
                     return Ok(Inbound::Block {
                         chunk_id: chunk.chunk_id,
                         data: chunk.data,

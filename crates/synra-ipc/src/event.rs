@@ -43,6 +43,26 @@ use crate::dto::{
 };
 use synra_protocol::{DeviceId, IntentId, PluginId, TransferId};
 
+/// One frame on or off the wire, for the debug console.
+///
+/// Carries no payload: the console is a transport view, and a payload would turn a debug feature into a second copy of
+/// every message — including the ones a transfer spends its bandwidth on. Event name and size are what a reader needs to
+/// see a conversation happen.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DebugWire {
+    /// When it happened, milliseconds since the epoch.
+    pub at_ms: i64,
+    /// `sent`, `received` or `note`.
+    pub direction: String,
+    /// The device on the other end, or `local` for a note.
+    pub peer: String,
+    /// An event name, `chunk #n`, or a note's short label.
+    pub label: String,
+    /// Payload bytes. Zero for a note.
+    pub bytes: u64,
+}
+
 /// A change the interface should apply.
 ///
 /// Internally tagged with `type`, so the interface's `switch` is exhaustive over a closed set and a variant it
@@ -133,6 +153,11 @@ pub enum KernelEvent {
     },
 
     // ── Diagnostics ──
+    /// One frame the transport sent or received, when the debug console asked for the wire.
+    ///
+    /// Only published while a sink is installed. The interface's floating console installs one for the life of the
+    /// window; a daemon with no console pays nothing.
+    DebugWire(Box<DebugWire>),
     /// A log line worth showing in the interface.
     ///
     /// Separate from `kernel://log`, which is the throttled bulk channel: this is the one or two lines a screen
@@ -172,6 +197,7 @@ impl KernelEvent {
             Self::PluginUpdateAvailable { .. } => "pluginUpdateAvailable",
             Self::PluginHealthChanged { .. } => "pluginHealthChanged",
             Self::PluginConsentRequested { .. } => "pluginConsentRequested",
+            Self::DebugWire(_) => "debugWire",
             Self::LogLine { .. } => "logLine",
             Self::Notice { .. } => "notice",
         }
