@@ -1057,13 +1057,18 @@ fn answer_pairing(
             return;
         }
     };
+    // ★ 已经配对过的设备直接拒绝，不弹窗：再配一次只会让两个人各看一遍同样的码。
+    let already = synra_store::SynraDb::open(&data_dir.join(synra_store::DB_FILE_NAME))
+        .ok()
+        .and_then(|db| db.paired_devices().ok())
+        .is_some_and(|rows| rows.iter().any(|row| row.device_id == request.from.to_string()));
     // 有人在问的时候，桌上已经有一份请求就不再接第二份：两个人同时看到两个码，谁也说不清该比哪一个。
     if let Err(refused) = desk.receive(
         code,
         request.from,
         request.display_name.clone(),
         request.platform,
-        false,
+        already,
     ) {
         eprintln!("synra-daemon: {peer} asked to pair, and the desk said {refused:?}");
         send_pair_answer(link, peer, &request.from, false);
