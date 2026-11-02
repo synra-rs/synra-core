@@ -33,6 +33,11 @@ pub struct Host {
     /// one, and a send that failed because a *metric* could not be written would be a message refused for a reason
     /// neither end can see or act on.
     pub(super) metrics: Option<std::sync::Arc<synra_observe::metrics::RingRecorder>>,
+    /// 配对的那张桌子。会话的线程等它，外壳的命令改它，两边的窗口画的也是它。
+    ///
+    /// ★ 放在这里而不是放在 listener 上，因为它不属于某一条连接：**一次配对只有一份请求**，
+    /// 而同时可能有两条连接（一条在问、一条在答）。放在连接上会让两个人各自看到半张桌子。
+    pub(super) pairing: std::sync::Arc<crate::pairing::Service>,
 }
 
 impl std::fmt::Debug for Host {
@@ -60,7 +65,16 @@ impl Host {
             flags: Flags::production(),
             sent: 0,
             metrics: None,
+            pairing: crate::pairing::Service::new(),
         }
+    }
+
+    /// 配对的那张桌子。
+    ///
+    /// 拿走的是 `Arc` 而不是借用：等答复的那条连接活在自己的线程里，它不能借一个被外壳持锁的字段。
+    #[must_use]
+    pub fn pairing(&self) -> std::sync::Arc<crate::pairing::Service> {
+        std::sync::Arc::clone(&self.pairing)
     }
 
     /// A host with chosen flags; authenticated handshakes always retain a finite total IO budget.
