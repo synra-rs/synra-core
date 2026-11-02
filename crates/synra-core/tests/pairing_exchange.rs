@@ -69,6 +69,8 @@ fn the_code_reads_back_as_the_six_digits_it_was_sent_as() {
         serde_json::from_value(sent["payload"].clone()).expect("the payload decodes");
 
     assert_eq!(payload.code, "000123", "前导零在 JSON 里保留");
+    assert_eq!(payload.from, from, "请求里写的是发起方，不是被问的那台");
+    assert_eq!(payload.display_name, "Pixel", "对方看到的名称来自发起方");
     assert_eq!(
         payload.code().expect("six digits").as_text(),
         "000123",
