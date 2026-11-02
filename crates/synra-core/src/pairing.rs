@@ -117,7 +117,7 @@ enum State {
         ask: Ask,
         expires_at: Instant,
     },
-    Done { accepted: bool },
+    Done { accepted: bool, cancelled: bool },
 }
 
 impl Default for Desk {
@@ -168,8 +168,17 @@ impl Desk {
     #[must_use]
     pub const fn accepted(&self) -> Option<bool> {
         match self.state {
-            State::Done { accepted } => Some(accepted),
+            State::Done { accepted, .. } => Some(accepted),
             _ => None,
+        }
+    }
+
+    /// 这次配对是不是本机自己撤回的。
+    #[must_use]
+    pub const fn cancelled(&self) -> bool {
+        match self.state {
+            State::Done { cancelled, .. } => cancelled,
+            _ => false,
         }
     }
 
@@ -251,7 +260,7 @@ impl Desk {
     ///
     /// [`Refused::NothingToAnswer`]：桌上没有等着答复的请求。
     pub fn accept(&mut self) -> Result<Outcome, Refused> {
-        match std::mem::replace(&mut self.state, State::Done { accepted: true }) {
+        match std::mem::replace(&mut self.state, State::Done { accepted: true, cancelled: false }) {
             State::Asked { ask, .. } => Ok(Outcome::Accepted { peer: ask.peer }),
             previous => {
                 self.state = previous;
@@ -266,7 +275,7 @@ impl Desk {
     ///
     /// 同 [`Self::accept`]。
     pub fn refuse(&mut self) -> Result<Outcome, Refused> {
-        match std::mem::replace(&mut self.state, State::Done { accepted: false }) {
+        match std::mem::replace(&mut self.state, State::Done { accepted: false, cancelled: false }) {
             State::Asked { ask, .. } => Ok(Outcome::Declined { peer: ask.peer }),
             previous => {
                 self.state = previous;
@@ -282,7 +291,7 @@ impl Desk {
     /// [`Refused::NothingToAnswer`]：本机没有正在等待的请求（对端发起的那份不能由本机「取消」，
     /// 那是拒绝）。
     pub fn cancel(&mut self) -> Result<Outcome, Refused> {
-        match std::mem::replace(&mut self.state, State::Done { accepted: true }) {
+        match std::mem::replace(&mut self.state, State::Done { accepted: false, cancelled: true }) {
             State::Waiting { offer, .. } => Ok(Outcome::Cancelled { peer: offer.peer }),
             previous => {
                 self.state = previous;
@@ -297,7 +306,7 @@ impl Desk {
     ///
     /// [`Refused::NothingToAnswer`]：本机没有正在等待的请求。
     pub fn answered(&mut self, accepted: bool) -> Result<Outcome, Refused> {
-        let done = State::Done { accepted };
+        let done = State::Done { accepted, cancelled: false };
         match std::mem::replace(&mut self.state, done) {
             State::Waiting { offer, .. } if accepted => Ok(Outcome::Completed { peer: offer.peer }),
             State::Waiting { offer, .. } => Ok(Outcome::Declined { peer: offer.peer }),
@@ -354,6 +363,8 @@ pub enum Decision {
     Refused,
     /// 到点也没有人回答。
     TimedOut,
+    /// 本机在对方答复前撤回了。
+    Cancelled,
 }
 
 impl Service {
@@ -401,6 +412,12 @@ impl Service {
     #[must_use]
     pub fn accepted(&self) -> Option<bool> {
         self.desk().accepted()
+    }
+
+    /// 这次配对是不是本机自己撤回的。
+    #[must_use]
+    pub fn cancelled(&self) -> bool {
+        self.desk().cancelled()
     }
 
     /// 本机发起一次配对。
@@ -512,7 +529,7 @@ impl Service {
         let mut desk = self.desk();
         loop {
             match desk.phase() {
-                Phase::Asked => {}
+                Phase::Asked | Phase::Waiting => {}
                 // Somebody already answered (or reset the desk) while we were not looking.
                 _ => return self.decision_of(&desk),
             }
@@ -532,10 +549,11 @@ impl Service {
     /// 读完状态之后把它换算成等待方的答案。
     fn decision_of(&self, desk: &Desk) -> Decision {
         // `Asked` 只有在「还没人回答」时才成立；能走到这里的都不是 `Asked`。
-        match desk.accepted() {
-            Some(true) => Decision::Accepted,
-            Some(false) => Decision::Refused,
-            None => Decision::TimedOut,
+        match (desk.accepted(), desk.cancelled()) {
+            (Some(true), _) => Decision::Accepted,
+            (_, true) => Decision::Cancelled,
+            (Some(false), false) => Decision::Refused,
+            (None, false) => Decision::TimedOut,
         }
     }
 
@@ -784,5 +802,62 @@ mod service_tests {
             service.wait_for_decision(Duration::from_millis(50)),
             Decision::TimedOut
         );
+    }
+}
+
+#[cfg(test)]
+mod dial_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn the_initiator_wakes_with_its_own_cancellation() {
+        let service = Service::new();
+        let peer = DeviceId::new();
+        service
+            .begin(peer, "Pixel", PlatformKind::Android, false)
+            .expect("an empty desk");
+
+        let waiter_service = std::sync::Arc::clone(&service);
+        let waiter = std::thread::spawn(move || waiter_service.wait_for_decision(Duration::from_secs(5)));
+
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(service.cancel().is_ok());
+
+        assert_eq!(waiter.join().expect("the waiter"), Decision::Cancelled);
+    }
+
+    #[test]
+    fn the_initiator_wakes_when_the_peer_accepts() {
+        let service = Service::new();
+        let peer = DeviceId::new();
+        service
+            .begin(peer, "Pixel", PlatformKind::Android, false)
+            .expect("an empty desk");
+
+        let waiter_service = std::sync::Arc::clone(&service);
+        let waiter = std::thread::spawn(move || waiter_service.wait_for_decision(Duration::from_secs(5)));
+
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(service.answered(true).is_ok());
+
+        assert_eq!(waiter.join().expect("the waiter"), Decision::Accepted);
+    }
+
+    #[test]
+    fn the_initiator_wakes_when_the_peer_refuses() {
+        let service = Service::new();
+        let peer = DeviceId::new();
+        service
+            .begin(peer, "Pixel", PlatformKind::Android, false)
+            .expect("an empty desk");
+
+        let waiter_service = std::sync::Arc::clone(&service);
+        let waiter = std::thread::spawn(move || waiter_service.wait_for_decision(Duration::from_secs(5)));
+
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(service.answered(false).is_ok());
+
+        assert_eq!(waiter.join().expect("the waiter"), Decision::Refused);
     }
 }
