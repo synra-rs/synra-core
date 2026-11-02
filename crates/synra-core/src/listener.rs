@@ -490,6 +490,9 @@ pub fn handle_within_with(
     // ★ The shared desk, not a per-connection state. A prompt raised on this connection is answered by a user who is not
     // on it at all, and a per-connection state would make that answer invisible here — the dialer would wait out its own
     // thirty-second window for a decision the user had already made.
+    // ★ 配对的那张桌子：随连接线程带进来，但它属于整套 Host——另一个连接上的人也会改它。
+    let desk = host.lock().pairing();
+
     loop {
         // ★ Checked between messages, because the link belongs to this loop. A cancel that took effect only after the
         // next block would still write a block the user said they did not want; one that sent the abort from the command
@@ -581,6 +584,17 @@ pub fn handle_within_with(
                         // answer is what the asker's plan compares. It is answered here rather than by a host callback
                         // because the kernel owns the tables: two hosts answering it separately would be two answers to
                         // one question, and the sync decision would inherit the difference.
+                        // ★ 配对：这条连接会**停下来等人**，而这是整条链路上唯一允许停的地方。
+                        //
+                        // 配对请求没有别的意义——不像插件列表或意图，它不是「问一句、答一句」就结束的事，
+                        // 而是两个人要各看一眼屏幕。每连接一个线程，所以停下来不挡 accept 循环。
+                        None if event == synra_protocol::pairing::PAIR_REQUEST => {
+                            let Some(envelope) = request else {
+                                eprintln!("synra-daemon: {peer} asked to pair without an envelope");
+                                continue;
+                            };
+                            answer_pairing(&mut link, &desk, &envelope, &data_dir, &peer);
+                        }
                         None if event == synra_protocol::event::events::PLUGIN_LIST_REQUEST => {
                             let answer = match (&pairing, request) {
                                 (Ok(db), Some(request)) => crate::plugin_sync::answer_plugin_list(
@@ -1006,6 +1020,112 @@ fn record_accept(data_dir: &Path, accepted: &crate::host::Dialled, now_ms: i64) 
         )
         .unwrap_or_else(|_| "[]".to_owned()),
         address: Some(accepted.address().to_string()),
+        paired_at_ms: now_ms,
+    };
+    let _ = db.pair_device(&record);
+}
+
+/// 回应一次配对请求：把码摆到桌上，等一个人回答，然后回复对方。
+///
+/// # 为什么这里可以阻塞
+///
+/// 因为配对的全部内容就是「等一个人」：它不像插件列表那样有一个立刻可得的事实。每连接一个线程，
+/// 所以停在这里不挡 accept 循环；而两分钟的上限保证它不会永远停下去。
+fn answer_pairing(
+    link: &mut PeerLink,
+    desk: &Arc<crate::pairing::Service>,
+    envelope: &Envelope,
+    data_dir: &Path,
+    peer: &synra_protocol::ids::DeviceId,
+) {
+    let Some(raw) = envelope.payload.as_ref() else {
+        eprintln!("synra-daemon: {peer} asked to pair without a payload");
+        return;
+    };
+    let request: synra_protocol::pairing::PairRequest = match serde_json::from_str(raw.get()) {
+        Ok(request) => request,
+        Err(error) => {
+            eprintln!("synra-daemon: {peer}'s pairing request could not be read: {error}");
+            return;
+        }
+    };
+    let code = match request.code() {
+        Ok(code) => code,
+        Err(error) => {
+            eprintln!("synra-daemon: {peer} sent a code that is not one: {error}");
+            send_pair_answer(link, peer, &request.from, false);
+            return;
+        }
+    };
+    // 有人在问的时候，桌上已经有一份请求就不再接第二份：两个人同时看到两个码，谁也说不清该比哪一个。
+    if let Err(refused) = desk.receive(
+        code,
+        request.from,
+        request.display_name.clone(),
+        request.platform,
+        false,
+    ) {
+        eprintln!("synra-daemon: {peer} asked to pair, and the desk said {refused:?}");
+        send_pair_answer(link, peer, &request.from, false);
+        return;
+    }
+    let accepted = desk.wait_for_decision(crate::pairing::PAIR_REQUEST_TTL)
+        == crate::pairing::Decision::Accepted;
+    send_pair_answer(link, peer, &request.from, accepted);
+    if accepted {
+        record_paired(data_dir, &request, synra_store::sqlite::now_ms());
+    }
+}
+
+/// 回一条答复。发不出去时只报告——对方等不到答复会自己超时，而这条连接还有别的用。
+fn send_pair_answer(
+    link: &mut PeerLink,
+    peer: &synra_protocol::ids::DeviceId,
+    from: &synra_protocol::ids::DeviceId,
+    accepted: bool,
+) {
+    let response = synra_protocol::pairing::PairResponse { accepted };
+    match crate::messaging::pair_response(
+        *from,
+        *peer,
+        response,
+        synra_protocol::ids::TraceId::new(),
+        synra_store::sqlite::now_ms(),
+    ) {
+        Ok(answer) => {
+            if let Err(error) = link.send(&answer) {
+                eprintln!("synra-daemon: the pairing answer could not be sent to {peer}: {error}");
+            }
+        }
+        Err(error) => eprintln!("synra-daemon: the pairing answer could not be built: {error}"),
+    }
+}
+
+/// 接受之后写一行「认识这台设备了」。
+///
+/// 写的字段与拨号侧一致：`device_id`、名称、平台、能力位、地址、时间。**能力位是空的**——
+/// 配对请求里没有 `Hello` 协商出来的交集，假装有会是比缺一行更糟的谎。
+fn record_paired(
+    data_dir: &Path,
+    request: &synra_protocol::pairing::PairRequest,
+    now_ms: i64,
+) {
+    use synra_protocol::session::PlatformKind;
+
+    let Ok(db) = synra_store::SynraDb::open(&data_dir.join(synra_store::DB_FILE_NAME)) else {
+        return;
+    };
+    let platform = match request.platform {
+        PlatformKind::Android => "android",
+        PlatformKind::Ios => "ios",
+        _ => "desktop",
+    };
+    let record = synra_store::Paired {
+        device_id: request.from.to_string(),
+        display_name: request.display_name.clone(),
+        platform: platform.to_owned(),
+        features: "[]".to_owned(),
+        address: None,
         paired_at_ms: now_ms,
     };
     let _ = db.pair_device(&record);
