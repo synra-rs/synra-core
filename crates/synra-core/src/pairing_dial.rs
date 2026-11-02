@@ -12,6 +12,7 @@
 //! 「配对超时」，而它们该给用户看的话完全不同。
 
 use std::net::SocketAddr;
+use std::time::{Duration, Instant};
 use std::path::Path;
 
 use parking_lot::Mutex;
@@ -92,6 +93,17 @@ pub fn dial(
         .map_err(|error| DialError::Send(error.to_string()))?;
 
     let finished = wait_for_answer(&desk, &mut link)?;
+    if finished == Finished::Cancelled {
+        // 撤回要告诉对面：否则那台设备的弹窗会一直摆到两分钟到期。
+        if let Ok(cancel) = crate::messaging::pair_cancel(
+            local.device_id,
+            peer,
+            TraceId::new(),
+            synra_store::sqlite::now_ms(),
+        ) {
+            let _ = link.send(&cancel);
+        }
+    }
     if finished == Finished::Paired {
         let _ = crate::pairing_record::record_paired(
             data_dir,
@@ -110,12 +122,20 @@ fn wait_for_answer(
     desk: &crate::pairing::Service,
     link: &mut crate::link::PeerLink,
 ) -> Result<Finished, DialError> {
+    // ★ 200 毫秒的读超时不是配对的截止时间，而是让这条循环有机会回头看一眼桌子：
+    // 本机的撤回发生在外壳的命令线程上，而这里可能正卡在 socket 上。
+    link.set_read_timeout(Some(Duration::from_millis(200)));
+    let deadline = Instant::now() + crate::pairing::PAIR_REQUEST_TTL;
     loop {
         // ★ 先看桌子：本机的取消发生在外壳的命令线程上，而这条循环可能正卡在 socket 上。
         match desk.phase() {
             crate::pairing::Phase::Done => return Ok(settled(desk)),
             crate::pairing::Phase::Idle => return Ok(Finished::TimedOut),
             _ => {}
+        }
+        if Instant::now() >= deadline {
+            desk.reset();
+            return Ok(Finished::TimedOut);
         }
         match link.receive() {
             Ok(answer) if answer.event.as_str() == PAIR_RESPONSE => {
@@ -134,6 +154,7 @@ fn wait_for_answer(
             }
             // 这条短连接上不该有别的消息；有也读掉，不当作答复。
             Ok(_) => {}
+            Err(crate::link::LinkError::TimedOut) => {}
             Err(error) => {
                 if desk.phase() == crate::pairing::Phase::Done {
                     return Ok(settled(desk));
