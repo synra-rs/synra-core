@@ -65,7 +65,7 @@ pub enum KernelEvent {
 
     // ── Pairing ──
     /// Progress of the shared restricted first-pairing task, never an authorization grant.
-    PairingUpdated(Box<synra_protocol::pairing::PairingSnapshot>),
+    PairingUpdated(Box<crate::PairingSnapshot>),
 
     // ── Intent ──
     /// An intent's state changed, including its candidates becoming available.
@@ -551,15 +551,7 @@ mod tests {
                 total_ms: 2_500,
                 found: 3,
             })),
-            KernelEvent::PairingUpdated(Box::new(synra_protocol::pairing::PairingSnapshot {
-                request_id: synra_protocol::RequestId::new(),
-                peer_id: DeviceId::new(),
-                phase: synra_protocol::pairing::PairingPhase::Cancelled,
-                expires_at_ms: 0,
-                reply: None,
-                error_code: None,
-                detail: None,
-            })),
+            KernelEvent::PairingUpdated(Box::new(crate::PairingSnapshot::idle())),
             KernelEvent::TransferFinished {
                 transfer_id: TransferId::new(),
             },

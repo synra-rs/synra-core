@@ -29,7 +29,8 @@
 //!
 //! | Module | Holds |
 //! | --- | --- |
-//! | `devices` | this device, the device list, and the pairing prompt |
+//! | `devices` | this device and the device list |
+//! | `pairing` | the code one person reads to another, and who is waiting for whom |
 //! | `intent` | what the user is trying to do, and their decision |
 //! | `transfer` | transfers, and the requests that start one |
 //! | `plugin` | installed plugins, the catalog, and install reports |
@@ -37,6 +38,7 @@
 
 mod config;
 mod devices;
+mod pairing;
 mod intent;
 mod plugin;
 mod transfer;
@@ -46,6 +48,7 @@ pub use config::{
     ProbeResultDto,
 };
 pub use devices::{DeviceCard, DevicesSnapshot, IdentitySnapshot, ScanOptions, ScanState};
+pub use pairing::{PairingAsk, PairingOffer, PairingOutcome, PairingPhase, PairingSnapshot};
 pub use intent::{
     IntentCandidate, IntentDecisionDto, IntentPrompt, IntentRetry, IntentSnapshot, IntentSourceDto,
 };
