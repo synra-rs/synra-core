@@ -198,6 +198,7 @@ impl DiscoveryService {
         // then finds everything — the worst of both.
         let demanded = on_demand > 0 && now_ms < on_demand;
         if now >= self.next_query || demanded {
+            synra_observe::wire::note("broadcast", "discovery query");
             // ★ Each address is reported on its own. "Nothing was found" and "nothing could be asked" are different
             // answers, and one failure among several interfaces is not a failure of the scan.
             for (_, result) in self.querier.broadcast_query(&self.ours) {
