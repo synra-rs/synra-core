@@ -74,12 +74,15 @@ pub fn dial(
     // 分段调用让那次交换发生在锁外，只有"记下这条链路"这一步回到锁内。
     let now = u64::try_from(now_ms).unwrap_or(0);
     let (parts, flags) = host.lock().dialling_parts();
-    let dialled = crate::host::dial_peer(&parts, flags, address, peer, now)
-        .map_err(|error| DialError::Dial(error.to_string()))?;
-    let mut link = host
-        .lock()
-        .adopt(dialled, now)
-        .map_err(|error| DialError::Dial(error.to_string()))?;
+    let dialled = crate::host::dial_peer(&parts, flags, address, peer, now).map_err(|error| {
+        // ★ 拨号失败也要收桌：否则这份没人等的请求会让下一次配对永远得到 Busy。
+        desk.reset();
+        DialError::Dial(error.to_string())
+    })?;
+    let mut link = host.lock().adopt(dialled, now).map_err(|error| {
+        desk.reset();
+        DialError::Dial(error.to_string())
+    })?;
 
     let envelope = crate::messaging::pair_request(
         local.device_id,
@@ -88,11 +91,19 @@ pub fn dial(
         TraceId::new(),
         now_ms,
     )
-    .map_err(|error| DialError::Send(error.to_string()))?;
-    link.send(&envelope)
-        .map_err(|error| DialError::Send(error.to_string()))?;
+    .map_err(|error| {
+        desk.reset();
+        DialError::Send(error.to_string())
+    })?;
+    link.send(&envelope).map_err(|error| {
+        desk.reset();
+        DialError::Send(error.to_string())
+    })?;
 
-    let finished = wait_for_answer(&desk, &mut link)?;
+    let finished = wait_for_answer(&desk, &mut link).map_err(|error| {
+        desk.reset();
+        error
+    })?;
     if finished == Finished::Cancelled {
         // 撤回要告诉对面：否则那台设备的弹窗会一直摆到两分钟到期。
         if let Ok(cancel) = crate::messaging::pair_cancel(
