@@ -566,7 +566,7 @@ impl Service {
     }
 
     /// 读完状态之后把它换算成等待方的答案。
-    fn decision_of(&self, desk: &Desk) -> Decision {
+    const fn decision_of(&self, desk: &Desk) -> Decision {
         // `Asked` 只有在「还没人回答」时才成立；能走到这里的都不是 `Asked`。
         match (desk.accepted(), desk.cancelled()) {
             (Some(true), _) => Decision::Accepted,

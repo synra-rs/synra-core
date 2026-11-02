@@ -100,9 +100,8 @@ pub fn dial(
         DialError::Send(error.to_string())
     })?;
 
-    let finished = wait_for_answer(&desk, &mut link).map_err(|error| {
+    let finished = wait_for_answer(&desk, &mut link).inspect_err(|_| {
         desk.reset();
-        error
     })?;
     if finished == Finished::Cancelled {
         // 撤回要告诉对面：否则那台设备的弹窗会一直摆到两分钟到期。

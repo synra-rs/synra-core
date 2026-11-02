@@ -59,7 +59,7 @@ impl PairCode {
     /// # Errors
     ///
     /// 越界时拒绝，调用方拿到的码因此永远打印成六位。
-    pub fn new(value: u32) -> Result<Self, PairCodeError> {
+    pub const fn new(value: u32) -> Result<Self, PairCodeError> {
         if value < PAIR_CODE_LIMIT {
             Ok(Self(value))
         } else {
