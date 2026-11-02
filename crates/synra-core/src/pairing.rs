@@ -352,6 +352,8 @@ pub struct Service {
     decided: std::sync::Condvar,
     /// 每次状态变化加一，等待方用它判断「这次醒来是因为我关心的事，还是因为超时」。
     revision: std::sync::atomic::AtomicU64,
+    /// 状态变了之后叫一声。装它的是外壳：窗口不该靠轮询才知道有人在等它回答。
+    sink: std::sync::Mutex<Option<std::sync::Arc<dyn Fn() + Send + Sync>>>,
 }
 
 /// 一次等待的结果。
@@ -375,6 +377,7 @@ impl Service {
             desk: std::sync::Mutex::new(Desk::new()),
             decided: std::sync::Condvar::new(),
             revision: std::sync::atomic::AtomicU64::new(0),
+            sink: std::sync::Mutex::new(None),
         })
     }
 
@@ -388,6 +391,22 @@ impl Service {
         self.revision
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.decided.notify_all();
+        let sink = self
+            .sink
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(sink) = sink {
+            sink();
+        }
+    }
+
+    /// 装上「配对变了」的通知者。装两次就替换，不叠加。
+    pub fn set_sink(&self, sink: std::sync::Arc<dyn Fn() + Send + Sync>) {
+        *self
+            .sink
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sink);
     }
 
     /// 当前状态，供界面渲染。
@@ -570,6 +589,7 @@ impl Default for Service {
             desk: std::sync::Mutex::new(Desk::new()),
             decided: std::sync::Condvar::new(),
             revision: std::sync::atomic::AtomicU64::new(0),
+            sink: std::sync::Mutex::new(None),
         }
     }
 }
@@ -859,5 +879,36 @@ mod dial_tests {
         assert!(service.answered(false).is_ok());
 
         assert_eq!(waiter.join().expect("the waiter"), Decision::Refused);
+    }
+}
+
+#[cfg(test)]
+mod sink_tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn a_change_calls_the_sink_the_shell_installed() {
+        let service = Service::new();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&calls);
+        service.set_sink(Arc::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        }));
+
+        service
+            .receive(
+                PairCode::new(11).expect("in range"),
+                DeviceId::new(),
+                "Laptop",
+                PlatformKind::Desktop,
+                false,
+            )
+            .expect("an empty desk");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        assert!(service.accept().is_ok());
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 }
