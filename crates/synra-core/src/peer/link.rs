@@ -52,21 +52,25 @@ pub(super) fn dial_stream(
     let hello = ours.hello(nonce, sequence);
 
     write_frame(stream, &hello_frame(&hello)?)?;
-    synra_observe::wire::emit(synra_observe::wire::WireEvent::sent(
-        "pending".to_owned(),
-        "hello",
-        0,
-    ));
+    if synra_observe::wire::is_installed() {
+        synra_observe::wire::emit(synra_observe::wire::WireEvent::sent(
+            "pending".to_owned(),
+            "hello",
+            0,
+        ));
+    }
 
     let mut decoder = FrameDecoder::new();
     let frame = read_frame(stream, &mut decoder, flags)?;
     expect(&frame, FrameKind::HelloAck, "HelloAck")?;
     let ack: HelloAck = json_payload(&frame, "HelloAck")?;
-    synra_observe::wire::emit(synra_observe::wire::WireEvent::received(
-        ack.device_id.to_string(),
-        "hello ack",
-        0,
-    ));
+    if synra_observe::wire::is_installed() {
+        synra_observe::wire::emit(synra_observe::wire::WireEvent::received(
+            ack.device_id.to_string(),
+            "hello ack",
+            0,
+        ));
+    }
 
     if let Some(refusal) = ack.refusal {
         return Err(HandshakeError::Refused {
@@ -174,11 +178,13 @@ pub(super) fn accept_on(
     let frame = read_frame(stream, &mut decoder, flags)?;
     expect(&frame, FrameKind::Hello, "Hello")?;
     let hello: Hello = json_payload(&frame, "Hello")?;
-    synra_observe::wire::emit(synra_observe::wire::WireEvent::received(
-        hello.device_id.to_string(),
-        "hello",
-        0,
-    ));
+    if synra_observe::wire::is_installed() {
+        synra_observe::wire::emit(synra_observe::wire::WireEvent::received(
+            hello.device_id.to_string(),
+            "hello",
+            0,
+        ));
+    }
 
     // ★ The announcement is validated before anything is built from it. It is attacker-controlled input: an unbounded
     // endpoint list would be an unbounded amount of dialling on this device's behalf, and a display name is rendered.
@@ -190,11 +196,13 @@ pub(super) fn accept_on(
         .map_err(|error| super::wire::link_error(&error))?;
     let ack = ours.hello_ack(hello.nonce, sequence);
     write_frame(stream, &hello_ack_frame(&ack)?)?;
-    synra_observe::wire::emit(synra_observe::wire::WireEvent::sent(
-        hello.device_id.to_string(),
-        "hello ack",
-        0,
-    ));
+    if synra_observe::wire::is_installed() {
+        synra_observe::wire::emit(synra_observe::wire::WireEvent::sent(
+            hello.device_id.to_string(),
+            "hello ack",
+            0,
+        ));
+    }
 
     Ok((
         Negotiated {

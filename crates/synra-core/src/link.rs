@@ -325,6 +325,32 @@ impl PeerLink {
         }
     }
 
+    /// Reports a sent frame, and does not even build its peer string when no console is listening.
+    ///
+    /// ★ The guard is the point: `WireEvent::sent` takes text, so a call that allocated and then found no sink would make
+    /// every ordinary send pay for a debug view nobody opened. The event name is already a `&str`, so the only avoidable
+    /// work is `DeviceId::to_string` — and with a daemon (which never installs a sink) that is every frame.
+    fn trace_sent(&self, label: &str, bytes: usize) {
+        if synra_observe::wire::is_installed() {
+            synra_observe::wire::emit(synra_observe::wire::WireEvent::sent(
+                self.peer.to_string(),
+                label,
+                bytes,
+            ));
+        }
+    }
+
+    /// Reports a received frame; see [`PeerLink::trace_sent`] for why the guard lives here.
+    fn trace_received(&self, label: &str, bytes: usize) {
+        if synra_observe::wire::is_installed() {
+            synra_observe::wire::emit(synra_observe::wire::WireEvent::received(
+                self.peer.to_string(),
+                label,
+                bytes,
+            ));
+        }
+    }
+
     /// This device.
     #[must_use]
     pub const fn local(&self) -> DeviceId {
@@ -454,11 +480,7 @@ impl PeerLink {
         self.count_bytes("bytes_sent_total", payload_len);
         // ★ The debug tap sees the frame that actually went out, not the one the caller asked to send: a failed write
         // returns above and produces no line, which is what a reader comparing both ends needs.
-        synra_observe::wire::emit(synra_observe::wire::WireEvent::sent(
-            self.peer.to_string(),
-            envelope.event.as_str(),
-            payload_len,
-        ));
+        self.trace_sent(envelope.event.as_str(), payload_len);
         Ok(())
     }
 
@@ -488,11 +510,13 @@ impl PeerLink {
         self.send_frame(&frame)?;
         self.sent = self.sent.saturating_add(1);
         self.count_bytes("bytes_sent_total", data.len());
-        synra_observe::wire::emit(synra_observe::wire::WireEvent::sent(
-            self.peer.to_string(),
-            format!("chunk #{chunk_id}"),
-            data.len(),
-        ));
+        if synra_observe::wire::is_installed() {
+            synra_observe::wire::emit(synra_observe::wire::WireEvent::sent(
+                self.peer.to_string(),
+                format!("chunk #{chunk_id}"),
+                data.len(),
+            ));
+        }
         Ok(())
     }
 
@@ -525,11 +549,7 @@ impl PeerLink {
                         .as_ref()
                         .map_or(0, |payload| payload.get().len());
                     self.count_bytes("bytes_received_total", received_len);
-                    synra_observe::wire::emit(synra_observe::wire::WireEvent::received(
-                        self.peer.to_string(),
-                        envelope.event.as_str(),
-                        received_len,
-                    ));
+                    self.trace_received(envelope.event.as_str(), received_len);
                     return Ok(Inbound::Envelope(Box::new(envelope)));
                 }
                 FrameKind::Chunk => {
@@ -540,22 +560,20 @@ impl PeerLink {
                     };
                     self.received = self.received.saturating_add(1);
                     self.count_bytes("bytes_received_total", chunk.data.len());
-                    synra_observe::wire::emit(synra_observe::wire::WireEvent::received(
-                        self.peer.to_string(),
-                        format!("chunk #{}", chunk.chunk_id),
-                        chunk.data.len(),
-                    ));
+                    if synra_observe::wire::is_installed() {
+                        synra_observe::wire::emit(synra_observe::wire::WireEvent::received(
+                            self.peer.to_string(),
+                            format!("chunk #{}", chunk.chunk_id),
+                            chunk.data.len(),
+                        ));
+                    }
                     return Ok(Inbound::Block {
                         chunk_id: chunk.chunk_id,
                         data: chunk.data,
                     });
                 }
                 FrameKind::Ping => {
-                    synra_observe::wire::emit(synra_observe::wire::WireEvent::received(
-                        self.peer.to_string(),
-                        "ping",
-                        0,
-                    ));
+                    self.trace_received("ping", 0);
                     let previous = self.write_timeout_override;
                     if let Some(deadline) = deadline {
                         let remaining =
@@ -569,11 +587,7 @@ impl PeerLink {
                     let result = self.pong();
                     self.write_timeout_override = previous;
                     result?;
-                    synra_observe::wire::emit(synra_observe::wire::WireEvent::sent(
-                        self.peer.to_string(),
-                        "pong",
-                        0,
-                    ));
+                    self.trace_sent("pong", 0);
                 }
                 FrameKind::Pong => {}
                 FrameKind::Bye => return Err(LinkError::Closed),
