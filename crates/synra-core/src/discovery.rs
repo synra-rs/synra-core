@@ -233,10 +233,7 @@ impl DiscoveryTable {
         let address = SocketAddr::new(from.ip(), announcement.port);
         let name = usable_name(&announcement.display_name);
         if synra_observe::wire::is_installed() {
-            synra_observe::wire::note(
-                announcement.device_id.to_string(),
-                format!("discovery · {address}"),
-            );
+            synra_observe::wire::note("lan", format!("heard {address}"));
         }
 
         let existing = self.candidates.get(&announcement.device_id);

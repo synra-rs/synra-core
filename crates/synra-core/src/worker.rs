@@ -88,6 +88,8 @@ pub struct DiscoveryService {
     next_query: Instant,
     /// How often to broadcast.
     interval: Duration,
+    /// Whether the previous tick broadcast, so a scan's re-broadcasts become one console line rather than dozens.
+    broadcasting: bool,
 }
 
 impl std::fmt::Debug for DiscoveryService {
@@ -156,6 +158,7 @@ impl DiscoveryService {
             // started and has nothing in its table.
             next_query: Instant::now(),
             interval,
+            broadcasting: false,
         })
     }
 
@@ -198,7 +201,12 @@ impl DiscoveryService {
         // then finds everything — the worst of both.
         let demanded = on_demand > 0 && now_ms < on_demand;
         if now >= self.next_query || demanded {
-            synra_observe::wire::note("broadcast", "discovery query");
+            // ★ One line per burst. A scan re-broadcasts on every tick until its deadline; one line per attempt would
+            // bury the pairing frames the console exists to show. The first broadcast is the interesting one.
+            if !self.broadcasting {
+                synra_observe::wire::note("lan", "query");
+                self.broadcasting = true;
+            }
             // ★ Each address is reported on its own. "Nothing was found" and "nothing could be asked" are different
             // answers, and one failure among several interfaces is not a failure of the scan.
             for (_, result) in self.querier.broadcast_query(&self.ours) {
@@ -212,6 +220,8 @@ impl DiscoveryService {
             // further than the interval already does, so a scan does not delay the next scheduled query by a full
             // interval on top of the scan itself.
             self.next_query = now + self.interval;
+        } else {
+            self.broadcasting = false;
         }
 
         ticked
@@ -535,6 +545,7 @@ mod tests {
             ours: announcement(id, "Laptop", 47_100),
             next_query: Instant::now(),
             interval,
+            broadcasting: false,
         }
     }
 
