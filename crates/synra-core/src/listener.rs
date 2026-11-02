@@ -1092,6 +1092,10 @@ fn answer_pairing(
             _ => break false,
         }
     };
+    // ★ 到点没人回答，桌子必须收回空：否则 `Asked` 会一直摆着，下一次配对永远得到 `Busy`。
+    if desk.phase() == crate::pairing::Phase::Asked {
+        let _ = desk.refuse();
+    }
     // ★ 只有答复真的发出去了才写记录：发不出去意味着对方已经撤回，写下的会是一行单方面记录。
     if accepted && send_pair_answer(link, peer, &request.from, accepted) {
         record_paired(data_dir, &request, synra_store::sqlite::now_ms());
