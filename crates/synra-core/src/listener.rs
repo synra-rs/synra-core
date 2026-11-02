@@ -1069,10 +1069,26 @@ fn answer_pairing(
         send_pair_answer(link, peer, &request.from, false);
         return;
     }
-    let accepted = desk.wait_for_decision(crate::pairing::PAIR_REQUEST_TTL)
-        == crate::pairing::Decision::Accepted;
-    send_pair_answer(link, peer, &request.from, accepted);
-    if accepted {
+    // ★ 等的是本机的人，但也要留意对面的撤回：50 毫秒的读超时让这条循环能在
+    // 「读连接」和「等人」之间来回，而不是一直卡在其中一边。
+    let deadline = std::time::Instant::now() + crate::pairing::PAIR_REQUEST_TTL;
+    link.set_read_timeout(Some(Duration::from_millis(50)));
+    let accepted = loop {
+        if let Ok(answer) = link.receive()
+            && answer.event.as_str() == synra_protocol::pairing::PAIR_CANCEL
+        {
+            // 对面撤回了：桌子收回空，不再等一个不会来的答复。
+            let _ = desk.refuse();
+            return;
+        }
+        match desk.wait_for_decision(Duration::from_millis(50)) {
+            crate::pairing::Decision::TimedOut if std::time::Instant::now() < deadline => {}
+            crate::pairing::Decision::Accepted => break true,
+            _ => break false,
+        }
+    };
+    // ★ 只有答复真的发出去了才写记录：发不出去意味着对方已经撤回，写下的会是一行单方面记录。
+    if accepted && send_pair_answer(link, peer, &request.from, accepted) {
         record_paired(data_dir, &request, synra_store::sqlite::now_ms());
     }
 }
@@ -1083,7 +1099,7 @@ fn send_pair_answer(
     peer: &synra_protocol::ids::DeviceId,
     from: &synra_protocol::ids::DeviceId,
     accepted: bool,
-) {
+) -> bool {
     let response = synra_protocol::pairing::PairResponse { accepted };
     match crate::messaging::pair_response(
         *from,
@@ -1095,10 +1111,13 @@ fn send_pair_answer(
         Ok(answer) => {
             if let Err(error) = link.send(&answer) {
                 eprintln!("synra-daemon: the pairing answer could not be sent to {peer}: {error}");
+            } else {
+                return true;
             }
         }
         Err(error) => eprintln!("synra-daemon: the pairing answer could not be built: {error}"),
     }
+    false
 }
 
 /// 接受之后写一行「认识这台设备了」。
