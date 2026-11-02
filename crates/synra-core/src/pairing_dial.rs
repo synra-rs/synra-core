@@ -155,10 +155,11 @@ fn wait_for_answer(
                 let _ = desk.answered(accepted);
                 return Ok(settled(desk));
             }
-            // 对面在我们答复前先撤了：码已经没用，桌子回到空。
+            // 对面在我们答复前先撤了：码已经没用，桌子要按「撤回」收，而不是按「拒绝」——
+            // `refuse` 只对接收方的 `Asked` 有效，在 `Waiting` 上会失败，桌子便一直挂着。
             Ok(answer) if answer.event.as_str() == PAIR_CANCEL => {
-                let _ = desk.refuse();
-                return Ok(Finished::Refused);
+                desk.cancel();
+                return Ok(Finished::Cancelled);
             }
             // 这条短连接上不该有别的消息；有也读掉，不当作答复。
             Ok(_) => {}
