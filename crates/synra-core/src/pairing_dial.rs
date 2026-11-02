@@ -69,9 +69,15 @@ pub fn dial(
         .begin(peer, peer_name, peer_platform, false)
         .map_err(DialError::Begin)?;
     let now_ms = synra_store::sqlite::now_ms();
+    // ★ 握手不持锁：`dial` 会在锁内做完整个 Hello 交换，而 `devices` 读列表时等的就是这把锁。
+    // 分段调用让那次交换发生在锁外，只有"记下这条链路"这一步回到锁内。
+    let now = u64::try_from(now_ms).unwrap_or(0);
+    let (parts, flags) = host.lock().dialling_parts();
+    let dialled = crate::host::dial_peer(&parts, flags, address, peer, now)
+        .map_err(|error| DialError::Dial(error.to_string()))?;
     let mut link = host
         .lock()
-        .dial(address, peer, u64::try_from(now_ms).unwrap_or(0))
+        .adopt(dialled, now)
         .map_err(|error| DialError::Dial(error.to_string()))?;
 
     let envelope = crate::messaging::pair_request(
