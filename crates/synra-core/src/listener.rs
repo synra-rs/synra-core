@@ -1053,7 +1053,7 @@ fn answer_pairing(
         Ok(code) => code,
         Err(error) => {
             eprintln!("synra-daemon: {peer} sent a code that is not one: {error}");
-            send_pair_answer(link, peer, &request.from, false);
+            send_pair_answer(link, peer, false);
             return;
         }
     };
@@ -1071,7 +1071,7 @@ fn answer_pairing(
         already,
     ) {
         eprintln!("synra-daemon: {peer} asked to pair, and the desk said {refused:?}");
-        send_pair_answer(link, peer, &request.from, false);
+        send_pair_answer(link, peer, false);
         return;
     }
     // ★ 等的是本机的人，但也要留意对面的撤回：50 毫秒的读超时让这条循环能在
@@ -1097,21 +1097,18 @@ fn answer_pairing(
         let _ = desk.refuse();
     }
     // ★ 只有答复真的发出去了才写记录：发不出去意味着对方已经撤回，写下的会是一行单方面记录。
-    if accepted && send_pair_answer(link, peer, &request.from, accepted) {
+    if accepted && send_pair_answer(link, peer, accepted) {
         record_paired(data_dir, &request, synra_store::sqlite::now_ms());
     }
 }
 
 /// 回一条答复。发不出去时只报告——对方等不到答复会自己超时，而这条连接还有别的用。
-fn send_pair_answer(
-    link: &mut PeerLink,
-    peer: &synra_protocol::ids::DeviceId,
-    from: &synra_protocol::ids::DeviceId,
-    accepted: bool,
-) -> bool {
+fn send_pair_answer(link: &mut PeerLink, peer: &synra_protocol::ids::DeviceId, accepted: bool) -> bool {
     let response = synra_protocol::pairing::PairResponse { accepted };
+    // ★ 答复由**本机**发出，回到问的那台设备：`link.local()` 是本机，`peer` 是对端。
+    // 把请求里的 `from` 当发送者会写出一条"发问者发给自己"的信封。
     match crate::messaging::pair_response(
-        *from,
+        link.local(),
         *peer,
         response,
         synra_protocol::ids::TraceId::new(),
