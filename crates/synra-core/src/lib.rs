@@ -68,6 +68,8 @@ pub mod listener;
 pub mod messaging;
 /// 配对的那张桌子：码、答复与作废。
 pub mod pairing;
+pub mod pairing_dial;
+pub mod pairing_record;
 pub mod network;
 pub mod peer;
 pub mod plugin;

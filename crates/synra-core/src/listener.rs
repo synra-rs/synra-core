@@ -1110,23 +1110,12 @@ fn record_paired(
     request: &synra_protocol::pairing::PairRequest,
     now_ms: i64,
 ) {
-    use synra_protocol::session::PlatformKind;
-
-    let Ok(db) = synra_store::SynraDb::open(&data_dir.join(synra_store::DB_FILE_NAME)) else {
-        return;
-    };
-    let platform = match request.platform {
-        PlatformKind::Android => "android",
-        PlatformKind::Ios => "ios",
-        _ => "desktop",
-    };
-    let record = synra_store::Paired {
-        device_id: request.from.to_string(),
-        display_name: request.display_name.clone(),
-        platform: platform.to_owned(),
-        features: "[]".to_owned(),
-        address: None,
-        paired_at_ms: now_ms,
-    };
-    let _ = db.pair_device(&record);
+    let _ = crate::pairing_record::record_paired(
+        data_dir,
+        request.from,
+        &request.display_name,
+        request.platform,
+        None,
+        now_ms,
+    );
 }
