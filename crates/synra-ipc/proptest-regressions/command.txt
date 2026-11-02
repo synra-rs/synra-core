@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 515147b512479fcea39d7879088482bfecc7f837228dbd000f805df117ded3c6 # shrinks to index = 40, suffix = "s"
+cc cd60438c036732ddb41ac47156edaa271ca6eb49c19298ec02af206ddc24a755 # shrinks to index = 7
