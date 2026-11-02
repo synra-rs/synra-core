@@ -66,6 +66,8 @@ pub mod late_queue;
 pub mod link;
 pub mod listener;
 pub mod messaging;
+/// 配对的那张桌子：码、答复与作废。
+pub mod pairing;
 pub mod network;
 pub mod peer;
 pub mod plugin;
