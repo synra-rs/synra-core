@@ -16,9 +16,8 @@ use std::time::{Duration, Instant};
 use std::path::Path;
 
 use parking_lot::Mutex;
-use synra_protocol::ids::{DeviceId, TraceId};
+use synra_protocol::ids::TraceId;
 use synra_protocol::pairing::{PairRequest, PairResponse, PAIR_CANCEL, PAIR_RESPONSE};
-use synra_protocol::session::PlatformKind;
 
 use crate::host::Host;
 
@@ -38,8 +37,6 @@ pub enum Finished {
 /// 发起配对失败在哪一步。
 #[derive(Debug)]
 pub enum DialError {
-    /// 桌上已经有一份请求，或这台设备已经配对过。
-    Begin(crate::pairing::Refused),
     /// 连不过去。
     Dial(String),
     /// 连上了，但请求发不出去。
@@ -52,23 +49,21 @@ pub enum DialError {
 ///
 /// # Errors
 ///
-/// [`DialError::Begin`] 桌上已经有一份请求；[`DialError::Dial`] 握手失败；[`DialError::Send`] 请求发不出去；
+/// [`DialError::Dial`] 握手失败；[`DialError::Send`] 请求发不出去；
 /// [`DialError::Read`] 连接断了而本机并没有取消。
 pub fn dial(
     host: &std::sync::Arc<Mutex<Host>>,
     address: SocketAddr,
-    peer: DeviceId,
-    peer_name: &str,
-    peer_platform: PlatformKind,
+    request: &PairRequest,
     data_dir: &Path,
 ) -> Result<Finished, DialError> {
+    // ★ 请求已经在桌上：外壳先 `begin` 拿到码，再把这同一份交进来。
+    // 这里再 `begin` 一次会得到 `Busy`——那正是"界面显示等待、实际从未拨号"的来源。
+    let peer = request.from;
     let (local, desk) = {
         let host = host.lock();
         (host.local_peer().clone(), host.pairing())
     };
-    let request = desk
-        .begin(peer, peer_name, peer_platform, false)
-        .map_err(DialError::Begin)?;
     let now_ms = synra_store::sqlite::now_ms();
     // ★ 握手不持锁：`dial` 会在锁内做完整个 Hello 交换，而 `devices` 读列表时等的就是这把锁。
     // 分段调用让那次交换发生在锁外，只有"记下这条链路"这一步回到锁内。
