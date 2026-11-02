@@ -551,6 +551,11 @@ impl PeerLink {
                     });
                 }
                 FrameKind::Ping => {
+                    synra_observe::wire::emit(synra_observe::wire::WireEvent::received(
+                        self.peer.to_string(),
+                        "ping",
+                        0,
+                    ));
                     let previous = self.write_timeout_override;
                     if let Some(deadline) = deadline {
                         let remaining =
@@ -564,6 +569,11 @@ impl PeerLink {
                     let result = self.pong();
                     self.write_timeout_override = previous;
                     result?;
+                    synra_observe::wire::emit(synra_observe::wire::WireEvent::sent(
+                        self.peer.to_string(),
+                        "pong",
+                        0,
+                    ));
                 }
                 FrameKind::Pong => {}
                 FrameKind::Bye => return Err(LinkError::Closed),
