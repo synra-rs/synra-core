@@ -594,6 +594,9 @@ pub fn handle_within_with(
                                 continue;
                             };
                             answer_pairing(&mut link, &desk, &envelope, &data_dir, &peer);
+                            // ★ 配对期间为了听见对面撤回，读超时被调到 50ms；
+                            // 这条连接之后还要按正常节奏工作，得把超时还回去。
+                            let _ = link.set_read_timeout(Some(timeout));
                         }
                         None if event == synra_protocol::event::events::PLUGIN_LIST_REQUEST => {
                             let answer = match (&pairing, request) {
