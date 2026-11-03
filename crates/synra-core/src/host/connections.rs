@@ -38,13 +38,8 @@ impl DialConfig {
             address: SocketAddr::from(([0, 0, 0, 0], 0)),
             why: error.to_string(),
         })?;
-        let (stream, negotiated) = crate::peer::accept_stream(
-            stream,
-            &self.ours,
-            now_ms,
-            flags,
-        )
-        .map_err(HostError::Handshake)?;
+        let (stream, negotiated) = crate::peer::accept_stream(stream, &self.ours, now_ms, flags)
+            .map_err(HostError::Handshake)?;
         let link = PeerLink::new(
             stream,
             self.ours.device_id,
@@ -56,6 +51,7 @@ impl DialConfig {
             link,
             negotiated,
             address,
+            outbound: false,
         })
     }
 }
@@ -65,6 +61,7 @@ pub struct Dialled {
     link: PeerLink,
     negotiated: Negotiated,
     address: SocketAddr,
+    outbound: bool,
 }
 
 /// Opens an authenticated business connection to the exact requested device outside the host lock.
@@ -77,8 +74,13 @@ pub fn dial_peer(
     peer: DeviceId,
     now_ms: u64,
 ) -> Result<Dialled, HostError> {
-    let (stream, negotiated) = crate::peer::dial(address, &ours.ours, now_ms, flags)
-        .map_err(HostError::Handshake)?;
+    let (stream, negotiated) =
+        crate::peer::dial(address, &ours.ours, now_ms, flags).map_err(HostError::Handshake)?;
+    if negotiated.device_id != peer {
+        return Err(HostError::Authentication {
+            why: "the endpoint answered as a different device".to_owned(),
+        });
+    }
     let link = PeerLink::new(
         stream,
         ours.ours.device_id,
@@ -86,11 +88,11 @@ pub fn dial_peer(
         negotiated.agreed.clone(),
         flags,
     );
-    let _ = peer;
     Ok(Dialled {
         link,
         negotiated,
         address,
+        outbound: true,
     })
 }
 // The rest of `impl Host`, whose first part is in `kernel`.
@@ -98,7 +100,12 @@ impl Host {
     /// Clones authentication and profile metadata for network IO outside the host mutex.
     #[must_use]
     pub fn dialling_parts(&self) -> (DialConfig, Flags) {
-        (DialConfig { ours: self.local.clone() }, self.flags)
+        (
+            DialConfig {
+                ours: self.local.clone(),
+            },
+            self.flags,
+        )
     }
 
     /// Records an authenticated connection without network IO.
@@ -121,6 +128,7 @@ impl Host {
             mut link,
             negotiated,
             address,
+            outbound,
         } = dialled;
         if link.local() != self.identity.device_id || link.peer() != negotiated.device_id {
             return Err(HostError::Authentication {
@@ -142,12 +150,20 @@ impl Host {
             })?;
         events.extend(ready);
         self.count_link_opened();
-        self.discovery.handshaked(
-            negotiated.device_id,
-            address,
-            Some(&negotiated.display_name),
-            millis_reading(now_ms),
-        );
+        // An accepted stream's source port is ephemeral, never a listening endpoint.
+        let listening_address = if outbound {
+            Some(address)
+        } else {
+            self.address_of(negotiated.device_id)
+        };
+        if let Some(listening_address) = listening_address {
+            self.discovery.handshaked(
+                negotiated.device_id,
+                listening_address,
+                Some(&negotiated.display_name),
+                millis_reading(now_ms),
+            );
+        }
         if let Some(metrics) = &self.metrics {
             link = link.with_metrics(Arc::clone(metrics));
         }
@@ -179,109 +195,6 @@ impl Host {
         let (parts, flags) = self.dialling_parts();
         let dialled = dial_peer(&parts, flags, address, peer, now_ms)?;
         self.adopt(dialled, now_ms)
-    }
-
-    /// Takes a connection if one is waiting, without handshaking on it.
-    ///
-    /// # Why this is separate from [`Host::accept`]
-    ///
-    /// Because the two halves are wildly different lengths. Taking a connection is a queue pop; a handshake is a read with
-    /// a six-second timeout on it. A loop that did both would hold the host for as long as a peer took to say `Hello` —
-    /// and a peer that connected and then went silent would freeze `devices` for six seconds, which is exactly the report a
-    /// user runs while something is wrong.
-    ///
-    /// So the loop pops here, cheaply, and hands the socket to a thread that handshakes on it.
-    ///
-    /// # Errors
-    ///
-    /// [`HostError::Bind`] when this host is not listening, or when the listener cannot accept. A would-block is reported
-    /// as `Ok(None)` rather than as an error, because "nothing is waiting" is not a failure.
-    pub fn try_accept(&self) -> Result<Option<TcpStream>, HostError> {
-        let Some(listener) = &self.listener else {
-            return Err(HostError::Bind {
-                address: SocketAddr::from(([0, 0, 0, 0], 0)),
-                why: "this host is not listening".to_owned(),
-            });
-        };
-        match listener.accept() {
-            Ok((stream, _)) => {
-                // ★ A connection accepted from a non-blocking listener **inherits** that mode on Windows, and every read on
-                // it then fails with `WSAEWOULDBLOCK` (10035) — which the link reports as a transport failure, so an
-                // incoming message looked like a broken connection. The listener has to be non-blocking for `try_accept` to
-                // be a poll; the connection must not be, because the handshake and the read loop on it are both ordinary
-                // blocking reads with timeouts of their own. Set back here rather than in the caller, because the caller
-                // receives a value and cannot fix it afterwards.
-                stream
-                    .set_nonblocking(false)
-                    .map_err(|error| HostError::Bind {
-                        address: listener
-                            .local_addr()
-                            .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0))),
-                        why: format!("the connection could not be made blocking: {error}"),
-                    })?;
-                Ok(Some(stream))
-            }
-            // Nothing waiting. Not a failure: the caller loops and asks again.
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
-            Err(error) => Err(HostError::Bind {
-                address: listener
-                    .local_addr()
-                    .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0))),
-                why: error.to_string(),
-            }),
-        }
-    }
-
-    /// Puts a stream into non-blocking mode, so [`Host::try_accept`] can be polled.
-    ///
-    /// # Errors
-    ///
-    /// [`HostError::Bind`] when the operating system refuses.
-    pub fn listen_nonblocking(&self) -> Result<(), HostError> {
-        let Some(listener) = &self.listener else {
-            return Err(HostError::Bind {
-                address: SocketAddr::from(([0, 0, 0, 0], 0)),
-                why: "this host is not listening".to_owned(),
-            });
-        };
-        listener
-            .set_nonblocking(true)
-            .map_err(|error| HostError::Bind {
-                address: listener
-                    .local_addr()
-                    .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0))),
-                why: error.to_string(),
-            })
-    }
-
-    /// Authenticates and records an accepted connection; callers holding a host mutex must use the split API.
-    /// # Errors
-    /// Refuses uninitialized credentials, unapproved peers and failed authentication.
-    pub fn complete_handshake(
-        &mut self,
-        stream: TcpStream,
-        now_ms: u64,
-    ) -> Result<(PeerLink, Vec<RegistryEvent>), HostError> {
-        let (parts, flags) = self.dialling_parts();
-        let accepted = parts.accept_stream(stream, flags, now_ms)?;
-        self.adopt_with_events(accepted, now_ms)
-    }
-
-    /// Accepts and authenticates one connection on an owned host.
-    /// # Errors
-    /// Refuses an absent listener, failed IO and failed authentication.
-    pub fn accept(&mut self, now_ms: u64) -> Result<(PeerLink, Vec<RegistryEvent>), HostError> {
-        let listener = self.listener.as_ref().ok_or_else(|| HostError::Bind {
-            address: SocketAddr::from(([0, 0, 0, 0], 0)),
-            why: "this host is not listening".to_owned(),
-        })?;
-        let (stream, _) = listener.accept().map_err(|error| HostError::Bind {
-            address: listener
-                .local_addr()
-                .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0))),
-            why: error.to_string(),
-        })?;
-        self.complete_handshake(stream, now_ms)
     }
 
     /// Whether a session for this link's peer is ready to carry a message, without sending one.
@@ -351,14 +264,13 @@ impl Dialled {
     /// only checked against it. Without certificates ([ADR-025](../../../../design-docs/20-adr.md)) the announcement is
     /// the whole of what this side knows about the peer, so a caller that keeps a device list has to read it.
     #[must_use]
-    pub fn negotiated(&self) -> &Negotiated {
+    pub const fn negotiated(&self) -> &Negotiated {
         &self.negotiated
     }
 
     /// Where the peer answered, for a record that remembers how it was reached.
     #[must_use]
-    pub fn address(&self) -> SocketAddr {
+    pub const fn address(&self) -> SocketAddr {
         self.address
     }
 }
-

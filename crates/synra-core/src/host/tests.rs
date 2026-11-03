@@ -16,6 +16,9 @@ use crate::sessions::{LinkState, RegistryEvent, SessionRegistry};
 
 use super::{Host, HostError, millis_reading, reading_millis, shared};
 
+#[path = "endpoint_tests.rs"]
+mod endpoint_tests;
+
 const A: &str = "11111111-1111-4111-8111-111111111111";
 const B: &str = "22222222-2222-4222-8222-222222222222";
 
@@ -25,8 +28,7 @@ fn device(name: &str) -> DeviceId {
 
 /// A host with an identity and a local peer, and a migrated database behind the identity.
 fn host(id: &str, name: &str) -> (Host, synra_testkit::fixtures::NetworkFixture) {
-    let db = synra_testkit::fixtures::NetworkFixture::unpaired(device(id), name)
-        .expect("fixture");
+    let db = synra_testkit::fixtures::NetworkFixture::unpaired(device(id), name).expect("fixture");
     let identity = Identity::load(&db, "test", 1_000).expect("identity");
     let local = LocalPeer::new(
         identity.device_id,
@@ -42,17 +44,8 @@ fn network_now() -> u64 {
     reading_millis(synra_store::sqlite::now_ms())
 }
 
-
-
 /// A host that is listening, with its address.
-fn listening(
-    id: &str,
-    name: &str,
-) -> (
-    Host,
-    synra_testkit::fixtures::NetworkFixture,
-    SocketAddr,
-) {
+fn listening(id: &str, name: &str) -> (Host, synra_testkit::fixtures::NetworkFixture, SocketAddr) {
     let (mut host, db) = host(id, name);
     let address = host
         .listen_on(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))

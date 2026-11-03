@@ -31,13 +31,19 @@ impl Host {
     pub fn resolve(&self, wanted: &str) -> Result<DeviceId, HostError> {
         let trimmed = wanted.trim();
         if trimmed.is_empty() {
-            return Err(HostError::NoSuchDevice { wanted: wanted.to_owned() });
+            return Err(HostError::NoSuchDevice {
+                wanted: wanted.to_owned(),
+            });
         }
 
         // Identifiers first: an exact match on the canonical form, then a case-insensitive one, because a user pasting a
         // UUID from a chat message may have a different case and there is nothing else it could mean.
         for candidate in self.discovery.iter() {
-            if candidate.device_id.to_string().eq_ignore_ascii_case(trimmed) {
+            if candidate
+                .device_id
+                .to_string()
+                .eq_ignore_ascii_case(trimmed)
+            {
                 return Ok(candidate.device_id);
             }
         }
@@ -49,13 +55,17 @@ impl Host {
             .collect();
 
         match matches.as_slice() {
-            [] => Err(HostError::NoSuchDevice { wanted: trimmed.to_owned() }),
+            [] => Err(HostError::NoSuchDevice {
+                wanted: trimmed.to_owned(),
+            }),
             [only] => {
                 // Known by name and there is no address to dial. Reported rather than dialled-and-failed: a connection
                 // attempt to an address this kernel never had would be an error about the network, and the real answer is
                 // that the device has not been seen.
                 if only.address.port() == 0 {
-                    return Err(HostError::Unreachable { device_id: only.device_id });
+                    return Err(HostError::Unreachable {
+                        device_id: only.device_id,
+                    });
                 }
                 Ok(only.device_id)
             }
@@ -69,7 +79,18 @@ impl Host {
     /// The address this kernel would dial a device at.
     #[must_use]
     pub fn address_of(&self, device_id: DeviceId) -> Option<SocketAddr> {
-        self.discovery.get(device_id).map(|candidate| candidate.address)
+        self.discovery
+            .get(device_id)
+            .map(|candidate| candidate.address)
+    }
+
+    /// A recently heard listening endpoint, independent of durable pairing trust.
+    #[must_use]
+    pub fn recent_address(&self, device_id: DeviceId, now_ms: i64) -> Option<SocketAddr> {
+        let candidate = self.discovery.get(device_id)?;
+        let ttl_ms = i64::try_from(self.discovery.ttl().as_millis()).unwrap_or(i64::MAX);
+        (candidate.address.port() != 0 && now_ms.saturating_sub(candidate.last_seen_ms) < ttl_ms)
+            .then_some(candidate.address)
     }
 
     /// Records that a device said goodbye.
@@ -101,6 +122,8 @@ impl Host {
     /// A session's state, for a report.
     #[must_use]
     pub fn state_of(&self, device_id: DeviceId) -> Option<LinkState> {
-        self.sessions.live_for(device_id).map(crate::sessions::PeerSession::state)
+        self.sessions
+            .live_for(device_id)
+            .map(crate::sessions::PeerSession::state)
     }
 }

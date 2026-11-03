@@ -9,6 +9,7 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+if-addrs.workspace = true
 synra-protocol = { path = "../synra-protocol" }
 synra-capability = { path = "../synra-capability" }
 synra-plugin-api = { path = "../synra-plugin-api" }
