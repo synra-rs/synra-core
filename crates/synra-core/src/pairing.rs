@@ -296,6 +296,20 @@ impl Desk {
         }
     }
 
+    /// The requester withdrew an incoming offer before it was answered.
+    ///
+    /// # Errors
+    /// There is no incoming offer waiting for a decision.
+    pub fn withdrawn(&mut self) -> Result<Outcome, Refused> {
+        match std::mem::replace(&mut self.state, State::Done { accepted: false, cancelled: true }) {
+            State::Asked { ask, .. } => Ok(Outcome::Cancelled { peer: ask.peer }),
+            previous => {
+                self.state = previous;
+                Err(Refused::NothingToAnswer)
+            }
+        }
+    }
+
     /// 对端答复了本机的请求。
     ///
     /// # Errors
@@ -533,6 +547,24 @@ impl Service {
             self.bump();
         }
         answer
+    }
+
+    /// Withdraws the incoming request when its sender cancels or disconnects.
+    ///
+    /// # Errors
+    /// There is no incoming request waiting for a decision.
+    pub fn withdrawn(&self) -> Result<Outcome, Refused> {
+        let answer = self.desk().withdrawn();
+        if answer.is_ok() {
+            self.bump();
+        }
+        answer
+    }
+
+    /// Announces completion again after the durable pairing record has been written.
+    /// The initial decision wakes the socket worker; this notification lets readers refresh the stored device list.
+    pub fn recorded(&self) {
+        self.bump();
     }
 
     /// 等一个人回答桌上那份请求，最多等到 `timeout`。

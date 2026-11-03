@@ -121,6 +121,7 @@ pub fn dial(
             Some(address.to_string()),
             now_ms,
         );
+        desk.recorded();
     }
     Ok(finished)
 }

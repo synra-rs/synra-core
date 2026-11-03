@@ -450,10 +450,16 @@ pub fn handle_within_with(
     flags.timeout = Some(timeout.min(flags.timeout.unwrap_or(timeout)));
     // Authentication, database approval queries and Hello all run outside the host guard.
     let authenticated = configuration.accept_stream(stream, flags, now);
+    // Hello establishes a connection, not the user's consent. Only answer_pairing may create a pairing row.
     let handshake = authenticated.and_then(|accepted| {
-        // ★ Written before adoption, because adoption consumes the announcement and this is the only place the
-        // accepted side learns who the peer says it is. The dialling side records its own at the end of a dial.
-        record_accept(&data_dir, &accepted, i64::try_from(now).unwrap_or(0));
+        let blocked = synra_store::SynraDb::open(&data_dir.join(synra_store::DB_FILE_NAME))
+            .and_then(|db| db.paired_devices())
+            .map_err(|error| crate::HostError::Authentication { why: error.to_string() })?
+            .iter()
+            .any(|row| row.device_id == accepted.negotiated().device_id.to_string() && row.blocked);
+        if blocked {
+            return Err(crate::HostError::Authentication { why: "this peer is blocked".to_owned() });
+        }
         host.lock().adopt_with_events(accepted, now)
     });
 
@@ -985,49 +991,6 @@ pub fn no_answer() -> FinishedCallback {
     Arc::new(|_| None)
 }
 
-/// Writes down who completed a handshake on a socket this side accepted.
-///
-/// # Why the accepting side records too
-///
-/// A device list is one list. If only the dialling side wrote its row, the same link would look paired on one screen and
-/// unpaired on the other, and "forget" would offer to remove a row that was never created. Both ends see the same
-/// announcement, so both ends keep the same record.
-///
-/// # Why a failed write is not an error
-///
-/// The socket is open and about to carry traffic; refusing it because a bookkeeping row could not be written would
-/// throw away a working connection over a display detail.
-fn record_accept(data_dir: &Path, accepted: &crate::host::Dialled, now_ms: i64) {
-    use synra_protocol::session::PlatformKind;
-
-    let Ok(db) = synra_store::SynraDb::open(&data_dir.join(synra_store::DB_FILE_NAME)) else {
-        return;
-    };
-    let negotiated = accepted.negotiated();
-    let platform = match negotiated.platform {
-        PlatformKind::Android => "android",
-        PlatformKind::Ios => "ios",
-        _ => "desktop",
-    };
-    let record = synra_store::Paired {
-        device_id: negotiated.device_id.to_string(),
-        display_name: negotiated.display_name.clone(),
-        platform: platform.to_owned(),
-        features: serde_json::to_string(
-            &negotiated
-                .agreed
-                .common
-                .iter()
-                .map(|feature| feature.as_str())
-                .collect::<Vec<_>>(),
-        )
-        .unwrap_or_else(|_| "[]".to_owned()),
-        address: Some(accepted.address().to_string()),
-        paired_at_ms: now_ms,
-    };
-    let _ = db.pair_device(&record);
-}
-
 /// 回应一次配对请求：把码摆到桌上，等一个人回答，然后回复对方。
 ///
 /// # 为什么这里可以阻塞
@@ -1052,6 +1015,10 @@ fn answer_pairing(
             return;
         }
     };
+    if request.from != *peer || envelope.from != *peer {
+        send_pair_answer(link, peer, false);
+        return;
+    }
     let code = match request.code() {
         Ok(code) => code,
         Err(error) => {
@@ -1083,12 +1050,16 @@ fn answer_pairing(
     let deadline = std::time::Instant::now() + crate::pairing::PAIR_REQUEST_TTL;
     link.set_read_timeout(Some(Duration::from_millis(50)));
     let accepted = loop {
-        if let Ok(answer) = link.receive()
-            && answer.event.as_str() == synra_protocol::pairing::PAIR_CANCEL
-        {
-            // 对面撤回了：桌子收回空，不再等一个不会来的答复。
-            let _ = desk.refuse();
-            return;
+        match link.receive() {
+            Ok(answer) if answer.event.as_str() == synra_protocol::pairing::PAIR_CANCEL => {
+                let _ = desk.withdrawn();
+                return;
+            }
+            Ok(_) | Err(LinkError::TimedOut) => {}
+            Err(_) => {
+                let _ = desk.withdrawn();
+                return;
+            }
         }
         match desk.wait_for_decision(Duration::from_millis(50)) {
             crate::pairing::Decision::TimedOut if std::time::Instant::now() < deadline => {}
@@ -1101,8 +1072,9 @@ fn answer_pairing(
         let _ = desk.refuse();
     }
     // ★ 只有答复真的发出去了才写记录：发不出去意味着对方已经撤回，写下的会是一行单方面记录。
-    if accepted && send_pair_answer(link, peer, accepted) {
+    if send_pair_answer(link, peer, accepted) && accepted {
         record_paired(data_dir, &request, synra_store::sqlite::now_ms());
+        desk.recorded();
     }
 }
 

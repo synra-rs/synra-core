@@ -50,13 +50,25 @@ impl SynraDb {
     ///
     /// [`DbError::Statement`] when the row cannot be written, which for a well-formed record means the table is absent.
     pub fn pair_device(&self, paired: &Paired) -> Result<(), DbError> {
+        self.write_relationship(paired, false)
+    }
+
+    /// Remembers a blocked peer without granting it a usable pairing.
+    ///
+    /// # Errors
+    /// [`DbError::Statement`] when the decision cannot be stored.
+    pub fn block_device(&self, peer: &Paired) -> Result<(), DbError> {
+        self.write_relationship(peer, true)
+    }
+
+    fn write_relationship(&self, paired: &Paired, blocked: bool) -> Result<(), DbError> {
         timed_write!(self, "pairing", {
             self.connection
                 .execute(
                     "INSERT INTO paired_devices \
                          (device_id, display_name, platform, features, last_address, \
                           paired_at_ms, last_seen_ms, blocked) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, 0) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7) \
                      ON CONFLICT(device_id) DO UPDATE SET \
                          display_name = excluded.display_name, \
                          platform     = excluded.platform, \
@@ -64,7 +76,7 @@ impl SynraDb {
                          last_address = excluded.last_address, \
                          paired_at_ms = excluded.paired_at_ms, \
                          last_seen_ms = excluded.last_seen_ms, \
-                         blocked      = 0",
+                         blocked      = excluded.blocked",
                     params![
                         paired.device_id,
                         paired.display_name,
@@ -72,6 +84,7 @@ impl SynraDb {
                         paired.features,
                         paired.address,
                         paired.paired_at_ms,
+                        blocked,
                     ],
                 )
                 .map_err(|error| DbError::Statement {
