@@ -27,7 +27,10 @@ fn every_declared_capability_gets_a_row() {
     assert_eq!(decision.rows().len(), 2);
     assert_eq!(
         decision.pairs(),
-        vec![("log:*".to_owned(), true), ("device:list".to_owned(), false)],
+        vec![
+            ("log:*".to_owned(), true),
+            ("device:list".to_owned(), false)
+        ],
         "the manifest's own order"
     );
     assert_eq!(decision.granted().collect::<Vec<_>>(), ["log:*"]);
@@ -48,14 +51,42 @@ fn denying_everything_is_not_trust() {
     let decision = decide(&manifest(), MANIFEST, &[]).expect("a decision");
 
     assert!(decision.rows().iter().all(|row| !row.granted()));
-    assert!(!decision.trusted(), "a full refusal is a refusal, not an approval");
+    assert!(
+        !decision.trusted(),
+        "a full refusal is a refusal, not an approval"
+    );
     assert_eq!(decision.granted().count(), 0);
+}
+
+#[test]
+fn an_explicit_empty_decision_approves_a_plugin_with_no_capabilities() {
+    let mut document: serde_json::Value = serde_json::from_str(MANIFEST).expect("a document");
+    document["capabilities"] = serde_json::json!([]);
+    let text = document.to_string();
+    let manifest = Manifest::from_json(&text).expect("a zero-capability manifest");
+    let decision = decide(&manifest, &text, &[]).expect("the user's explicit approval");
+
+    assert!(
+        decision.trusted(),
+        "there is nothing to grant, but the user approved running it"
+    );
+    assert!(
+        decision.rows().is_empty(),
+        "approval must not invent a capability grant"
+    );
+    assert_eq!(decision.digest(), manifest_digest(&text));
+    assert!(matches!(
+        decide(&manifest, &text, &["log:*".to_owned()]),
+        Err(ConsentError::UnknownCapability { .. })
+    ));
 }
 
 #[test]
 fn a_grant_the_plugin_never_asked_for_is_refused() {
     match decide(&manifest(), MANIFEST, &["device:send".to_owned()]) {
-        Err(ConsentError::UnknownCapability { capability }) => assert_eq!(capability, "device:send"),
+        Err(ConsentError::UnknownCapability { capability }) => {
+            assert_eq!(capability, "device:send")
+        }
         other => panic!("expected an unknown-capability refusal, got {other:?}"),
     }
 }
@@ -66,8 +97,17 @@ fn the_digest_is_of_the_text_the_decision_was_made_about() {
     // travels with every row.
     let first = decide(&manifest(), MANIFEST, &[]).expect("a decision");
     let edited = MANIFEST.replace("\"log:*\"", "\"log:info\"");
-    let second = decide(&Manifest::from_json(&edited).expect("a manifest"), &edited, &[]).expect("a decision");
+    let second = decide(
+        &Manifest::from_json(&edited).expect("a manifest"),
+        &edited,
+        &[],
+    )
+    .expect("a decision");
 
     assert_eq!(first.digest(), manifest_digest(MANIFEST));
-    assert_ne!(first.digest(), second.digest(), "an edited manifest is a different document");
+    assert_ne!(
+        first.digest(),
+        second.digest(),
+        "an edited manifest is a different document"
+    );
 }

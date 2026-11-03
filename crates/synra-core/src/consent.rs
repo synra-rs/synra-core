@@ -9,10 +9,13 @@
 //!
 //! # The rule, and why partial consent runs
 //!
-//! **Trusted means the user allowed something.** A decision that denies everything is a refusal and leaves the plugin
+//! **Trusted means explicit approval.** With declared capabilities, a decision that denies everything leaves the plugin
 //! unable to run; a decision that allows one of three means the plugin runs with that one and is refused at the gate for
 //! the other two. That is what the design document's `Consent { granted, denied }` and `is_partial()` describe, and what
 //! the loader already does — a plugin whose grants are a subset is exactly what a capability gate is for.
+//!
+//! For a manifest with no capabilities, an explicit empty decision approves running with no grants. Installation or
+//! enabling alone still does not approve it; the host records trust only after the user submits this decision.
 //!
 //! The alternative — "trusted only if nothing was declined" — sounds safer and is not: it records the partial decision
 //! and then ignores it, so the user sees a plugin they allowed two capabilities for and that never runs, with no
@@ -67,7 +70,10 @@ impl Decision {
     /// this module's types — and the conversion is at the one boundary where the two meet.
     #[must_use]
     pub fn pairs(&self) -> Vec<(String, bool)> {
-        self.rows.iter().map(|row| (row.capability.clone(), row.granted)).collect()
+        self.rows
+            .iter()
+            .map(|row| (row.capability.clone(), row.granted))
+            .collect()
     }
 
     /// The digest of the manifest the decision was made about.
@@ -82,17 +88,23 @@ impl Decision {
     /// Whether the plugin may run at all.
     #[must_use]
     pub fn trusted(&self) -> bool {
-        self.rows.iter().any(Row::granted)
+        self.rows.is_empty() || self.rows.iter().any(Row::granted)
     }
 
     /// The capabilities the user allowed.
     pub fn granted(&self) -> impl Iterator<Item = &str> {
-        self.rows.iter().filter(|row| row.granted).map(Row::capability)
+        self.rows
+            .iter()
+            .filter(|row| row.granted)
+            .map(Row::capability)
     }
 
     /// The capabilities the user refused.
     pub fn denied(&self) -> impl Iterator<Item = &str> {
-        self.rows.iter().filter(|row| !row.granted).map(Row::capability)
+        self.rows
+            .iter()
+            .filter(|row| !row.granted)
+            .map(Row::capability)
     }
 }
 
@@ -124,9 +136,18 @@ pub fn decide(
     manifest_json: &str,
     granted: &[String],
 ) -> Result<Decision, ConsentError> {
-    let declared: Vec<&str> = manifest.capabilities.iter().map(|capability| capability.cap.as_str()).collect();
-    if let Some(unknown) = granted.iter().find(|allowed| !declared.contains(&allowed.as_str())) {
-        return Err(ConsentError::UnknownCapability { capability: unknown.clone() });
+    let declared: Vec<&str> = manifest
+        .capabilities
+        .iter()
+        .map(|capability| capability.cap.as_str())
+        .collect();
+    if let Some(unknown) = granted
+        .iter()
+        .find(|allowed| !declared.contains(&allowed.as_str()))
+    {
+        return Err(ConsentError::UnknownCapability {
+            capability: unknown.clone(),
+        });
     }
     let rows = manifest
         .capabilities
@@ -136,7 +157,10 @@ pub fn decide(
             granted: granted.contains(&capability.cap),
         })
         .collect();
-    Ok(Decision { rows, digest: manifest_digest(manifest_json) })
+    Ok(Decision {
+        rows,
+        digest: manifest_digest(manifest_json),
+    })
 }
 
 #[cfg(test)]
