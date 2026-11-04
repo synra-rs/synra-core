@@ -59,6 +59,7 @@ pub mod dispatch;
 pub mod host;
 pub mod identity;
 pub mod inbound;
+pub mod input;
 pub mod install;
 pub mod intent;
 pub mod kernel;
@@ -66,11 +67,11 @@ pub mod late_queue;
 pub mod link;
 pub mod listener;
 pub mod messaging;
+pub mod network;
 /// 配对的那张桌子：码、答复与作废。
 pub mod pairing;
 pub mod pairing_dial;
 pub mod pairing_record;
-pub mod network;
 pub mod peer;
 pub mod plugin;
 pub mod plugin_events;
@@ -116,9 +117,7 @@ pub use identity::{
 };
 pub use kernel::{Kernel, KernelConfig, KernelError, KernelEvent, KernelSnapshot, NodeRole};
 pub use link::{Inbound, LinkError, PeerLink};
-pub use messaging::{
-    ClipboardText, MessageError, TEXT_MIME, text_from, text_to,
-};
+pub use messaging::{ClipboardText, MessageError, TEXT_MIME, text_from, text_to};
 pub use peer::{Flags, HandshakeError, LocalPeer, Negotiated, accept, agree, dial};
 pub use plugin::{
     INSTANCE_LIMIT, LoadedSummary, Refused, activation_config, deactivate, load_installed,

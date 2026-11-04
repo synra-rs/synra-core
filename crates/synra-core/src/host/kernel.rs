@@ -38,6 +38,8 @@ pub struct Host {
     /// ★ 放在这里而不是放在 listener 上，因为它不属于某一条连接：**一次配对只有一份请求**，
     /// 而同时可能有两条连接（一条在问、一条在答）。放在连接上会让两个人各自看到半张桌子。
     pub(super) pairing: std::sync::Arc<crate::pairing::Service>,
+    /// Optional pointer input service supplied by a host with a consent UI.
+    pub(super) input: Option<std::sync::Arc<crate::input::Receiver>>,
 }
 
 impl std::fmt::Debug for Host {
@@ -66,6 +68,7 @@ impl Host {
             sent: 0,
             metrics: None,
             pairing: crate::pairing::Service::new(),
+            input: None,
         }
     }
 

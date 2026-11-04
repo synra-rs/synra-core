@@ -40,7 +40,6 @@
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
-
 // Test code is exempt from the no-panic rules; see `synra-protocol` for the reasoning. The relaxation has to live
 // at the crate root, because the workspace sets these lints to `deny` and a local `#[allow]` cannot override a
 // `deny` set at a higher priority level.
@@ -56,14 +55,15 @@
 )]
 
 pub mod actions;
+pub mod desktop;
 pub mod error;
 pub mod guard;
-pub mod desktop;
 mod host;
+pub mod pointer;
 
 pub use actions::{
-    Policies, PlatformAction, EXECUTABLE_EXTENSIONS, MAX_CHORD_LEN, MAX_CLIPBOARD_BYTES,
-    MAX_NOTIFICATION_LEN, MAX_URL_LEN,
+    EXECUTABLE_EXTENSIONS, MAX_CHORD_LEN, MAX_CLIPBOARD_BYTES, MAX_NOTIFICATION_LEN, MAX_URL_LEN,
+    PlatformAction, Policies,
 };
 pub use desktop::{CommandPlatform, CommandRunner, Desktop, SystemRunner};
 pub use error::{PathRefusal, PlatformError, UrlRefusal};

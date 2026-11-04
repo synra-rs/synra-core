@@ -16,6 +16,9 @@ serde_json.workspace = true
 thiserror.workspace = true
 parking_lot.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+enigo = { version = "=0.6.1", default-features = false }
+
 [dev-dependencies]
 proptest.workspace = true
 rstest.workspace = true

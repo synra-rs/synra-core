@@ -143,17 +143,14 @@ pub enum KernelEventOutcome {
 /// a reply belongs on the connection that asked, so the answer has to be produced **while the link is still open**.
 /// The captured authority accompanies the envelope so deferred consumers can recheck it without
 /// refreshing the connection to a newer approval. The listener refuses unauthenticated links.
-pub type KernelEventCallback = dyn Fn(&Envelope, &synra_protocol::ids::DeviceId) -> KernelEventOutcome
-    + Send
-    + Sync;
+pub type KernelEventCallback =
+    dyn Fn(&Envelope, &synra_protocol::ids::DeviceId) -> KernelEventOutcome + Send + Sync;
 
 /// A kernel-event callback for a host that runs no kernel events.
 #[must_use]
 pub fn no_kernel_events() -> Arc<KernelEventCallback> {
     Arc::new(
-        |_event: &Envelope, _authority: &synra_protocol::ids::DeviceId| {
-            KernelEventOutcome::Ignored
-        },
+        |_event: &Envelope, _authority: &synra_protocol::ids::DeviceId| KernelEventOutcome::Ignored,
     )
 }
 
@@ -454,11 +451,15 @@ pub fn handle_within_with(
     let handshake = authenticated.and_then(|accepted| {
         let blocked = synra_store::SynraDb::open(&data_dir.join(synra_store::DB_FILE_NAME))
             .and_then(|db| db.paired_devices())
-            .map_err(|error| crate::HostError::Authentication { why: error.to_string() })?
+            .map_err(|error| crate::HostError::Authentication {
+                why: error.to_string(),
+            })?
             .iter()
             .any(|row| row.device_id == accepted.negotiated().device_id.to_string() && row.blocked);
         if blocked {
-            return Err(crate::HostError::Authentication { why: "this peer is blocked".to_owned() });
+            return Err(crate::HostError::Authentication {
+                why: "this peer is blocked".to_owned(),
+            });
         }
         host.lock().adopt_with_events(accepted, now)
     });
@@ -534,6 +535,16 @@ pub fn handle_within_with(
                     share,
                     request,
                 } => {
+                    if let Some(envelope) = request.as_ref()
+                        && crate::input::serve_if_requested(host, &mut link, envelope)
+                    {
+                        return Served {
+                            peer: Some(peer),
+                            events,
+                            finished,
+                            ended: None,
+                        };
+                    }
                     // ★ `frames_received_total{event}` is recorded by the link's `receive_inbound`, not here. This branch
                     // sees only the frames a listener *delivered*; an answer on a dialled link — a pairing response, a
                     // plugin list — never reaches a listener, and those were invisible. The link is the one place every
@@ -599,10 +610,10 @@ pub fn handle_within_with(
                                 eprintln!("synra-daemon: {peer} asked to pair without an envelope");
                                 continue;
                             };
-                            answer_pairing(&mut link, &desk, &envelope, &data_dir, &peer);
+                            answer_pairing(&mut link, &desk, &envelope, data_dir, &peer);
                             // ★ 配对期间为了听见对面撤回，读超时被调到 50ms；
                             // 这条连接之后还要按正常节奏工作，得把超时还回去。
-                            let _ = link.set_read_timeout(Some(timeout));
+                            link.set_read_timeout(Some(timeout));
                         }
                         None if event == synra_protocol::event::events::PLUGIN_LIST_REQUEST => {
                             let answer = match (&pairing, request) {
@@ -1030,7 +1041,10 @@ fn answer_pairing(
     let already = synra_store::SynraDb::open(&data_dir.join(synra_store::DB_FILE_NAME))
         .ok()
         .and_then(|db| db.paired_devices().ok())
-        .is_some_and(|rows| rows.iter().any(|row| row.device_id == request.from.to_string()));
+        .is_some_and(|rows| {
+            rows.iter()
+                .any(|row| row.device_id == request.from.to_string())
+        });
     // ★ 已经配对过的设备直接拒绝，不弹窗：再配一次只会让两个人各看一遍同样的码。
     // ★ 但绝不自动确认。配对是两个人在两块屏幕上比对六个数字；一条没有弹窗的「接受」会让这段流程名存实亡。
     // 有人在问的时候，桌上已经有一份请求就不再接第二份：两个人同时看到两个码，谁也说不清该比哪一个。
@@ -1079,7 +1093,11 @@ fn answer_pairing(
 }
 
 /// 回一条答复。发不出去时只报告——对方等不到答复会自己超时，而这条连接还有别的用。
-fn send_pair_answer(link: &mut PeerLink, peer: &synra_protocol::ids::DeviceId, accepted: bool) -> bool {
+fn send_pair_answer(
+    link: &mut PeerLink,
+    peer: &synra_protocol::ids::DeviceId,
+    accepted: bool,
+) -> bool {
     let response = synra_protocol::pairing::PairResponse { accepted };
     // ★ 答复由**本机**发出，回到问的那台设备：`link.local()` 是本机，`peer` 是对端。
     // 把请求里的 `from` 当发送者会写出一条"发问者发给自己"的信封。
@@ -1106,11 +1124,7 @@ fn send_pair_answer(link: &mut PeerLink, peer: &synra_protocol::ids::DeviceId, a
 ///
 /// 写的字段与拨号侧一致：`device_id`、名称、平台、能力位、地址、时间。**能力位是空的**——
 /// 配对请求里没有 `Hello` 协商出来的交集，假装有会是比缺一行更糟的谎。
-fn record_paired(
-    data_dir: &Path,
-    request: &synra_protocol::pairing::PairRequest,
-    now_ms: i64,
-) {
+fn record_paired(data_dir: &Path, request: &synra_protocol::pairing::PairRequest, now_ms: i64) {
     let _ = crate::pairing_record::record_paired(
         data_dir,
         request.from,

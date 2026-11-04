@@ -101,7 +101,11 @@ impl CallError {
     /// A refusal.
     #[must_use]
     pub fn new(code: &'static str, message: impl Into<String>) -> Self {
-        Self { code, message: message.into(), details: None }
+        Self {
+            code,
+            message: message.into(),
+            details: None,
+        }
     }
 
     /// The same refusal with more to say.
@@ -129,7 +133,10 @@ impl CallError {
     /// The refusal for a function no host provides.
     #[must_use]
     pub fn unknown(import: &str) -> Self {
-        Self::new(Self::UNKNOWN_FUNCTION, format!("`{import}` is not a host function"))
+        Self::new(
+            Self::UNKNOWN_FUNCTION,
+            format!("`{import}` is not a host function"),
+        )
     }
 }
 
@@ -168,16 +175,39 @@ pub trait Host: Send + Sync {
     fn platform_capabilities(&self) -> Vec<String>;
 
     /// Write a line to the kernel's log.
-    fn log(&self, plugin: &PluginId, level: &str, message: &str, context: Option<&str>) -> Result<(), CallError>;
+    fn log(
+        &self,
+        plugin: &PluginId,
+        level: &str,
+        message: &str,
+        context: Option<&str>,
+    ) -> Result<(), CallError>;
     /// Publish an event to whoever subscribed.
     fn event_emit(&self, plugin: &PluginId, event: &str, payload: &str) -> Result<(), CallError>;
 
     /// Every device this kernel can see, as `(id, name, kind)`.
     fn devices(&self) -> Vec<(String, String, String)>;
     /// Send an event to one device.
-    fn device_send(&self, plugin: &PluginId, target: &str, event: &str, payload: &str) -> Result<(), CallError>;
+    fn device_send(
+        &self,
+        plugin: &PluginId,
+        target: &str,
+        event: &str,
+        payload: &str,
+    ) -> Result<(), CallError>;
+    /// Manage a bounded, leased real-time input connection owned by this plugin.
+    /// # Errors
+    /// Hosts without input session support refuse the operation.
+    fn input_session(&self, _plugin: &PluginId, _request: &str) -> Result<String, CallError> {
+        Err(CallError::unknown("input-session"))
+    }
     /// Send an event to every paired device.
-    fn device_broadcast(&self, plugin: &PluginId, event: &str, payload: &str) -> Result<(), CallError>;
+    fn device_broadcast(
+        &self,
+        plugin: &PluginId,
+        event: &str,
+        payload: &str,
+    ) -> Result<(), CallError>;
 
     /// Read a value, or `None` when the key is absent.
     fn storage_get(&self, plugin: &PluginId, key: &str) -> Result<Option<String>, CallError>;
@@ -186,7 +216,11 @@ pub trait Host: Send + Sync {
     /// Remove a value.
     fn storage_delete(&self, plugin: &PluginId, key: &str) -> Result<(), CallError>;
     /// Every key under a prefix, or every key when there is none.
-    fn storage_keys(&self, plugin: &PluginId, prefix: Option<&str>) -> Result<Vec<String>, CallError>;
+    fn storage_keys(
+        &self,
+        plugin: &PluginId,
+        prefix: Option<&str>,
+    ) -> Result<Vec<String>, CallError>;
     /// How many bytes the plugin's storage is holding.
     ///
     /// # ★ Why usage and not a `(used, allowed)` pair
@@ -232,7 +266,12 @@ pub trait Host: Send + Sync {
     ) -> Result<Option<String>, CallError>;
 
     /// Declare an action other plugins may call.
-    fn action_declare(&self, plugin: &PluginId, name: &str, schema_json: &str) -> Result<(), CallError>;
+    fn action_declare(
+        &self,
+        plugin: &PluginId,
+        name: &str,
+        schema_json: &str,
+    ) -> Result<(), CallError>;
     /// Every action this kernel knows about, as a JSON array.
     fn action_list(&self, plugin: &PluginId) -> Result<String, CallError>;
     /// Call another plugin's action.
@@ -314,7 +353,10 @@ impl PlatformAction {
     /// The action with this name, when it is one.
     #[must_use]
     pub fn parse(name: &str) -> Option<Self> {
-        Self::ALL.iter().copied().find(|action| action.as_str() == name)
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|action| action.as_str() == name)
     }
 }
 
@@ -380,15 +422,20 @@ impl<'a> HostCalls<'a> {
         budget: &'a Budget,
         audit: &'a mut Vec<AuditEntry>,
     ) -> Self {
-        Self { host, plugin, grants, budget, audit, side_effects: true, metrics: None }
+        Self {
+            host,
+            plugin,
+            grants,
+            budget,
+            audit,
+            side_effects: true,
+            metrics: None,
+        }
     }
 
     /// The same session, recording what it does.
     #[must_use]
-    pub const fn with_metrics(
-        mut self,
-        metrics: &'a synra_observe::metrics::RingRecorder,
-    ) -> Self {
+    pub const fn with_metrics(mut self, metrics: &'a synra_observe::metrics::RingRecorder) -> Self {
         self.metrics = Some(metrics);
         self
     }
@@ -502,12 +549,27 @@ impl<'a> HostCalls<'a> {
                 }
                 return Err(error);
             }
-            self.count("gate_checks_total", &[("result", AuditOutcome::Allowed.as_str())], 1);
-            if let Err(limited) = self.budget.consume(Self::rate_kind(import_name), 1, clock_ms()) {
+            self.count(
+                "gate_checks_total",
+                &[("result", AuditOutcome::Allowed.as_str())],
+                1,
+            );
+            if let Err(limited) = self
+                .budget
+                .consume(Self::rate_kind(import_name), 1, clock_ms())
+            {
                 let error = CallError::new(CallError::RATE_LIMITED, limited.to_string());
                 self.record(import_name, AuditOutcome::RateLimited, None);
-                self.count("gate_checks_total", &[("result", AuditOutcome::RateLimited.as_str())], 1);
-                self.count("gate_rate_limited_total", &[("plugin", self.plugin.as_str())], 1);
+                self.count(
+                    "gate_checks_total",
+                    &[("result", AuditOutcome::RateLimited.as_str())],
+                    1,
+                );
+                self.count(
+                    "gate_rate_limited_total",
+                    &[("plugin", self.plugin.as_str())],
+                    1,
+                );
                 return Err(error);
             }
         }
@@ -520,7 +582,23 @@ impl<'a> HostCalls<'a> {
             Err(error) if error.code == CallError::CAPABILITY_DENIED => AuditOutcome::Denied,
             Err(_) => AuditOutcome::Failed,
         };
-        self.record(import_name, outcome, Some(elapsed));
+        let routine_input = import_name == "synra:plugin/host#input-session"
+            && result.is_ok()
+            && serde_json::from_str::<serde_json::Value>(argument)
+                .ok()
+                .is_some_and(|request| {
+                    matches!(
+                        request.get("op").and_then(serde_json::Value::as_str),
+                        Some("frame" | "status")
+                    )
+                });
+        if routine_input {
+            // High-frequency input retains timing metrics and all permission gates,
+            // without writing a persistent audit row for every touch sample.
+            self.observe("host_call_ms", &[("import", import_name)], elapsed as f64);
+        } else {
+            self.record(import_name, outcome, Some(elapsed));
+        }
         result
     }
 
@@ -545,7 +623,9 @@ impl<'a> HostCalls<'a> {
     fn run(&self, import_name: &str, argument: &str) -> CallResult {
         // The capability a call is audited against, which is the one the gate names — the audit record is *about* the
         // permission, so it says which one.
-        let function = import_name.rsplit_once('#').map_or(import_name, |(_, name)| name);
+        let function = import_name
+            .rsplit_once('#')
+            .map_or(import_name, |(_, name)| name);
         let host = self.host;
         let plugin = &self.plugin;
 
@@ -554,7 +634,9 @@ impl<'a> HostCalls<'a> {
         if !self.side_effects && Self::ACTION_SHAPED.contains(&function) {
             return Err(CallError::new(
                 CallError::SIDE_EFFECT_NOT_ALLOWED,
-                format!("`{function}` cannot be called while matching: `share.can-handle` is a pure function"),
+                format!(
+                    "`{function}` cannot be called while matching: `share.can-handle` is a pure function"
+                ),
             ));
         }
 
@@ -572,7 +654,12 @@ impl<'a> HostCalls<'a> {
             "log" => {
                 let parsed: LogArguments = serde_json::from_str(argument)
                     .map_err(|error| CallError::new(CallError::BAD_ARGUMENT, error.to_string()))?;
-                host.log(plugin, &parsed.level, &parsed.message, parsed.context.as_deref())?;
+                host.log(
+                    plugin,
+                    &parsed.level,
+                    &parsed.message,
+                    parsed.context.as_deref(),
+                )?;
                 Ok(String::new())
             }
 
@@ -585,6 +672,7 @@ impl<'a> HostCalls<'a> {
             }
             // ── Devices ───────────────────────────────────────────────────────────────────────────────
             "device-list" => Ok(json_devices(&host.devices())),
+            "input-session" => host.input_session(plugin, argument),
             "device-send" => {
                 let parsed: SendArguments = serde_json::from_str(argument)
                     .map_err(|error| CallError::new(CallError::BAD_ARGUMENT, error.to_string()))?;
@@ -605,7 +693,10 @@ impl<'a> HostCalls<'a> {
                 Some(value) => Ok(value),
                 // ★ An absent key is an `err`, and the code says which kind: a plugin branching on `notFound` is doing
                 // something ordinary, and one branching on `hostFailed` is not.
-                None => Err(CallError::new("notFound", format!("no value under `{argument}`"))),
+                None => Err(CallError::new(
+                    "notFound",
+                    format!("no value under `{argument}`"),
+                )),
             },
             "storage-set" => {
                 let parsed: KeyValue = serde_json::from_str(argument)
@@ -623,9 +714,14 @@ impl<'a> HostCalls<'a> {
                 let replaced = host
                     .storage_get(plugin, &parsed.key)?
                     .map_or(0, |previous| previous.len() as u64);
-                let after = used.saturating_sub(replaced).saturating_add(parsed.value.len() as u64);
+                let after = used
+                    .saturating_sub(replaced)
+                    .saturating_add(parsed.value.len() as u64);
                 if let Err(refusal) = self.budget.check_storage(after) {
-                    return Err(CallError::new(CallError::QUOTA_EXCEEDED, refusal.to_string()));
+                    return Err(CallError::new(
+                        CallError::QUOTA_EXCEEDED,
+                        refusal.to_string(),
+                    ));
                 }
                 host.storage_set(plugin, &parsed.key, &parsed.value)?;
                 Ok(String::new())
@@ -635,7 +731,11 @@ impl<'a> HostCalls<'a> {
                 Ok(String::new())
             }
             "storage-keys" => {
-                let prefix = if argument.is_empty() { None } else { Some(argument) };
+                let prefix = if argument.is_empty() {
+                    None
+                } else {
+                    Some(argument)
+                };
                 Ok(json_array(&host.storage_keys(plugin, prefix)?))
             }
             "storage-quota" => {
@@ -649,7 +749,10 @@ impl<'a> HostCalls<'a> {
             // ── Secrets ───────────────────────────────────────────────────────────────────────────────
             "secret-get" => match host.secret_get(plugin, argument)? {
                 Some(value) => Ok(value),
-                None => Err(CallError::new("notFound", format!("no secret under `{argument}`"))),
+                None => Err(CallError::new(
+                    "notFound",
+                    format!("no secret under `{argument}`"),
+                )),
             },
             "secret-set" => {
                 let parsed: KeyValue = serde_json::from_str(argument)
@@ -714,7 +817,13 @@ impl<'a> HostCalls<'a> {
                 format!("`{other}` is declared but this host does not implement it"),
             )),
         }
-        .map(|answer| if answer.is_empty() { "null".to_owned() } else { answer })
+        .map(|answer| {
+            if answer.is_empty() {
+                "null".to_owned()
+            } else {
+                answer
+            }
+        })
     }
 
     /// Runs a platform action through the one host function they all share.
@@ -759,6 +868,7 @@ impl<'a> HostCalls<'a> {
         "event-emit",
         "device-send",
         "device-broadcast",
+        "input-session",
         "storage-set",
         "storage-delete",
         "secret-set",
@@ -806,60 +916,60 @@ impl<'a> HostCalls<'a> {
             .map_err(|error| CallError::new(CallError::CAPABILITY_DENIED, error.to_string()))
     }
 
-/// Adds one to a counter, when there is anywhere to add it to.
-///
-/// # Why the labels are sorted here rather than by the caller
-///
-/// Because `SeriesKey::new` sorts them, and a label list built in a different order at a different call site would be the
-/// same series either way — so this takes them as they read best at the call site and lets the key do the canonicalising.
-///
-/// # Why a missing recorder is not an error
-///
-/// Because a host that keeps no numbers is a host, not a broken one, and a call that failed because a *metric* could not be
-/// written would be a call refused for a reason the plugin cannot see or act on.
-/// Records one observation, on the same terms as [`count_metric`].
-///
-/// ★ **Why the call duration is a histogram and not a counter.** `elapsed_ms` was already in this file's hand — it goes
-/// into the audit entry — and a counter cannot answer the question it is for: "how slow is this plugin" is a question
-/// about a distribution, and no number of audit rows can be averaged by a person reading them.
-///
-/// Nothing in production called `histogram_observe` before this; only the recorder's own tests did. A histogram that no
-/// caller uses is a shape rather than a measurement, and the difference is one call at the place the number already is.
-fn observe_metric(
-    metrics: Option<&synra_observe::metrics::RingRecorder>,
-    name: &str,
-    labels: &[(&str, &str)],
-    value: f64,
-) {
-    let Some(recorder) = metrics else {
-        return;
-    };
-    let key = synra_observe::metrics::SeriesKey::new(
-        name,
-        labels
-            .iter()
-            .map(|(label, text)| ((*label).to_owned(), (*text).to_owned())),
-    );
-    recorder.histogram_observe(&key, value);
-}
+    /// Adds one to a counter, when there is anywhere to add it to.
+    ///
+    /// # Why the labels are sorted here rather than by the caller
+    ///
+    /// Because `SeriesKey::new` sorts them, and a label list built in a different order at a different call site would be the
+    /// same series either way — so this takes them as they read best at the call site and lets the key do the canonicalising.
+    ///
+    /// # Why a missing recorder is not an error
+    ///
+    /// Because a host that keeps no numbers is a host, not a broken one, and a call that failed because a *metric* could not be
+    /// written would be a call refused for a reason the plugin cannot see or act on.
+    /// Records one observation, on the same terms as [`count_metric`].
+    ///
+    /// ★ **Why the call duration is a histogram and not a counter.** `elapsed_ms` was already in this file's hand — it goes
+    /// into the audit entry — and a counter cannot answer the question it is for: "how slow is this plugin" is a question
+    /// about a distribution, and no number of audit rows can be averaged by a person reading them.
+    ///
+    /// Nothing in production called `histogram_observe` before this; only the recorder's own tests did. A histogram that no
+    /// caller uses is a shape rather than a measurement, and the difference is one call at the place the number already is.
+    fn observe_metric(
+        metrics: Option<&synra_observe::metrics::RingRecorder>,
+        name: &str,
+        labels: &[(&str, &str)],
+        value: f64,
+    ) {
+        let Some(recorder) = metrics else {
+            return;
+        };
+        let key = synra_observe::metrics::SeriesKey::new(
+            name,
+            labels
+                .iter()
+                .map(|(label, text)| ((*label).to_owned(), (*text).to_owned())),
+        );
+        recorder.histogram_observe(&key, value);
+    }
 
-fn count_metric(
-    metrics: Option<&synra_observe::metrics::RingRecorder>,
-    name: &str,
-    labels: &[(&str, &str)],
-    value: u64,
-) {
-    let Some(recorder) = metrics else {
-        return;
-    };
-    let key = synra_observe::metrics::SeriesKey::new(
-        name,
-        labels
-            .iter()
-            .map(|(label, text)| ((*label).to_owned(), (*text).to_owned())),
-    );
-    recorder.counter_add(&key, value);
-}
+    fn count_metric(
+        metrics: Option<&synra_observe::metrics::RingRecorder>,
+        name: &str,
+        labels: &[(&str, &str)],
+        value: u64,
+    ) {
+        let Some(recorder) = metrics else {
+            return;
+        };
+        let key = synra_observe::metrics::SeriesKey::new(
+            name,
+            labels
+                .iter()
+                .map(|(label, text)| ((*label).to_owned(), (*text).to_owned())),
+        );
+        recorder.counter_add(&key, value);
+    }
 
     /// Adds to a counter on the session's recorder, when there is one.
     fn count(&self, name: &str, labels: &[(&str, &str)], value: u64) {
@@ -871,7 +981,7 @@ fn count_metric(
         Self::observe_metric(self.metrics, name, labels, value);
     }
 
-/// Writes one audit record.
+    /// Writes one audit record.
     fn record(&mut self, import_name: &str, outcome: AuditOutcome, elapsed_ms: Option<u64>) {
         // ★ Recorded before anything can return: a call that is refused still took as long as it took, and a
         // distribution built only from the calls that succeeded would answer "how slow is this plugin" with the times
@@ -883,7 +993,8 @@ fn count_metric(
         // the plugin does not hold. The gate table is generated from the contract and every string in it is a
         // capability, so a parse failure here means the table and the capability crate disagree — which is a build
         // failure rather than a runtime one, and the record is skipped rather than invented.
-        let Some(capability) = host_surface::gate(import_name).and_then(|gate| gate.capability()) else {
+        let Some(capability) = host_surface::gate(import_name).and_then(|gate| gate.capability())
+        else {
             return;
         };
         let Ok(parsed) = Capability::parse(capability) else {

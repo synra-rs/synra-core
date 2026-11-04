@@ -54,6 +54,11 @@ impl Stub {
 }
 
 impl Host for Stub {
+    fn input_session(&self, _plugin: &PluginId, request: &str) -> Result<String, CallError> {
+        self.record("input-session", request);
+        Ok("{}".to_owned())
+    }
+
     fn sdk_version(&self) -> String {
         "1.0.0".to_owned()
     }

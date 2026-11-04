@@ -1,4 +1,4 @@
-use crate::parse::gate::read_gate;
+use crate::parse::gate::{read_gate, read_receiver_capability};
 use crate::parse::signature::{read_signature, split_function};
 use crate::parse::{Direction, Function, Gate, Interface, ParseError};
 
@@ -216,10 +216,11 @@ impl Contract {
                     annotated_functions.push(name.clone());
                 }
                 let gate = annotated.unwrap_or(Gate::Ungated);
+                let receiver_capability = read_receiver_capability(&pending, line)?;
                 pending.clear();
 
                 let (params, returns) = read_signature(signature);
-                interface.functions.push(Function { name, gate, params, returns, line });
+                interface.functions.push(Function { name, gate, receiver_capability, params, returns, line });
                 continue;
             }
 

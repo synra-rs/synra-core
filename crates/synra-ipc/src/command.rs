@@ -213,6 +213,9 @@ commands! {
     "devices_pairing_respond" => Devices, Host, One, true;
     "devices_pairing_cancel" => Devices, Host, One, true;
     "devices_pairing_snapshot" => Devices, Host, One, true;
+    "devices_input_snapshot" => Devices, Host, One, false;
+    "devices_input_respond" => Devices, Host, Unit, true;
+    "devices_input_stop" => Devices, Host, Unit, true;
 
 
     // ── intent ──
@@ -505,6 +508,9 @@ mod tests {
             "devices_pairing_respond",
             "devices_pairing_cancel",
             "devices_pairing_snapshot",
+            "devices_input_snapshot",
+            "devices_input_respond",
+            "devices_input_stop",
             // pairing
             // intent
             "intent_dispatch",
@@ -859,7 +865,7 @@ mod tests {
     #[test]
     fn a_domain_can_be_listed() {
         let devices = CommandRegistry::in_domain(Domain::Devices);
-        assert_eq!(devices.len(), 8);
+        assert_eq!(devices.len(), 11);
         for command in devices {
             assert_eq!(command.domain, Domain::Devices);
             assert!(command.name.starts_with("devices_"));

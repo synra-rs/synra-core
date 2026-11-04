@@ -9,6 +9,17 @@ use super::{Host, HostError};
 
 // The rest of `impl Host`, whose other parts are in `kernel` and `connections`.
 impl Host {
+    /// Attach the shared pointer receiver; it is never created by an incoming connection.
+    pub fn set_input_receiver(&mut self, receiver: std::sync::Arc<crate::input::Receiver>) {
+        self.input = Some(receiver);
+    }
+
+    /// The pointer receiver, cloned before performing IO outside the host lock.
+    #[must_use]
+    pub fn input_receiver(&self) -> Option<std::sync::Arc<crate::input::Receiver>> {
+        self.input.clone()
+    }
+
     /// Resolves what a user typed to a device this kernel can reach.
     ///
     /// # The three ways it can fail, and why they are separate

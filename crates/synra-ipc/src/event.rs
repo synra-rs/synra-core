@@ -86,6 +86,8 @@ pub enum KernelEvent {
     // ── Pairing ──
     /// Progress of the shared restricted first-pairing task, never an authorization grant.
     PairingUpdated(Box<crate::PairingSnapshot>),
+    /// An incoming pointer request or active session changed; only host UI can decide or stop it.
+    InputUpdated(Box<crate::InputSnapshot>),
 
     // ── Intent ──
     /// An intent's state changed, including its candidates becoming available.
@@ -187,6 +189,7 @@ impl KernelEvent {
             Self::DeviceRemoved { .. } => "deviceRemoved",
             Self::ScanUpdated(_) => "scanUpdated",
             Self::PairingUpdated(_) => "pairingUpdated",
+            Self::InputUpdated(_) => "inputUpdated",
             Self::IntentUpdated(_) => "intentUpdated",
             Self::IntentFinished { .. } => "intentFinished",
             Self::ConfigUpdated(_) => "configUpdated",

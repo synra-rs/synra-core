@@ -19,7 +19,7 @@ impl Contract {
         table
     }
 
-    /// Every capability the table mentions, sorted and deduplicated.
+    /// Every import and receiver capability the contract mentions, sorted and deduplicated.
     ///
     /// The list a manifest's `capabilities` block is validated against, and the list the permission dialog shows.
     #[must_use]
@@ -29,6 +29,9 @@ impl Contract {
             .values()
             .filter_map(|gate| gate.capability().map(str::to_owned))
             .collect();
+        if let Some(host) = self.host() {
+            capabilities.extend(host.functions.iter().filter_map(|function| function.receiver_capability.clone()));
+        }
         capabilities.sort();
         capabilities.dedup();
         capabilities

@@ -38,8 +38,9 @@
 
 mod config;
 mod devices;
-mod pairing;
+mod input;
 mod intent;
+mod pairing;
 mod plugin;
 mod transfer;
 
@@ -48,10 +49,11 @@ pub use config::{
     ProbeResultDto,
 };
 pub use devices::{DeviceCard, DevicesSnapshot, IdentitySnapshot, ScanOptions, ScanState};
-pub use pairing::{PairingAsk, PairingOffer, PairingOutcome, PairingPhase, PairingSnapshot};
+pub use input::{InputPhase, InputSession, InputSnapshot};
 pub use intent::{
     IntentCandidate, IntentDecisionDto, IntentPrompt, IntentRetry, IntentSnapshot, IntentSourceDto,
 };
+pub use pairing::{PairingAsk, PairingOffer, PairingOutcome, PairingPhase, PairingSnapshot};
 pub use plugin::{
     AuditEntryDto, CatalogItem, CatalogQuery, CatalogSort, InstallPreviewDto, InstallReport,
     InstallSourceDto, PluginHealthDto, PluginSnapshot, PublisherDto, RemoveOptionsDto,

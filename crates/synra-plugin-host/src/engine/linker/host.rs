@@ -75,6 +75,7 @@ impl host::Host for StoreData {
         platform_reveal_path => "platform-reveal-path",
         platform_simulate_keys => "platform-simulate-keys",
         platform_write_clipboard => "platform-write-clipboard",
+        input_session => "input-session",
     }
 
     outcome_pair! {

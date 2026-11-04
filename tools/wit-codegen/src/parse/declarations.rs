@@ -7,6 +7,8 @@ pub struct Function {
     pub name: String,
     /// What the host checks before calling it.
     pub gate: Gate,
+    /// Additional permission checked by the remote receiver, independently of the importing controller.
+    pub receiver_capability: Option<String>,
     /// The parameters, as `(name, WIT type)` pairs, in declaration order.
     ///
     /// Kept as WIT text rather than mapped here, because the mapping belongs to whatever is being *generated*: a Rust

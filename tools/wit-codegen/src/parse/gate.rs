@@ -54,3 +54,30 @@ pub(super) fn read_gate(annotations: &[String]) -> Option<Gate> {
     }
     None
 }
+
+/// Receiver authority is declared in WIT too, but never substitutes for an import gate.
+pub(super) fn read_receiver_capability(
+    annotations: &[String],
+    line: usize,
+) -> Result<Option<String>, crate::parse::ParseError> {
+    let mut receiver = None;
+    for annotation in annotations
+        .iter()
+        .filter(|value| value.starts_with("@receiver-capability"))
+    {
+        let capability = annotation
+            .strip_prefix("@receiver-capability(\"")
+            .and_then(|value| value.strip_suffix("\")"))
+            .filter(|value| !value.is_empty() && !value.chars().any(char::is_whitespace));
+        match (capability, &receiver) {
+            (Some(capability), None) => receiver = Some(capability.to_owned()),
+            _ => {
+                return Err(crate::parse::ParseError::Syntax {
+                    line,
+                    reason: "one nonempty quoted receiver capability is required".to_owned(),
+                });
+            }
+        }
+    }
+    Ok(receiver)
+}

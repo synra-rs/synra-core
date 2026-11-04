@@ -1,5 +1,21 @@
 use crate::parse::{Contract, Gate, ParseError};
 
+#[test]
+fn receiver_authority_is_declared_without_weakening_the_import_gate() {
+    let text = SMALL.replace("@capability(\"log:*\")", "@capability(\"log:*\")\n    /// @receiver-capability(\"platform:control-pointer\")");
+    let contract = Contract::parse(&text).unwrap();
+    assert_eq!(contract.capabilities(), ["log:*", "platform:control-pointer"]);
+    assert_eq!(contract.capability_table().get("synra:plugin/host#log"), Some(&Gate::Capability("log:*".to_owned())));
+}
+
+#[test]
+fn malformed_or_duplicate_receiver_authority_is_refused() {
+    for annotation in ["@receiver-capability(\"\")", "@receiver-capability(pointer)", "@receiver-capability(\"one\")\n    /// @receiver-capability(\"two\")"] {
+        let text = SMALL.replace("@capability(\"log:*\")", &format!("@capability(\"log:*\")\n    /// {annotation}"));
+        assert!(Contract::parse(&text).is_err());
+    }
+}
+
 /// A miniature contract, for the parser's own tests.
 const SMALL: &str = r#"
 package synra:plugin@1.0.0;

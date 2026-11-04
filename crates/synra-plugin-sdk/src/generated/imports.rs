@@ -30,6 +30,8 @@ pub const EVENT_EMIT_IMPORT: &str = "synra:plugin/host#event-emit";
 pub const DEVICE_LIST_IMPORT: &str = "synra:plugin/host#device-list";
 /// The import name for `device-send`.
 pub const DEVICE_SEND_IMPORT: &str = "synra:plugin/host#device-send";
+/// The import name for `input-session`.
+pub const INPUT_SESSION_IMPORT: &str = "synra:plugin/host#input-session";
 /// The import name for `device-broadcast`.
 pub const DEVICE_BROADCAST_IMPORT: &str = "synra:plugin/host#device-broadcast";
 /// The import name for `storage-get`.

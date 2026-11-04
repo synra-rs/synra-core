@@ -28,6 +28,8 @@ pub trait Host {
     fn device_list() -> Vec<DeviceTarget>;
     /// `device-send`. Requires `device:send:*`. The contract documents it.
     fn device_send(target: String, event: String, payload: String) -> Outcome;
+    /// `input-session`. Requires `device:input`. The contract documents it.
+    fn input_session(request: String) -> Outcome;
     /// `device-broadcast`. Requires `device:broadcast`. The contract documents it.
     fn device_broadcast(event: String, payload: String) -> Outcome;
     /// `storage-get`. Requires `storage:local:read`. The contract documents it.

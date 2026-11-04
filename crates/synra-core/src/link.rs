@@ -363,12 +363,6 @@ impl PeerLink {
         self.peer
     }
 
-    /// Retains this authenticated link's original identities and authorization for deferred work.
-    ///
-    /// Recheck the returned context against each request immediately before execution admission.
-    /// It does not retain the socket or extend an IO timeout, request deadline or input-session lease.
-    /// # Errors
-
     /// What both ends agreed on.
     #[must_use]
     pub const fn agreed(&self) -> &synra_protocol::handshake::Agreed {
