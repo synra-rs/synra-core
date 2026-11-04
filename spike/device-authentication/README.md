@@ -1,5 +1,8 @@
 # Device authentication spike — 2026-10-26
 
+> Historical experiment. Current device communication uses plain TCP; the production authentication module
+> described below was removed from the MVP. See the [current implementation](https://github.com/synra-rs/design-docs/blob/main/CURRENT-STATE.md).
+
 This detached crate tests the transport choice required by
 [ADR-017](../../../design-docs/20-adr.md) and [roadmap D1](../../../design-docs/19-roadmap.md).
 It is not linked into either host and does not make the existing TCP transport authenticated.
@@ -65,12 +68,12 @@ The lockfile fixes the spike's dependency graph independently of the production 
 
 ## What this does not prove
 
-**Production follow-up (2026-10-26):** the workspace now contains
-[`synra-net::authentication`](../../crates/synra-net/src/authentication/mod.rs), with device-named credentials,
+**Historical production follow-up (2026-10-26):** the workspace then contained
+`synra-net::authentication`, with device-named credentials,
 exact certificate pins, a bounded approved-peer list and a total handshake deadline. Its Windows tests and Android
 compile/link evidence are recorded [separately](../../../design-docs/history/2026-10-26-device-authentication.md).
-The limitations below describe this isolated experiment; host integration, protected storage, initial verification
-and revocation still remain incomplete in the product.
+The limitations below describe this isolated experiment and the product state at that date;
+they are not the current implementation roadmap.
 
 The desktop result supports continuing with standard mutual TLS; it does not complete D1. Android compilation and linking
 do not prove runtime randomness, filesystem access or socket behavior on a phone, and no Android execution was performed.
