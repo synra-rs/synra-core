@@ -420,6 +420,18 @@ pub const MIGRATIONS: &[Migration] = &[
             "ALTER TABLE plugin_update_checks ADD COLUMN retry_at_ms INTEGER",
         ],
     },
+    Migration {
+        version: 17,
+        name: "forget-auto-paired",
+        statements: &[
+            // ★ One-time repair, and deliberately destructive. A development build answered a pairing request with
+            // `accepted: true` without showing either person the six digits. Those rows are indistinguishable from a
+            // real pairing after the fact, and leaving them behind makes the devices screen show a pair that nobody
+            // agreed to. The app has not shipped, so forgetting every pairing once is the honest reset; remove this
+            // migration before the first release rather than carrying it forever.
+            "DELETE FROM paired_devices",
+        ],
+    },
 ];
 
 /// The schema version this build expects.
