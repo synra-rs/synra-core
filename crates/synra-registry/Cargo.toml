@@ -11,7 +11,7 @@ authors.workspace = true
 [dependencies]
 # The manifest a packument carries inline is the contract's own type, so a panel can show what it parsed without a second
 # parser — and so "is this package installable" is answered by the same type the installer reads.
-synra-plugin-api = { path = "../synra-plugin-api" }
+synra-plugin-api = { path = "../synra-plugin-api", version = "0.1.0" }
 
 serde.workspace = true
 serde_json.workspace = true

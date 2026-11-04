@@ -9,10 +9,10 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
-synra-protocol = { path = "../synra-protocol" }
-synra-capability = { path = "../synra-capability" }
-synra-plugin-api = { path = "../synra-plugin-api" }
-synra-observe = { path = "../synra-observe" }
+synra-protocol = { path = "../synra-protocol", version = "0.1.0" }
+synra-capability = { path = "../synra-capability", version = "0.1.0" }
+synra-plugin-api = { path = "../synra-plugin-api", version = "0.1.0" }
+synra-observe = { path = "../synra-observe", version = "0.1.0" }
 
 http = "=1.5.0"
 serde.workspace = true
@@ -67,7 +67,7 @@ wit-parser = "0.247"
 proptest.workspace = true
 rstest.workspace = true
 # The verify pipeline's tests sign a package, which needs a key and the same base64 a signature document carries.
-synra-store = { path = "../synra-store" }
+synra-store = { path = "../synra-store", version = "0.1.0" }
 ed25519-dalek.workspace = true
 base64.workspace = true
 # ★ The text-to-binary assembler, for the tests only.
@@ -83,7 +83,7 @@ wat = "1"
 [build-dependencies]
 # The generator, as a library. The table is regenerated before every build, so a contract change that is not
 # reflected in it cannot produce a binary — see `build.rs`.
-wit-codegen = { path = "../../tools/wit-codegen" }
+wit-codegen = { path = "../../tools/wit-codegen", version = "0.1.0" }
 
 # The build script is where the table is regenerated, and its only way to fail is a panic — see `build.rs`.
 [lints]

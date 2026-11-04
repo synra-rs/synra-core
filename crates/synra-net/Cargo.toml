@@ -9,8 +9,8 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
-synra-protocol = { path = "../synra-protocol" }
-synra-observe = { path = "../synra-observe" }
+synra-protocol = { path = "../synra-protocol", version = "0.1.0" }
+synra-observe = { path = "../synra-observe", version = "0.1.0" }
 
 serde.workspace = true
 serde_json.workspace = true

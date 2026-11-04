@@ -10,20 +10,20 @@ authors.workspace = true
 
 [dependencies]
 if-addrs.workspace = true
-synra-protocol = { path = "../synra-protocol" }
-synra-capability = { path = "../synra-capability" }
-synra-plugin-api = { path = "../synra-plugin-api" }
+synra-protocol = { path = "../synra-protocol", version = "0.1.0" }
+synra-capability = { path = "../synra-capability", version = "0.1.0" }
+synra-plugin-api = { path = "../synra-plugin-api", version = "0.1.0" }
 # The installer unpacks a plugin's UI bundle, and `synra-plugin-ui` is the crate that owns unpacking (design 06). No cycle:
 # it depends on protocol/api/capability only.
-synra-plugin-ui = { path = "../synra-plugin-ui" }
+synra-plugin-ui = { path = "../synra-plugin-ui", version = "0.1.0" }
 # A published `.tgz` is opened by the same extractor the registry client uses: the traversal and size rules are the
 # security argument, and a second copy here would be a second place for one of them to be forgotten.
-synra-registry = { path = "../synra-registry" }
-synra-plugin-host = { path = "../synra-plugin-host" }
-synra-net = { path = "../synra-net" }
-synra-store = { path = "../synra-store" }
-synra-platform = { path = "../synra-platform" }
-synra-observe = { path = "../synra-observe" }
+synra-registry = { path = "../synra-registry", version = "0.1.0" }
+synra-plugin-host = { path = "../synra-plugin-host", version = "0.1.0" }
+synra-net = { path = "../synra-net", version = "0.1.0" }
+synra-store = { path = "../synra-store", version = "0.1.0" }
+synra-platform = { path = "../synra-platform", version = "0.1.0" }
+synra-observe = { path = "../synra-observe", version = "0.1.0" }
 
 serde.workspace = true
 serde_json.workspace = true

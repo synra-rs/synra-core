@@ -13,7 +13,7 @@ authors.workspace = true
 # the machine happened to have would behave differently on machines with different versions, and `foreign_keys` — the
 # pragma that makes the schema's `ON DELETE CASCADE` mean anything — is exactly the sort of thing a version can change.
 rusqlite = { version = "0.40", features = ["bundled"] }
-synra-protocol = { path = "../synra-protocol" }
+synra-protocol = { path = "../synra-protocol", version = "0.1.0" }
 
 serde.workspace = true
 serde_json.workspace = true

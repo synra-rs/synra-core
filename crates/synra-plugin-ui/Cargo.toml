@@ -9,9 +9,9 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
-synra-protocol = { path = "../synra-protocol" }
-synra-capability = { path = "../synra-capability" }
-synra-plugin-api = { path = "../synra-plugin-api" }
+synra-protocol = { path = "../synra-protocol", version = "0.1.0" }
+synra-capability = { path = "../synra-capability", version = "0.1.0" }
+synra-plugin-api = { path = "../synra-plugin-api", version = "0.1.0" }
 
 serde.workspace = true
 serde_json.workspace = true

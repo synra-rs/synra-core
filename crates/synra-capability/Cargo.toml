@@ -9,7 +9,7 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
-synra-protocol = { path = "../synra-protocol" }
+synra-protocol = { path = "../synra-protocol", version = "0.1.0" }
 
 serde.workspace = true
 compact_str.workspace = true

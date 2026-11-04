@@ -9,7 +9,7 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
-synra-store = { path = "../synra-store" }
+synra-store = { path = "../synra-store", version = "0.1.0" }
 
 serde.workspace = true
 serde_json.workspace = true
