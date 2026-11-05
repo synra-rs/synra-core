@@ -53,7 +53,7 @@ pub(super) fn dial_stream(
 
     write_frame(stream, &hello_frame(&hello)?)?;
     if synra_observe::wire::is_installed() {
-        synra_observe::wire::emit(synra_observe::wire::WireEvent::sent(
+        synra_observe::wire::emit(&synra_observe::wire::WireEvent::sent(
             "pending".to_owned(),
             "hello",
             0,
@@ -65,7 +65,7 @@ pub(super) fn dial_stream(
     expect(&frame, FrameKind::HelloAck, "HelloAck")?;
     let ack: HelloAck = json_payload(&frame, "HelloAck")?;
     if synra_observe::wire::is_installed() {
-        synra_observe::wire::emit(synra_observe::wire::WireEvent::received(
+        synra_observe::wire::emit(&synra_observe::wire::WireEvent::received(
             ack.device_id.to_string(),
             "hello ack",
             0,
@@ -179,7 +179,7 @@ pub(super) fn accept_on(
     expect(&frame, FrameKind::Hello, "Hello")?;
     let hello: Hello = json_payload(&frame, "Hello")?;
     if synra_observe::wire::is_installed() {
-        synra_observe::wire::emit(synra_observe::wire::WireEvent::received(
+        synra_observe::wire::emit(&synra_observe::wire::WireEvent::received(
             hello.device_id.to_string(),
             "hello",
             0,
@@ -197,7 +197,7 @@ pub(super) fn accept_on(
     let ack = ours.hello_ack(hello.nonce, sequence);
     write_frame(stream, &hello_ack_frame(&ack)?)?;
     if synra_observe::wire::is_installed() {
-        synra_observe::wire::emit(synra_observe::wire::WireEvent::sent(
+        synra_observe::wire::emit(&synra_observe::wire::WireEvent::sent(
             hello.device_id.to_string(),
             "hello ack",
             0,

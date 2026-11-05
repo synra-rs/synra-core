@@ -134,20 +134,20 @@ pub fn is_installed() -> bool {
 ///
 /// The lock is released before the callback runs. A sink that called back into [`emit`] would otherwise deadlock on a
 /// read lock it already holds, and a debug feature that can hang the transport is worse than no debug feature.
-pub fn emit(event: WireEvent) {
+pub fn emit(event: &WireEvent) {
     let sink = {
         let guard = slot().read().unwrap_or_else(|poisoned| poisoned.into_inner());
         guard.as_ref().map(Arc::clone)
     };
     if let Some(sink) = sink {
-        sink(&event);
+        sink(event);
     }
 }
 
 /// A note, for a caller that does not want to build the struct.
 pub fn note(peer: impl Into<String>, label: impl Into<String>) {
     if is_installed() {
-        emit(WireEvent::note(peer, label));
+        emit(&WireEvent::note(peer, label));
     }
 }
 

@@ -332,7 +332,7 @@ impl PeerLink {
     /// work is `DeviceId::to_string` — and with a daemon (which never installs a sink) that is every frame.
     fn trace_sent(&self, label: &str, bytes: usize) {
         if synra_observe::wire::is_installed() {
-            synra_observe::wire::emit(synra_observe::wire::WireEvent::sent(
+            synra_observe::wire::emit(&synra_observe::wire::WireEvent::sent(
                 self.peer.to_string(),
                 label,
                 bytes,
@@ -343,7 +343,7 @@ impl PeerLink {
     /// Reports a received frame; see [`PeerLink::trace_sent`] for why the guard lives here.
     fn trace_received(&self, label: &str, bytes: usize) {
         if synra_observe::wire::is_installed() {
-            synra_observe::wire::emit(synra_observe::wire::WireEvent::received(
+            synra_observe::wire::emit(&synra_observe::wire::WireEvent::received(
                 self.peer.to_string(),
                 label,
                 bytes,
@@ -505,7 +505,7 @@ impl PeerLink {
         self.sent = self.sent.saturating_add(1);
         self.count_bytes("bytes_sent_total", data.len());
         if synra_observe::wire::is_installed() {
-            synra_observe::wire::emit(synra_observe::wire::WireEvent::sent(
+            synra_observe::wire::emit(&synra_observe::wire::WireEvent::sent(
                 self.peer.to_string(),
                 format!("chunk #{chunk_id}"),
                 data.len(),
@@ -555,7 +555,7 @@ impl PeerLink {
                     self.received = self.received.saturating_add(1);
                     self.count_bytes("bytes_received_total", chunk.data.len());
                     if synra_observe::wire::is_installed() {
-                        synra_observe::wire::emit(synra_observe::wire::WireEvent::received(
+                        synra_observe::wire::emit(&synra_observe::wire::WireEvent::received(
                             self.peer.to_string(),
                             format!("chunk #{}", chunk.chunk_id),
                             chunk.data.len(),
