@@ -163,7 +163,7 @@ pub enum Inbound {
 ///
 /// # Why the methods return this crate's error rather than `std::io::Error`
 ///
-/// Because a promise about another crate's error type is a promise about its version — `api-guard` exists to refuse exactly
+/// Because a promise about another crate's error type is a promise about its version — `synra-error-guard` exists to refuse exactly
 /// that, and it is right to: a consumer matching on `std::io::ErrorKind` from a `synra-core` signature has tied its build to
 /// whatever `std` does next. Converting at the boundary costs one `map_err` per implementation and keeps the promise where
 /// it belongs.

@@ -7,7 +7,7 @@ use std::path::Path;
 use std::process::{Command, Output};
 
 fn invoke(path: &Path, check_first: bool, check_last: bool) -> Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_wit-codegen"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_synra-wit-codegen"));
     if check_first {
         command.arg("--check");
     }

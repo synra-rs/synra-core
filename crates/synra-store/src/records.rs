@@ -710,7 +710,7 @@ fn parse_features(text: &str) -> Result<Vec<String>, RowError> {
     })
 }
 
-/// A pinned copy of the row types' column lists, for `api-guard` and for a test.
+/// A pinned copy of the row types' column lists, for `synra-error-guard` and for a test.
 ///
 /// # Why this exists
 ///

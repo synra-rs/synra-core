@@ -19,13 +19,13 @@ members = [
   "crates/synra-store",
   "crates/synra-protocol",
   "apps/synra-cli",
-  "tools/api-guard",
+  "tools/synra-error-guard",
     "tools/doc-claims",
     "tools/doc-links",
   "tools/guards",
   "tools/matrix",
   "tools/synra-plugin-cli",
-  "tools/wit-codegen",
+  "tools/synra-wit-codegen",
   "apps/synra-daemon",
 ]
 

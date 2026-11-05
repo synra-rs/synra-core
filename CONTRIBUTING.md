@@ -30,7 +30,7 @@ CLI 通过本机控制通道访问运行中的 daemon；daemon 与 CLI 使用同
 cargo test --locked -p synra-core --lib
 cargo clippy --locked -p synra-core --lib --no-deps -- -D warnings
 cargo run --locked -p guards -- .
-cargo run --locked -p api-guard -- .
+cargo run --locked -p synra-error-guard -- .
 cargo run --locked -p doc-links -- .
 cargo run --locked -p doc-claims -- . .
 ```

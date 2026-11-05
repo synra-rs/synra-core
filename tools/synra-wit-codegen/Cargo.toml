@@ -1,6 +1,6 @@
 [package]
-name = "api-guard"
-description = "Checks public error boundaries across the unpublished workspace"
+name = "synra-wit-codegen"
+description = "Reads wit/synra-plugin.wit and derives the capability table the kernel enforces"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,11 +10,9 @@ authors.workspace = true
 
 [dependencies]
 thiserror.workspace = true
-syn = { version = "2", features = ["full", "visit"] }
-proc-macro2 = { version = "1", features = ["span-locations"] }
 
 [dev-dependencies]
-serde_json.workspace = true
+tempfile = "3"
 
 [lints]
 workspace = true

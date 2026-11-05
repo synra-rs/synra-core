@@ -83,7 +83,7 @@ wat = "1"
 [build-dependencies]
 # The generator, as a library. The table is regenerated before every build, so a contract change that is not
 # reflected in it cannot produce a binary — see `build.rs`.
-wit-codegen = { path = "../../tools/wit-codegen", version = "0.1.0" }
+synra-wit-codegen = { path = "../../tools/synra-wit-codegen", version = "0.1.0" }
 
 # The build script is where the table is regenerated, and its only way to fail is a panic — see `build.rs`.
 [lints]

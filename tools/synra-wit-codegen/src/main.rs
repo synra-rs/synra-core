@@ -10,14 +10,14 @@ fn main() -> ExitCode {
         if argument == "--check" {
             check = true;
         } else if argument.starts_with('-') || path.is_some() {
-            eprintln!("usage: wit-codegen [--check] [contract.wit]");
+            eprintln!("usage: synra-wit-codegen [--check] [contract.wit]");
             return ExitCode::FAILURE;
         } else {
             path = Some(PathBuf::from(argument));
         }
     }
     let path = path.unwrap_or_else(|| PathBuf::from("wit/synra-plugin.wit"));
-    match wit_codegen::generate::synchronize(&path, check) {
+    match synra_wit_codegen::generate::synchronize(&path, check) {
         Ok(paths) => {
             for path in paths {
                 println!(
@@ -29,7 +29,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(error) => {
-            eprintln!("wit-codegen: {error}");
+            eprintln!("synra-wit-codegen: {error}");
             ExitCode::FAILURE
         }
     }

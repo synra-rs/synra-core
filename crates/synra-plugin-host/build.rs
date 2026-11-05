@@ -45,8 +45,8 @@ fn main() {
     };
 
     // The generator is called as a library rather than as a program, because a build dependency on a binary's output
-    // path is a path that depends on the profile. This crate is published, so it depends on `wit-codegen` by version.
-    let contract = match wit_codegen::Contract::parse(&text) {
+    // path is a path that depends on the profile. This crate is published, so it depends on `synra-wit-codegen` by version.
+    let contract = match synra_wit_codegen::Contract::parse(&text) {
         Ok(contract) => contract,
         Err(error) => {
             // ★ A contract change that leaves a host function ungated fails the build, which is the point: the
@@ -55,7 +55,7 @@ fn main() {
         }
     };
 
-    let rendered = match wit_codegen::emit_rust(&contract) {
+    let rendered = match synra_wit_codegen::emit_rust(&contract) {
         Ok(rendered) => rendered,
         Err(error) => panic!("the capability table could not be rendered: {error}"),
     };
@@ -77,13 +77,13 @@ fn main() {
 
     // And the readable report, so a reviewer reads prose rather than a Rust constant.
     let report: PathBuf = Path::new(&manifest_dir).join("../../wit/GENERATED.md");
-    let _ = std::fs::write(report, wit_codegen::emit_text(&contract));
+    let _ = std::fs::write(report, synra_wit_codegen::emit_text(&contract));
 
     // The trait the host implements, from the same contract and for the same reason as the table: a function the
     // contract gained is a method this crate does not implement, which is a compile error rather than a call that traps
     // at the component boundary.
     let trait_path = Path::new(&manifest_dir).join("src/generated/host_trait.rs");
-    match wit_codegen::emit_host_trait(&contract) {
+    match synra_wit_codegen::emit_host_trait(&contract) {
         Ok(rendered) => write_if_changed(&trait_path, &rendered),
         // A type the generator does not know: refused rather than mapped to something that compiles and is wrong at
         // the boundary.

@@ -103,16 +103,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
-name = "api-guard"
-version = "0.1.0"
-dependencies = [
- "proc-macro2",
- "serde_json",
- "syn 2.0.119",
- "thiserror",
-]
-
-[[package]]
 name = "arbitrary"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2361,6 +2351,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "synra-error-guard"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "serde_json",
+ "syn 2.0.119",
+ "thiserror",
+]
+
+[[package]]
 name = "synra-fetch"
 version = "0.1.0"
 dependencies = [
@@ -2505,10 +2505,10 @@ dependencies = [
  "synra-protocol",
  "synra-store",
  "synra-testkit",
+ "synra-wit-codegen",
  "thiserror",
  "wasmtime",
  "wat",
- "wit-codegen",
  "wit-component",
  "wit-parser 0.247.0",
 ]
@@ -2517,8 +2517,8 @@ dependencies = [
 name = "synra-plugin-sdk"
 version = "0.1.0"
 dependencies = [
+ "synra-wit-codegen",
  "wit-bindgen",
- "wit-codegen",
 ]
 
 [[package]]
@@ -2613,6 +2613,14 @@ name = "synra-testkit-alloc"
 version = "0.1.0"
 dependencies = [
  "proptest",
+]
+
+[[package]]
+name = "synra-wit-codegen"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "thiserror",
 ]
 
 [[package]]
@@ -3841,14 +3849,6 @@ dependencies = [
  "syn 2.0.119",
  "wit-bindgen-core",
  "wit-bindgen-rust",
-]
-
-[[package]]
-name = "wit-codegen"
-version = "0.1.0"
-dependencies = [
- "tempfile",
- "thiserror",
 ]
 
 [[package]]

@@ -46,9 +46,9 @@ development; publish = false is packaging configuration, not an API freeze.
 - API and protocol changes compile real callers, including the sibling app and JS consumers where
   applicable, and cover real Wasm, database or transport boundaries.
 
-## What api-guard checks
+## What synra-error-guard checks
 
-Run cargo run --locked -p api-guard -- . from this workspace.
+Run cargo run --locked -p synra-error-guard -- . from this workspace.
 
 The guard parses shared domain declarations and public signatures for unclassified dependency
 errors, reports unreadable or invalid sources, and reads the whole declared library catalogue.

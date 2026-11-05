@@ -1,9 +1,9 @@
-//! `api-guard` — checks the crates that make a promise against the rules that promise is made of.
+//! `synra-error-guard` — checks the crates that make a promise against the rules that promise is made of.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use api_guard::{CRATES, Source, check};
+use synra_error_guard::{CRATES, Source, check};
 
 fn main() -> ExitCode {
     let root = std::env::args()
@@ -18,7 +18,7 @@ fn main() -> ExitCode {
         let files = match rust_files(&directory) {
             Ok(files) => files,
             Err(error) => {
-                eprintln!("api-guard: {name}: {error}");
+                eprintln!("synra-error-guard: {name}: {error}");
                 return ExitCode::FAILURE;
             }
         };
@@ -26,7 +26,7 @@ fn main() -> ExitCode {
             let source = match Source::read(&file) {
                 Ok(source) => source,
                 Err(error) => {
-                    eprintln!("api-guard: {error}");
+                    eprintln!("synra-error-guard: {error}");
                     return ExitCode::FAILURE;
                 }
             };
@@ -40,11 +40,11 @@ fn main() -> ExitCode {
     }
 
     if violations.is_empty() {
-        println!("api-guard: {checked} file(s) checked, no violations");
+        println!("synra-error-guard: {checked} file(s) checked, no violations");
         return ExitCode::SUCCESS;
     }
     eprintln!(
-        "api-guard: {} violation(s) in {checked} file(s). STABILITY.md defines the unpublished workspace boundaries.",
+        "synra-error-guard: {} violation(s) in {checked} file(s). STABILITY.md defines the unpublished workspace boundaries.",
         violations.len()
     );
     ExitCode::FAILURE

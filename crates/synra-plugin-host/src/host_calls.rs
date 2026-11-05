@@ -12,7 +12,7 @@
 //! # The one rule
 //!
 //! [`call`] refuses anything the generated import table does not list. Not "refuses anything gated and unheld" —
-//! *anything not listed*, including a function name nothing has ever heard of. The table is produced by `wit-codegen`
+//! *anything not listed*, including a function name nothing has ever heard of. The table is produced by `synra-wit-codegen`
 //! from the WIT file, so a function added to the contract without a gate is a build failure, and a function a plugin
 //! asks for that is not in the contract is refused by the host rather than by a linker.
 //!

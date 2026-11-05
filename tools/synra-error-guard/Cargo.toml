@@ -1,6 +1,6 @@
 [package]
-name = "wit-codegen"
-description = "Reads wit/synra-plugin.wit and derives the capability table the kernel enforces"
+name = "synra-error-guard"
+description = "Checks public error boundaries across the unpublished workspace"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,9 +10,11 @@ authors.workspace = true
 
 [dependencies]
 thiserror.workspace = true
+syn = { version = "2", features = ["full", "visit"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }
 
 [dev-dependencies]
-tempfile = "3"
+serde_json.workspace = true
 
 [lints]
 workspace = true

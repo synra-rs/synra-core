@@ -65,7 +65,7 @@ jobs:
 
       - name: Check generated WIT artifacts
         working-directory: synra-rust-core
-        run: cargo run --locked -q -p wit-codegen -- --check
+        run: cargo run --locked -q -p synra-wit-codegen -- --check
 
       - name: Clippy
         working-directory: synra-rust-core
