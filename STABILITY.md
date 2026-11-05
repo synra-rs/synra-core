@@ -1,39 +1,41 @@
 # Development contracts
 
-Current publication status: **Published at 0.1.0**.
+Current publication status: **Unpublished**.
 
-The libraries are on crates.io at 0.1.0. The hosts under apps/ and the tools under tools/ remain
-unpublished. The wire formats, WIT and IPC contracts now have external consumers and follow the
-0.1.0 line: a breaking change to any published crate needs a minor bump on the 0.x line, and every
-affected crate is republished in dependency order.
-
-The 0.1.0 line carries no compatibility promise beyond the crate versions themselves. A public Rust
-item does not by itself establish one; only the recorded consumers and the versions below do.
+The application has never been released. The hosts under apps/ remain unpublished and may be
+refactored directly. The libraries below carry crate versions on crates.io; see the release
+section for what those versions do and do not promise.
 
 ## Library boundaries
 
-These roles describe diagnostic responsibilities, not stability tiers. Every published library is at
-0.1.0; `synra-testkit`, `synra-testkit-alloc` and `synra-fetch` stay private to development.
+These roles describe diagnostic responsibilities, not stability tiers. Every library is unpublished
+in the sense that no compatibility promise is recorded for it.
 
 | Boundary | Libraries | Publication | Required checks |
 | --- | --- | --- | --- |
-| Domain | `synra-protocol`, `synra-capability`, `synra-plugin-api`, `synra-net`, `synra-store`, `synra-core`, `synra-plugin-host` | 0.1.0 | Public domain errors are classified at the Synra boundary; API guard, compiler and actual callers |
-| Adapter | `synra-observe`, `synra-platform`, `synra-plugin-ui`, `synra-ipc`, `synra-control`, `synra-plugin-sdk`, `synra-registry` | 0.1.0 | Host integration, typed contracts, compiler and actual callers |
-| Build | `synra-wit-codegen` | 0.1.0 | Generated contract mirrors are checked against their owning source |
-| Private | `synra-testkit`, `synra-testkit-alloc`, `synra-fetch` | publish = false | Test support and internal fetch stay out of the release |
+| Domain | `synra-protocol`, `synra-capability`, `synra-plugin-api`, `synra-net`, `synra-store`, `synra-core`, `synra-plugin-host` | Unpublished | Public domain errors are classified at the Synra boundary; API guard, compiler and actual callers |
+| Adapter | `synra-observe`, `synra-platform`, `synra-plugin-ui`, `synra-ipc`, `synra-control`, `synra-plugin-sdk`, `synra-testkit`, `synra-testkit-alloc`, `synra-fetch`, `synra-registry` | Unpublished | Host integration, typed contracts, compiler and actual callers |
 
-Hosts under apps/ and tools under tools/ are unpublished, except `synra-wit-codegen`: the host's build
-script depends on it, so it ships as a build dependency. Test support remains private to development;
-publish = false is packaging configuration, not an API freeze.
+Hosts under apps/ and tools under tools/ are also unpublished. Test support remains private to
+development; publish = false is packaging configuration, not an API freeze.
 
-## Published versions
+## Released crate versions
 
-Every crate below is on crates.io at 0.1.0. Publishing order is dependency order: a crate never
-precedes the crates it depends on.
+Fifteen crates are on crates.io at 0.1.0. Publishing order is dependency order: no crate precedes a
+crate it depends on.
 
 `synra-protocol`, `synra-wit-codegen`, `synra-store`, `synra-capability`, `synra-observe`, `synra-net`,
 `synra-plugin-api`, `synra-registry`, `synra-plugin-ui`, `synra-plugin-host`, `synra-plugin-sdk`,
 `synra-platform`, `synra-control`, `synra-ipc`, `synra-core`.
+
+A version on crates.io is immutable, so a published crate is never rewritten. It does not establish
+a compatibility promise: changes still update every actual caller, mirror and test together. Release
+a new version, with a minor bump on the 0.x line for a breaking change, and republish the dependants
+in dependency order.
+
+`synra-wit-codegen` sits under tools/ but is released because the host's build script depends on it;
+a build dependency must resolve from the registry. Three libraries stay out of the release:
+`synra-testkit`, `synra-testkit-alloc` and `synra-fetch` are private to development.
 
 A crate that reads the plugin contract carries its own copy of `wit/synra-plugin.wit`, because
 `cargo package` ships only files inside the crate directory. The copies mirror the workspace source;
