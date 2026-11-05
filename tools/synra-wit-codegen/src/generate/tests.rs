@@ -2,7 +2,7 @@
 
 use super::*;
 
-const SOURCE: &str = include_str!("../../../../wit/synra-plugin.wit");
+const SOURCE: &str = include_str!("../../wit/synra-plugin.wit");
 
 fn source(dir: &Path) -> PathBuf {
     let file = dir.join("wit/synra-plugin.wit");

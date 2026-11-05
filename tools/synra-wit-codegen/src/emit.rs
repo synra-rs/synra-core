@@ -153,7 +153,7 @@ mod tests {
     use super::*;
 
     /// The real contract, so the tests assert against what the repository ships.
-    const REAL: &str = include_str!("../../../wit/synra-plugin.wit");
+    const REAL: &str = include_str!("../wit/synra-plugin.wit");
 
     fn contract() -> Contract {
         Contract::parse(REAL).expect("the repository's contract parses")

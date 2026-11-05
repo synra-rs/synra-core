@@ -259,7 +259,7 @@ fn doc_for(function: &Function) -> String {
 mod tests {
     use super::*;
 
-    const REAL: &str = include_str!("../../../wit/synra-plugin.wit");
+    const REAL: &str = include_str!("../wit/synra-plugin.wit");
 
     fn contract() -> Contract {
         Contract::parse(REAL).expect("the repository's contract parses")

@@ -23,7 +23,7 @@ fn the_cli_checks_all_outputs_with_the_option_before_or_after_the_source() {
     let dir = tempfile::tempdir().unwrap();
     let contract = dir.path().join("wit/synra-plugin.wit");
     std::fs::create_dir_all(contract.parent().unwrap()).unwrap();
-    std::fs::write(&contract, include_str!("../../../wit/synra-plugin.wit")).unwrap();
+    std::fs::write(&contract, include_str!("../wit/synra-plugin.wit")).unwrap();
     let generated = invoke(&contract, false, false);
     assert!(
         generated.status.success(),

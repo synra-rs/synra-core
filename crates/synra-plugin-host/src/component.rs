@@ -55,7 +55,7 @@ pub struct ComponentInfo {
     pub imports: Vec<String>,
 }
 
-const CONTRACT: &str = include_str!("../../../wit/synra-plugin.wit");
+const CONTRACT: &str = include_str!("../wit/synra-plugin.wit");
 
 /// Validate binary encoding, allowed imports, all required exports and types against the real WIT world.
 /// This does not instantiate the component, execute constructors or compile native guest code.

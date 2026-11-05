@@ -86,7 +86,7 @@ fn importing_component(import: &str) -> Vec<u8> {
     let source = if foreign {
         "package wasi:filesystem@0.2.0; interface types { touch: func(); } world plugin { import types; }".to_owned()
     } else {
-        include_str!("../../../wit/synra-plugin.wit").replace("env-sdk-version", function)
+        include_str!("../wit/synra-plugin.wit").replace("env-sdk-version", function)
     };
     let mut resolve = wit_parser::Resolve::default();
     let package = resolve.push_str("fixture.wit", &source).unwrap();
