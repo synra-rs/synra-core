@@ -50,7 +50,7 @@ pub use generated::host::Host;
 
 pub use generated::{CAPABILITIES, EXPORTED_INTERFACES, HOST_FUNCTIONS, HOST_INTERFACE, PACKAGE, PACKAGE_VERSION};
 
-use synra_capability::CapabilitySet;
+use synra_capability::{CapabilitySet, Domain};
 
 /// What the host checks before a function runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,6 +187,19 @@ pub fn is_declared_capability(capability: &str) -> bool {
     let Ok(candidate) = synra_capability::Capability::parse(capability) else {
         return false;
     };
+    // Event subscriptions are manifest policy rather than Wasm imports. The receiver's `handles`
+    // declaration selects which events enter the runtime, while this grant is checked by the event
+    // worker at delivery time. Keeping it here lets the consent and verification paths recognise
+    // the same capability even though no guest calls an `event-subscribe` host function.
+    if candidate.domain() == Domain::Event
+        && candidate
+            .prefixes()
+            .first()
+            .is_some_and(|prefix| prefix.as_str() == "subscribe")
+        && candidate.qualifier().len() == 1
+    {
+        return true;
+    }
     CAPABILITIES
         .iter()
         .filter_map(|family| synra_capability::Capability::parse(family).ok())
@@ -413,6 +426,9 @@ mod tests {
         assert!(is_declared_capability("log:info"));
         assert!(is_declared_capability("action:declare:debug"));
         assert!(is_declared_capability("network:fetch:example.com"));
+        assert!(is_declared_capability(
+            "event:subscribe:_plugin.@acme/chat.*"
+        ));
         assert!(!is_declared_capability("action:unknown:debug"));
         assert!(!is_declared_capability("storag:local:read"));
         assert!(!is_declared_capability("log"));
