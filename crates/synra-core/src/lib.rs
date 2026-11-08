@@ -52,6 +52,7 @@
 
 pub mod admission;
 pub mod bus;
+pub mod build_info;
 pub mod config;
 pub mod consent;
 pub mod discovery;
@@ -106,6 +107,7 @@ pub use bus::{
     Delivery, EventBus, Judgement, SUBSCRIBER_QUEUE_CAPACITY, SequenceTracker, SubscriberId,
     SubscriberReport,
 };
+pub use build_info::BuildInfo;
 pub use config::{Catalog, Config, ConfigError, ConfigSnapshot, Setting, SettingKey, SettingKind};
 pub use discovery::{
     Absorbed, CANDIDATE_TTL, Candidate, DiscoveryTable, UNUSABLE_NAME, announced_address,

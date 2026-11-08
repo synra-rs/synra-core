@@ -1,6 +1,7 @@
 [package]
 name = "synra-core"
 description = "The kernel: domain model, aggregates, state machines and orchestration"
+build = "build.rs"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -40,6 +41,9 @@ sha2.workspace = true
 # Cross-process exclusion for identity secret writers without holding SQLite across backend IO.
 fs2 = "=0.4.3"
 base64.workspace = true
+
+[build-dependencies]
+time.workspace = true
 
 [dev-dependencies]
 # Encode intent result fixtures against the production WIT contract.

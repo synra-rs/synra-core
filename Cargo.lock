@@ -2310,6 +2310,7 @@ dependencies = [
  "synra-testkit-alloc",
  "tempfile",
  "thiserror",
+ "time",
  "wat",
  "wit-component",
  "wit-parser 0.247.0",
