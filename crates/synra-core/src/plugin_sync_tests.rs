@@ -31,7 +31,12 @@ fn theirs(version: &str, digest: &str) -> RemoteState {
 
 #[test]
 fn a_device_without_the_plugin_gets_it() {
-    let action = decide("1.0.0", "sha256-a", &RemoteState::absent(plugin("@acme/chat")), ConflictPolicy::NeverDowngrade);
+    let action = decide(
+        "1.0.0",
+        "sha256-a",
+        &RemoteState::absent(plugin("@acme/chat")),
+        ConflictPolicy::NeverDowngrade,
+    );
     assert!(action.is_push());
     assert_eq!(action.as_str(), "push");
     match action {
@@ -44,7 +49,12 @@ fn a_device_without_the_plugin_gets_it() {
 fn a_device_with_the_exact_bytes_is_skipped() {
     // ★ The digest and not the version: two devices may hold the same version string with different bytes — a rebuilt
     // artifact, a hand-edited bundle — and comparing versions alone would call that synced.
-    let action = decide("1.0.0", "sha256-a", &theirs("1.0.0", "sha256-a"), ConflictPolicy::SourceWins);
+    let action = decide(
+        "1.0.0",
+        "sha256-a",
+        &theirs("1.0.0", "sha256-a"),
+        ConflictPolicy::SourceWins,
+    );
     match action {
         SyncAction::Skip { why } => assert!(why.contains("exact bytes"), "{why}"),
         other => panic!("{other:?}"),
@@ -54,7 +64,12 @@ fn a_device_with_the_exact_bytes_is_skipped() {
 #[test]
 fn the_same_version_with_different_bytes_is_pushed() {
     // The case the digest comparison exists for.
-    let action = decide("1.0.0", "sha256-a", &theirs("1.0.0", "sha256-b"), ConflictPolicy::SourceWins);
+    let action = decide(
+        "1.0.0",
+        "sha256-a",
+        &theirs("1.0.0", "sha256-b"),
+        ConflictPolicy::SourceWins,
+    );
     assert!(action.is_push());
 }
 
@@ -62,7 +77,12 @@ fn the_same_version_with_different_bytes_is_pushed() {
 fn never_downgrade_refuses_to_send_an_older_version() {
     // ★ The rule the default exists for: an automatic downgrade can put a device back on a version with a known
     // vulnerability, and "my software was remotely rolled back" is a thing users are right to refuse.
-    let action = decide("1.9.0", "sha256-old", &theirs("1.10.0", "sha256-new"), ConflictPolicy::NeverDowngrade);
+    let action = decide(
+        "1.9.0",
+        "sha256-old",
+        &theirs("1.10.0", "sha256-new"),
+        ConflictPolicy::NeverDowngrade,
+    );
     match action {
         SyncAction::Skip { why } => {
             assert!(why.contains("1.10.0") && why.contains("older"), "{why}");
@@ -74,8 +94,12 @@ fn never_downgrade_refuses_to_send_an_older_version() {
 #[test]
 fn never_downgrade_sends_a_newer_or_equal_version() {
     for (ours, theirs_version) in [("1.10.0", "1.9.0"), ("1.0.0", "1.0.0")] {
-        let action =
-            decide(ours, "sha256-x", &theirs(theirs_version, "sha256-y"), ConflictPolicy::NeverDowngrade);
+        let action = decide(
+            ours,
+            "sha256-x",
+            &theirs(theirs_version, "sha256-y"),
+            ConflictPolicy::NeverDowngrade,
+        );
         assert!(action.is_push(), "{ours} vs {theirs_version}: {action:?}");
     }
 }
@@ -83,7 +107,12 @@ fn never_downgrade_sends_a_newer_or_equal_version() {
 #[test]
 fn source_wins_sends_whatever_this_device_has() {
     // Available because a user *can* mean it — a device being brought in line deliberately — and never the default.
-    let action = decide("1.9.0", "sha256-old", &theirs("1.10.0", "sha256-new"), ConflictPolicy::SourceWins);
+    let action = decide(
+        "1.9.0",
+        "sha256-old",
+        &theirs("1.10.0", "sha256-new"),
+        ConflictPolicy::SourceWins,
+    );
     assert!(action.is_push());
     match action {
         SyncAction::Push { why } => assert!(why.contains("by policy"), "{why}"),
@@ -93,10 +122,31 @@ fn source_wins_sends_whatever_this_device_has() {
 
 #[test]
 fn keep_newest_sends_only_a_newer_version() {
-    assert!(decide("1.10.0", "a", &theirs("1.9.0", "b"), ConflictPolicy::KeepNewest).is_push());
-    assert!(!decide("1.9.0", "a", &theirs("1.10.0", "b"), ConflictPolicy::KeepNewest).is_push());
+    assert!(
+        decide(
+            "1.10.0",
+            "a",
+            &theirs("1.9.0", "b"),
+            ConflictPolicy::KeepNewest
+        )
+        .is_push()
+    );
+    assert!(
+        !decide(
+            "1.9.0",
+            "a",
+            &theirs("1.10.0", "b"),
+            ConflictPolicy::KeepNewest
+        )
+        .is_push()
+    );
     // Equal versions with different bytes: nothing is newer, so nothing moves.
-    let action = decide("1.0.0", "a", &theirs("1.0.0", "b"), ConflictPolicy::KeepNewest);
+    let action = decide(
+        "1.0.0",
+        "a",
+        &theirs("1.0.0", "b"),
+        ConflictPolicy::KeepNewest,
+    );
     match action {
         SyncAction::Skip { why } => assert!(why.contains("at least as new"), "{why}"),
         other => panic!("{other:?}"),
@@ -105,7 +155,12 @@ fn keep_newest_sends_only_a_newer_version() {
 
 #[test]
 fn independent_does_nothing() {
-    let action = decide("9.9.9", "a", &theirs("1.0.0", "b"), ConflictPolicy::Independent);
+    let action = decide(
+        "9.9.9",
+        "a",
+        &theirs("1.0.0", "b"),
+        ConflictPolicy::Independent,
+    );
     match action {
         SyncAction::Skip { why } => assert!(why.contains("independent"), "{why}"),
         other => panic!("{other:?}"),
@@ -116,7 +171,10 @@ fn independent_does_nothing() {
 fn ask_carries_both_versions_so_the_user_can_decide() {
     let action = decide("1.9.0", "a", &theirs("1.10.0", "b"), ConflictPolicy::Ask);
     match action {
-        SyncAction::Ask { ours, theirs: Some(theirs_version) } => {
+        SyncAction::Ask {
+            ours,
+            theirs: Some(theirs_version),
+        } => {
             assert_eq!(ours, "1.9.0");
             assert_eq!(theirs_version, "1.10.0");
         }
@@ -127,10 +185,22 @@ fn ask_carries_both_versions_so_the_user_can_decide() {
 #[test]
 fn the_version_comparison_does_not_get_ten_wrong() {
     // The mistake that ships an old version to everybody: `1.10.0` sorts before `1.9.0` as text.
-    assert_eq!(compare_versions("1.10.0", "1.9.0"), core::cmp::Ordering::Greater);
-    assert_eq!(compare_versions("2.0.0", "10.0.0"), core::cmp::Ordering::Less);
-    assert_eq!(compare_versions("1.0.0", "1.0.0"), core::cmp::Ordering::Equal);
-    assert_eq!(compare_versions("1.0.0", "1.0.0-rc.1"), core::cmp::Ordering::Greater);
+    assert_eq!(
+        compare_versions("1.10.0", "1.9.0"),
+        core::cmp::Ordering::Greater
+    );
+    assert_eq!(
+        compare_versions("2.0.0", "10.0.0"),
+        core::cmp::Ordering::Less
+    );
+    assert_eq!(
+        compare_versions("1.0.0", "1.0.0"),
+        core::cmp::Ordering::Equal
+    );
+    assert_eq!(
+        compare_versions("1.0.0", "1.0.0-rc.1"),
+        core::cmp::Ordering::Greater
+    );
 }
 
 #[test]
@@ -217,7 +287,10 @@ fn chunks_are_counted_once_and_a_resend_is_not_an_error() {
     // acknowledgement look like corruption.
     let mut opened = opened();
     assert!(opened.absorb(&session("round-1"), 0).expect("a chunk"));
-    assert!(!opened.absorb(&session("round-1"), 0).expect("a duplicate"), "the second is not new");
+    assert!(
+        !opened.absorb(&session("round-1"), 0).expect("a duplicate"),
+        "the second is not new"
+    );
     assert_eq!(opened.received(), 1);
     assert_eq!(opened.duplicates(), 1);
 
@@ -276,7 +349,10 @@ fn a_tampered_package_is_refused_by_the_digest_the_receiver_computes() {
         other => panic!("expected a digest refusal, got {other:?}"),
     }
     // And the same bytes as declared are accepted, so the check is not one that refuses everything.
-    assert_eq!(opened.conclude("sha256-declared", "sha256-declared"), Ok(()));
+    assert_eq!(
+        opened.conclude("sha256-declared", "sha256-declared"),
+        Ok(())
+    );
 }
 
 #[test]
@@ -306,14 +382,24 @@ fn an_outcome_records_every_duty_the_device_owed_itself() {
     assert!(outcome.installed);
     assert!(outcome.activated);
     assert_eq!(outcome.performed.len(), ReceiverDuty::ALL.len());
-    assert!(outcome.describe().contains("enabled"), "{}", outcome.describe());
+    assert!(
+        outcome.describe().contains("enabled"),
+        "{}",
+        outcome.describe()
+    );
 
     // And an outcome that installed without checking is a bug the type can report. The `performed` argument here is empty
     // because it is overwritten by the struct update below — a placeholder that says so, rather than a list that pretends
     // to be the work.
     let unchecked = SyncOutcome {
         performed: vec![ReceiverDuty::PackageDigest],
-        ..SyncOutcome::installed(plugin("@acme/chat"), session("round-1"), "1.0.0", true, Vec::new())
+        ..SyncOutcome::installed(
+            plugin("@acme/chat"),
+            session("round-1"),
+            "1.0.0",
+            true,
+            Vec::new(),
+        )
     };
     assert!(!unchecked.is_fully_checked());
     // The original is untouched, which is what makes the two assertions about the same value.
@@ -322,12 +408,23 @@ fn an_outcome_records_every_duty_the_device_owed_itself() {
 
 #[test]
 fn a_refusal_is_not_fully_checked_because_nothing_was_installed() {
-    let outcome = SyncOutcome::refused(plugin("@acme/chat"), session("round-1"), "the signature did not verify");
+    let outcome = SyncOutcome::refused(
+        plugin("@acme/chat"),
+        session("round-1"),
+        "the signature did not verify",
+    );
     assert!(!outcome.installed);
     assert!(!outcome.activated);
     assert!(outcome.installed_version.is_none());
-    assert!(outcome.is_fully_checked(), "nothing was installed, so nothing was owed");
-    assert!(outcome.describe().contains("signature"), "{}", outcome.describe());
+    assert!(
+        outcome.is_fully_checked(),
+        "nothing was installed, so nothing was owed"
+    );
+    assert!(
+        outcome.describe().contains("signature"),
+        "{}",
+        outcome.describe()
+    );
 }
 
 #[test]
@@ -358,8 +455,17 @@ fn the_table_says_what_each_device_has() {
     table.record(phone, RemoteState::absent(plugin("@acme/chat")));
 
     assert_eq!(table.len(), 2);
-    assert_eq!(table.state_of(&plugin("@acme/chat"), laptop).and_then(|state| state.version.as_deref()), Some("1.0.0"));
-    assert!(table.state_of(&plugin("@acme/chat"), phone).is_some_and(|state| !state.has_it()));
+    assert_eq!(
+        table
+            .state_of(&plugin("@acme/chat"), laptop)
+            .and_then(|state| state.version.as_deref()),
+        Some("1.0.0")
+    );
+    assert!(
+        table
+            .state_of(&plugin("@acme/chat"), phone)
+            .is_some_and(|state| !state.has_it())
+    );
     assert_eq!(table.for_plugin(&plugin("@acme/chat")).len(), 2);
     assert!(table.for_plugin(&plugin("@other/thing")).is_empty());
 }
@@ -373,7 +479,12 @@ fn recording_a_device_twice_replaces_what_was_known() {
     table.record(laptop, theirs("1.1.0", "b"));
 
     assert_eq!(table.len(), 1);
-    assert_eq!(table.state_of(&plugin("@acme/chat"), laptop).and_then(|state| state.version.as_deref()), Some("1.1.0"));
+    assert_eq!(
+        table
+            .state_of(&plugin("@acme/chat"), laptop)
+            .and_then(|state| state.version.as_deref()),
+        Some("1.1.0")
+    );
 }
 
 #[test]
@@ -382,17 +493,26 @@ fn a_record_says_what_happened_and_why() {
     let pushed = SyncRecord::new(
         plugin("@acme/chat"),
         peer,
-        SyncAction::Push { why: "the other device does not have this plugin".to_owned() },
+        SyncAction::Push {
+            why: "the other device does not have this plugin".to_owned(),
+        },
         1_000,
     );
     assert!(pushed.describe().contains("push"), "{}", pushed.describe());
-    assert!(pushed.describe().contains("does not have"), "{}", pushed.describe());
+    assert!(
+        pushed.describe().contains("does not have"),
+        "{}",
+        pushed.describe()
+    );
     assert_eq!(pushed.started_at_ms, 1_000);
 
     let asked = SyncRecord::new(
         plugin("@acme/chat"),
         peer,
-        SyncAction::Ask { ours: "1.0.0".to_owned(), theirs: None },
+        SyncAction::Ask {
+            ours: "1.0.0".to_owned(),
+            theirs: None,
+        },
         1_000,
     );
     assert!(asked.describe().contains("ask"), "{}", asked.describe());
@@ -402,11 +522,20 @@ fn a_record_says_what_happened_and_why() {
 #[test]
 fn every_refusal_explains_itself() {
     let refusals = [
-        SyncError::WrongSession { theirs: "round-2".to_owned(), ours: "round-1".to_owned() },
+        SyncError::WrongSession {
+            theirs: "round-2".to_owned(),
+            ours: "round-1".to_owned(),
+        },
         SyncError::ChunkOutOfRange { index: 9, total: 4 },
         SyncError::NoChunks,
-        SyncError::DigestMismatch { declared: "sha256-a".to_owned(), found: "sha256-b".to_owned() },
-        SyncError::Incomplete { missing: 2, indexes: vec![1, 3] },
+        SyncError::DigestMismatch {
+            declared: "sha256-a".to_owned(),
+            found: "sha256-b".to_owned(),
+        },
+        SyncError::Incomplete {
+            missing: 2,
+            indexes: vec![1, 3],
+        },
     ];
     for refusal in &refusals {
         let sentence = refusal.to_string();
@@ -475,9 +604,15 @@ fn an_incomplete_session_cannot_be_digest_verified() {
 fn a_receiver_with_no_room_for_the_package_is_refused() {
     let complete = completed();
     let mut check = ReceiverCheck::new();
-    check.verify_digest(&complete, "sha256-declared").expect("the digest matches");
-    check.verify_signature(true, "").expect("the signature verifies");
-    check.check_manifest(true, "").expect("the manifest is usable");
+    check
+        .verify_digest(&complete, "sha256-declared")
+        .expect("the digest matches");
+    check
+        .verify_signature(true, "")
+        .expect("the signature verifies");
+    check
+        .check_manifest(true, "")
+        .expect("the manifest is usable");
 
     // A figure no volume has, so the refusal is about the comparison rather than about this machine.
     match check.check_room(&std::env::temp_dir(), u64::MAX) {
@@ -488,10 +623,16 @@ fn a_receiver_with_no_room_for_the_package_is_refused() {
         other => panic!("expected a room refusal, got {other:?}"),
     }
     // And the step that did not happen is not recorded.
-    assert!(!check.performed().contains(&ReceiverDuty::ArchiveLimits), "{:?}", check.performed());
+    assert!(
+        !check.performed().contains(&ReceiverDuty::ArchiveLimits),
+        "{:?}",
+        check.performed()
+    );
 
     // The same check with a byte passes, so the gate is about the comparison and not about refusing everything.
-    check.check_room(&std::env::temp_dir(), 1).expect("one byte fits");
+    check
+        .check_room(&std::env::temp_dir(), 1)
+        .expect("one byte fits");
 }
 
 #[test]
@@ -500,16 +641,36 @@ fn a_receiver_that_walks_every_step_reports_exactly_what_it_did() {
     // seven obligations only because each one was actually taken.
     let complete = completed();
     let mut check = ReceiverCheck::new();
-    check.verify_digest(&complete, "sha256-declared").expect("the digest matches");
-    check.verify_signature(true, "").expect("the signature verifies");
-    check.check_manifest(true, "").expect("the manifest is usable");
-    check.check_archive(true, "").expect("the archive limits hold");
-    check.check_room(&std::env::temp_dir(), 1).expect("one byte fits");
-    check.check_session_complete(&complete).expect("the session is complete");
-    check.decide_activation(true).expect("this device enables it");
-    check.keep_local_grants(true).expect("the grants stay this device's");
+    check
+        .verify_digest(&complete, "sha256-declared")
+        .expect("the digest matches");
+    check
+        .verify_signature(true, "")
+        .expect("the signature verifies");
+    check
+        .check_manifest(true, "")
+        .expect("the manifest is usable");
+    check
+        .check_archive(true, "")
+        .expect("the archive limits hold");
+    check
+        .check_room(&std::env::temp_dir(), 1)
+        .expect("one byte fits");
+    check
+        .check_session_complete(&complete)
+        .expect("the session is complete");
+    check
+        .decide_activation(true)
+        .expect("this device enables it");
+    check
+        .keep_local_grants(true)
+        .expect("the grants stay this device's");
 
-    assert_eq!(check.performed(), ReceiverDuty::ALL, "every duty, in the order the type declares");
+    assert_eq!(
+        check.performed(),
+        ReceiverDuty::ALL,
+        "every duty, in the order the type declares"
+    );
     assert!(check.activated());
 
     let outcome = check.finish(plugin("@acme/chat"), session("round-1"), "1.0.0");
@@ -524,13 +685,27 @@ fn a_receiver_that_would_replace_the_grants_is_refused() {
     // sender's grants were applied" is a refusal rather than a successful install nobody looked at.
     let complete = completed();
     let mut check = ReceiverCheck::new();
-    check.verify_digest(&complete, "sha256-declared").expect("the digest matches");
-    check.verify_signature(true, "").expect("the signature verifies");
-    check.check_manifest(true, "").expect("the manifest is usable");
-    check.check_archive(true, "").expect("the archive limits hold");
-    check.check_room(&std::env::temp_dir(), 1).expect("one byte fits");
-    check.check_session_complete(&complete).expect("the session is complete");
-    check.decide_activation(true).expect("this device enables it");
+    check
+        .verify_digest(&complete, "sha256-declared")
+        .expect("the digest matches");
+    check
+        .verify_signature(true, "")
+        .expect("the signature verifies");
+    check
+        .check_manifest(true, "")
+        .expect("the manifest is usable");
+    check
+        .check_archive(true, "")
+        .expect("the archive limits hold");
+    check
+        .check_room(&std::env::temp_dir(), 1)
+        .expect("one byte fits");
+    check
+        .check_session_complete(&complete)
+        .expect("the session is complete");
+    check
+        .decide_activation(true)
+        .expect("this device enables it");
 
     match check.keep_local_grants(false) {
         Err(SyncError::StepRefused { step, why }) => {
@@ -541,7 +716,6 @@ fn a_receiver_that_would_replace_the_grants_is_refused() {
     }
     assert!(!check.performed().contains(&ReceiverDuty::LocalGrants));
 }
-
 
 // ── ⑨：发起端把结局写进它对本机的认识 ────────────────────────────────────────────────────────
 
@@ -563,9 +737,16 @@ fn a_successful_round_updates_what_the_other_device_has() {
     let mut table = SyncTable::new();
     let laptop = DeviceId::new();
 
-    table.apply_result(laptop, &plugin("@acme/chat"), &a_result(true, Some("1.2.0"), true), "sha256-pushed");
+    table.apply_result(
+        laptop,
+        &plugin("@acme/chat"),
+        &a_result(true, Some("1.2.0"), true),
+        "sha256-pushed",
+    );
 
-    let state = table.state_of(&plugin("@acme/chat"), laptop).expect("recorded");
+    let state = table
+        .state_of(&plugin("@acme/chat"), laptop)
+        .expect("recorded");
     assert_eq!(state.version.as_deref(), Some("1.2.0"));
     // ★ 摘要来自发起端自己算的那个，而不是回复 —— 回复里根本没有摘要。
     assert_eq!(state.digest.as_deref(), Some("sha256-pushed"));
@@ -582,21 +763,36 @@ fn a_failed_round_does_not_move_what_the_other_device_has() {
     let id = plugin("@acme/chat");
     table.record(
         laptop,
-        RemoteState { plugin_id: id.clone(), version: Some("1.0.0".to_owned()), digest: Some("old".to_owned()), active: true },
+        RemoteState {
+            plugin_id: id.clone(),
+            version: Some("1.0.0".to_owned()),
+            digest: Some("old".to_owned()),
+            active: true,
+        },
     );
 
     table.apply_result(laptop, &id, &a_result(false, None, false), "sha256-pushed");
 
     let state = table.state_of(&id, laptop).expect("still recorded");
-    assert_eq!(state.version.as_deref(), Some("1.0.0"), "a failure moved the table");
+    assert_eq!(
+        state.version.as_deref(),
+        Some("1.0.0"),
+        "a failure moved the table"
+    );
     assert_eq!(state.digest.as_deref(), Some("old"));
     assert!(state.active);
 
     // 以及一个自称成功却没有版本的回复：自相矛盾，不更新好过记一个半真半假的状态。
     table.apply_result(laptop, &id, &a_result(true, None, true), "sha256-pushed");
-    assert_eq!(table.state_of(&id, laptop).expect("recorded").version.as_deref(), Some("1.0.0"));
+    assert_eq!(
+        table
+            .state_of(&id, laptop)
+            .expect("recorded")
+            .version
+            .as_deref(),
+        Some("1.0.0")
+    );
 }
-
 
 // ── §5.5：一次同步留下了什么 ────────────────────────────────────────────────────────────────────
 
@@ -607,7 +803,10 @@ fn a_record_starts_empty_and_ends_with_a_verdict() {
     let started = SyncRecord::new(
         plugin("@acme/chat"),
         DeviceId::new(),
-        SyncAction::Ask { ours: String::new(), theirs: None },
+        SyncAction::Ask {
+            ours: String::new(),
+            theirs: None,
+        },
         1_000,
     );
 
@@ -642,10 +841,19 @@ fn a_second_verdict_is_refused_because_it_would_replace_the_first() {
     let done = SyncRecord::new(
         plugin("@acme/chat"),
         DeviceId::new(),
-        SyncAction::Ask { ours: String::new(), theirs: None },
+        SyncAction::Ask {
+            ours: String::new(),
+            theirs: None,
+        },
         1_000,
     )
-    .finished(SyncVerdict::Failed { error: "the signature did not verify".to_owned() }, 0, 2_000)
+    .finished(
+        SyncVerdict::Failed {
+            error: "the signature did not verify".to_owned(),
+        },
+        0,
+        2_000,
+    )
     .expect("the first verdict is accepted");
 
     match done.clone().finished(SyncVerdict::Succeeded, 10, 3_000) {
@@ -658,7 +866,9 @@ fn a_second_verdict_is_refused_because_it_would_replace_the_first() {
     // 而原记录没有被改动：它仍然说失败。
     assert_eq!(
         done.verdict,
-        Some(SyncVerdict::Failed { error: "the signature did not verify".to_owned() })
+        Some(SyncVerdict::Failed {
+            error: "the signature did not verify".to_owned()
+        })
     );
 }
 
@@ -669,16 +879,28 @@ fn a_skipped_round_is_not_a_failed_one() {
     let skipped = SyncRecord::new(
         plugin("@acme/chat"),
         DeviceId::new(),
-        SyncAction::Skip { why: "both devices have the same artifact".to_owned() },
+        SyncAction::Skip {
+            why: "both devices have the same artifact".to_owned(),
+        },
         1_000,
     )
-    .finished(SyncVerdict::Skipped { reason: "both devices have the same artifact".to_owned() }, 0, 1_500)
+    .finished(
+        SyncVerdict::Skipped {
+            reason: "both devices have the same artifact".to_owned(),
+        },
+        0,
+        1_500,
+    )
     .expect("a verdict");
 
     assert!(matches!(skipped.verdict, Some(SyncVerdict::Skipped { .. })));
-    assert_ne!(skipped.verdict, Some(SyncVerdict::Failed { error: String::new() }));
+    assert_ne!(
+        skipped.verdict,
+        Some(SyncVerdict::Failed {
+            error: String::new()
+        })
+    );
 }
-
 
 #[test]
 fn a_record_round_trips_through_a_database_row() {
@@ -688,15 +910,25 @@ fn a_record_round_trips_through_a_database_row() {
     for (verdict, action) in [
         (
             SyncVerdict::Succeeded,
-            SyncAction::Push { why: "the peer had nothing".to_owned() },
+            SyncAction::Push {
+                why: "the peer had nothing".to_owned(),
+            },
         ),
         (
-            SyncVerdict::Skipped { reason: "both ends agree".to_owned() },
-            SyncAction::Skip { why: "same digest".to_owned() },
+            SyncVerdict::Skipped {
+                reason: "both ends agree".to_owned(),
+            },
+            SyncAction::Skip {
+                why: "same digest".to_owned(),
+            },
         ),
         (
-            SyncVerdict::Failed { error: "the signature did not verify".to_owned() },
-            SyncAction::Refuse { why: "the publisher is untrusted here".to_owned() },
+            SyncVerdict::Failed {
+                error: "the signature did not verify".to_owned(),
+            },
+            SyncAction::Refuse {
+                why: "the publisher is untrusted here".to_owned(),
+            },
         ),
     ] {
         let record = SyncRecord::new(plugin("@acme/chat"), DeviceId::new(), action, 1_000)
@@ -735,7 +967,6 @@ fn a_row_that_is_not_this_rounds_document_is_an_error_rather_than_a_guess() {
     };
     assert!(SyncRecord::from_row(&row).is_err());
 }
-
 
 // ── 接收端的收件箱：④–⑦ 的库层 ─────────────────────────────────────────────────────────────────
 
@@ -820,7 +1051,6 @@ fn an_index_beyond_the_declaration_is_refused_and_not_counted_as_foreign() {
     assert_eq!(inbox.refused_chunks(), 0);
 }
 
-
 #[test]
 fn a_table_loads_what_the_database_remembers() {
     // ★ 两张表回答同一个问题（谁持有什么），一张在内存里、一张在磁盘上。
@@ -846,7 +1076,12 @@ fn a_table_loads_what_the_database_remembers() {
     let plugin_id = plugin("@acme/chat");
 
     let sender = table
-        .state_of(&plugin_id, "22222222-2222-4222-8222-222222222222".parse().expect("a device"))
+        .state_of(
+            &plugin_id,
+            "22222222-2222-4222-8222-222222222222"
+                .parse()
+                .expect("a device"),
+        )
         .expect("the sender's row");
     assert_eq!(sender.version.as_deref(), Some("1.2.0"));
     assert_eq!(sender.digest.as_deref(), Some("sha256-abc"));
@@ -855,7 +1090,12 @@ fn a_table_loads_what_the_database_remembers() {
     // ★ 而空版本变成 `None` 而不是 `Some("")` —— 后者会被读成「对端持有版本 ''」这个断言，
     // 而 `has_it()` 正是那个会被答错的问题。
     let receiver = table
-        .state_of(&plugin_id, "33333333-3333-4333-8333-333333333333".parse().expect("a device"))
+        .state_of(
+            &plugin_id,
+            "33333333-3333-4333-8333-333333333333"
+                .parse()
+                .expect("a device"),
+        )
         .expect("the receiver's row");
     assert_eq!(receiver.version, None, "an empty version read as a claim");
     assert_eq!(receiver.digest.as_deref(), Some("sha256-def"));
@@ -890,11 +1130,17 @@ fn a_row_this_build_cannot_read_is_skipped_rather_than_fatal() {
     let table = SyncTable::from_rows(&rows);
 
     // 坏的那一行没了，而好的那一行还在。
-    let state = table
-        .state_of(&plugin("@acme/chat"), "22222222-2222-4222-8222-222222222222".parse().expect("a device"));
-    assert_eq!(state.and_then(|state| state.version.as_deref()), Some("1.2.0"));
+    let state = table.state_of(
+        &plugin("@acme/chat"),
+        "22222222-2222-4222-8222-222222222222"
+            .parse()
+            .expect("a device"),
+    );
+    assert_eq!(
+        state.and_then(|state| state.version.as_deref()),
+        Some("1.2.0")
+    );
 }
-
 
 #[test]
 fn the_two_faces_of_one_question_agree() {
@@ -913,10 +1159,17 @@ fn the_two_faces_of_one_question_agree() {
     let mut db = synra_store::SynraDb::open_in_memory().expect("opens");
     db.migrate().expect("migrates");
     let peer = "22222222-2222-4222-8222-222222222222";
-    db.record_sync("@acme/chat", peer, "1.2.0", "sha256-abc", 2_000).expect("records");
-    // 而这一行是接收端的形状：版本空，摘要真。
-    db.record_sync("@acme/chat", "33333333-3333-4333-8333-333333333333", "", "sha256-def", 3_000)
+    db.record_sync("@acme/chat", peer, "1.2.0", "sha256-abc", 2_000)
         .expect("records");
+    // 而这一行是接收端的形状：版本空，摘要真。
+    db.record_sync(
+        "@acme/chat",
+        "33333333-3333-4333-8333-333333333333",
+        "",
+        "sha256-def",
+        3_000,
+    )
+    .expect("records");
 
     // 磁盘那一侧。
     let rows = db.sync_records().expect("reads");
@@ -928,9 +1181,15 @@ fn the_two_faces_of_one_question_agree() {
 
     for row in &rows {
         let device = row.peer_device.parse().expect("a device id");
-        let state = table.state_of(&plugin_id, device).expect("the same peer is known");
+        let state = table
+            .state_of(&plugin_id, device)
+            .expect("the same peer is known");
         // 版本：库里的空串在两边都必须是「没有版本」，而不是「版本是空串」。
-        let expected = if row.version.is_empty() { None } else { Some(row.version.as_str()) };
+        let expected = if row.version.is_empty() {
+            None
+        } else {
+            Some(row.version.as_str())
+        };
         assert_eq!(
             state.version.as_deref(),
             expected,
@@ -942,7 +1201,6 @@ fn the_two_faces_of_one_question_agree() {
         assert!(state.has_it(), "the two faces disagree about holding it");
     }
 }
-
 
 #[test]
 fn the_receiver_checks_cannot_be_run_out_of_order() {
@@ -965,11 +1223,17 @@ fn the_receiver_checks_cannot_be_run_out_of_order() {
         "check_room ran without the checks it depends on"
     );
     assert!(
-        matches!(check.decide_activation(true), Err(SyncError::OutOfOrder { .. })),
+        matches!(
+            check.decide_activation(true),
+            Err(SyncError::OutOfOrder { .. })
+        ),
         "activation was decided before the session was known complete"
     );
     assert!(
-        matches!(check.keep_local_grants(true), Err(SyncError::OutOfOrder { .. })),
+        matches!(
+            check.keep_local_grants(true),
+            Err(SyncError::OutOfOrder { .. })
+        ),
         "grants were kept before activation was decided"
     );
 
@@ -993,7 +1257,10 @@ fn a_peer_answers_with_its_list_over_a_real_link() {
     use synra_protocol::handshake::Agreed;
 
     let (near, far) = MemoryStream::pair_with_capacity(4 * 1024 * 1024);
-    let agreed = Agreed { common: Vec::new(), missing_required: Vec::new() };
+    let agreed = Agreed {
+        common: Vec::new(),
+        missing_required: Vec::new(),
+    };
     let ours = DeviceId::new();
     let peer = DeviceId::new();
     let mut asking = PeerLink::new(near, ours, peer, agreed.clone(), Flags::no_timeout());
@@ -1001,9 +1268,18 @@ fn a_peer_answers_with_its_list_over_a_real_link() {
 
     let mut db = synra_store::SynraDb::open_in_memory().expect("opens");
     db.migrate().expect("migrates");
-    db.insert_plugin("@acme/chat", true, true, "installed", 1_000, 1_000).expect("a plugin");
-    db.record_plugin_version(&PluginVersionRecord { plugin_id: "@acme/chat", version: "1.2.0", artifact: "plugin.wasm", digest: "sha256-abc", manifest: "{}", installed_ms: 1_000, ..Default::default() })
-        .expect("a version");
+    db.insert_plugin("@acme/chat", true, true, "installed", 1_000, 1_000)
+        .expect("a plugin");
+    db.record_plugin_version(&PluginVersionRecord {
+        plugin_id: "@acme/chat",
+        version: "1.2.0",
+        artifact: "plugin.wasm",
+        digest: "sha256-abc",
+        manifest: "{}",
+        installed_ms: 1_000,
+        ..Default::default()
+    })
+    .expect("a version");
 
     let answerer = std::thread::spawn(move || {
         let request = match answering.receive_inbound().expect("a request") {
@@ -1025,7 +1301,12 @@ fn a_peer_answers_with_its_list_over_a_real_link() {
     .expect("an answer");
 
     answerer.join().expect("the answering thread");
-    assert_eq!(list.plugins.len(), 1, "one plugin travels: {:?}", list.plugins);
+    assert_eq!(
+        list.plugins.len(),
+        1,
+        "one plugin travels: {:?}",
+        list.plugins
+    );
     assert_eq!(list.plugins[0].version.as_deref(), Some("1.2.0"));
     assert_eq!(list.plugins[0].digest.as_deref(), Some("sha256-abc"));
 }
@@ -1066,11 +1347,21 @@ fn a_received_bundle_becomes_history_and_what_the_peer_holds() {
     assert_eq!(history.len(), 1, "the bundle was not recorded: {history:?}");
     assert_eq!(history[0].plugin_id, "@acme/chat");
     assert_eq!(history[0].peer_device, transfer.peer.to_string());
-    assert!(history[0].finished_at_ms.is_some(), "a finished transfer with no end time");
+    assert!(
+        history[0].finished_at_ms.is_some(),
+        "a finished transfer with no end time"
+    );
 
     let held = db.sync_records().expect("reads");
-    assert_eq!(held.len(), 1, "what the peer holds was not recorded: {held:?}");
-    assert_eq!(held[0].version, "1.2.0", "the version travelled with the transfer");
+    assert_eq!(
+        held.len(),
+        1,
+        "what the peer holds was not recorded: {held:?}"
+    );
+    assert_eq!(
+        held[0].version, "1.2.0",
+        "the version travelled with the transfer"
+    );
     assert_eq!(held[0].digest, "sha256-test");
 
     assert!(outcome.installed);
@@ -1087,7 +1378,10 @@ fn an_attachment_is_not_a_synchronisation() {
     assert!(record_received(&db, &attachment).is_none());
     assert!(db.sync_log(None, 10).expect("reads").is_empty());
     assert!(db.sync_records().expect("reads").is_empty());
-    assert!(db.plugins().expect("reads").is_empty(), "an attachment installed a plugin");
+    assert!(
+        db.plugins().expect("reads").is_empty(),
+        "an attachment installed a plugin"
+    );
 }
 
 #[test]
@@ -1103,10 +1397,16 @@ fn a_received_bundle_is_installed_enabled_and_untrusted() {
         !installed[0].trusted,
         "a file that just arrived has been confirmed by nobody"
     );
-    assert_eq!(installed[0].health, "unknown", "health is observed, not assumed");
+    assert_eq!(
+        installed[0].health, "unknown",
+        "health is observed, not assumed"
+    );
     // ★ The outcome has to agree with the row it just wrote: it used to say `activated: false` because the check that
     // would set it required a `SessionComplete` the transfer path never performs — while the row beside it was enabled.
-    assert!(outcome.activated, "the outcome contradicts the row it wrote");
+    assert!(
+        outcome.activated,
+        "the outcome contradicts the row it wrote"
+    );
 }
 
 #[test]
@@ -1117,7 +1417,14 @@ fn the_outcome_claims_no_receiver_check_was_performed() {
 
     let outcome = record_received(&db, &received_bundle(Some("1.2.0"))).expect("an outcome");
 
-    assert!(outcome.performed.is_empty(), "checks that did not run were reported: {:?}", outcome.performed);
-    assert!(!outcome.is_fully_checked(), "an install is not a fully checked sync");
+    assert!(
+        outcome.performed.is_empty(),
+        "checks that did not run were reported: {:?}",
+        outcome.performed
+    );
+    assert!(
+        !outcome.is_fully_checked(),
+        "an install is not a fully checked sync"
+    );
     assert!(outcome.error.is_none());
 }
