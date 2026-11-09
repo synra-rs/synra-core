@@ -18,7 +18,7 @@
 //! rate limit — each is refused, and the runner is then asked to have seen nothing. A check that ran after the launch
 //! would be a check that reported a window it had already opened.
 
-use std::path::Path;
+use std::{path::Path, time::Duration};
 
 use crate::actions::{MAX_CLIPBOARD_BYTES, PlatformAction, Policies};
 use crate::error::PlatformError;
@@ -91,11 +91,9 @@ impl Desktop {
     pub const fn current() -> Self {
         if cfg!(target_os = "windows") {
             Self::Windows
-        }
-        else if cfg!(target_os = "macos") {
+        } else if cfg!(target_os = "macos") {
             Self::MacOs
-        }
-        else {
+        } else {
             Self::Linux
         }
     }
@@ -155,7 +153,10 @@ impl std::fmt::Debug for CommandPlatform {
             .debug_struct("CommandPlatform")
             .field("desktop", &self.desktop)
             .field("simulate_keys", &self.policies.allows_simulate_keys())
-            .field("notifications_per_hour", &self.policies.notifications_per_hour())
+            .field(
+                "notifications_per_hour",
+                &self.policies.notifications_per_hour(),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -170,7 +171,12 @@ impl CommandPlatform {
     /// A platform for a desktop, with a runner.
     #[must_use]
     pub fn with(desktop: Desktop, runner: Box<dyn CommandRunner>) -> Self {
-        Self { policies: Policies::new(), desktop, runner, limiter: RateLimiter::new(Policies::new()) }
+        Self {
+            policies: Policies::new(),
+            desktop,
+            runner,
+            limiter: RateLimiter::new(Policies::new()),
+        }
     }
 
     /// The same platform with other policies.
@@ -196,6 +202,34 @@ impl CommandPlatform {
         self.policies
             .notifications_per_hour()
             .saturating_sub(self.limiter.notifications_in_window(now_ms))
+    }
+
+    /// Copies the text currently selected in the focused desktop application and reads it back.
+    ///
+    /// This is used by an explicit user action. It keeps the key chord and clipboard read in one bounded platform
+    /// operation, so callers do not accidentally read the clipboard before the focused application has handled Ctrl+C.
+    pub fn read_selected_clipboard(&self) -> Result<Option<String>, PlatformError> {
+        self.limiter
+            .admit(PlatformAction::SimulateKeys, Self::now_ms())?;
+        match self.desktop {
+            Desktop::Linux => {
+                let _ = self.run("xdotool", &["key", "--", "ctrl+c"])?;
+            }
+            Desktop::MacOs => {
+                let _ = self.run(
+                    "osascript",
+                    &[
+                        "-e",
+                        "tell application \"System Events\" to keystroke \"c\" using {command down}",
+                    ],
+                )?;
+            }
+            Desktop::Windows => {
+                let _ = self.powershell(powershell::KEYS, Some("ctrl+c"))?;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+        self.read_clipboard()
     }
 
     /// The milliseconds this platform reads the clock at.
@@ -295,14 +329,16 @@ impl Platform for CommandPlatform {
         // ★ The check first, and the runner second. A check that ran after the launch would be a check that reported a
         // window it had already opened.
         check_url(url, &self.policies)?;
-        self.limiter.admit(PlatformAction::OpenUrl, Self::now_ms())?;
+        self.limiter
+            .admit(PlatformAction::OpenUrl, Self::now_ms())?;
         let _ = self.run(self.desktop.opener(), &[url])?;
         Ok(())
     }
 
     fn open_path(&self, path: &Path) -> Result<(), PlatformError> {
         check_path(path, PathUse::Open, &self.policies, None)?;
-        self.limiter.admit(PlatformAction::OpenPath, Self::now_ms())?;
+        self.limiter
+            .admit(PlatformAction::OpenPath, Self::now_ms())?;
         let text = path.to_string_lossy().to_string();
         let _ = self.run(self.desktop.opener(), &[text.as_str()])?;
         Ok(())
@@ -311,10 +347,15 @@ impl Platform for CommandPlatform {
     fn reveal_path(&self, path: &Path, sandbox_root: Option<&Path>) -> Result<(), PlatformError> {
         // The sandbox root is what stops a plugin revealing `~/.ssh` in a file manager the user is looking at.
         check_path(path, PathUse::Reveal, &self.policies, sandbox_root)?;
-        self.limiter.admit(PlatformAction::RevealPath, Self::now_ms())?;
+        self.limiter
+            .admit(PlatformAction::RevealPath, Self::now_ms())?;
         let text = path.to_string_lossy().to_string();
         let (program, flag) = self.desktop.revealer();
-        let arguments: Vec<&str> = if flag.is_empty() { vec![text.as_str()] } else { vec![flag, text.as_str()] };
+        let arguments: Vec<&str> = if flag.is_empty() {
+            vec![text.as_str()]
+        } else {
+            vec![flag, text.as_str()]
+        };
         let _ = self.run(program, &arguments)?;
         Ok(())
     }
@@ -327,7 +368,8 @@ impl Platform for CommandPlatform {
         // ★ The rate limit is the whole of the protection here: a plugin that can type into whatever window is focused
         // can do anything the user can, and the interval is what makes it a slow, visible thing rather than a
         // keystroke storm.
-        self.limiter.admit(PlatformAction::SimulateKeys, Self::now_ms())?;
+        self.limiter
+            .admit(PlatformAction::SimulateKeys, Self::now_ms())?;
         match self.desktop {
             Desktop::Linux => {
                 let _ = self.run("xdotool", &["key", "--", chord])?;
@@ -356,7 +398,8 @@ impl Platform for CommandPlatform {
     }
 
     fn read_clipboard(&self) -> Result<Option<String>, PlatformError> {
-        self.limiter.admit(PlatformAction::ReadClipboard, Self::now_ms())?;
+        self.limiter
+            .admit(PlatformAction::ReadClipboard, Self::now_ms())?;
         let text: Option<String> = match self.desktop {
             Desktop::Linux => Some(self.run("xclip", &["-selection", "clipboard", "-o"])?),
             Desktop::MacOs => Some(self.run("pbpaste", &[])?),
@@ -383,7 +426,8 @@ impl Platform for CommandPlatform {
 
     fn write_clipboard(&self, text: &str) -> Result<(), PlatformError> {
         check_clipboard_text(text)?;
-        self.limiter.admit(PlatformAction::WriteClipboard, Self::now_ms())?;
+        self.limiter
+            .admit(PlatformAction::WriteClipboard, Self::now_ms())?;
         match self.desktop {
             Desktop::Linux => {
                 let _ =
