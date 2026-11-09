@@ -387,6 +387,12 @@ impl EventService {
         error: Option<ErrorCode>,
         delivered: bool,
     ) {
+        let target_label = target
+            .as_ref()
+            .map_or_else(|| "-".to_owned(), |id| id.as_str().to_owned());
+        let error_label = error
+            .as_ref()
+            .map_or_else(|| "-".to_owned(), |code| code.as_str().to_owned());
         let mut state = self.state.lock();
         if delivered {
             state.delivered = state.delivered.saturating_add(1);
@@ -407,6 +413,14 @@ impl EventService {
         });
         let metrics = state.metrics.clone();
         drop(state);
+        eprintln!(
+            "synra: plugin event completed event={} request={} target={} delivered={} error={}",
+            pending.event,
+            pending.request,
+            target_label,
+            delivered,
+            error_label,
+        );
         if let Some(metrics) = metrics {
             let outcome = if delivered {
                 "delivered"
