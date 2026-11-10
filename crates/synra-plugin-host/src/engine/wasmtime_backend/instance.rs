@@ -154,7 +154,7 @@ impl PluginInstance for EngineInstance {
 }
 
 impl EngineInstance {
-    pub(super) fn new(store: Store<StoreData>, instance: Instance, kind: BackendKind) -> Self {
+    pub(super) const fn new(store: Store<StoreData>, instance: Instance, kind: BackendKind) -> Self {
         Self {
             store,
             instance,
