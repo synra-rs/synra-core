@@ -127,5 +127,4 @@ pub fn implemented() -> Vec<(&'static str, &'static str)> {
 }
 
 #[cfg(test)]
-#[path = "host_calls_tests.rs"]
 mod tests;
