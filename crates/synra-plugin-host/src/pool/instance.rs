@@ -4,20 +4,18 @@ use core::time::Duration;
 
 use super::policy::{InstancePolicy, PoolRefusal};
 use super::record::{IDLE_EVICT_AFTER, InstanceRecord, RECYCLE_AFTER_CALLS};
-use serde::{Deserialize, Serialize};
-
 /// A pool of instances for one plugin.
 #[derive(Debug)]
 pub struct InstancePool {
-    policy: InstancePolicy,
-    limit: u32,
-    instances: parking_lot::Mutex<Vec<InstanceRecord>>,
-    next_handle: parking_lot::Mutex<u64>,
-    running: parking_lot::Mutex<bool>,
+    pub(super) policy: InstancePolicy,
+    pub(super) limit: u32,
+    pub(super) instances: parking_lot::Mutex<Vec<InstanceRecord>>,
+    pub(super) next_handle: parking_lot::Mutex<u64>,
+    pub(super) running: parking_lot::Mutex<bool>,
     /// How long a caller is told to wait when the pool is exhausted.
-    retry_hint: Duration,
-    recycle_after_calls: u64,
-    idle_evict_after: Duration,
+    pub(super) retry_hint: Duration,
+    pub(super) recycle_after_calls: u64,
+    pub(super) idle_evict_after: Duration,
 }
 
 impl InstancePool {
@@ -76,8 +74,14 @@ impl InstancePool {
     /// How many are busy.
     #[must_use]
     pub fn busy(&self) -> u32 {
-        u32::try_from(self.instances.lock().iter().filter(|record| record.busy).count())
-            .unwrap_or(u32::MAX)
+        u32::try_from(
+            self.instances
+                .lock()
+                .iter()
+                .filter(|record| record.busy)
+                .count(),
+        )
+        .unwrap_or(u32::MAX)
     }
 
     /// Marks the pool usable.
@@ -139,7 +143,9 @@ impl InstancePool {
         // Reuse before creating: an instance that already exists costs nothing more, and creating one per call would
         // make the quota the only thing limiting memory.
         let mut found = None;
-        let index = instances.iter().position(|record| record.serves(self.policy, conversation));
+        let index = instances
+            .iter()
+            .position(|record| record.serves(self.policy, conversation));
         if let Some(index) = index
             && let Some(record) = instances.get_mut(index)
         {
@@ -233,8 +239,7 @@ impl InstancePool {
             // cannot influence. A stateful instance is only recycled once its conversation is done — which is what
             // `end_conversation` is for — because recycling it mid-conversation would lose its state.
             self.policy == InstancePolicy::Stateless && record.calls >= self.recycle_after_calls
-        }
-        else {
+        } else {
             false
         };
 
@@ -291,40 +296,4 @@ impl InstancePool {
         });
         evicted
     }
-
-    /// A snapshot for the interface and a diagnostic report.
-    #[must_use]
-    pub fn report(&self) -> PoolReport {
-        let instances = self.instances.lock();
-        PoolReport {
-            policy: match self.policy {
-                InstancePolicy::Stateless => "stateless",
-                InstancePolicy::Stateful => "stateful",
-            }
-            .to_owned(),
-            limit: self.limit,
-            live: u32::try_from(instances.len()).unwrap_or(u32::MAX),
-            busy: u32::try_from(instances.iter().filter(|record| record.busy).count()).unwrap_or(u32::MAX),
-            conversations: instances.iter().filter_map(|record| record.conversation.clone()).collect(),
-            total_calls: instances.iter().map(|record| record.calls).sum(),
-        }
-    }
-}
-
-/// What the interface shows about a plugin's instances.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PoolReport {
-    /// Whether instances are interchangeable.
-    pub policy: String,
-    /// The quota.
-    pub limit: u32,
-    /// How many exist.
-    pub live: u32,
-    /// How many are serving a call.
-    pub busy: u32,
-    /// The conversations holding an instance, for a stateful plugin.
-    pub conversations: Vec<String>,
-    /// How many calls the live instances have served.
-    pub total_calls: u64,
 }

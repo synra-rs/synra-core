@@ -12,9 +12,10 @@
 //! | `record` | what the pool knows about one instance |
 //! | `instance` | the pool itself, and its report |
 
+mod instance;
 mod policy;
 mod record;
-mod instance;
+mod report;
 
 #[cfg(test)]
 mod tests;
@@ -22,6 +23,7 @@ mod tests;
 #[cfg(test)]
 mod proptests;
 
-pub use instance::{InstancePool, PoolReport};
+pub use instance::InstancePool;
 pub use policy::{InstancePolicy, PoolRefusal};
 pub use record::{IDLE_EVICT_AFTER, InstanceRecord, RECYCLE_AFTER_CALLS};
+pub use report::PoolReport;
