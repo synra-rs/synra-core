@@ -20,5 +20,4 @@ pub use model::{LoadedSummary, Refused};
 pub const INSTANCE_LIMIT: u32 = 4;
 
 #[cfg(test)]
-#[path = "../plugin_tests.rs"]
 mod tests;

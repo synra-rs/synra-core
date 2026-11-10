@@ -87,5 +87,4 @@ impl std::fmt::Debug for Kernel {
 }
 
 #[cfg(test)]
-#[path = "../kernel_tests.rs"]
 mod tests;
