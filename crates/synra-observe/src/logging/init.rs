@@ -24,11 +24,11 @@ use std::io::{self, Write};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use tracing_subscriber::fmt::MakeWriter;
 
 use super::file::{DEFAULT_KEEP, DEFAULT_MAX_BYTES, RotatingFile};
 use super::level::LogLevel;
 use super::nonblocking::{DEFAULT_QUEUE_CAPACITY, QueueWriter, Worker};
+use super::shared::SharedWriter;
 use super::stats::LogStats;
 use super::writer::RedactingWriter;
 
@@ -108,7 +108,7 @@ pub enum LogError {
 /// the shutdown.
 #[must_use = "dropping the guard stops the log being written"]
 pub struct LogGuard {
-    writer: Arc<Mutex<RedactingWriter<QueueWriter>>>,
+    pub(super) writer: Arc<Mutex<RedactingWriter<QueueWriter>>>,
     /// What is being written, and the window a raise lasts for.
     ///
     /// Held here because the guard is what `init` hands back and what a caller keeps for the life of the process — the
@@ -181,46 +181,23 @@ impl LogGuard {
     }
 }
 
-impl std::fmt::Debug for LogGuard {    /// Renders as the writer's own `Debug`, which names the file.
+impl std::fmt::Debug for LogGuard {
+    /// Renders as the writer's own `Debug`, which names the file.
     ///
     /// ★ Not derived, because the guard holds an `Arc<Mutex<RedactingWriter<RotatingFile>>>` and a derive would render a
     /// lock rather than the thing a reader wants to know: which file is being written. A shell that keeps this beside its
     /// other state needs `Debug` — `AppState` derives it — and "logging is on, here" is the useful rendering.
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_tuple("LogGuard").field(&self.writer.lock()).finish()
+        formatter
+            .debug_tuple("LogGuard")
+            .field(&self.writer.lock())
+            .finish()
     }
 }
 
 impl Drop for LogGuard {
     fn drop(&mut self) {
         let _ = self.writer.lock().flush();
-    }
-}
-
-/// A writer handle handed to `tracing` once per event.
-///
-/// Cheap to clone — an `Arc` — because `MakeWriter` is called for every event.
-#[derive(Clone)]
-struct SharedWriter(Arc<Mutex<RedactingWriter<QueueWriter>>>);
-
-/// One event's writer, holding the shared handle for the duration of the write.
-struct SharedGuard(Arc<Mutex<RedactingWriter<QueueWriter>>>);
-
-impl Write for SharedGuard {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.0.lock().write(buf)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.0.lock().flush()
-    }
-}
-
-impl<'a> MakeWriter<'a> for SharedWriter {
-    type Writer = SharedGuard;
-
-    fn make_writer(&'a self) -> Self::Writer {
-        SharedGuard(Arc::clone(&self.0))
     }
 }
 
@@ -271,7 +248,10 @@ pub fn init(config: &LogConfig) -> Result<LogGuard, LogError> {
     let stats = Arc::new(LogStats::default());
     let (queue, worker) = Worker::spawn(file, DEFAULT_QUEUE_CAPACITY, Arc::clone(&stats))
         .map_err(LogError::Thread)?;
-    let writer = Arc::new(Mutex::new(RedactingWriter::with_stats(queue, Arc::clone(&stats))));
+    let writer = Arc::new(Mutex::new(RedactingWriter::with_stats(
+        queue,
+        Arc::clone(&stats),
+    )));
     let verbosity = Arc::new(super::verbosity::Verbosity::new(config.level));
 
     use tracing_subscriber::layer::SubscriberExt as _;
@@ -291,16 +271,13 @@ pub fn init(config: &LogConfig) -> Result<LogGuard, LogError> {
         );
 
     use tracing_subscriber::util::SubscriberInitExt;
-    subscriber.try_init().map_err(|_| LogError::AlreadyInstalled)?;
+    subscriber
+        .try_init()
+        .map_err(|_| LogError::AlreadyInstalled)?;
 
-    Ok(LogGuard { writer, verbosity, worker: Some(worker) })
-}
-
-/// The bytes a running logger has written, for a status report.
-///
-/// A free function rather than a method on the guard, because the daemon needs it from a thread that does not own the
-/// guard — and the guard is what keeps the file open, not what owns the count.
-#[must_use]
-pub fn stats_of(guard: &LogGuard) -> Arc<LogStats> {
-    guard.writer.lock().stats()
+    Ok(LogGuard {
+        writer,
+        verbosity,
+        worker: Some(worker),
+    })
 }

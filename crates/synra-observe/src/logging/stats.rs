@@ -83,3 +83,9 @@ impl LogStats {
         self.last_error.lock().clone()
     }
 }
+
+/// Returns the counters held by a running logger.
+#[must_use]
+pub fn stats_of(guard: &super::init::LogGuard) -> std::sync::Arc<LogStats> {
+    guard.writer.lock().stats()
+}
