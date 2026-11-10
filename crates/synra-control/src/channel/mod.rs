@@ -1,7 +1,5 @@
 //! Length-prefixed command channel types and codec.
 
-use serde::{Deserialize, Serialize};
-
 /// The most bytes one message may be, header included.
 ///
 /// # Why there is a ceiling at all
