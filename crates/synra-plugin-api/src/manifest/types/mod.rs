@@ -5,6 +5,8 @@
 //! Because a limit is part of what a field *is*. A title is at most `MAX_TITLE_LEN` characters; a reader of these types
 //! should not have to find the validator to learn that, and a change to one should be visible beside the other.
 
+pub use declarations::CapabilityDeclaration;
+
 use serde::{Deserialize, Serialize};
 
 use synra_protocol::PluginId;
@@ -180,171 +182,11 @@ pub struct UiRuntime {
     pub default_page: Option<String>,
 }
 
-/// One capability the plugin asks for.
-///
-/// A struct with a `cap` field rather than a bare string, so the list has room to grow — a justification, a
-/// scope note — without changing every manifest.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CapabilityDeclaration {
-    /// The capability string.
-    pub cap: String,
-    /// Why the plugin wants it, if the author chose to say.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub reason: Option<String>,
-}
+mod context;
+mod declarations;
 
-/// An action the plugin offers.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ActionDeclaration {
-    /// The action's name within the plugin.
-    pub name: String,
-    /// The arguments' JSON Schema.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub args: Option<serde_json::Value>,
-    /// The return value's JSON Schema.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub returns: Option<serde_json::Value>,
-    /// A sentence describing it.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub description: Option<String>,
-}
-
-/// A share kind the plugin handles.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ShareHandler {
-    /// The kinds it accepts, such as `text` or `url`.
-    pub kinds: Vec<String>,
-    /// A sentence describing what it does with them.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub description: Option<String>,
-}
-
-/// An event the plugin defines.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct EventDeclaration {
-    /// The full event name, which must be inside the plugin's own namespace.
-    pub name: String,
-    /// The payload's JSON Schema.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub payload: Option<serde_json::Value>,
-}
-
-/// An event the plugin wants delivered.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct HandleDeclaration {
-    /// An event name or a pattern.
-    pub event: String,
-    /// A condition on the payload, if the plugin only wants some of them.
-    #[serde(rename = "match", skip_serializing_if = "Option::is_none", default)]
-    pub conditions: Option<serde_json::Value>,
-}
-
-/// Another plugin this one composes with.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ComposeDependency {
-    /// The other plugin's id.
-    pub id: PluginId,
-    /// A semver range.
-    pub version: String,
-    /// Whether the plugin works without it.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub optional: Option<bool>,
-}
-
-/// The hosts a plugin may reach.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct NetworkDeclaration {
-    /// The hosts it may reach out to.
-    pub outbound: Vec<OutboundHost>,
-}
-
-/// One host in the network declaration.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct OutboundHost {
-    /// The hostname, possibly with a leading `*.`.
-    pub host: String,
-    /// The methods it needs, when it needs only some.
-    #[serde(skip_serializing_if = "Vec::is_empty", default)]
-    pub methods: Vec<String>,
-}
-
-/// A page the plugin adds.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PageDeclaration {
-    /// The page's key.
-    pub key: String,
-    /// Its title.
-    pub title: String,
-    /// Its route.
-    pub path: String,
-    /// An icon name.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub icon: Option<String>,
-}
-
-/// What the plugin would like to be allowed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ResourceHints {
-    /// A memory budget in mebibytes.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub preferred_memory_mb: Option<u32>,
-    /// A per-call time budget in milliseconds.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub preferred_timeout_ms: Option<u32>,
-}
-
-// ──────────────────────────────────────────────────────────────────────────────────────────────────────
-// What the checks need from outside
-// ──────────────────────────────────────────────────────────────────────────────────────────────────────
-
-/// What the checks need that is not in the manifest.
-#[derive(Debug, Clone, Default)]
-pub struct ManifestContext {
-    /// The host SDK version, for the `sdk.min` comparison.
-    pub host_sdk: Option<String>,
-    /// The WIT world the host supports.
-    pub host_wit: Option<String>,
-    /// Artifacts that exist in the package, relative to its root.
-    ///
-    /// `None` skips the existence check, which is what the schema-level validation wants: a manifest can be
-    /// checked for self-consistency before anything has been unpacked.
-    ///
-    /// A package walk produces a short ordered list; validation only needs membership checks.
-    pub present_artifacts: Option<Vec<String>>,
-}
-
-/// The digest a consent decision is recorded against.
-///
-/// # ★ Why this is here rather than at each caller
-///
-/// Because two callers need it and they must agree to the byte. The shell records the user's decision against this
-/// value; the daemon refuses to run a plugin whose manifest no longer hashes to what was recorded. Two implementations
-/// that drifted — one hashing the parsed value, one the raw text — would produce a mismatch on every plugin, or worse,
-/// a match for a manifest that had only been reformatted.
-///
-/// So it hashes the **bytes exactly as they are on disk**, which is why it takes text and not a [`Manifest`]: by the
-/// time a manifest has been parsed, field order and whitespace are gone, and two files differing only in those would
-/// hash alike.
-///
-/// SHA-256 in hex, and **not** an SRI string. Artifacts are signed and compared as SRI (`sha256-<base64>`); the manifest
-/// is a text document rather than an addressed blob, and this is the encoding the plugin CLI signs and every recorded
-/// consent decision carries. The two encodings differ on purpose — and using this function's sibling by accident is a
-/// genuine signature reported as covering a different manifest, which is why the install and scan paths both call this
-/// rather than hashing for themselves.
-#[must_use]
-pub fn manifest_digest(text: &str) -> String {
-    use sha2::Digest as _;
-    let mut hasher = sha2::Sha256::new();
-    hasher.update(text.as_bytes());
-    format!("{:x}", hasher.finalize())
-}
+pub use context::{ManifestContext, ResourceHints, manifest_digest};
+pub use declarations::{
+    ActionDeclaration, ComposeDependency, EventDeclaration, HandleDeclaration, NetworkDeclaration,
+    OutboundHost, PageDeclaration, ShareHandler,
+};
