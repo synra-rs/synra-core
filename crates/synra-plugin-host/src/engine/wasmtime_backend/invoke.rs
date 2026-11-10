@@ -3,7 +3,8 @@
 use wasmtime::component::{ComponentNamedList, Func, Lift, Lower};
 
 use super::bindings::synra::plugin::types::Outcome;
-use super::{CallFailure, EngineInstance, export_name, interface_name};
+use super::instance::{CallFailure, EngineInstance};
+use super::{export_name, interface_name};
 use crate::engine::types::{CallOutcome, Work};
 
 impl EngineInstance {

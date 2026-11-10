@@ -1,6 +1,6 @@
 //! Compiler stack ownership, independent of a desktop caller's native stack.
 
-use super::BackendError;
+use crate::engine::BackendError;
 use parking_lot::Mutex;
 use wasmtime::{Engine, component::Component};
 
