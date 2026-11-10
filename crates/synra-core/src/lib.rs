@@ -88,6 +88,9 @@ pub mod supervisor;
 pub mod transfer;
 pub mod worker;
 
+#[cfg(test)]
+mod test_support;
+
 pub use admission::{
     AdmissionContext, AdmissionRefusal, AdmissionStep, PluginKey, admit, check, host_requirement,
 };
