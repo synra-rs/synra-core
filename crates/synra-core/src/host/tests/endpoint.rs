@@ -1,4 +1,11 @@
-use super::*;
+use synra_protocol::discovery::DeviceAnnouncement;
+use synra_protocol::handshake::PROTOCOL_VERSION;
+use synra_protocol::ids::DeviceId;
+use synra_protocol::session::PlatformKind;
+use crate::link::PeerLink;
+use crate::peer::Flags;
+use super::super::{Host, HostError};
+use super::{A, B, device, host, network_now, listening};
 
 fn accept_bounded(mut server: Host) -> (Host, PeerLink) {
     server.listen_nonblocking().expect("nonblocking listener");
