@@ -49,6 +49,7 @@ pub mod args;
 pub mod build;
 pub mod execute;
 pub mod pack;
+mod package_artifacts;
 pub mod publish;
 pub mod run;
 pub mod sign;
