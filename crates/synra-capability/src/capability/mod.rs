@@ -16,6 +16,7 @@
 //! | `matching` | whether a pattern covers a candidate, and how specific it is |
 //! | `consent` | the description a user is asked to approve |
 
+mod conversions;
 mod consent;
 mod matching;
 mod segment;

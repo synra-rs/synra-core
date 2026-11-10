@@ -31,6 +31,7 @@ mod plugins;
 mod publishers;
 mod refusals;
 mod registry_install;
+mod report_metrics;
 mod reports;
 pub(crate) mod retry;
 mod state;

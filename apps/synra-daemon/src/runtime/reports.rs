@@ -1,4 +1,3 @@
-
 use synra_control::Refusal;
 use synra_protocol::error::ErrorCode;
 
@@ -81,22 +80,6 @@ impl Runtime {
         })
     }
 
-    /// The counters, as the recorder's own snapshot.
-    ///
-    /// # Why this serialises rather than shapes
-    ///
-    /// Because `MetricsSnapshot`, `SeriesValue`, `SeriesKey` and `Value` already derive `serde::Serialize` with
-    /// `rename_all = "camelCase"` — they were built to cross this boundary, and the first version of this method took the
-    /// snapshot apart and rebuilt it as a list of `{name, labels, value}` objects. That is the same data with a second
-    /// spelling: a reader would have had to know both, and nothing kept the two in step.
-    ///
-    /// Serialising the recorder's own type means the shape a client sees **is** the shape the recorder produces, with the
-    /// series already sorted by rendered key and every label carried as a label. A counter arrives as
-    /// `{"kind":"counter","value":1}`, which is what tells a client how to draw it rather than leaving it to guess.
-    pub(super) fn metrics_value(&self) -> serde_json::Value {
-        serde_json::to_value(self.metrics.snapshot()).unwrap_or(serde_json::Value::Null)
-    }
-
     /// What is installed in the plugins directory.
     ///
     /// # Why this is real while `devices` is not
@@ -110,10 +93,16 @@ impl Runtime {
         // is there but whose row is not has never been installed by the kernel, and one whose row is there and whose
         // directory is gone has been removed from disk behind its back. Both are states a user needs to see.
         let rows = self.db().plugins().map_err(|error| {
-            Refusal::new(ErrorCode::Internal, format!("could not read the plugins table: {error}"))
+            Refusal::new(
+                ErrorCode::Internal,
+                format!("could not read the plugins table: {error}"),
+            )
         })?;
         let checks = self.db().plugin_update_checks().map_err(|error| {
-            Refusal::new(ErrorCode::Internal, format!("could not read update checks: {error}"))
+            Refusal::new(
+                ErrorCode::Internal,
+                format!("could not read update checks: {error}"),
+            )
         })?;
 
         // ★ The two plugin gauges, set where the truth is read. The daemon has no install command, so this listing is the
@@ -298,5 +287,3 @@ impl Runtime {
         }))
     }
 }
-
-

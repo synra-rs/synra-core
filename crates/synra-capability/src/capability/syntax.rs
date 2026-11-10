@@ -291,11 +291,3 @@ impl From<Capability> for String {
         value.text.into_string()
     }
 }
-
-impl TryFrom<String> for Capability {
-    type Error = CapabilityError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        Self::parse(&value)
-    }
-}
