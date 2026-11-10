@@ -26,12 +26,14 @@ use synra_protocol::session::{PluginList, PluginSummary};
 
 mod decision;
 mod decision_policy;
+mod outcome;
 mod receiver;
 mod record;
 mod session;
 
 pub use decision::*;
 pub use decision_policy::*;
+pub use outcome::*;
 pub use receiver::*;
 pub use record::*;
 pub use session::*;
