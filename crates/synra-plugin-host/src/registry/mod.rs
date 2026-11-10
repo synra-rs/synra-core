@@ -65,6 +65,5 @@ pub use packument::{Dist, Packument, SizeBlock, SynraBlock, VersionEntry};
 pub use versions::{VersionTags, Versions};
 
 #[cfg(test)]
-#[path = "../registry_tests.rs"]
 mod tests;
 
