@@ -26,7 +26,9 @@
 //! is also what makes the rule below so blunt: an id whose key changed is **untrusted**, not "possibly rotated". A
 //! host that guessed would be a host that could be made to accept a different key by whoever controlled the id.
 
+#[cfg(test)]
 use base64::Engine;
+#[cfg(test)]
 use base64::engine::general_purpose::STANDARD as BASE64;
 
 /// The only signing algorithm this version knows.
