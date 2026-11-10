@@ -45,5 +45,4 @@ pub use record_table::*;
 pub use session::*;
 
 #[cfg(test)]
-#[path = "../plugin_sync_tests.rs"]
 mod tests;
