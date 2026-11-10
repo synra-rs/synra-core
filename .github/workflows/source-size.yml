@@ -1,0 +1,23 @@
+name: source-size
+
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches: [main]
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  source-size:
+    name: source-size
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install the development toolchain
+        run: rustup toolchain install --no-self-update
+      - run: cargo run --locked -q -p guards -- --source-size

@@ -41,6 +41,7 @@ use std::path::Path;
 
 mod documents;
 mod policy;
+mod source_size;
 mod workspace;
 
 use documents::{check_document_claims, check_document_guard_counts, check_document_links};
@@ -110,6 +111,10 @@ fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
+
+    if std::env::args_os().nth(1).is_some_and(|arg| arg == "--source-size") {
+        return source_size::check(&root);
+    }
 
     let mut failures = 0;
     for guard in guards() {
