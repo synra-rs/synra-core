@@ -58,7 +58,6 @@ pub struct SystemRunner {
     timeout: Duration,
     gate: Arc<Gate>,
 }
-
 impl Default for SystemRunner {
     fn default() -> Self {
         static GATE: OnceLock<Arc<Gate>> = OnceLock::new();
