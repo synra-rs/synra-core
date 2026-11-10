@@ -36,9 +36,12 @@ use std::collections::HashMap;
 use std::hash::RandomState;
 
 use synra_protocol::ids::PluginId;
-use synra_protocol::inbound::{HandlePattern, MAX_WILDCARD_RULES};
+use synra_protocol::inbound::HandlePattern;
 
 use crate::admission::PluginKey;
+
+#[cfg(test)]
+use synra_protocol::inbound::MAX_WILDCARD_RULES;
 
 /// The most distinct unknown event names the registry will number.
 ///
@@ -168,7 +171,6 @@ pub struct EventRegistry {
     wildcards: Vec<Subscription>,
     /// Every subscription, so unregistering one plugin does not have to scan the routes and guess.
     subscriptions: Vec<Subscription>,
-
 }
 
 impl fmt::Debug for EventRegistry {
@@ -181,238 +183,7 @@ impl fmt::Debug for EventRegistry {
     }
 }
 
-impl Default for EventRegistry {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl EventRegistry {
-    /// An empty registry.
-    ///
-    /// The map's hasher is seeded from the operating system's randomness, so two runs of the same program hash the
-    /// same peer-chosen names differently — which is what stops a peer from choosing a set of names that all collide
-    /// in one bucket of this particular process.
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            by_name: HashMap::with_hasher(RandomState::new()),
-            names: Vec::new(),
-            routes: Vec::new(),
-            wildcards: Vec::new(),
-            subscriptions: Vec::new(),
-        }
-    }
-
-    /// How many distinct event names are known.
-    #[must_use]
-    pub fn distinct_names(&self) -> usize {
-        self.by_name.len()
-    }
-
-    /// How many wildcard rules are held.
-    #[must_use]
-    pub const fn wildcard_rules(&self) -> usize {
-        self.wildcards.len()
-    }
-
-    /// How many plugins subscribe to anything.
-    #[must_use]
-    pub fn subscriber_count(&self) -> usize {
-        let mut plugins: Vec<&PluginKey> =
-            self.subscriptions.iter().map(|subscription| &subscription.plugin).collect();
-        plugins.sort();
-        plugins.dedup();
-        plugins.len()
-    }
-
-    /// The number for a name, if it has one.
-    #[must_use]
-    pub fn id_for(&self, name: &str) -> Option<EventId> {
-        self.by_name.get(name).copied()
-    }
-
-    /// The name behind a number.
-    #[must_use]
-    pub fn name_for(&self, id: EventId) -> Option<&str> {
-        self.names.get(usize::from(id.0)).map(String::as_str)
-    }
-
-    /// Registers a plugin's subscription rules.
-    ///
-    /// # Errors
-    ///
-    /// [`RouterError`] for a rule that is not usable, a duplicate, or a wildcard beyond the bound.
-    ///
-    /// # All or nothing
-    ///
-    /// A plugin whose third rule is bad is not registered at all. Registering the first two would leave a plugin that
-    /// receives some of what it asked for and none of what it did not — which reads as a plugin with a bug rather than
-    /// as a manifest that was refused.
-    pub fn register(&mut self, plugin: &PluginKey, rules: &[String]) -> Result<(), RouterError> {
-        let mut staged: Vec<Subscription> = Vec::with_capacity(rules.len());
-        let mut wildcards_added = 0usize;
-
-        for rule in rules {
-            // A rule that is an exact name is registered as an exact subscription; one with a wildcard is a pattern.
-            // The distinction is the pattern parser's, not a check for `*` — `device.ping` is an exact name and
-            // `device.*` is a pattern, and the parser is what knows the difference.
-            let pattern = if rule.contains('*') {
-                match HandlePattern::parse(rule) {
-                    Ok(pattern) => Some(pattern),
-                    Err(_) => return Err(RouterError::BadRule { rule: rule.clone() }),
-                }
-            }
-            else {
-                // An exact rule is validated by being numberable: an event name the kernel's catalogue does not contain
-                // is still acceptable, because a plugin may subscribe to a family a newer peer emits.
-                if rule.is_empty() || rule.chars().any(char::is_whitespace) {
-                    return Err(RouterError::BadRule { rule: rule.clone() });
-                }
-                None
-            };
-
-            if self
-                .subscriptions
-                .iter()
-                .any(|existing| existing.plugin == *plugin && existing.rule == *rule)
-            {
-                return Err(RouterError::Duplicate { plugin: plugin.to_string(), rule: rule.clone() });
-            }
-
-            if pattern.is_some() {
-                wildcards_added += 1;
-            }
-            staged.push(Subscription { plugin: plugin.clone(), rule: rule.clone(), pattern });
-        }
-
-        if self.wildcards.len() + wildcards_added > MAX_WILDCARD_RULES {
-            return Err(RouterError::TooManyWildcards { limit: MAX_WILDCARD_RULES });
-        }
-
-        // Nothing above this line has mutated the registry, so a refusal leaves it untouched.
-        for subscription in staged {
-            if subscription.pattern.is_some() {
-                self.wildcards.push(subscription.clone());
-            }
-            else {
-                // An exact rule is numbered now, so the first frame carrying it costs a lookup rather than a parse.
-                let id = self.number(&subscription.rule)?;
-                let index = usize::from(id.0);
-                while self.routes.len() <= index {
-                    self.routes.push(Vec::new());
-                }
-                if let Some(list) = self.routes.get_mut(index)
-                    && !list.contains(&subscription.plugin)
-                {
-                    list.push(subscription.plugin.clone());
-                }
-            }
-            self.subscriptions.push(subscription);
-        }
-        Ok(())
-    }
-
-    /// Removes every subscription belonging to a plugin.
-    ///
-    /// # Returns
-    ///
-    /// How many rules were removed. Zero means the plugin had none, which is ordinary rather than a mistake.
-    ///
-    /// # Removing the routes, not just the subscription
-    ///
-    /// A route table holding a handle to an unloaded plugin is a use-after-free waiting for the right event, so the
-    /// routes are pruned as well — and a route list that becomes empty has its identifier *kept*, because renumbering
-    /// would invalidate every other plugin's routes.
-    pub fn unregister(&mut self, plugin: &PluginKey) -> usize {
-        let before = self.subscriptions.len();
-        self.subscriptions.retain(|subscription| subscription.plugin != *plugin);
-        self.wildcards.retain(|subscription| subscription.plugin != *plugin);
-
-        for list in &mut self.routes {
-            list.retain(|holder| holder != plugin);
-        }
-
-        before - self.subscriptions.len()
-    }
-
-    /// Routes an event name.
-    ///
-    /// # The hot path
-    ///
-    /// A name that has been seen before costs one hash lookup and, for a name with no wildcard matching it, no
-    /// allocation beyond the result. A name seen for the first time costs a parse of the wildcard rules and a number.
-    #[must_use]
-    pub fn route(&mut self, event: &str) -> RouteOutcome {
-        // Wildcards are matched first, because a plugin may subscribe both to an exact name and to a family containing
-        // it, and the result must name it once.
-        let mut matched: Vec<PluginKey> = Vec::new();
-
-        if let Some(id) = self.by_name.get(event).copied()
-            && let Some(list) = self.routes.get(usize::from(id.0))
-        {
-            matched.extend(list.iter().cloned());
-        }
-
-        for subscription in &self.wildcards {
-            if let Some(pattern) = &subscription.pattern
-                && pattern.matches(event)
-                && !matched.contains(&subscription.plugin)
-            {
-                matched.push(subscription.plugin.clone());
-            }
-        }
-
-        if !matched.is_empty() {
-            return RouteOutcome::Routed(matched);
-        }
-
-        // Nothing matched. The name is numbered only if it is new and there is room, so a familiar name that nobody
-        // subscribes to costs nothing — which is the common case for the kernel's own events.
-        match self.by_name.get(event) {
-            Some(_) => RouteOutcome::Nobody,
-            None => match self.number(event) {
-                Ok(_) => RouteOutcome::Nobody,
-                Err(_) => RouteOutcome::Unknown { distinct: self.by_name.len() },
-            },
-        }
-    }
-
-    /// Numbers a name, if it is new and there is room.
-    fn number(&mut self, name: &str) -> Result<EventId, RouterError> {
-        if let Some(id) = self.by_name.get(name) {
-            return Ok(*id);
-        }
-        if self.by_name.len() >= MAX_DISTINCT_NAMES {
-            return Err(RouterError::Unknown {
-                distinct: self.by_name.len(),
-            });
-        }
-        let raw = u16::try_from(self.names.len()).map_err(|_| RouterError::OutOfNumbers)?;
-        let id = EventId(raw);
-        // The key is owned by the registry and hashed with the registry's seeded hasher, so a peer cannot choose names
-        // that collide in this process.
-        self.by_name.insert(name.to_owned(), id);
-        self.names.push(name.to_owned());
-        while self.routes.len() <= usize::from(raw) {
-            self.routes.push(Vec::new());
-        }
-        Ok(id)
-    }
-
-    /// A snapshot for the interface and a diagnostic report.
-    #[must_use]
-    pub fn report(&self) -> RouterReport {
-        RouterReport {
-            distinct_names: self.by_name.len(),
-            max_distinct_names: MAX_DISTINCT_NAMES,
-            wildcard_rules: self.wildcards.len(),
-            max_wildcard_rules: MAX_WILDCARD_RULES,
-            subscriptions: self.subscriptions.len(),
-            subscribers: self.subscriber_count(),
-        }
-    }
-}
+mod registry;
 
 /// What the interface shows about the registry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -495,13 +266,18 @@ mod tests {
     fn an_empty_registry_routes_nobody() {
         let mut registry = registry();
         // The kernel's own event, which nothing subscribes to. Ordinary rather than an error.
-        assert!(matches!(registry.route("device.ping"), RouteOutcome::Nobody));
+        assert!(matches!(
+            registry.route("device.ping"),
+            RouteOutcome::Nobody
+        ));
     }
 
     #[test]
     fn an_exact_rule_receives_its_event() {
         let mut registry = registry();
-        registry.register(&key("@a/one"), &rules(&["device.ping"])).expect("registers");
+        registry
+            .register(&key("@a/one"), &rules(&["device.ping"]))
+            .expect("registers");
 
         match registry.route("device.ping") {
             RouteOutcome::Routed(plugins) => assert_eq!(plugins, vec![key("@a/one")]),
@@ -512,30 +288,46 @@ mod tests {
     #[test]
     fn an_exact_rule_does_not_receive_a_different_event() {
         let mut registry = registry();
-        registry.register(&key("@a/one"), &rules(&["device.ping"])).expect("registers");
-        assert!(matches!(registry.route("device.pong"), RouteOutcome::Nobody));
+        registry
+            .register(&key("@a/one"), &rules(&["device.ping"]))
+            .expect("registers");
+        assert!(matches!(
+            registry.route("device.pong"),
+            RouteOutcome::Nobody
+        ));
     }
 
     #[test]
     fn a_wildcard_rule_receives_its_family() {
         let mut registry = registry();
-        registry.register(&key("@a/one"), &rules(&["_synra.device.*"])).expect("registers");
+        registry
+            .register(&key("@a/one"), &rules(&["_synra.device.*"]))
+            .expect("registers");
 
         for event in ["_synra.device.changed", "_synra.device.offline"] {
             match registry.route(event) {
-                RouteOutcome::Routed(plugins) => assert_eq!(plugins, vec![key("@a/one")], "{event}"),
+                RouteOutcome::Routed(plugins) => {
+                    assert_eq!(plugins, vec![key("@a/one")], "{event}")
+                }
                 other => panic!("{event}: expected a route, got {other:?}"),
             }
         }
         // And not a sibling family.
-        assert!(matches!(registry.route("_synra.transfer.started"), RouteOutcome::Nobody));
+        assert!(matches!(
+            registry.route("_synra.transfer.started"),
+            RouteOutcome::Nobody
+        ));
     }
 
     #[test]
     fn several_plugins_receive_the_same_event() {
         let mut registry = registry();
-        registry.register(&key("@a/one"), &rules(&["_synra.device.*"])).expect("registers");
-        registry.register(&key("@b/two"), &rules(&["_synra.device.changed"])).expect("registers");
+        registry
+            .register(&key("@a/one"), &rules(&["_synra.device.*"]))
+            .expect("registers");
+        registry
+            .register(&key("@b/two"), &rules(&["_synra.device.changed"]))
+            .expect("registers");
 
         match registry.route("_synra.device.changed") {
             RouteOutcome::Routed(plugins) => {
@@ -553,7 +345,10 @@ mod tests {
         // its handler twice for one event.
         let mut registry = registry();
         registry
-            .register(&key("@a/one"), &rules(&["_synra.device.*", "_synra.device.changed"]))
+            .register(
+                &key("@a/one"),
+                &rules(&["_synra.device.*", "_synra.device.changed"]),
+            )
             .expect("registers");
 
         match registry.route("_synra.device.changed") {
@@ -566,8 +361,13 @@ mod tests {
     fn a_deep_wildcard_reaches_the_whole_subtree() {
         let mut registry = registry();
         // A single `*` matches one segment, so `_synra.offline` is in the family and `_synra.device.changed` is not.
-        registry.register(&key("@a/one"), &rules(&["_synra.offline"])).expect("registers");
-        assert!(matches!(registry.route("_synra.offline"), RouteOutcome::Routed(_)));
+        registry
+            .register(&key("@a/one"), &rules(&["_synra.offline"]))
+            .expect("registers");
+        assert!(matches!(
+            registry.route("_synra.offline"),
+            RouteOutcome::Routed(_)
+        ));
     }
 
     #[test]
@@ -588,24 +388,44 @@ mod tests {
         // `_synra.device.changed` — which is the safer reading, because a pattern's depth is then visible in the
         // manifest rather than being implied by the wildcard.
         let mut registry = registry();
-        registry.register(&key("@a/one"), &rules(&["_synra.*"])).expect("registers");
+        registry
+            .register(&key("@a/one"), &rules(&["_synra.*"]))
+            .expect("registers");
 
-        assert!(matches!(registry.route("_synra.offline"), RouteOutcome::Routed(_)));
-        assert!(matches!(registry.route("_synra.device.changed"), RouteOutcome::Nobody));
+        assert!(matches!(
+            registry.route("_synra.offline"),
+            RouteOutcome::Routed(_)
+        ));
+        assert!(matches!(
+            registry.route("_synra.device.changed"),
+            RouteOutcome::Nobody
+        ));
 
         // Two wildcards cover two more segments, which is how a deeper family is expressed.
-        registry.register(&key("@b/two"), &rules(&["_synra.*.*"])).expect("registers");
-        assert!(matches!(registry.route("_synra.device.changed"), RouteOutcome::Routed(_)));
-        assert!(matches!(registry.route("_synra.a.b.c.d"), RouteOutcome::Nobody));
+        registry
+            .register(&key("@b/two"), &rules(&["_synra.*.*"]))
+            .expect("registers");
+        assert!(matches!(
+            registry.route("_synra.device.changed"),
+            RouteOutcome::Routed(_)
+        ));
+        assert!(matches!(
+            registry.route("_synra.a.b.c.d"),
+            RouteOutcome::Nobody
+        ));
     }
 
     #[test]
     fn a_number_is_assigned_once_and_reused() {
         // The whole point: the string comparison happens on the first sighting and never again.
         let mut registry = registry();
-        registry.register(&key("@a/one"), &rules(&["device.ping"])).expect("registers");
+        registry
+            .register(&key("@a/one"), &rules(&["device.ping"]))
+            .expect("registers");
 
-        let first = registry.id_for("device.ping").expect("numbered at registration");
+        let first = registry
+            .id_for("device.ping")
+            .expect("numbered at registration");
         let _ = registry.route("device.ping");
         assert_eq!(registry.id_for("device.ping"), Some(first));
         assert_eq!(registry.distinct_names(), 1);
@@ -624,7 +444,9 @@ mod tests {
     #[test]
     fn an_event_name_round_trips_through_its_number() {
         let mut registry = registry();
-        registry.register(&key("@a/one"), &rules(&["device.ping"])).expect("registers");
+        registry
+            .register(&key("@a/one"), &rules(&["device.ping"]))
+            .expect("registers");
         let id = registry.id_for("device.ping").expect("numbered");
         assert_eq!(registry.name_for(id), Some("device.ping"));
         assert!(id.get() < 1024);
@@ -641,7 +463,9 @@ mod tests {
     #[test]
     fn a_duplicate_rule_is_refused() {
         let mut registry = registry();
-        registry.register(&key("@a/one"), &rules(&["device.ping"])).expect("registers");
+        registry
+            .register(&key("@a/one"), &rules(&["device.ping"]))
+            .expect("registers");
         match registry.register(&key("@a/one"), &rules(&["device.ping"])) {
             Err(RouterError::Duplicate { plugin, rule }) => {
                 assert_eq!(plugin, "@a/one");
@@ -655,8 +479,12 @@ mod tests {
     fn two_plugins_may_hold_the_same_rule() {
         // The rule is the same and the subscribers differ, which is ordinary.
         let mut registry = registry();
-        registry.register(&key("@a/one"), &rules(&["_synra.device.*"])).expect("registers");
-        registry.register(&key("@b/two"), &rules(&["_synra.device.*"])).expect("registers");
+        registry
+            .register(&key("@a/one"), &rules(&["_synra.device.*"]))
+            .expect("registers");
+        registry
+            .register(&key("@b/two"), &rules(&["_synra.device.*"]))
+            .expect("registers");
         assert_eq!(registry.subscriber_count(), 2);
     }
 
@@ -665,7 +493,10 @@ mod tests {
         let mut registry = registry();
         for rule in ["", "has space", "_synra.*.*.*.*.*"] {
             assert!(
-                matches!(registry.register(&key("@a/one"), &rules(&[rule])), Err(RouterError::BadRule { .. })),
+                matches!(
+                    registry.register(&key("@a/one"), &rules(&[rule])),
+                    Err(RouterError::BadRule { .. })
+                ),
                 "{rule:?} should be refused"
             );
         }
@@ -681,16 +512,27 @@ mod tests {
         let mut registry = registry();
         let result = registry.register(&key("@a/one"), &rules(&["device.ping", "has space"]));
         assert!(result.is_err());
-        assert_eq!(registry.subscriber_count(), 0, "a partial registration happened");
-        assert!(matches!(registry.route("device.ping"), RouteOutcome::Nobody));
+        assert_eq!(
+            registry.subscriber_count(),
+            0,
+            "a partial registration happened"
+        );
+        assert!(matches!(
+            registry.route("device.ping"),
+            RouteOutcome::Nobody
+        ));
     }
 
     #[test]
     fn the_wildcard_bound_is_enforced() {
         let mut registry = registry();
         // Fill the bound with rules that all parse.
-        let many: Vec<String> = (0..MAX_WILDCARD_RULES).map(|index| format!("_synra.f{index}.*")).collect();
-        registry.register(&key("@a/one"), &many).expect("registers up to the bound");
+        let many: Vec<String> = (0..MAX_WILDCARD_RULES)
+            .map(|index| format!("_synra.f{index}.*"))
+            .collect();
+        registry
+            .register(&key("@a/one"), &many)
+            .expect("registers up to the bound");
 
         match registry.register(&key("@b/two"), &rules(&["_synra.extra.*"])) {
             Err(RouterError::TooManyWildcards { limit }) => assert_eq!(limit, MAX_WILDCARD_RULES),
@@ -722,7 +564,11 @@ mod tests {
             RouteOutcome::Unknown { distinct } => assert_eq!(distinct, MAX_DISTINCT_NAMES),
             other => panic!("expected an unknown outcome, got {other:?}"),
         }
-        assert_eq!(registry.distinct_names(), MAX_DISTINCT_NAMES, "the bound was exceeded");
+        assert_eq!(
+            registry.distinct_names(),
+            MAX_DISTINCT_NAMES,
+            "the bound was exceeded"
+        );
     }
 
     #[test]
@@ -730,7 +576,9 @@ mod tests {
         // The bound is on *new* names. A device whose registry is full must still deliver the events its plugins
         // actually asked for, or the bound would break every plugin rather than only the unrecognised traffic.
         let mut registry = registry();
-        registry.register(&key("@a/one"), &rules(&["_synra.device.changed"])).expect("registers");
+        registry
+            .register(&key("@a/one"), &rules(&["_synra.device.changed"]))
+            .expect("registers");
         for index in 0..MAX_DISTINCT_NAMES {
             let _ = registry.route(&format!("_synra.streaming.{index}"));
         }
@@ -761,16 +609,26 @@ mod tests {
             .expect("registers");
         assert_eq!(registry.unregister(&key("@a/one")), 2);
 
-        assert!(matches!(registry.route("device.ping"), RouteOutcome::Nobody));
-        assert!(matches!(registry.route("_synra.device.changed"), RouteOutcome::Nobody));
+        assert!(matches!(
+            registry.route("device.ping"),
+            RouteOutcome::Nobody
+        ));
+        assert!(matches!(
+            registry.route("_synra.device.changed"),
+            RouteOutcome::Nobody
+        ));
         assert_eq!(registry.wildcard_rules(), 0);
     }
 
     #[test]
     fn unregistering_leaves_other_plugins_alone() {
         let mut registry = registry();
-        registry.register(&key("@a/one"), &rules(&["device.ping"])).expect("registers");
-        registry.register(&key("@b/two"), &rules(&["device.ping"])).expect("registers");
+        registry
+            .register(&key("@a/one"), &rules(&["device.ping"]))
+            .expect("registers");
+        registry
+            .register(&key("@b/two"), &rules(&["device.ping"]))
+            .expect("registers");
 
         registry.unregister(&key("@a/one"));
         match registry.route("device.ping") {
@@ -790,7 +648,9 @@ mod tests {
         // Renumbering would invalidate every other plugin's routes, so an identifier whose subscribers are gone is
         // kept rather than reused.
         let mut registry = registry();
-        registry.register(&key("@a/one"), &rules(&["device.ping"])).expect("registers");
+        registry
+            .register(&key("@a/one"), &rules(&["device.ping"]))
+            .expect("registers");
         let id = registry.id_for("device.ping").expect("numbered");
 
         registry.unregister(&key("@a/one"));
@@ -802,9 +662,13 @@ mod tests {
     fn a_plugin_may_register_again_after_unregistering() {
         // A plugin that is deactivated and reactivated must be able to subscribe again.
         let mut registry = registry();
-        registry.register(&key("@a/one"), &rules(&["device.ping"])).expect("registers");
+        registry
+            .register(&key("@a/one"), &rules(&["device.ping"]))
+            .expect("registers");
         registry.unregister(&key("@a/one"));
-        registry.register(&key("@a/one"), &rules(&["device.ping"])).expect("registers again");
+        registry
+            .register(&key("@a/one"), &rules(&["device.ping"]))
+            .expect("registers again");
 
         match registry.route("device.ping") {
             RouteOutcome::Routed(plugins) => assert_eq!(plugins, vec![key("@a/one")]),
@@ -845,7 +709,10 @@ mod tests {
         };
         assert!(near.is_near_a_bound());
 
-        let far = RouterReport { distinct_names: 10, ..near };
+        let far = RouterReport {
+            distinct_names: 10,
+            ..near
+        };
         assert!(!far.is_near_a_bound());
 
         let wildcards = RouterReport {
@@ -880,8 +747,13 @@ mod tests {
     #[test]
     fn router_errors_explain_themselves() {
         let errors = [
-            RouterError::Duplicate { plugin: "p".to_owned(), rule: "r".to_owned() },
-            RouterError::BadRule { rule: "r".to_owned() },
+            RouterError::Duplicate {
+                plugin: "p".to_owned(),
+                rule: "r".to_owned(),
+            },
+            RouterError::BadRule {
+                rule: "r".to_owned(),
+            },
             RouterError::TooManyWildcards { limit: 64 },
             RouterError::OutOfNumbers,
         ];
