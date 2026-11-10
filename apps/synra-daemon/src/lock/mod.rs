@@ -35,6 +35,11 @@
 
 use serde::{Deserialize, Serialize};
 
+mod file;
+
+pub use file::{ClaimFile, encode_claim, refresh_claim, remove_claim, write_claim};
+pub(crate) use file::write_claim_file;
+
 /// How long a heartbeat is believed, in milliseconds.
 ///
 /// Ninety seconds. The owner writes every [`HEARTBEAT_INTERVAL_MS`], so this is thirty missed beats — long enough that

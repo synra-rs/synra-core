@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::args::{ClaimFile, DaemonArgs, Parsed};
-use crate::lock::{Claim, LockError, LockFile};
+use crate::lock::{Claim, LockError, LockFile, write_claim_file};
 
 use super::{Startup, now_ms};
 
@@ -157,9 +157,6 @@ pub fn mark_clean_shutdown(path: &Path, lock: &LockFile) -> Result<LockFile, Loc
     let mut clean = lock.clone();
     clean.owner.clean = true;
     clean.owner.heartbeat_ms = now_ms();
-    std::fs::write(path, crate::args::encode_claim(&clean, path)?).map_err(|error| LockError::Unreadable {
-        path: path.display().to_string(),
-        reason: format!("the claim could not be marked clean: {error}"),
-    })?;
+    write_claim_file(path, &clean, "the claim could not be marked clean")?;
     Ok(clean)
 }
