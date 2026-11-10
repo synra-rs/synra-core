@@ -44,4 +44,4 @@ WIT 是宿主导入与能力标注的来源。修改时同步生成资源、SDK�
 独立插件将 SDK 和作者 CLI 固定到同一个已审查提交；使用真实组件和实际安装入口验证。
 
 接口与数据格式的开发期约定见 [STABILITY.md](./STABILITY.md)。
-编辑、锁作用域、测试及提交规则见 [AGENT.md](./AGENT.md)；调查证据保留在 [NOTES](./NOTES)。
+编辑、锁作用域、测试及提交规则见 [AGENTS.md](./AGENTS.md)，调查证据保留在 [NOTES](./NOTES)。

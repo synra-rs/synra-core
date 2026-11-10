@@ -1,6 +1,6 @@
 # Working in this repository
 
-This file is for an AI agent making changes here. It is the *only* place the rules live: where a rule needs explaining, it
+This file is for agents making changes here. It is the *only* place the rules live: where a rule needs explaining, it
 links to the file that owns the explanation rather than repeating it.
 
 Read this before the first edit of a session. `README.md` says what the project is; `STABILITY.md` says what each crate
@@ -108,16 +108,19 @@ touches three files. Splitting by the actor keeps a change in one place.
 
 `mod.rs` re-exports everything the old flat module exported, so **a split is a change of layout and not of interface**.
 
-Production Rust files must stay at or below 300 lines. Test files may exceed that limit when a complete scenario benefits from
-remaining together. A feature that fills one file becomes a directory with a focused `mod.rs`. Mixed files are separated into
-feature modules and narrowly named reusable utilities. Catch-all utility modules are not a substitute for identifying the
-responsibility that owns the code.
+Keep hand-written Rust source files at or below 300 physical lines, including inline tests. Move tests into sibling modules
+when they make a production file too long. Group large test suites by scenario and keep their shared fixtures beside them.
+Split mixed responsibilities into feature modules and extract genuinely shared logic into narrowly named utilities.
 
-Before committing a Rust refactor, scan production portions with the repository's PowerShell check. Any result above 300 is
-unfinished work and must be split or explicitly identified as a test-only aggregation:
+Before committing a Rust refactor, scan for files above 300 lines. Generated source belongs to its generator. Split every
+new or refactored hand-written file that exceeds the limit and use the rest of the report to track existing files:
 
 ```powershell
-$out = @(); foreach ($f in rg --files -g '*.rs') { $lines = Get-Content $f; $cut = $lines.Count; for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -match '^\s*#\[cfg\(test\)\]') { $cut = $i; break } }; if ($cut -gt 300) { $out += [pscustomobject]@{ Lines = $cut; Path = $f } } }; $out | Sort-Object Lines -Descending
+$long = foreach ($file in rg --files --hidden -g '*.rs' -g '!**/generated/**') {
+    $count = [IO.File]::ReadAllLines((Join-Path $PWD $file)).Length
+    if ($count -gt 300) { [pscustomobject]@{ Lines = $count; Path = $file } }
+}
+$long | Sort-Object Lines -Descending
 ```
 
 ### Splitting a file safely

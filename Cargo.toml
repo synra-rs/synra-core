@@ -110,7 +110,7 @@ unreachable_pub = "warn"
 unused_qualifications = "warn"
 
 # 严格 lint 集。内核不许 panic / unwrap / expect：所有失败路径都要给出结构化错误。
-# 为什么这样严，以及改动时要注意什么，见 AGENT.md。
+# 为什么这样严，以及改动时要注意什么，见 AGENTS.md。
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
 # 正确性与可疑写法直接拒绝
