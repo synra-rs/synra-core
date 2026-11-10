@@ -33,6 +33,7 @@ pub use response::Response;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde::{Deserialize, Serialize};
 
     fn round_trip<T>(message: &T) -> T
     where
