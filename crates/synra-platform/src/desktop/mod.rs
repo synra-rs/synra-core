@@ -64,6 +64,5 @@ pub use platform::CommandPlatform;
 pub use types::Desktop;
 
 #[cfg(test)]
-#[path = "../desktop_tests.rs"]
 mod tests;
 
