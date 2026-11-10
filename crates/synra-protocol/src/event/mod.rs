@@ -24,8 +24,6 @@
 //! Comparison here is by string, which is correct but not free. Routing does not use it: the host
 //! resolves a name to a small integer once and looks that up thereafter, so the per-frame cost is an
 //! array index rather than a string compare.
-use crate::ids::PluginId;
-
 /// Prefix for host-defined events.
 pub const SYSTEM_PREFIX: &str = "_synra.";
 
@@ -60,6 +58,7 @@ pub use name::*;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ids::PluginId;
     use rstest::rstest;
 
     fn slug(text: &str) -> PluginId {
@@ -385,6 +384,7 @@ mod tests {
 #[cfg(test)]
 mod proptests {
     use super::*;
+    use crate::ids::PluginId;
     use proptest::prelude::*;
 
     fn slug_text() -> impl Strategy<Value = String> {
