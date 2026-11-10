@@ -20,6 +20,7 @@ mod consent;
 mod matching;
 mod segment;
 mod syntax;
+mod validation;
 
 pub use segment::Segment;
 pub use syntax::{Capability, CapabilityError, MAX_LEN, MAX_PREFIX_LEN, MAX_PREFIXES, MAX_SEGMENTS};

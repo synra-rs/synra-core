@@ -8,6 +8,7 @@ use smallvec::SmallVec;
 use crate::domain::{Domain, UnknownDomain};
 
 use super::segment::Segment;
+use super::validation::{is_prefix_name, is_qualifier_segment};
 
 /// The most segments a capability may have.
 ///
@@ -299,29 +300,3 @@ impl TryFrom<String> for Capability {
     }
 }
 
-/// Whether a string is a prefix name: `[a-z][a-z0-9-]{0,63}`.
-fn is_prefix_name(text: &str) -> bool {
-    let mut chars = text.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    if !first.is_ascii_lowercase() {
-        return false;
-    }
-    chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
-}
-
-/// Whether a string is usable as a qualifier segment.
-///
-/// One character class for every domain's qualifier, because the domains disagree about theirs and a
-/// per-domain rule here would be five parsers sharing one caller. It admits domain names
-/// (`api.github.com`), HTTP methods (`POST`), paths (`/data/**`), device ids (`@synra-pc`), event
-/// patterns (`_plugin.@acme/chat.*`) and page keys (`settings`), and nothing that would let a qualifier
-/// escape its own meaning: no colon, so it cannot forge a segment boundary; no whitespace; no
-/// quotes or angle brackets, so it cannot be reinterpreted as markup.
-fn is_qualifier_segment(text: &str) -> bool {
-    !text.is_empty()
-        && text.chars().all(|ch| {
-            ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '@' | '/' | '*' | '-')
-        })
-}
