@@ -30,425 +30,30 @@
 //! paired device stopped being paired. The level rises when the evidence rises and is lowered only by the kernel
 //! forgetting the pairing, which is a different code path with a different reason.
 
-use std::collections::BTreeMap;
-use std::net::{IpAddr, SocketAddr};
+mod model;
+mod mutation;
+mod table;
+mod util;
+
+pub use model::{Absorbed, Candidate};
+pub use table::DiscoveryTable;
+pub use util::announced_address;
+
 use std::time::Duration;
 
-use synra_protocol::discovery::{DeviceAnnouncement, TrustLevel};
-use synra_protocol::ids::DeviceId;
-use synra_protocol::session::PlatformKind;
-
-use crate::identity::check_display_name;
-
-/// How long a candidate stays after its last announcement.
-///
-/// # Why this is not the protocol's scan budget
-///
-/// The scan budget is how long one *scan* runs — 2.5 seconds — and it decides when a scan stops looking. This is how
-/// long a device that was found stays in the list, which is a different question: a device that answered a scan a
-/// second ago is one the user should still see, and one that answered ten minutes ago is one that may have been
-/// unplugged. A figure in that range, not in the scan's.
+/// How long an unpaired candidate stays current after its last announcement.
 pub const CANDIDATE_TTL: Duration = Duration::from_secs(90);
-
-/// The name shown for a device whose own name was not usable.
+/// The display name used when an announcement contains an unusable name.
 pub const UNUSABLE_NAME: &str = "Unnamed device";
 
-/// One device the kernel has heard about.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Candidate {
-    /// Which device.
-    pub device_id: DeviceId,
-    /// What to show a person.
-    ///
-    /// Never the raw announced string: a name that failed validation is [`UNUSABLE_NAME`].
-    pub display_name: String,
-    /// What it claims to be, when it said.
-    pub platform: Option<PlatformKind>,
-    /// What it claims to run, when it said.
-    pub app_version: Option<String>,
-    /// What it claims it can do, when it said.
-    ///
-    /// A claim, and a caller that acts on it without a handshake is acting on an unauthenticated value. Kept because
-    /// the handshake compares against it, which is what makes "the peer said it could resume and then could not"
-    /// detectable.
-    pub claimed_features: Vec<synra_protocol::handshake::Feature>,
-    /// Where it said it listens.
-    pub address: SocketAddr,
-    /// How much of it to believe.
-    pub trust: TrustLevel,
-    /// When it was last heard from, as a wall-clock reading.
-    ///
-    /// A wall clock rather than a monotonic reading, because this crosses to a client and to the database — the same
-    /// reasoning every other `*_ms` in the kernel follows.
-    pub last_seen_ms: i64,
-}
-
-impl Candidate {
-    /// Whether it is still worth showing.
-    ///
-    /// # Why a paired device never expires
-    ///
-    /// Because the pairing is recorded and the user approved it. A paired device that has gone quiet is one that is
-    /// *offline*, which is a state the interface shows and the user can act on — and dropping it would make the device
-    /// disappear until it was rediscovered, which reads as an unpairing.
-    #[must_use]
-    pub fn is_current(&self, now_ms: i64, ttl: Duration) -> bool {
-        if self.trust == TrustLevel::Paired {
-            return true;
-        }
-        let age = now_ms.saturating_sub(self.last_seen_ms);
-        // `as_millis` on a `u128` into an `i64`: saturating, because a ttl beyond 292 million years is a caller mistake
-        // rather than a duration this can represent.
-        let ttl_ms = i64::try_from(ttl.as_millis()).unwrap_or(i64::MAX);
-        age < ttl_ms
-    }
-
-    /// Whether the interface may show it.
-    ///
-    /// The protocol's own rule, delegated rather than restated.
-    #[must_use]
-    pub const fn is_displayable(&self) -> bool {
-        self.trust.is_displayable()
-    }
-}
-
-/// What the table decided about an announcement.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum Absorbed {
-    /// A device the table had not heard of.
-    New {
-        /// Which device.
-        device_id: DeviceId,
-    },
-    /// A device it had heard of, with something different to say.
-    Updated {
-        /// Which device.
-        device_id: DeviceId,
-        /// Whether the address changed, which is what makes a peer worth reconnecting to.
-        moved: bool,
-    },
-    /// A device it had heard of, saying the same thing again.
-    Unchanged {
-        /// Which device.
-        device_id: DeviceId,
-    },
-    /// The announcement was from this device.
-    ///
-    /// Ignored rather than refused: a device hears its own broadcasts, because that is what broadcasting means. Every
-    /// kernel ignores its own datagrams, and a table that counted them would show the user their own machine as a peer.
-    SelfAnnouncement,
-    /// The announcement named a device that is now offline.
-    Offline {
-        /// Which device.
-        device_id: DeviceId,
-    },
-}
-
-/// Everything the kernel has heard about.
-///
-/// # Why a `BTreeMap` and not a `HashMap`
-///
-/// Because a report and a test both want the same order twice, and the interface renders a list. The protocol's routing
-/// table uses a seeded hash because it is indexed by an untrusted name on a hot path; this is indexed by an identifier
-/// the kernel already holds and is read once per render.
-#[derive(Debug, Clone)]
-pub struct DiscoveryTable {
-    candidates: BTreeMap<DeviceId, Candidate>,
-    local: DeviceId,
-    ttl: Duration,
-}
-
-impl DiscoveryTable {
-    /// A table that ignores announcements from `local`.
-    #[must_use]
-    pub const fn new(local: DeviceId) -> Self {
-        Self { candidates: BTreeMap::new(), local, ttl: CANDIDATE_TTL }
-    }
-
-    /// A table with a chosen lifetime, for a test that does not want to wait one out.
-    #[must_use]
-    pub const fn with_ttl(local: DeviceId, ttl: Duration) -> Self {
-        Self { candidates: BTreeMap::new(), local, ttl }
-    }
-
-    /// This device's identifier, which announcements from it are ignored against.
-    #[must_use]
-    pub const fn local(&self) -> DeviceId {
-        self.local
-    }
-
-    /// How many devices are known, expired ones included.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.candidates.len()
-    }
-
-    /// Whether nothing is known.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.candidates.is_empty()
-    }
-
-    /// A device, whether or not it is still current.
-    #[must_use]
-    pub fn get(&self, device_id: DeviceId) -> Option<&Candidate> {
-        self.candidates.get(&device_id)
-    }
-
-    /// Every device, in identifier order.
-    pub fn iter(&self) -> impl Iterator<Item = &Candidate> {
-        self.candidates.values()
-    }
-
-    /// Every device that is still current, in identifier order.
-    pub fn current(&self, now_ms: i64) -> impl Iterator<Item = &Candidate> {
-        let ttl = self.ttl;
-        self.candidates.values().filter(move |candidate| candidate.is_current(now_ms, ttl))
-    }
-
-    /// Every device the interface may show, in identifier order.
-    ///
-    /// The intersection of current and displayable, which is the list a screen renders and therefore the list worth
-    /// having a name for.
-    pub fn displayable(&self, now_ms: i64) -> impl Iterator<Item = &Candidate> {
-        let ttl = self.ttl;
-        self.candidates
-            .values()
-            .filter(move |candidate| candidate.is_current(now_ms, ttl) && candidate.is_displayable())
-    }
-
-    /// Records an announcement.
-    ///
-    /// # Why the trust level only rises
-    ///
-    /// An announcement is unauthenticated. A peer that announced itself is not evidence that a paired device stopped
-    /// being paired, so the level is raised for a device that has just been heard from and never lowered here. A
-    /// pairing is forgotten by the code that owns pairings, with a reason a user can see.
-    pub fn absorb(&mut self, announcement: &DeviceAnnouncement, from: SocketAddr, now_ms: i64) -> Absorbed {
-        if announcement.device_id == self.local {
-            return Absorbed::SelfAnnouncement;
-        }
-
-        let address = SocketAddr::new(from.ip(), announcement.port);
-        let name = usable_name(&announcement.display_name);
-        if synra_observe::wire::is_installed() {
-            synra_observe::wire::note("lan", format!("heard {address}"));
-        }
-
-        let existing = self.candidates.get(&announcement.device_id);
-        let Some(existing) = existing else {
-            self.candidates.insert(
-                announcement.device_id,
-                Candidate {
-                    device_id: announcement.device_id,
-                    display_name: name,
-                    platform: announcement.platform,
-                    app_version: announcement.app_version.clone(),
-                    claimed_features: announcement.features.clone(),
-                    address,
-                    trust: TrustLevel::Announced,
-                    last_seen_ms: now_ms,
-                },
-            );
-            return Absorbed::New { device_id: announcement.device_id };
-        };
-
-        // Nothing changed, which is the ordinary case: a device announces on an interval and most announcements say the
-        // same thing. Reported rather than silently swallowed, because a caller that counts *changes* needs to know the
-        // difference between "heard from again" and "said something new" — and the first is what keeps a candidate
-        // alive.
-        let moved = existing.address != address;
-        let same = existing.display_name == name
-            && existing.platform == announcement.platform
-            && existing.app_version == announcement.app_version
-            && existing.claimed_features == announcement.features
-            && !moved;
-
-        // ★ The trust level is preserved, not reset to `Announced`. An announcement cannot demote a pairing, and a table
-        // that reset the level would make a paired device fall back to "found on this network" every time it broadcast.
-        let trust = existing.trust;
-        self.candidates.insert(
-            announcement.device_id,
-            Candidate {
-                device_id: announcement.device_id,
-                display_name: name,
-                platform: announcement.platform,
-                app_version: announcement.app_version.clone(),
-                claimed_features: announcement.features.clone(),
-                address,
-                trust,
-                last_seen_ms: now_ms,
-            },
-        );
-
-        if same {
-            Absorbed::Unchanged { device_id: announcement.device_id }
-        }
-        else {
-            Absorbed::Updated { device_id: announcement.device_id, moved }
-        }
-    }
-
-    /// Records that a device completed a handshake with this one.
-    ///
-    /// # Why this takes the address too
-    ///
-    /// Because a handshake that completed over a connection proves the address the connection was made to works, which
-    /// is better evidence than anything a datagram claimed. A device reached at a different address from the one it
-    /// announced is one whose announcement is stale, and recording the address it was actually reachable at is what
-    /// makes the next connection attempt succeed.
-    ///
-    /// Returns whether the device was known. A handshake with an unknown device is not a failure: a direct connection
-    /// may be attempted without discovery, and refusing it would make discovery mandatory for a device that is already
-    /// known by address.
-    pub fn handshaked(
-        &mut self,
-        device_id: DeviceId,
-        address: SocketAddr,
-        name: Option<&str>,
-        now_ms: i64,
-    ) -> bool {
-        let Some(existing) = self.candidates.get_mut(&device_id) else {
-            // A device reached without discovery becomes a candidate at the handshaked level: the connection is evidence,
-            // and it is better evidence than a datagram.
-            self.candidates.insert(
-                device_id,
-                Candidate {
-                    device_id,
-                    display_name: name.map_or_else(|| UNUSABLE_NAME.to_owned(), usable_name),
-                    platform: None,
-                    app_version: None,
-                    claimed_features: Vec::new(),
-                    address,
-                    trust: TrustLevel::Handshaked,
-                    last_seen_ms: now_ms,
-                },
-            );
-            return false;
-        };
-
-        existing.address = address;
-        existing.trust = existing.trust.max(TrustLevel::Handshaked);
-        existing.last_seen_ms = now_ms;
-        if let Some(name) = name {
-            existing.display_name = usable_name(name);
-        }
-        true
-    }
-
-    /// Records that the user paired with a device.
-    ///
-    /// # Why this can create a candidate
-    ///
-    /// Because a pairing can be made without discovery — two devices given each other's addresses. A table that
-    /// required an announcement first would make a paired device invisible until it happened to broadcast.
-    pub fn paired(&mut self, device_id: DeviceId, address: SocketAddr, name: Option<&str>, now_ms: i64) {
-        match self.candidates.get_mut(&device_id) {
-            Some(existing) => {
-                existing.trust = TrustLevel::Paired;
-                existing.address = address;
-                existing.last_seen_ms = now_ms;
-                if let Some(name) = name {
-                    existing.display_name = usable_name(name);
-                }
-            }
-            None => {
-                self.candidates.insert(
-                    device_id,
-                    Candidate {
-                        device_id,
-                        display_name: name.map_or_else(|| UNUSABLE_NAME.to_owned(), usable_name),
-                        platform: None,
-                        app_version: None,
-                        claimed_features: Vec::new(),
-                        address,
-                        trust: TrustLevel::Paired,
-                        last_seen_ms: now_ms,
-                    },
-                );
-            }
-        }
-    }
-
-    /// Records that a device said goodbye.
-    ///
-    /// # Why the candidate is kept rather than removed
-    ///
-    /// Because "it left" and "it was never here" are different, and the user asked to see a list of devices — a device
-    /// that said goodbye is one the interface should show as offline until its entry ages out, not one that vanishes. A
-    /// paired device is kept indefinitely, because a pairing outlives a departure.
-    ///
-    /// Returns whether the device was known.
-    pub fn went_offline(&mut self, device_id: DeviceId, now_ms: i64) -> Absorbed {
-        match self.candidates.get_mut(&device_id) {
-            // The last-seen time is moved *back* rather than left alone, so the entry ages out at the same rate as one
-            // that was never seen — a goodbye is the beginning of the end of the entry, not a refresh of it.
-            Some(existing) => {
-                existing.last_seen_ms = now_ms.saturating_sub(
-                    i64::try_from(self.ttl.as_millis()).unwrap_or(i64::MAX),
-                );
-                Absorbed::Offline { device_id }
-            }
-            None => Absorbed::Unchanged { device_id },
-        }
-    }
-
-    /// Drops the candidates that have stopped being current.
-    ///
-    /// # Why this reports what it dropped
-    ///
-    /// Because the interface has to be told: a device that disappears from a list without an event is one a screen keeps
-    /// showing. The names are returned rather than only a count so the caller can say which without looking them up
-    /// again, which it cannot do — they are gone.
-    pub fn expire(&mut self, now_ms: i64) -> Vec<Candidate> {
-        let ttl = self.ttl;
-        let expired: Vec<DeviceId> = self
-            .candidates
-            .values()
-            .filter(|candidate| !candidate.is_current(now_ms, ttl))
-            .map(|candidate| candidate.device_id)
-            .collect();
-
-        expired.into_iter().filter_map(|id| self.candidates.remove(&id)).collect()
-    }
-
-    /// Forgets a device entirely, for an unpairing or a block.
-    ///
-    /// Returns whether it was known. Unlike [`DiscoveryTable::expire`], this is not about time: the user decided, and a
-    /// device that is blocked must not be shown again because it broadcast once more.
-    pub fn forget(&mut self, device_id: DeviceId) -> Option<Candidate> {
-        self.candidates.remove(&device_id)
-    }
-
-    /// How long a candidate stays after its last announcement.
-    #[must_use]
-    pub const fn ttl(&self) -> Duration {
-        self.ttl
-    }
-}
-
-/// A name to display, or the placeholder.
-///
-/// # Why a bad name does not drop the candidate
-///
-/// The datagram told us a device exists and where, which is what discovery is *for*. The name is a display concern, so a
-/// name that fails the check costs the name and not the candidate — and the user still sees that something is there,
-/// which is the difference between a device they can investigate and one that is silently missing.
-fn usable_name(announced: &str) -> String {
-    check_display_name(announced).unwrap_or_else(|_| UNUSABLE_NAME.to_owned())
-}
-
-/// The address a datagram came from, with the port it announced.
-///
-/// The source address and not the announced endpoint list: the source is what the operating system vouched for, and the
-/// announced list is a claim. The port is the announced one, because the source port is the ephemeral one the datagram
-/// was sent from rather than the one the peer listens on.
-#[must_use]
-pub const fn announced_address(from: IpAddr, announcement: &DeviceAnnouncement) -> SocketAddr {
-    SocketAddr::new(from, announcement.port)
-}
-
+#[cfg(test)]
+use std::net::{IpAddr, SocketAddr};
+#[cfg(test)]
+use synra_protocol::discovery::{DeviceAnnouncement, TrustLevel};
+#[cfg(test)]
+use synra_protocol::ids::DeviceId;
+#[cfg(test)]
+use synra_protocol::session::PlatformKind;
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -493,7 +98,12 @@ mod tests {
     fn an_announcement_from_an_unknown_device_is_new() {
         let mut table = table();
         let result = table.absorb(&announcement(PEER, "Phone", 47100), address(0), 1_000);
-        assert_eq!(result, Absorbed::New { device_id: device(PEER) });
+        assert_eq!(
+            result,
+            Absorbed::New {
+                device_id: device(PEER)
+            }
+        );
         assert_eq!(table.len(), 1);
 
         let candidate = table.get(device(PEER)).expect("a candidate");
@@ -535,18 +145,39 @@ mod tests {
         table.absorb(&announcement(PEER, "Phone", 47100), address(0), 1_000);
         let result = table.absorb(&announcement(PEER, "Phone", 47100), address(0), 2_000);
 
-        assert_eq!(result, Absorbed::Unchanged { device_id: device(PEER) });
-        assert_eq!(table.get(device(PEER)).expect("a candidate").last_seen_ms, 2_000);
+        assert_eq!(
+            result,
+            Absorbed::Unchanged {
+                device_id: device(PEER)
+            }
+        );
+        assert_eq!(
+            table.get(device(PEER)).expect("a candidate").last_seen_ms,
+            2_000
+        );
     }
 
     #[test]
     fn a_changed_name_says_updated_and_not_moved() {
         let mut table = table();
         table.absorb(&announcement(PEER, "Phone", 47100), address(0), 1_000);
-        let result = table.absorb(&announcement(PEER, "Lena's phone", 47100), address(0), 2_000);
+        let result = table.absorb(
+            &announcement(PEER, "Lena's phone", 47100),
+            address(0),
+            2_000,
+        );
 
-        assert_eq!(result, Absorbed::Updated { device_id: device(PEER), moved: false });
-        assert_eq!(table.get(device(PEER)).expect("c").display_name, "Lena's phone");
+        assert_eq!(
+            result,
+            Absorbed::Updated {
+                device_id: device(PEER),
+                moved: false
+            }
+        );
+        assert_eq!(
+            table.get(device(PEER)).expect("c").display_name,
+            "Lena's phone"
+        );
     }
 
     #[test]
@@ -557,7 +188,13 @@ mod tests {
         table.absorb(&announcement(PEER, "Phone", 47100), address(0), 1_000);
         let result = table.absorb(&announcement(PEER, "Phone", 47101), address(0), 2_000);
 
-        assert_eq!(result, Absorbed::Updated { device_id: device(PEER), moved: true });
+        assert_eq!(
+            result,
+            Absorbed::Updated {
+                device_id: device(PEER),
+                moved: true
+            }
+        );
         assert_eq!(table.get(device(PEER)).expect("c").address.port(), 47101);
     }
 
@@ -587,7 +224,10 @@ mod tests {
         let mut table = table();
         let long = "a".repeat(500);
         table.absorb(&announcement(PEER, &long, 47100), address(0), 1_000);
-        assert_eq!(table.get(device(PEER)).expect("c").display_name, UNUSABLE_NAME);
+        assert_eq!(
+            table.get(device(PEER)).expect("c").display_name,
+            UNUSABLE_NAME
+        );
     }
 
     #[test]
@@ -604,7 +244,10 @@ mod tests {
         let mut table = table();
         table.absorb(&announcement(PEER, "Phone", 47100), address(0), 1_000);
         assert!(table.handshaked(device(PEER), address(47100), Some("Phone"), 2_000));
-        assert_eq!(table.get(device(PEER)).expect("c").trust, TrustLevel::Handshaked);
+        assert_eq!(
+            table.get(device(PEER)).expect("c").trust,
+            TrustLevel::Handshaked
+        );
     }
 
     #[test]
@@ -615,10 +258,16 @@ mod tests {
         let mut table = table();
         table.absorb(&announcement(PEER, "Phone", 47100), address(0), 1_000);
         table.paired(device(PEER), address(47100), Some("Phone"), 1_500);
-        assert_eq!(table.get(device(PEER)).expect("c").trust, TrustLevel::Paired);
+        assert_eq!(
+            table.get(device(PEER)).expect("c").trust,
+            TrustLevel::Paired
+        );
 
         table.absorb(&announcement(PEER, "Phone", 47100), address(0), 2_000);
-        assert_eq!(table.get(device(PEER)).expect("c").trust, TrustLevel::Paired);
+        assert_eq!(
+            table.get(device(PEER)).expect("c").trust,
+            TrustLevel::Paired
+        );
     }
 
     #[test]
@@ -649,7 +298,10 @@ mod tests {
     fn a_handshake_with_a_bad_name_still_records_the_device() {
         let mut table = table();
         table.handshaked(device(PEER), address(47100), Some("bad\nname"), 1_000);
-        assert_eq!(table.get(device(PEER)).expect("c").display_name, UNUSABLE_NAME);
+        assert_eq!(
+            table.get(device(PEER)).expect("c").display_name,
+            UNUSABLE_NAME
+        );
     }
 
     #[test]
@@ -716,7 +368,12 @@ mod tests {
         // would keep the entry alive for a further lifetime after the device said it was leaving.
         let mut table = short_table();
         table.absorb(&announcement(PEER, "Phone", 47100), address(0), 0);
-        assert_eq!(table.went_offline(device(PEER), 100), Absorbed::Offline { device_id: device(PEER) });
+        assert_eq!(
+            table.went_offline(device(PEER), 100),
+            Absorbed::Offline {
+                device_id: device(PEER)
+            }
+        );
         // The entry was pushed a lifetime back, so it is already expired at the moment of the goodbye.
         assert_eq!(table.current(100).count(), 0);
     }
@@ -727,7 +384,9 @@ mod tests {
         let mut table = table();
         assert_eq!(
             table.went_offline(device(OTHER), 1_000),
-            Absorbed::Unchanged { device_id: device(OTHER) }
+            Absorbed::Unchanged {
+                device_id: device(OTHER)
+            }
         );
         assert!(table.is_empty());
     }
@@ -738,7 +397,10 @@ mod tests {
         let mut table = table();
         table.absorb(&announcement(PEER, "Phone", 47100), address(0), 1_000);
         assert!(table.forget(device(PEER)).is_some());
-        assert!(table.forget(device(PEER)).is_none(), "forgetting twice should say nothing was there");
+        assert!(
+            table.forget(device(PEER)).is_none(),
+            "forgetting twice should say nothing was there"
+        );
         assert!(table.is_empty());
     }
 
@@ -755,7 +417,11 @@ mod tests {
         // ★ And the current one is **not** displayable: the protocol's own rule is `Handshaked | Paired`, so a device
         // heard from over UDP — which is unauthenticated — is a *candidate* and not a peer. The interface shows
         // candidates under a separate heading for exactly this reason.
-        assert_eq!(table.displayable(1_900).count(), 0, "an announced device is not displayable");
+        assert_eq!(
+            table.displayable(1_900).count(),
+            0,
+            "an announced device is not displayable"
+        );
 
         // A handshake is what makes it displayable, because a completed connection is evidence — and it does not change
         // whether the entry is current.
