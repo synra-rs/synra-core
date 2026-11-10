@@ -47,7 +47,11 @@ impl Paths {
     pub fn new(data_dir: impl Into<PathBuf>, cache_dir: impl Into<PathBuf>) -> Self {
         let data_dir = data_dir.into();
         let cache_dir = cache_dir.into();
-        Self { log_dir: data_dir.join("logs"), data_dir, cache_dir }
+        Self {
+            log_dir: data_dir.join("logs"),
+            data_dir,
+            cache_dir,
+        }
     }
 
     /// A layout with one root, for a platform that does not separate them, and for tests.
@@ -246,59 +250,9 @@ pub fn is_within(root: &Path, candidate: &Path) -> bool {
     root.iter().zip(&candidate).all(|(a, b)| a == b)
 }
 
-/// Why a path is not usable.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[non_exhaustive]
-pub enum PathError {
-    /// A directory could not be created.
-    #[error("the directory {path:?} cannot be created: {detail}")]
-    Unwritable {
-        /// The directory.
-        path: String,
-        /// What the operating system said.
-        detail: String,
-    },
+mod errors;
 
-    /// A plugin supplied a path that leaves its sandbox.
-    #[error("the path {path:?} is outside {root:?}")]
-    Escapes {
-        /// The path as the plugin wrote it.
-        path: String,
-        /// The sandbox root.
-        root: String,
-    },
-
-    /// A plugin supplied a path that is not relative.
-    #[error("the path {0:?} is absolute, and a plugin's paths are relative to its sandbox")]
-    Absolute(String),
-
-    /// A path could not be resolved.
-    #[error("the path {path:?} cannot be resolved: {detail}")]
-    Unresolvable {
-        /// The path.
-        path: String,
-        /// What the operating system said.
-        detail: String,
-    },
-
-    /// A directory tree could not be removed.
-    #[error("the directory {path:?} cannot be removed: {detail}")]
-    RemovalFailed {
-        /// The directory.
-        path: String,
-        /// What the operating system said.
-        detail: String,
-    },
-
-    /// A component of a path is not usable.
-    #[error("the path {path:?} has an unusable component {component:?}")]
-    BadComponent {
-        /// The whole path.
-        path: String,
-        /// The offending component.
-        component: String,
-    },
-}
+pub use errors::PathError;
 
 #[cfg(test)]
 mod tests {
@@ -315,13 +269,19 @@ mod tests {
         assert_eq!(paths.cache_dir(), Path::new("/cache"));
         assert_eq!(paths.log_dir(), Path::new("/data/logs"));
         assert_eq!(paths.db_path(), Path::new("/data/kernel.db"));
-        assert_eq!(paths.bootstrap_config_path(), Path::new("/data/config.json"));
+        assert_eq!(
+            paths.bootstrap_config_path(),
+            Path::new("/data/config.json")
+        );
         assert_eq!(paths.plugins_dir(), Path::new("/data/plugins"));
         assert_eq!(paths.plugin_data_dir(), Path::new("/data/plugin-data"));
         assert_eq!(paths.keys_dir(), Path::new("/data/keys"));
         assert_eq!(paths.wasm_cache_dir(), Path::new("/cache/wasm"));
         assert_eq!(paths.catalog_cache_dir(), Path::new("/cache/catalog"));
-        assert_eq!(paths.diagnostics_cache_dir(), Path::new("/cache/diagnostics"));
+        assert_eq!(
+            paths.diagnostics_cache_dir(),
+            Path::new("/cache/diagnostics")
+        );
         assert_eq!(paths.crash_dir(), Path::new("/data/logs/crash"));
     }
 
@@ -339,8 +299,16 @@ mod tests {
         // Deleting all of it costs a recompile and nothing else, which is only true if nothing in it is
         // irreplaceable.
         let paths = paths();
-        for directory in [paths.wasm_cache_dir(), paths.catalog_cache_dir(), paths.diagnostics_cache_dir()] {
-            assert!(directory.starts_with(paths.cache_dir()), "{}", directory.display());
+        for directory in [
+            paths.wasm_cache_dir(),
+            paths.catalog_cache_dir(),
+            paths.diagnostics_cache_dir(),
+        ] {
+            assert!(
+                directory.starts_with(paths.cache_dir()),
+                "{}",
+                directory.display()
+            );
         }
     }
 
@@ -356,14 +324,27 @@ mod tests {
     fn a_plugin_id_becomes_one_path_component() {
         // An id contains a `/` and an `@`, one of which is a path separator and neither of which is a legal
         // directory name everywhere.
-        assert_eq!(sanitise_component("@synra-plugin/chat"), "synra-plugin+chat");
-        assert_eq!(sanitise_component("@imba97/synra-plugin-notes"), "imba97+synra-plugin-notes");
+        assert_eq!(
+            sanitise_component("@synra-plugin/chat"),
+            "synra-plugin+chat"
+        );
+        assert_eq!(
+            sanitise_component("@imba97/synra-plugin-notes"),
+            "imba97+synra-plugin-notes"
+        );
     }
 
     #[test]
     fn a_plugin_id_cannot_name_a_directory_outside_the_plugins_directory() {
         // The property that matters: whatever the id, the joined path stays under the root.
-        for id in ["../../etc", "@scope/../../..", "..", "./..", "@scope//x", "a/b/c"] {
+        for id in [
+            "../../etc",
+            "@scope/../../..",
+            "..",
+            "./..",
+            "@scope//x",
+            "a/b/c",
+        ] {
             let sanitised = sanitise_component(id);
             assert!(!sanitised.contains('/'), "{id} -> {sanitised}");
             assert!(!sanitised.contains('\\'), "{id} -> {sanitised}");
@@ -394,7 +375,11 @@ mod tests {
     fn distinct_ids_stay_distinct_after_sanitising() {
         // A substitution that collapsed two ids would let one plugin read another's data, which is the one thing
         // the per-plugin directory exists to prevent.
-        let ids = ["@synra-plugin/chat", "@synra-plugin/notes", "@imba97/synra-plugin-chat"];
+        let ids = [
+            "@synra-plugin/chat",
+            "@synra-plugin/notes",
+            "@imba97/synra-plugin-chat",
+        ];
         let mut seen = std::collections::HashSet::new();
         for id in ids {
             assert!(seen.insert(sanitise_component(id)), "{id} collided");
@@ -434,7 +419,10 @@ mod tests {
 
         let mut seen = std::collections::HashSet::new();
         for directory in &directories {
-            assert!(seen.insert(directory.clone()), "{directory:?} is listed twice");
+            assert!(
+                seen.insert(directory.clone()),
+                "{directory:?} is listed twice"
+            );
             assert!(
                 directory.starts_with(paths.data_dir()) || directory.starts_with(paths.cache_dir()),
                 "{directory:?} is under neither root"
@@ -453,7 +441,11 @@ mod tests {
 
         paths.ensure_directories().expect("creates");
         for directory in paths.required_directories() {
-            assert!(directory.is_dir(), "{} was not created", directory.display());
+            assert!(
+                directory.is_dir(),
+                "{} was not created",
+                directory.display()
+            );
         }
 
         // Idempotent, because start-up can run more than once in a session.
@@ -480,11 +472,23 @@ mod tests {
     #[test]
     fn path_errors_explain_themselves() {
         let errors = vec![
-            PathError::Unwritable { path: "a".to_owned(), detail: "b".to_owned() },
-            PathError::Escapes { path: "a".to_owned(), root: "b".to_owned() },
+            PathError::Unwritable {
+                path: "a".to_owned(),
+                detail: "b".to_owned(),
+            },
+            PathError::Escapes {
+                path: "a".to_owned(),
+                root: "b".to_owned(),
+            },
             PathError::Absolute("a".to_owned()),
-            PathError::Unresolvable { path: "a".to_owned(), detail: "b".to_owned() },
-            PathError::BadComponent { path: "a".to_owned(), component: "b".to_owned() },
+            PathError::Unresolvable {
+                path: "a".to_owned(),
+                detail: "b".to_owned(),
+            },
+            PathError::BadComponent {
+                path: "a".to_owned(),
+                component: "b".to_owned(),
+            },
         ];
         for error in errors {
             let text = error.to_string();
