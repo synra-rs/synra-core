@@ -25,11 +25,13 @@ use synra_protocol::ids::{DeviceId, PluginId, TraceId, TransferId};
 use synra_protocol::session::{PluginList, PluginSummary};
 
 mod decision;
+mod decision_policy;
 mod receiver;
 mod record;
 mod session;
 
 pub use decision::*;
+pub use decision_policy::*;
 pub use receiver::*;
 pub use record::*;
 pub use session::*;
