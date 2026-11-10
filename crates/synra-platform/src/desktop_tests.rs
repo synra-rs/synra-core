@@ -7,6 +7,9 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::actions::MAX_NOTIFICATION_LEN;
+use crate::guard::check_clipboard_text;
+use crate::host::Platform;
+use crate::{MAX_CLIPBOARD_BYTES, PlatformAction, PlatformError, Policies};
 
 use super::*;
 
