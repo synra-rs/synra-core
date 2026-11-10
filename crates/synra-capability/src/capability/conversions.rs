@@ -4,6 +4,6 @@ impl TryFrom<String> for Capability {
     type Error = CapabilityError;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
-        Capability::parse(&value)
+        Self::parse(&value)
     }
 }

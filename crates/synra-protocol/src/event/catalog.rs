@@ -10,7 +10,6 @@ use super::EventName;
 ///
 /// Never delivered to a plugin: these *are* the protocol, and exposing them would let a plugin
 /// interfere with link establishment or pairing.
-
 pub mod events {
     /// Opens a link. Carries the handshake body.
     pub const HELLO: &str = "device.hello";

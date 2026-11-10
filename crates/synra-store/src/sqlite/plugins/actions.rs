@@ -1,4 +1,4 @@
-use super::*;
+use super::{DbError, PluginActionRow, SynraDb, params};
 
 impl SynraDb {
     /// Records an action a plugin declares, replacing an earlier declaration under the same name.
