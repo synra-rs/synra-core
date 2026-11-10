@@ -272,6 +272,5 @@ fn refusal_for(path: &str) -> PathRefusal {
 }
 
 #[cfg(test)]
-#[path = "../expand_tests.rs"]
 mod tests;
 
