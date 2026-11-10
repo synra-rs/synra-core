@@ -26,11 +26,12 @@
 
 use std::path::{Path, PathBuf};
 
-use ed25519_dalek::{Signer as _, SigningKey, VerifyingKey};
-use rand_core::RngCore as _;
 use sha2::{Digest, Sha256};
 use synra_plugin_api::manifest::Manifest;
-use synra_plugin_api::publisher::{self, Fingerprint, SignatureFile, SigningSubject, Untrusted};
+use synra_plugin_api::publisher::{self, SigningSubject, Untrusted};
+
+#[cfg(test)]
+use synra_plugin_api::publisher::SignatureFile;
 
 /// Why a signature could not be produced or checked.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -151,7 +152,7 @@ impl SignedContent {
 ///
 /// The digest is over **the file's bytes**, not over a re-serialisation: the host hashes the bytes it received, and a
 /// digest computed from a parsed-and-printed form would be a digest of something nobody downloaded.
-fn read_manifest(root: &Path) -> Result<(Manifest, String), SignError> {
+pub(super) fn read_manifest(root: &Path) -> Result<(Manifest, String), SignError> {
     let path = root.join("manifest.json");
     let text = std::fs::read_to_string(&path).map_err(|error| SignError::ManifestUnreadable {
         path: path.display().to_string(),
@@ -165,7 +166,7 @@ fn read_manifest(root: &Path) -> Result<(Manifest, String), SignError> {
 }
 
 /// Every artifact the manifest names, by file name, with its digest.
-fn collect_artifacts(root: &Path, manifest: &Manifest) -> Result<publisher::Digests, SignError> {
+pub(super) fn collect_artifacts(root: &Path, manifest: &Manifest) -> Result<publisher::Digests, SignError> {
     let mut artifacts = publisher::Digests::new();
     for name in artifact_names(manifest) {
         let path = root.join(&name);
@@ -267,270 +268,12 @@ fn collect_files(root: &Path, directory: &Path, out: &mut Vec<(String, PathBuf)>
     Ok(())
 }
 
-/// A signing key, parsed from the format this tool reads.
-///
-/// The format is 32 bytes of lowercase hex in a file. Deliberately the simplest thing an author can produce, and
-/// printable: a key they can write down is a key they can restore, and a publisher who loses theirs cannot ship an
-/// update to a plugin users already trust.
-#[derive(Debug)]
-pub struct SigningKeyFile {
-    key: SigningKey,
-}
+mod key;
+mod verify;
 
-impl SigningKeyFile {
-    /// Reads a key.
-    ///
-    /// # Errors
-    ///
-    /// [`SignError`] when the file cannot be read or is not 32 bytes of hex.
-    pub fn read(path: &Path) -> Result<Self, SignError> {
-        let text = std::fs::read_to_string(path).map_err(|error| SignError::KeyUnreadable {
-            path: path.display().to_string(),
-            reason: error.to_string(),
-        })?;
-        Self::parse(text.trim()).map_err(|reason| SignError::KeyMalformed {
-            path: path.display().to_string(),
-            reason,
-        })
-    }
-
-    /// Parses 32 bytes of hex.
-    ///
-    /// # Errors
-    ///
-    /// The reason, as a sentence, when it is not 32 bytes of hex.
-    pub fn parse(text: &str) -> Result<Self, String> {
-        let bytes = hex_decode(text)?;
-        // The length is checked before the type conversion, because a `SigningKey` from 16 bytes would be a weaker key
-        // rather than an error — and a publisher would not know.
-        let array: [u8; 32] = bytes
-            .as_slice()
-            .try_into()
-            .map_err(|_| format!("it is {} bytes and a key is 32", bytes.len()))?;
-        Ok(Self { key: SigningKey::from_bytes(&array) })
-    }
-
-    /// Generates a new key from the operating system's randomness.
-    ///
-    /// # Errors
-    ///
-    /// The reason, as a sentence, when the system's randomness cannot be read. Reported rather than worked around: a
-    /// key from a weak source is one an attacker can forge, and the failure would be silent.
-    pub fn generate() -> Result<Self, String> {
-        Ok(Self { key: SigningKey::from_bytes(&os_randomness()?) })
-    }
-
-    /// The secret, as the hex this tool reads back.
-    #[must_use]
-    pub fn to_hex(&self) -> String {
-        hex_encode(self.key.as_bytes())
-    }
-
-    /// The public half, as hex.
-    #[must_use]
-    pub fn public_hex(&self) -> String {
-        hex_encode(self.key.verifying_key().as_bytes())
-    }
-
-    /// The public half's fingerprint, as a user compares it.
-    #[must_use]
-    pub fn fingerprint(&self) -> Fingerprint {
-        Fingerprint::of(&self.key.verifying_key())
-    }
-
-    /// The public half as base64, which is what a signature document carries.
-    #[must_use]
-    pub fn public_base64(&self) -> String {
-        use base64::Engine as _;
-        base64::engine::general_purpose::STANDARD.encode(self.key.verifying_key().as_bytes())
-    }
-
-    /// Signs content, producing the document a package carries.
-    ///
-    /// `signed_at` is passed in rather than read from the clock, because a document's timestamp is a value a test
-    /// asserts and a reproducibility check compares.
-    #[must_use]
-    pub fn sign(&self, content: &SignedContent, signed_at: &str) -> String {
-        let signature = self.key.sign(&content.subject.canonical_bytes());
-        let document = serde_json::json!({
-            "version": publisher::SIGNATURE_VERSION,
-            "publisher": { "id": content.publisher_id },
-            "algorithm": publisher::ALGORITHM,
-            "signedAt": signed_at,
-            "pubkey": self.public_base64(),
-            "subject": {
-                "manifest": content.subject.manifest,
-                "artifacts": content.subject.artifacts,
-            },
-            "signature": encode_signature(&signature.to_bytes()),
-        });
-        // Pretty-printed, because the file lands in a repository and a human diffs it. The *signed* bytes are the
-        // canonical subject, so the presentation cannot change what a signature means.
-        serde_json::to_string_pretty(&document).unwrap_or_else(|_| "{}".to_owned())
-    }
-}
-
-/// The base64 of a signature.
-fn encode_signature(bytes: &[u8]) -> String {
-    use base64::Engine as _;
-    base64::engine::general_purpose::STANDARD.encode(bytes)
-}
-
-/// What a verification concluded.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Verified {
-    /// The plugin's id.
-    pub plugin_id: String,
-    /// Its version.
-    pub version: String,
-    /// Who signed it.
-    pub publisher_id: String,
-    /// The key's fingerprint, which is what a user compares.
-    pub fingerprint: Fingerprint,
-    /// What the device makes of the publisher.
-    pub trust: publisher::PluginTrust,
-}
-
-/// Checks a package's signature against what is on disk.
-///
-/// # The order the checks happen in, and why
-///
-/// The document is verified **before** anything is concluded about the publisher, the manifest's artifacts are
-/// checked **before** that, and the artifacts' actual digests are checked **last** — each step is only meaningful if
-/// the one before it held, and a signature that does not cover what shipped produces a reassuring answer about the
-/// wrong bytes.
-///
-/// # Errors
-///
-/// [`SignError::Mismatch`] when anything does not agree, [`SignError::Untrusted`] when the publisher is one this
-/// device refuses, and [`SignError::DocumentUnreadable`] when the document cannot be read at all.
-pub fn verify(
-    document_text: &str,
-    root: &Path,
-    trust: &publisher::PublisherTrustStore,
-) -> Result<Verified, SignError> {
-    let document = SignatureFile::parse(document_text).map_err(|error| SignError::DocumentUnreadable {
-        reason: error.to_string(),
-    })?;
-
-    let (manifest, manifest_digest) = read_manifest(root)?;
-    if !document.subject.covers(&manifest).is_empty() {
-        return Err(SignError::Mismatch);
-    }
-
-    let found = collect_artifacts(root, &manifest)?;
-    // ★ The same comparison the host's verify pipeline runs (`SigningSubject::matches`), rather than a second
-    // hand-written version of it. The manifest digest, every artifact's digest and the "signature covers a subset"
-    // question are one question — is this subject this package? — and the two sides had two answers until this call.
-    if !document.subject.matches(&manifest_digest, &found) {
-        return Err(SignError::Mismatch);
-    }
-
-    let publisher::VerifyOutcome::Good { fingerprint } =
-        document.verify().map_err(|error| SignError::DocumentUnreadable {
-            reason: error.to_string(),
-        })?
-    else {
-        return Err(SignError::Mismatch);
-    };
-
-    let trust = trust.classify(&document.publisher.id, &fingerprint);
-    if let publisher::PluginTrust::Untrusted { why } = &trust {
-        return Err(SignError::Untrusted { why: why.clone() });
-    }
-
-    Ok(Verified {
-        plugin_id: manifest.id.to_string(),
-        version: manifest.version,
-        publisher_id: document.publisher.id,
-        fingerprint,
-        trust,
-    })
-}
-
-/// Reads the public key an author keeps beside a package, if there is one.
-///
-/// # Why a package directory has one
-///
-/// Because an author who signs and then loses the key has no way to notice: the signature they produced is still
-/// valid, and every later release would be signed with a key nobody has. The public half beside the package is what a
-/// later run compares against, and its absence is not an error — a plugin without one is one whose publisher has not
-/// decided to pin anything.
-#[must_use]
-pub fn expected_fingerprint(root: &Path) -> Option<Fingerprint> {
-    let path = root.join("public-key.txt");
-    let text = std::fs::read_to_string(path).ok()?;
-    let bytes = hex_decode(text.trim()).ok()?;
-    let array: [u8; 32] = bytes.as_slice().try_into().ok()?;
-    VerifyingKey::from_bytes(&array).ok().map(|key| Fingerprint::of(&key))
-}
-
-/// Reads randomness from the operating system.
-///
-/// # Why this goes through `ed25519-dalek`'s own randomness
-///
-/// The alternative was to call the platform's API directly, and on Windows that is an `unsafe extern` block —
-/// which this workspace forbids everywhere. `ed25519-dalek`'s `rand_core` feature already reads the same source
-/// correctly on every platform it supports, so the dependency is on a sibling feature of a crate already here rather
-/// than on a second random-number crate.
-///
-/// A key from a weak source is one an attacker can forge and the failure would be silent, so this reports rather than
-/// working around a failure.
-fn os_randomness() -> Result<[u8; 32], String> {
-    let mut bytes = [0u8; 32];
-    // `fill_bytes`, not `try_fill_bytes`: `rand_core` 0.6's `OsRng` has no fallible call, and its contract is that the
-    // system either has randomness or the process cannot continue. The result is still a `Result` at this boundary, so
-    // a later version with a fallible call changes one line rather than every caller.
-    rand_core::OsRng.fill_bytes(&mut bytes);
-    Ok(bytes)
-}
-
-/// The lowercase hex of some bytes.
-fn hex_encode(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        // Written by hand rather than with a crate: it is eight lines, and a dependency for it would be a dependency
-        // in a tool an author runs on their own machine for no gain.
-        out.push(char::from_digit(u32::from(byte >> 4), 16).unwrap_or('0'));
-        out.push(char::from_digit(u32::from(byte & 0x0F), 16).unwrap_or('0'));
-    }
-    out
-}
-
-/// Decodes lowercase or uppercase hex.
-///
-/// # Errors
-///
-/// The reason, as a sentence: an odd length, a character that is not hex, or the byte that is not.
-fn hex_decode(text: &str) -> Result<Vec<u8>, String> {
-    if !text.len().is_multiple_of(2) {
-        return Err(format!("it has {} characters and hex comes in pairs", text.len()));
-    }
-    let mut out = Vec::with_capacity(text.len() / 2);
-    // `as_chunks` rather than `chunks_exact` plus indexing: the compiler knows each chunk is exactly two bytes, so the
-    // two reads cannot panic — and "may panic" is a lint this workspace denies because the kernel decodes bytes from
-    // the network.
-    let (pairs, remainder) = text.as_bytes().as_chunks::<2>();
-    if !remainder.is_empty() {
-        return Err(format!("it has {} characters and hex comes in pairs", text.len()));
-    }
-    for pair in pairs {
-        let high = hex_value(pair[0]).ok_or_else(|| format!("`{}` is not a hex digit", char::from(pair[0])))?;
-        let low = hex_value(pair[1]).ok_or_else(|| format!("`{}` is not a hex digit", char::from(pair[1])))?;
-        out.push((high << 4) | low);
-    }
-    Ok(out)
-}
-
-/// The value of one hex digit.
-const fn hex_value(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
-    }
-}
+pub use key::SigningKeyFile;
+pub(super) use key::hex_encode;
+pub use verify::{Verified, expected_fingerprint, verify};
 
 #[cfg(test)]
 mod tests {
@@ -859,3 +602,4 @@ mod tests {
         assert!(verify(&document, &package.path, &PublisherTrustStore::new()).is_ok());
     }
 }
+
