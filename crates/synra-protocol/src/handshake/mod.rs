@@ -18,8 +18,11 @@
 //!
 use serde::{Deserialize, Serialize};
 
+#[cfg(test)]
 use crate::ids::DeviceId;
+#[cfg(test)]
 use crate::limits;
+#[cfg(test)]
 use crate::session::PlatformKind;
 
 /// The only protocol version this build speaks.

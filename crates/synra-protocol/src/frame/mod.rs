@@ -35,7 +35,10 @@
 
 use core::fmt;
 
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
+
+#[cfg(test)]
+use bytes::BytesMut;
 
 use crate::limits::{FRAME_HEADER_LEN, MAX_CHUNK_LEN, MAX_FRAME_LEN};
 

@@ -30,14 +30,19 @@
 //! call site would get wrong, and getting one wrong produces a message that cannot be correlated
 //! with anything.
 
-use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
-use crate::error::ErrorCode;
 use crate::event::EventName;
 use crate::ids::{DeviceId, RequestId, TraceId};
-use crate::limits::{MAX_PAYLOAD_DEPTH, MAX_PAYLOAD_LEN};
+use crate::limits::MAX_PAYLOAD_LEN;
+
+#[cfg(test)]
+use bytes::Bytes;
+#[cfg(test)]
+use crate::error::ErrorCode;
+#[cfg(test)]
+use crate::limits::MAX_PAYLOAD_DEPTH;
 
 mod errors;
 mod helpers;
