@@ -57,7 +57,6 @@ pub struct BundlePlan {
     log_tail_lines: usize,
     destination: PathBuf,
 }
-
 impl BundlePlan {
     /// Assembles a plan from the available sources.
     ///
