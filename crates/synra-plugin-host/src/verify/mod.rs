@@ -38,5 +38,4 @@ pub(crate) use crate::host_surface;
 pub(crate) use synra_plugin_api::publisher::PluginTrust;
 
 #[cfg(test)]
-#[path = "../verify_tests.rs"]
 mod tests;
