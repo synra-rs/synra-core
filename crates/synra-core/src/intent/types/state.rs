@@ -1,172 +1,4 @@
-//! An intent: what a user asked for, before anything has decided how to do it.
-//!
-//! # Why this is a type of its own and not a message
-//!
-//! Because the interesting part of the product is the *gap* between "the user shared a link" and "a plugin opened a
-//! browser on another machine", and everything that happens in that gap is a decision somebody has to make: which
-//! plugins are even asked, which of their answers count, whether a user is interrupted, which device runs it, and what
-//! happens when the answer never comes. A message struct cannot hold a decision that is still being made.
-//!
-//! # What is here and what is not
-//!
-//! This module is the **vocabulary**: what an intent is made of, what a candidate is, and every way one can end. The
-//! board that sequences them — matching, deadlines, idempotency — is [`crate::intent`], and it is deliberately a
-//! separate file because the two have different readers: this one is read by whoever adds a source of intents, and the
-//! board by whoever changes the order things happen in.
-
-use std::time::Duration;
-
-use serde::{Deserialize, Serialize};
-use synra_protocol::ids::{DeviceId, IntentId, PluginId, RequestId, TraceId};
-use synra_protocol::SynraError;
-
-use crate::admission::AdmissionRefusal;
-
-/// What an intent will carry once a plugin has been chosen.
-///
-/// The same shape the wire uses, so a candidate that becomes a dispatch does not get rebuilt on the way out: a second
-/// structure would be a second place for the action's name to drift from the one the user was shown.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PlannedAction {
-    /// Which plugin would run it.
-    pub plugin_id: PluginId,
-    /// Which of that plugin's actions.
-    pub action: String,
-    /// The action's arguments, as JSON.
-    pub args: serde_json::Value,
-}
-
-/// One plugin's answer to "can you handle this?".
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IntentCandidate {
-    /// Who answered.
-    pub plugin_id: PluginId,
-    /// The version that answered, which a dispatch records: a plugin updated between the prompt and the decision is a
-    /// plugin the user did not agree about.
-    pub plugin_version: String,
-    /// What it proposes to do.
-    pub planned: PlannedAction,
-    /// The capabilities the action needs, which the gate checks before anything runs.
-    pub required_caps: Vec<String>,
-    /// Where it suggests running, when it has an opinion.
-    pub suggested_target: Option<DeviceId>,
-    /// One line for a prompt, which is what a user chooses between.
-    pub title: String,
-    /// Optional detail, such as the URL that would be opened.
-    pub detail: Option<String>,
-}
-
-impl IntentCandidate {
-    /// Whether this candidate is the same plugin answering twice.
-    ///
-    /// # Why a second answer from one plugin replaces the first rather than joining it
-    ///
-    /// Because a plugin asked twice — once for the same share under two event names, say — has not offered the user two
-    /// choices; it has offered one and described it twice. Two entries in a prompt would ask a user to choose between
-    /// the same thing.
-    #[must_use]
-    pub fn supersedes(&self, other: &Self) -> bool {
-        self.plugin_id == other.plugin_id && self.planned.action == other.planned.action
-    }
-}
-
-/// Where an intent came from.
-///
-/// # Why the source is kept rather than flattened into an action
-///
-/// Because it is what the *next* decision is made from: a share is matched by asking every plugin that declares a share
-/// handler, a direct call names its plugin already, and a clipboard push is neither. Flattening these into "an action
-/// and its arguments" would lose the fact that decides who gets asked.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
-pub enum IntentSource {
-    /// The operating system's share sheet handed something over.
-    Share {
-        /// The shared item, as the inbound layer parsed it.
-        item: synra_protocol::inbound::ShareItem,
-        /// The application that shared it, when the platform said.
-        source_app: Option<String>,
-    },
-    /// This device's own clipboard changed and the user asked for it to go somewhere.
-    Clipboard {
-        /// Which device it is meant for, or `None` to ask.
-        target: Option<DeviceId>,
-    },
-    /// A plugin's own window asked for something.
-    PluginUi {
-        /// Which plugin.
-        plugin_id: PluginId,
-        /// Which action.
-        action: String,
-        /// Its arguments.
-        params: serde_json::Value,
-    },
-    /// Somebody named the plugin and the action directly: a CLI, a test, a deep link.
-    Direct {
-        /// Which plugin.
-        plugin_id: PluginId,
-        /// Which action.
-        action: String,
-        /// Its arguments.
-        params: serde_json::Value,
-        /// Where it should run.
-        target: DeviceId,
-    },
-}
-
-impl IntentSource {
-    /// A short name, for a log line and a metric label.
-    #[must_use]
-    pub const fn kind(&self) -> &'static str {
-        match self {
-            Self::Share { .. } => "share",
-            Self::Clipboard { .. } => "clipboard",
-            Self::PluginUi { .. } => "plugin-ui",
-            Self::Direct { .. } => "direct",
-        }
-    }
-
-    /// The plugin already named by the source, when there is one.
-    ///
-    /// A [`IntentSource::Direct`] or [`IntentSource::PluginUi`] names its plugin, so nothing has to be matched: the
-    /// candidate list has one entry and the matching phase has no questions to ask. Answering `None` here is what makes
-    /// a share go through matching.
-    #[must_use]
-    pub const fn named_plugin(&self) -> Option<&PluginId> {
-        match self {
-            Self::PluginUi { plugin_id, .. } | Self::Direct { plugin_id, .. } => Some(plugin_id),
-            Self::Share { .. } | Self::Clipboard { .. } => None,
-        }
-    }
-
-    /// The device the source already chose, when it did.
-    #[must_use]
-    pub const fn named_target(&self) -> Option<DeviceId> {
-        match self {
-            Self::Clipboard { target } => *target,
-            Self::Direct { target, .. } => Some(*target),
-            Self::Share { .. } | Self::PluginUi { .. } => None,
-        }
-    }
-
-    /// The candidate this source implies without asking anyone, when it implies one.
-    #[must_use]
-    pub fn implied_action(&self) -> Option<PlannedAction> {
-        // Two arms rather than one with an `|`: `Direct` carries a `target` that `PluginUi` does not, and a pattern
-        // that names only the shared fields is the one a field added to either variant would silently stop binding.
-        let (plugin_id, action, params) = match self {
-            Self::PluginUi { plugin_id, action, params } => (plugin_id, action, params),
-            Self::Direct { plugin_id, action, params, .. } => (plugin_id, action, params),
-            Self::Share { .. } | Self::Clipboard { .. } => return None,
-        };
-        Some(PlannedAction {
-            plugin_id: plugin_id.clone(),
-            action: action.clone(),
-            args: params.clone(),
-        })
-    }
-}
+use super::*;
 
 /// How much of a user's attention an intent is allowed to need.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -310,7 +142,14 @@ impl IntentState {
     /// progress. There is a test beside this that constructs every variant and asserts the two agree.
     #[must_use]
     pub const fn final_kinds() -> &'static [&'static str] {
-        &["succeeded", "failed", "no-handler", "timed-out", "refused", "cancelled"]
+        &[
+            "succeeded",
+            "failed",
+            "no-handler",
+            "timed-out",
+            "refused",
+            "cancelled",
+        ]
     }
 
     /// The candidates, wherever they are being held.
@@ -405,41 +244,4 @@ pub enum IntentError {
         /// How it ended.
         ended: &'static str,
     },
-}
-
-/// An intent, with everything known about it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Intent {
-    /// Identifies it for its whole life, and travels with the dispatch.
-    pub id: IntentId,
-    /// Follows it across devices and into logs.
-    pub trace: TraceId,
-    /// What asked for it.
-    pub source: IntentSource,
-    /// Where it is.
-    pub state: IntentState,
-    /// How much attention it may need.
-    pub choice: Choice,
-    /// When it was raised, in signed milliseconds since the epoch.
-    pub created_at_ms: i64,
-    /// The envelope id a dispatch carries, once there is one.
-    pub request_id: Option<RequestId>,
-    /// Which device it came from, when it came over a link.
-    ///
-    /// Part of the idempotency key: two devices may both pick the same identifier, and the same device may send the
-    /// same request twice because its answer was lost.
-    pub origin: Option<DeviceId>,
-}
-
-impl Intent {
-    /// Whether this intent's action is the same one another request names.
-    ///
-    /// # Why the whole triple and not the request id alone
-    ///
-    /// A request id is chosen by the sender, and two senders choose independently: the same id from two devices is two
-    /// requests. Comparing all three is what makes "have I already done this?" a question with an answer.
-    #[must_use]
-    pub fn is_same_request_as(&self, origin: DeviceId, request: RequestId) -> bool {
-        self.origin == Some(origin) && self.request_id == Some(request)
-    }
 }
