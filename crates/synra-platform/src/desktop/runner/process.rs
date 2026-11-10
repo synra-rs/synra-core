@@ -5,7 +5,8 @@ use std::sync::{Arc, atomic::Ordering, mpsc};
 use std::thread::JoinHandle;
 use std::time::Instant;
 
-use super::{CLEANUP_TIMEOUT, Lease, POLL_INTERVAL, Request, failed, streams, timed_out};
+use super::{CLEANUP_TIMEOUT, POLL_INTERVAL, Request, failed, streams, timed_out};
+use super::gate::Lease;
 use crate::PlatformError;
 
 pub(super) fn run(mut request: Request, lease: &Arc<Lease>) -> Result<String, PlatformError> {

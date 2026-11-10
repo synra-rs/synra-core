@@ -5,7 +5,8 @@ use std::process::Child;
 use std::sync::{Arc, mpsc::SyncSender};
 use std::thread::JoinHandle;
 
-use super::{Lease, MAX_ERROR_OUTPUT, MAX_OUTPUT, failed};
+use super::{MAX_ERROR_OUTPUT, MAX_OUTPUT, failed};
+use super::gate::Lease;
 use crate::PlatformError;
 
 #[derive(Debug, Clone, Copy)]

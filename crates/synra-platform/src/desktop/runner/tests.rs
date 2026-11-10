@@ -5,7 +5,8 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use super::{CommandRunner, Gate, MAX_ARGUMENTS, MAX_ERROR_OUTPUT, MAX_OUTPUT, SystemRunner};
+use super::{CommandRunner, MAX_ARGUMENTS, MAX_ERROR_OUTPUT, MAX_OUTPUT, SystemRunner};
+use super::gate::Gate;
 use crate::{MAX_CLIPBOARD_BYTES, PlatformError};
 
 const ENTRY: &str = "desktop::runner::tests::child_process_entry";
