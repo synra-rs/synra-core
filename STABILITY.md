@@ -38,8 +38,8 @@ a build dependency must resolve from the registry. Three libraries stay out of t
 `synra-testkit`, `synra-testkit-alloc` and `synra-fetch` are private to development.
 
 A crate that reads the plugin contract carries its own copy of `wit/synra-plugin.wit`, because
-`cargo package` ships only files inside the crate directory. The copies mirror the workspace source;
-regenerate and check them together with the derived artifacts.
+`cargo package` ships only files inside the crate directory. Edit the interfaces under `wit/source/`
+and regenerate the combined contract and crate copies with `synra-wit-codegen`.
 
 ## Refactoring and encapsulation
 

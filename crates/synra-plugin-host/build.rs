@@ -29,19 +29,36 @@
 
 use std::path::{Path, PathBuf};
 
+use synra_wit_codegen::generate::{WORKSPACE_FRAGMENTS, combined_wit, workspace_source};
+
 fn main() {
     // The contract, from the crate's own directory: `crates/synra-plugin-host/../../wit/…`.
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_owned());
-    let contract = Path::new(&manifest_dir).join("../../wit/synra-plugin.wit");
+    let contract_path = Path::new(&manifest_dir).join("../../wit/synra-plugin.wit");
     let generated = Path::new(&manifest_dir).join("src/generated/capability_table.rs");
 
     // Rebuild when the contract changes, so editing it is enough.
-    println!("cargo::rerun-if-changed={}", contract.display());
+    println!("cargo::rerun-if-changed={}", contract_path.display());
     println!("cargo::rerun-if-changed={}", generated.display());
+    if let Some(directory) = contract_path.parent() {
+        for fragment in WORKSPACE_FRAGMENTS {
+            println!("cargo::rerun-if-changed={}", directory.join(fragment).display());
+        }
+    }
 
-    let Ok(text) = std::fs::read_to_string(&contract) else {
-        // See the module docs: a crate without the repository has no contract, and the committed table is what ships.
-        return;
+    let workspace = match workspace_source(&contract_path) {
+        Ok(source) => source,
+        Err(error) => panic!("{error}"),
+    };
+    let fragmented = workspace.is_some();
+    let text = if let Some(source) = workspace {
+        source
+    } else {
+        let Ok(text) = std::fs::read_to_string(&contract_path) else {
+            // A packaged crate keeps the generated table it shipped.
+            return;
+        };
+        text
     };
 
     // The generator is called as a library rather than as a program, because a build dependency on a binary's output
@@ -59,6 +76,10 @@ fn main() {
         Ok(rendered) => rendered,
         Err(error) => panic!("the capability table could not be rendered: {error}"),
     };
+
+    if fragmented {
+        write_if_changed(&contract_path, &combined_wit(&text));
+    }
 
     // Written only when it differs, so a build does not touch the file's timestamp on every run — which would make
     // every `cargo build` a rebuild of this crate and everything above it.

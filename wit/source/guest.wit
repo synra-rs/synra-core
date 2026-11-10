@@ -1,0 +1,67 @@
+/// What a plugin must implement.
+///
+/// These are **exports**: the host calls them. Every plugin implements this interface whatever else it does, which is
+/// why the manifest's `implementation` block is about the *optional* entry points rather than about these.
+interface lifecycle {
+    use types.{outcome};
+
+    /// The plugin is being activated, first time or after being re-enabled.
+    ///
+    /// `config-json` is the plugin's own settings, so an activation does not need a second call to read them.
+    activate: func(config-json: string) -> outcome;
+
+    /// The plugin is being deactivated and must release everything it holds.
+    ///
+    /// No return value: a deactivation that failed is still a deactivation, and a host that could not stop a plugin
+    /// would have to kill it — which is what this gives it the chance to avoid.
+    deactivate: func();
+
+    /// The host is asking the plugin to bring its own data forward.
+    migrate: func(from-version: string, to-version: string) -> outcome;
+
+    /// A timer the plugin asked for has fired.
+    on-tick: func(tick-json: string) -> outcome;
+
+    /// Handle one event selected by the manifest's handles and the current receive grant.
+    /// The host supplies the verified origin, request and trace, with the JSON payload.
+    /// Event handlers use the normal instance policy and execution budget; they do not register callbacks.
+    on-event: func(event-json: string) -> outcome;
+}
+
+/// Handling a share, which is how a plugin says "this is mine".
+interface share {
+    use types.{outcome};
+
+    /// Whether this plugin can handle an item — **without side effects**.
+    ///
+    /// Returns JSON rather than an `outcome`, because declining is not a failure: `{"handled":false}` is a plugin
+    /// saying "not mine", and a host that treated it as an error would log one for every plugin that was asked.
+    ///
+    /// This runs before the user has chosen anything, so a plugin that wrote a file here would have written it for
+    /// every share the user cancelled.
+    can-handle: func(item-json: string) -> string;
+
+    /// Perform the action `can-handle` proposed.
+    execute: func(action: string, args-json: string) -> outcome;
+}
+
+/// Declaring and invoking actions, which is how plugins compose.
+interface actions {
+    use types.{outcome};
+
+    /// The action's own implementation, called after `action-declare` registered it.
+    invoke: func(name: string, args-json: string) -> outcome;
+}
+
+/// The world a plugin component implements.
+///
+/// One world, versioned by the package: a plugin imports the host and exports the interfaces the kernel calls.
+/// Every plugin provides this headless component. A hybrid plugin may also ship a UI bundle,
+/// which the host serves separately; UI-only plugins are not supported.
+world plugin {
+    import host;
+
+    export lifecycle;
+    export share;
+    export actions;
+}

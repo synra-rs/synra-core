@@ -1,0 +1,84 @@
+/// The plugin contract, as the Component Model's interface definition language.
+///
+/// # What this file is
+///
+/// The one place the host's surface and a plugin's obligations are written down. Everything else that knows about
+/// them is *derived*: `tools/wit-codegen` reads this file and produces the capability table `synra-plugin-host`
+/// enforces, and `synra-plugin-cli`'s import checks compare a built artifact against the same table. A function added
+/// here without a capability is a compile-and-test failure rather than an ungated host call nobody noticed.
+///
+/// # The annotations are not WIT
+///
+/// `@ungated` and `@capability("…")` are comments as far as a WIT toolchain is concerned — they begin with `@` inside
+/// a doc comment, which the syntax ignores. They are read by `wit-codegen`, and they exist because the capability a
+/// function needs is a fact about the *host*, not about the interface: WIT has no way to say "this call requires
+/// `storage:local:write`", and putting it in a name would be a convention nothing checks.
+///
+/// A function with neither annotation is a **refusal**: the generator reports it rather than assuming a gate, because
+/// the one outcome that must not be possible is a host function that is reachable without a capability.
+/// `@receiver-capability("…")` additionally declares authority checked on a receiving peer. It never grants or
+/// replaces the importing controller's capability, and does not add a callable native-input function.
+///
+/// # Everything cross-boundary is a string
+///
+/// The complex payloads are JSON in a `string`, deliberately. A WIT type that gained a field would be a breaking
+/// change for every plugin built against the old one, and the kernel parses these anyway — the capability gate and
+/// the audit record both need the structure. The types that *are* WIT types are the ones whose shape will not change:
+/// a log level, a device's identity, the outcome of a call.
+package synra:plugin@1.0.0;
+
+interface types {
+    /// How loud a log line is, matching the host's own levels.
+    enum log-level {
+        trace,
+        debug,
+        info,
+        warn,
+        error,
+    }
+
+    /// What kind of machine a device is.
+    ///
+    /// Three kinds rather than a platform string: a plugin deciding whether to offer a file transfer cares whether the
+    /// other end can show a dialog, not whether it runs Windows.
+    enum device-kind {
+        desktop,
+        mobile,
+        headless,
+    }
+
+    /// A device this kernel can see.
+    record device-target {
+        id: string,
+        name: string,
+        kind: device-kind,
+    }
+
+    /// A message crossing the boundary.
+    ///
+    /// `payload` is JSON. The envelope is a WIT record because its three fields are what every message has; the
+    /// payload is not, because a payload's shape is the plugin's business.
+    record envelope {
+        event: string,
+        target: string,
+        payload: string,
+    }
+
+    /// Why a call failed.
+    ///
+    /// `code` is one of the kernel's stable error codes, so a plugin can branch on it without parsing a sentence.
+    record error {
+        code: string,
+        message: string,
+        details: option<string>,
+    }
+
+    /// What a call produced.
+    ///
+    /// A value rather than a trap: Wasm has no exceptions, and a trap is for an unrecoverable bug. A plugin that
+    /// cannot reach a device has *failed*, which is a thing it can handle.
+    variant outcome {
+        ok(string),
+        err(error),
+    }
+}

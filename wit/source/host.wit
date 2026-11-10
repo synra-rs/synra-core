@@ -1,0 +1,220 @@
+/// What the host offers a plugin.
+///
+/// Every function except the five `env-*` queries is gated: the gate is checked before the call runs, and the
+/// capability it needs is the annotation above it.
+interface host {
+    use types.{log-level, device-target, envelope, outcome};
+
+    // ── Ungated: read-only facts about the environment ───────────────────────────────────────────────
+    //
+    // These five are the exception the design document names. Each answers a question a plugin needs the answer to
+    // *before* it can decide what to ask for — what version of the host this is, whether a dark theme is set — so
+    // gating them would mean a plugin had to request a capability to discover whether it wants it.
+
+    /// The host SDK's version.
+    /// @ungated
+    env-sdk-version: func() -> string;
+
+    /// What kind of host this is: `desktop`, `mobile` or `headless`.
+    /// @ungated
+    env-host-kind: func() -> string;
+
+    /// The user's locale, as a BCP 47 tag.
+    /// @ungated
+    env-locale: func() -> string;
+
+    /// Whether the interface is in a dark theme.
+    /// @ungated
+    env-dark-mode: func() -> bool;
+
+    /// Whether the plugin may use a capability, without using it.
+    ///
+    /// Ungated on purpose: a plugin that has to *call* something to find out whether it may is one that has already
+    /// done the thing. This is how a plugin hides a button it cannot use.
+    /// @ungated
+    env-can: func(capability: string) -> bool;
+
+    // ── log:* ───────────────────────────────────────────────────────────────────────────────────────
+
+    /// Write a line to the kernel's log.
+    /// @capability("log:*")
+    log: func(level: log-level, message: string, ctx: option<string>);
+
+    // ── event:emit:* / event:subscribe:* ────────────────────────────────────────────────────────────
+
+    /// Publish an event to whoever subscribed.
+    /// Plugin events use `_plugin.<full @scope/name>.<topic>` and are bounded to 240 ASCII bytes.
+    /// Complete package ownership and the concrete event grant are checked independently.
+    /// @capability("event:emit:*")
+    event-emit: func(event: string, payload: string) -> outcome;
+
+    // ── device:list / device:send[:target] / device:broadcast ───────────────────────────────────────
+
+    /// Every device this kernel can see.
+    /// @capability("device:list")
+    device-list: func() -> list<device-target>;
+
+    /// Send an event to one device.
+    /// The target is a canonical device UUID, not a display name or alias. The import's family
+    /// label permits scoped grants; each call checks device:send:<target> and event ownership.
+    /// @capability("device:send:*")
+    device-send: func(target: string, event: string, payload: string) -> outcome;
+
+    /// Open, inspect, feed or close a leased input session to an explicitly chosen paired computer.
+    /// The receiving host separately checks platform:control-pointer and asks for per-session consent.
+    /// @capability("device:input")
+    /// @receiver-capability("platform:control-pointer")
+    input-session: func(request: string) -> outcome;
+
+    /// Send an event to every paired device.
+    /// @capability("device:broadcast")
+    device-broadcast: func(event: string, payload: string) -> outcome;
+
+    // ── storage:local:* ─────────────────────────────────────────────────────────────────────────────
+    //
+    // A plugin's own storage, keyed by its id. There is no path and no namespace argument: giving one would be
+    // giving every plugin the ability to guess another's.
+
+    /// Read a value, or `err` when the key is absent.
+    /// @capability("storage:local:read")
+    storage-get: func(key: string) -> outcome;
+
+    /// Write a value.
+    /// @capability("storage:local:write")
+    storage-set: func(key: string, value: string) -> outcome;
+
+    /// Remove a value.
+    /// @capability("storage:local:write")
+    storage-delete: func(key: string) -> outcome;
+
+    /// Every key under a prefix, or every key when there is none.
+    /// @capability("storage:local:read")
+    storage-keys: func(prefix: option<string>) -> list<string>;
+
+    /// How much storage the plugin is using, and how much it may.
+    ///
+    /// Ungated within the storage group would be wrong — this is a fact about the plugin's own quota, and the quota is
+    /// part of what `storage:local:read` grants.
+    /// @capability("storage:local:read")
+    storage-quota: func() -> tuple<u64, u64>;
+
+    // ── storage:secure:* ────────────────────────────────────────────────────────────────────────────
+    //
+    // Separate from `storage:local:*` because the OS keychain is a different promise: a user granting local storage
+    // has not agreed to let the plugin write to their credential store.
+
+    /// Read a secret from the OS keychain.
+    /// @capability("storage:secure:read")
+    secret-get: func(key: string) -> outcome;
+
+    /// Write a secret to the OS keychain.
+    /// @capability("storage:secure:write")
+    secret-set: func(key: string, value: string) -> outcome;
+
+    /// Remove a secret.
+    /// @capability("storage:secure:write")
+    secret-delete: func(key: string) -> outcome;
+
+    // ── network:fetch:<host>[:<method>] ─────────────────────────────────────────────────────────────
+    //
+    // The host proxies every request. A plugin never opens a socket: the gate decides which hosts and which methods,
+    // and the host is what enforces a redirect policy and a response size.
+
+    /// Perform an HTTP request, as a JSON request object.
+    /// @capability("network:fetch:*")
+    network-fetch: func(request-json: string) -> outcome;
+
+    /// Open a WebSocket.
+    /// @capability("network:websocket:*")
+    network-websocket: func(url: string) -> outcome;
+
+    // ── file:transfer:* ─────────────────────────────────────────────────────────────────────────────
+    //
+    // Sending a file *to a device*, which is not the filesystem: nothing here names a path, and the host is the one
+    // that reads the file the user chose.
+
+    /// Begin a transfer.
+    /// @capability("file:transfer:send")
+    transfer-send: func(kind: string, target: string, meta-json: string) -> outcome;
+
+    /// How a transfer is going.
+    /// @capability("file:transfer:read")
+    transfer-status: func(transfer-id: string) -> outcome;
+
+    // ── platform:* ──────────────────────────────────────────────────────────────────────────────────
+    //
+    // Each platform action its own capability rather than one `platform:*`: a plugin that notifies has no business
+    // simulating keystrokes, and one capability for both would make the permission dialog ask for both.
+
+    /// Open a URL in the user's browser.
+    /// @capability("platform:open-url")
+    platform-open-url: func(url: string) -> outcome;
+
+    /// Open a file or directory with the system's handler.
+    /// @capability("platform:open-path")
+    platform-open-path: func(path: string) -> outcome;
+
+    /// Show a file in the system's file manager.
+    /// @capability("platform:reveal-path")
+    platform-reveal-path: func(path: string) -> outcome;
+
+    /// Synthesize a keystroke.
+    ///
+    /// Off by default and never granted implicitly: a plugin that can type into whatever window is focused can do
+    /// anything the user can.
+    /// @capability("platform:simulate-keys")
+    platform-simulate-keys: func(chord: string) -> outcome;
+
+    /// Show a notification.
+    /// @capability("platform:notify")
+    platform-notify: func(title: string, body: string) -> outcome;
+
+    /// Read clipboard text. The successful outcome contains JSON `null` when there is no text,
+    /// or a JSON string preserving all text, including the empty string. Hosts return raw optional
+    /// text internally; the shared dispatcher JSON-encodes it exactly once.
+    /// @capability("platform:read-clipboard")
+    platform-read-clipboard: func() -> outcome;
+
+    /// Write the clipboard.
+    /// @capability("platform:write-clipboard")
+    platform-write-clipboard: func(text: string) -> outcome;
+
+    /// Which platform actions this host can perform at all.
+    ///
+    /// Ungated: a plugin deciding whether to offer a menu item needs to know whether the host can do the thing, and
+    /// asking is not doing.
+    /// @ungated
+    platform-capabilities: func() -> list<string>;
+
+    // ── action:*（cross-plugin actions）─────────────────────────────────────────────────────────────
+
+    /// Declare an action other plugins may call.
+    /// Each call checks action:declare:<literal action name>; the family label permits scoped imports.
+    /// @capability("action:declare:*")
+    action-declare: func(name: string, schema-json: string) -> outcome;
+
+    /// Call another plugin's action.
+    /// Each call checks action:invoke:<full @scope/name>:<literal action name>.
+    /// The family label permits scoped imports; it does not authorize a particular call.
+    /// @capability("action:invoke:*:*")
+    action-invoke: func(target-plugin: string, name: string, args-json: string) -> outcome;
+
+    /// Every action this kernel knows about, as a JSON array.
+    /// @capability("action:list")
+    action-list: func() -> string;
+
+    // ── The plugin's own identity ───────────────────────────────────────────────────────────────────
+    //
+    // One function, ungated, and deliberately the only thing about the plugin itself the host answers. Its *data* is
+    // reached through `storage:*`, which is a domain the capability system has and whose grants a user already
+    // understands — a `plugin:data:clear` capability would be a second way to reach the same storage, gated by a name
+    // that had to be invented for it.
+
+    /// The plugin's own id.
+    ///
+    /// Ungated because it is the identity the kernel already used to load the component: a plugin asking who it is has
+    /// told the host nothing it did not know, and a gate would mean a plugin had to request a capability to label its
+    /// own log lines.
+    /// @ungated
+    plugin-id: func() -> string;
+}

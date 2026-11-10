@@ -7,6 +7,10 @@ use crate::{
     emitted_paths,
 };
 
+mod source;
+
+pub use source::{WORKSPACE_FRAGMENTS, combined_wit, workspace_source};
+
 /// One derived file and its complete contents.
 pub struct Artifact {
     /// Destination resolved against the source contract's directory.
@@ -95,11 +99,31 @@ pub fn artifacts(contract_path: &Path, source: &str) -> Result<Vec<Artifact>, Ge
 /// # Errors
 /// Reports input/render failures, every stale output, or an IO failure.
 pub fn synchronize(contract_path: &Path, check: bool) -> Result<Vec<PathBuf>, GenerateError> {
-    let source = std::fs::read_to_string(contract_path).map_err(|source| GenerateError::Read {
-        path: contract_path.to_path_buf(),
-        source,
-    })?;
-    let artifacts = artifacts(contract_path, &source)?;
+    let workspace = workspace_source(contract_path)?;
+    let fragmented = workspace.is_some();
+    let source = match workspace {
+        Some(source) => source,
+        None => std::fs::read_to_string(contract_path).map_err(|source| GenerateError::Read {
+            path: contract_path.to_path_buf(),
+            source,
+        })?,
+    };
+    let mut artifacts = artifacts(contract_path, &source)?;
+    if fragmented {
+        let directory = contract_path.parent().unwrap_or_else(|| Path::new("."));
+        let contents = combined_wit(&source);
+        artifacts.extend([
+            Artifact { path: contract_path.to_path_buf(), contents: contents.clone() },
+            Artifact {
+                path: directory.join("../crates/synra-plugin-host/wit/synra-plugin.wit"),
+                contents: contents.clone(),
+            },
+            Artifact {
+                path: directory.join("../tools/synra-wit-codegen/wit/synra-plugin.wit"),
+                contents,
+            },
+        ]);
+    }
     let mut changed = Vec::new();
     for artifact in &artifacts {
         match std::fs::read_to_string(&artifact.path) {

@@ -12,6 +12,37 @@ fn source(dir: &Path) -> PathBuf {
 }
 
 #[test]
+fn fragments_regenerate_the_workspace_contract_and_detect_drift() {
+    let dir = tempfile::tempdir().unwrap();
+    let wit = dir.path().join("wit");
+    std::fs::create_dir_all(wit.join("source")).unwrap();
+    let types = SOURCE.find("/// The plugin contract").unwrap();
+    let host = SOURCE.find("/// What the host offers a plugin.").unwrap();
+    let guest = SOURCE.find("/// What a plugin must implement.").unwrap();
+    for (file, contents) in WORKSPACE_FRAGMENTS
+        .into_iter()
+        .zip([&SOURCE[types..host], &SOURCE[host..guest], &SOURCE[guest..]])
+    {
+        std::fs::write(wit.join(file), contents).unwrap();
+    }
+    let contract = wit.join("synra-plugin.wit");
+    let outputs = synchronize(&contract, false).unwrap();
+    assert_eq!(outputs.len(), 9);
+    let combined = std::fs::read_to_string(&contract).unwrap();
+    assert_eq!(combined, combined_wit(&workspace_source(&contract).unwrap().unwrap()));
+    synchronize(&contract, true).unwrap();
+
+    let guest_file = wit.join("source/guest.wit");
+    let guest = std::fs::read_to_string(&guest_file).unwrap();
+    std::fs::write(guest_file, format!("{guest}\n// The guest contract changed.\n")).unwrap();
+    let GenerateError::Drift { paths } = synchronize(&contract, true).unwrap_err() else {
+        panic!("expected a stale contract diagnosis");
+    };
+    assert!(paths.contains(&contract));
+    assert_eq!(std::fs::read_to_string(&contract).unwrap(), combined);
+}
+
+#[test]
 fn checking_each_stale_artifact_fails_without_repairing_it() {
     let dir = tempfile::tempdir().unwrap();
     let source = source(dir.path());
