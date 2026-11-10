@@ -24,7 +24,7 @@ use super::state::Runtime;
 #[must_use]
 pub fn cache_for(runtime: &Runtime) -> CatalogCache {
     // `Paths` is the one place that decides where things live, so the cache directory is asked for rather than joined here —
-    // the same reasoning `serve.rs` follows for the log directory.
+    // the same reasoning startup diagnostics follows for the log directory.
     let paths = synra_store::Paths::new(&runtime.data_dir, runtime.data_dir.join("cache"));
     CatalogCache::new(paths.catalog_cache_dir())
 }
