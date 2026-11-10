@@ -272,6 +272,7 @@ mod key;
 mod verify;
 
 pub use key::SigningKeyFile;
+#[cfg(test)]
 pub(super) use key::hex_encode;
 pub use verify::{Verified, expected_fingerprint, verify};
 

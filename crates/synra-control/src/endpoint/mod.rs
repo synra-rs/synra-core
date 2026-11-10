@@ -36,7 +36,7 @@ use std::time::Duration;
 // Each platform's name mapping, imported only where it is used: a build that imported both would warn about one on
 // every platform, and a warning that is always there is one nobody reads.
 
-use crate::{ChannelError, Request, Response};
+use crate::ChannelError;
 
 /// The file name of the control socket inside the data directory.
 ///
@@ -198,6 +198,7 @@ pub use listener::{Listener, serve_stream};
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Request, Response};
     use crate::Refusal;
     use std::cell::RefCell;
     use synra_protocol::error::ErrorCode;
