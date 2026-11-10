@@ -2,7 +2,8 @@
 
 use crate::logging::{DEFAULT_REDACTED_FIELDS, redact_line};
 
-use super::{BundleLogLine, BundleSection, LogSlice, MAX_LOG_LINE_BYTES};
+use super::super::records::{BundleLogLine, LogSlice};
+use super::super::sections::{BundleSection, MAX_LOG_LINE_BYTES};
 
 impl LogSlice {
     /// Adds another slice's lines to this one, de-duplicating the errors.
