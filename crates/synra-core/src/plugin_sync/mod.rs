@@ -27,15 +27,21 @@ use synra_protocol::session::{PluginList, PluginSummary};
 mod decision;
 mod decision_policy;
 mod outcome;
-mod receiver;
-mod record;
+mod receiver_check;
+mod receiver_inbox;
+mod receiver_round;
+mod record_models;
+mod record_table;
 mod session;
 
 pub use decision::*;
 pub use decision_policy::*;
 pub use outcome::*;
-pub use receiver::*;
-pub use record::*;
+pub use receiver_check::*;
+pub use receiver_inbox::*;
+pub use receiver_round::*;
+pub use record_models::*;
+pub use record_table::*;
 pub use session::*;
 
 #[cfg(test)]
