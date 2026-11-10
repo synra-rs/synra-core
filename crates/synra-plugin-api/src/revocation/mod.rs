@@ -37,69 +37,15 @@
 //! remove the revocation and leave everything looking healthy. Parsing fails, and the caller decides what to do about a bad
 //! list — which is a decision it can only make if it is told.
 
-use std::collections::BTreeMap;
+mod types;
 
-use serde::{Deserialize, Serialize};
+pub use types::RevocationError;
+
+use std::collections::BTreeMap;
 
 use crate::publisher::Fingerprint;
 
-/// Why a revocation list could not be read.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[non_exhaustive]
-pub enum RevocationError {
-    /// The document is not JSON, or not this shape.
-    #[error("the revocation list is not readable: {detail}")]
-    Malformed {
-        /// What the parser said.
-        detail: String,
-    },
-    /// An entry names neither a plugin version nor a publisher.
-    #[error("entry {index} names neither a plugin version nor a publisher")]
-    EmptyEntry {
-        /// Which entry, counting from zero, as it appears in the document.
-        index: usize,
-    },
-    /// An entry names a plugin but no versions.
-    #[error("entry {index} names `{plugin}` and no versions")]
-    NoVersions {
-        /// The plugin it names.
-        plugin: String,
-        /// Which entry.
-        index: usize,
-    },
-    /// A fingerprint that is not one.
-    #[error("entry {index} has a fingerprint that is not one: {detail}")]
-    BadFingerprint {
-        /// Which entry.
-        index: usize,
-        /// What the parser said.
-        detail: String,
-    },
-}
-
-/// One line of the document.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RawEntry {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    plugin: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    versions: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    publisher: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pubkey_fingerprint: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    reason: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    at: Option<String>,
-}
-
-/// The document itself.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct RawList {
-    revoked: Vec<RawEntry>,
-}
+use types::{RawList, parse_fingerprint, reason_of};
 
 /// One accepted entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -206,9 +152,10 @@ impl RevocationList {
     /// [`RevocationError`] for anything this cannot read, including an entry that names nothing — see the module
     /// documentation for why a dropped entry is the one failure this must not have.
     pub fn parse(text: &str) -> Result<Self, RevocationError> {
-        let raw: RawList = serde_json::from_str(text).map_err(|error| RevocationError::Malformed {
-            detail: error.to_string(),
-        })?;
+        let raw: RawList =
+            serde_json::from_str(text).map_err(|error| RevocationError::Malformed {
+                detail: error.to_string(),
+            })?;
 
         let mut list = Self::empty();
         for (index, entry) in raw.revoked.into_iter().enumerate() {
@@ -224,22 +171,31 @@ impl RevocationList {
                     // above moved into its own tuple — the same reason the name is bound at all.
                     if let Some(text) = fingerprint {
                         let key = parse_fingerprint(&text, index)?;
-                        list.publishers.insert(key, PublisherRevocation {
-                            publisher: publisher.unwrap_or_default(),
-                            reason: reason_of(&entry.reason),
-                        });
+                        list.publishers.insert(
+                            key,
+                            PublisherRevocation {
+                                publisher: publisher.unwrap_or_default(),
+                                reason: reason_of(&entry.reason),
+                            },
+                        );
                     }
                     list.versions.insert(
                         plugin,
-                        VersionRevocation { versions: entry.versions, reason: reason_of(&entry.reason) },
+                        VersionRevocation {
+                            versions: entry.versions,
+                            reason: reason_of(&entry.reason),
+                        },
                     );
                 }
                 (None, Some(publisher), Some(text)) => {
                     let key = parse_fingerprint(&text, index)?;
-                    list.publishers.insert(key, PublisherRevocation {
-                        publisher,
-                        reason: reason_of(&entry.reason),
-                    });
+                    list.publishers.insert(
+                        key,
+                        PublisherRevocation {
+                            publisher,
+                            reason: reason_of(&entry.reason),
+                        },
+                    );
                 }
                 // A publisher with no key is a claim with nothing behind it — the module documentation's reason for
                 // revoking keys rather than names. Reported rather than accepted, and the name is not bound because an
@@ -278,7 +234,9 @@ impl RevocationList {
     /// Why this signing key is revoked, if it is.
     #[must_use]
     pub fn revokes_key(&self, fingerprint: &Fingerprint) -> Option<&str> {
-        self.publishers.get(fingerprint).map(|entry| entry.reason.as_str())
+        self.publishers
+            .get(fingerprint)
+            .map(|entry| entry.reason.as_str())
     }
 
     /// The publisher a revoked key belongs to, as the document names it.
@@ -287,7 +245,9 @@ impl RevocationList {
     /// a verification asks, and *whose key was it* is what a person is shown.
     #[must_use]
     pub fn revoked_publisher(&self, fingerprint: &Fingerprint) -> Option<&str> {
-        self.publishers.get(fingerprint).map(|entry| entry.publisher.as_str())
+        self.publishers
+            .get(fingerprint)
+            .map(|entry| entry.publisher.as_str())
     }
 
     /// Every installed plugin that must be disabled, in the order given.
@@ -321,24 +281,6 @@ impl RevocationList {
     pub fn plugin_names(&self) -> impl Iterator<Item = &str> + '_ {
         self.versions.keys().map(String::as_str)
     }
-}
-
-/// The reason, or a sentence saying there is none.
-///
-/// ★ A revocation with no reason is still a revocation. Refusing to parse it would leave the plugin running because of a
-/// missing field, which inverts the point of the document.
-fn reason_of(reason: &Option<String>) -> String {
-    reason
-        .clone()
-        .unwrap_or_else(|| "revoked with no reason given".to_owned())
-}
-
-/// A fingerprint, or the error naming which entry.
-fn parse_fingerprint(text: &str, index: usize) -> Result<Fingerprint, RevocationError> {
-    Fingerprint::parse(text).map_err(|error| RevocationError::BadFingerprint {
-        index,
-        detail: error.to_string(),
-    })
 }
 
 #[cfg(test)]
