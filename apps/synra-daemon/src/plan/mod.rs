@@ -27,7 +27,7 @@
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
-use synra_store::{PathError, Paths, sanitise_component};
+use synra_store::{PathError, Paths};
 
 /// The port the main transport listens on by default.
 pub const DEFAULT_LISTEN_PORT: u16 = 47_100;
@@ -195,9 +195,10 @@ impl DaemonPlan {
         // checked against the other port, because two requests for an ephemeral port are not a collision.
         if options.listen_port == 0 || options.discovery_port == 0 {
             // Allowed. Nothing to check: the operating system assigns one that is free by construction.
-        }
-        else if options.listen_port == options.discovery_port {
-            return Err(PlanError::PortsCollide { port: options.listen_port });
+        } else if options.listen_port == options.discovery_port {
+            return Err(PlanError::PortsCollide {
+                port: options.listen_port,
+            });
         }
 
         // `Paths::new` with an explicit cache directory, rather than `Paths::under`.
@@ -260,11 +261,19 @@ impl DaemonPlan {
             format!("  discovery port {}", self.discovery_port),
             format!(
                 "  claim     {}",
-                if self.exclusive { "exclusive" } else { "shared (a diagnostic run)" }
+                if self.exclusive {
+                    "exclusive"
+                } else {
+                    "shared (a diagnostic run)"
+                }
             ),
             format!(
                 "  lifetime  {}",
-                if self.linger { "keeps running with no clients" } else { "exits with its last client" }
+                if self.linger {
+                    "keeps running with no clients"
+                } else {
+                    "exits with its last client"
+                }
             ),
         ]
     }
@@ -273,38 +282,9 @@ impl DaemonPlan {
 /// The name of the claim file.
 pub const LOCK_FILE_NAME: &str = "daemon.lock";
 
-/// A name turned into one path component, refusing the shapes that would name somewhere else.
-///
-/// Used when the daemon makes a directory after a plugin or a device, because a name that came from outside is a path
-/// traversal waiting to happen and the check has to run before the join rather than after it.
-///
-/// # Sanitising rather than refusing, for everything but the empty shape
-///
-/// The store's substitution is what makes `@synra-plugin/chat` a single directory name, and refusing a name that
-/// contains a separator would refuse every plugin id there is. So a name with separators is *turned into* a component,
-/// by the same function the rest of the kernel uses — two spellings of one plugin's directory would be one plugin with
-/// two directories.
-///
-/// The exception is a name that sanitises to nothing useful, and the reason is arithmetic rather than taste: joining
-/// an empty component is the *parent* directory, so a caller that meant to write inside its own directory would write
-/// one level up. `..` sanitises to `_`, which is a harmless directory named `_`, so it is not refused — but a name of
-/// only dots sanitises to a run of dots, and `...` joined is a path that means something other than a directory.
-///
-/// # Errors
-///
-/// [`PlanError::BadName`] when the name is empty or sanitises to nothing usable.
-pub fn checked_component(name: &str) -> Result<String, PlanError> {
-    if name.trim().is_empty() {
-        return Err(PlanError::BadName { name: name.to_owned() });
-    }
-    let component = sanitise_component(name);
-    // Empty is the dangerous one: `Path::join("")` is the parent. A run of dots is refused too, because `..` collapsing
-    // to `.` and then joining is a path that names a directory the caller did not ask for.
-    if component.is_empty() || component.chars().all(|ch| ch == '.') {
-        return Err(PlanError::BadName { name: name.to_owned() });
-    }
-    Ok(component)
-}
+mod paths;
+
+pub use paths::checked_component;
 
 #[cfg(test)]
 mod tests {
@@ -322,7 +302,11 @@ mod tests {
     /// Windows treats `/tmp/x` as drive-relative rather than absolute, so a fixture that used one form would be an
     /// absolute path on one platform and not on the other.
     fn root() -> &'static str {
-        if cfg!(windows) { "C:\\synra-data" } else { "/tmp/synra-data" }
+        if cfg!(windows) {
+            "C:\\synra-data"
+        } else {
+            "/tmp/synra-data"
+        }
     }
 
     // ── Ports ─────────────────────────────────────────────────────────────────────────────────────
@@ -395,7 +379,10 @@ mod tests {
         // A lock that outlived the directory it describes would hold a claim on a directory that no longer exists, and
         // the next start would reclaim it and log a crash that never happened.
         let plan = DaemonPlan::resolve(&options(root())).expect("resolves");
-        assert_eq!(plan.lock_path(), Path::new(&plan.data_dir).join(LOCK_FILE_NAME));
+        assert_eq!(
+            plan.lock_path(),
+            Path::new(&plan.data_dir).join(LOCK_FILE_NAME)
+        );
         assert!(plan.lock_path().starts_with(&plan.data_dir));
     }
 
@@ -405,9 +392,18 @@ mod tests {
         let lines = plan.lines();
         assert!(lines[0].contains("synra-daemon"), "{lines:?}");
         assert!(lines[0].contains(env!("CARGO_PKG_VERSION")), "{lines:?}");
-        assert!(lines.iter().any(|line| line.contains("transport port")), "{lines:?}");
-        assert!(lines.iter().any(|line| line.contains("exclusive")), "{lines:?}");
-        assert!(lines.iter().any(|line| line.contains("keeps running")), "{lines:?}");
+        assert!(
+            lines.iter().any(|line| line.contains("transport port")),
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|line| line.contains("exclusive")),
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|line| line.contains("keeps running")),
+            "{lines:?}"
+        );
     }
 
     #[test]
@@ -420,11 +416,18 @@ mod tests {
             let plan = DaemonPlan::resolve(&options(root)).expect("resolves");
             let data = Path::new(&plan.data_dir);
             let plugins = Path::new(&plan.plugins_dir);
-            assert!(plugins.starts_with(data), "{plugins:?} is not inside {data:?}");
+            assert!(
+                plugins.starts_with(data),
+                "{plugins:?} is not inside {data:?}"
+            );
             assert_ne!(plugins, data, "the sandbox is the data directory itself");
             // And the database is not inside the sandbox, which is the direction that would hand every plugin a path
             // to the kernel's own keys.
-            assert!(!Path::new(&plan.db_path).starts_with(plugins), "{}", plan.db_path);
+            assert!(
+                !Path::new(&plan.db_path).starts_with(plugins),
+                "{}",
+                plan.db_path
+            );
         }
     }
 
@@ -437,8 +440,14 @@ mod tests {
         options.linger = false;
         let plan = DaemonPlan::resolve(&options).expect("resolves");
         let lines = plan.lines();
-        assert!(lines.iter().any(|line| line.contains("diagnostic run")), "{lines:?}");
-        assert!(lines.iter().any(|line| line.contains("last client")), "{lines:?}");
+        assert!(
+            lines.iter().any(|line| line.contains("diagnostic run")),
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|line| line.contains("last client")),
+            "{lines:?}"
+        );
         assert!(!plan.exclusive);
         assert!(!plan.linger);
     }
@@ -476,7 +485,10 @@ mod tests {
         // The list is short on purpose. A separator sanitises to `+`, which is a directory that is safe to create, and
         // refusing it would refuse every plugin id there is — see the test below.
         for name in ["", "   ", "\t\n"] {
-            assert!(checked_component(name).is_err(), "{name:?} should be refused");
+            assert!(
+                checked_component(name).is_err(),
+                "{name:?} should be refused"
+            );
         }
     }
 
@@ -549,8 +561,13 @@ mod tests {
                 data_dir: "/a".to_owned(),
                 plugins_dir: "/a/plugins".to_owned(),
             },
-            PlanError::BadName { name: "..".to_owned() },
-            PlanError::Path(PathError::Escapes { path: "/a".to_owned(), root: "/b".to_owned() }),
+            PlanError::BadName {
+                name: "..".to_owned(),
+            },
+            PlanError::Path(PathError::Escapes {
+                path: "/a".to_owned(),
+                root: "/b".to_owned(),
+            }),
         ];
         for error in errors {
             let text = error.to_string();
@@ -578,7 +595,10 @@ mod tests {
         // `Paths::new(root, root.join("cache")).data_dir()`. This asserts they agree, which is the property that makes
         // `synra status` reach a daemon rather than a socket that is not there.
         let named = PathBuf::from("/tmp/synra-agreement");
-        let options = DaemonOptions { data_dir: named.clone(), ..DaemonOptions::default() };
+        let options = DaemonOptions {
+            data_dir: named.clone(),
+            ..DaemonOptions::default()
+        };
         let plan = DaemonPlan::resolve(&options).expect("resolves");
 
         // What the client computes, spelled the way the client spells it.
