@@ -1,160 +1,18 @@
-use super::{CONSENT_TIMEOUT, LEASE, Policy, wire};
-use crate::{LinkError, PeerLink};
-use parking_lot::Mutex;
-use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
-use synra_platform::pointer::{Factory, Pointer};
+
+use synra_platform::pointer::Pointer;
 use synra_protocol::envelope::Envelope;
 use synra_protocol::ids::SessionId;
-use synra_protocol::{DeviceId, PluginId};
 
-/// Receiver-side session phase. Every new controller starts at Pending.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum Phase {
-    /// Waiting for a local person.
-    Pending,
-    /// Accepted locally; native initialization is in progress.
-    Allowed,
-    /// Receiving real pointer input.
-    Active,
-    /// Refused, stopped, revoked, expired or disconnected.
-    Ended,
-}
+use crate::{LinkError, PeerLink};
 
-/// Bounded state for the receiver's consent prompt and active indicator.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Snapshot {
-    /// Receiver-issued session handle.
-    pub session: SessionId,
-    /// The peer established by Hello.
-    pub peer: DeviceId,
-    /// Local recorded device name.
-    pub peer_name: String,
-    /// The full plugin identity.
-    pub plugin_id: PluginId,
-    /// Current control state.
-    pub phase: Phase,
-    /// Structured lifecycle reason, without input contents.
-    pub reason: Option<String>,
-}
-
-/// One exclusive desktop pointer owner, shared by incoming links and host decisions.
-pub struct Receiver {
-    policy: Arc<dyn Policy>,
-    factory: Arc<Factory>,
-    state: Mutex<Option<Snapshot>>,
-    pointer_lease: Mutex<()>,
-    publication: Mutex<Option<Snapshot>>,
-    stopping: AtomicBool,
-    notify: Arc<dyn Fn(Option<Snapshot>) + Send + Sync>,
-}
+use super::super::{wire, CONSENT_TIMEOUT, LEASE};
+use super::release::Released;
+use super::{Phase, Receiver, Snapshot};
 
 impl Receiver {
-    /// Build a receiver with durable policy, OS factory and host UI notification.
-    pub fn new(
-        policy: Arc<dyn Policy>,
-        factory: Arc<Factory>,
-        notify: Arc<dyn Fn(Option<Snapshot>) + Send + Sync>,
-    ) -> Self {
-        Self {
-            policy,
-            factory,
-            state: Mutex::new(None),
-            pointer_lease: Mutex::new(()),
-            publication: Mutex::new(None),
-            stopping: AtomicBool::new(false),
-            notify,
-        }
-    }
-
-    /// Current request or last terminal state, without holding the guard during publication.
-    #[must_use]
-    pub fn snapshot(&self) -> Option<Snapshot> {
-        self.state.lock().clone()
-    }
-
-    /// Accept/refuse exactly the pending session the UI displayed.
-    pub fn decide(&self, id: SessionId, allow: bool) -> bool {
-        let changed = {
-            let mut state = self.state.lock();
-            if let Some(current) = state
-                .as_mut()
-                .filter(|s| s.session == id && s.phase == Phase::Pending)
-            {
-                current.phase = if allow { Phase::Allowed } else { Phase::Ended };
-                current.reason = (!allow).then(|| "declined".to_owned());
-                true
-            } else {
-                false
-            }
-        };
-        if changed {
-            self.publish();
-        }
-        changed
-    }
-
-    /// Revoke a pending or active session. The link thread releases within its 100ms poll bound.
-    pub fn stop(&self, id: SessionId) {
-        self.finish(id, "stopped");
-    }
-
-    /// End input before a deliberate host exit and wait, with a bound, for native button release.
-    /// Returns false only if the native worker did not relinquish the pointer in time.
-    #[must_use]
-    pub fn shutdown(&self) -> bool {
-        self.stopping.store(true, Ordering::Release);
-        if let Some(snapshot) = self.snapshot() {
-            self.finish(snapshot.session, "host stopped");
-        }
-        self.pointer_lease.try_lock_for(LEASE + LEASE).is_some()
-    }
-
-    fn finish(&self, id: SessionId, reason: &str) {
-        let changed = {
-            let mut state = self.state.lock();
-            if let Some(current) = state
-                .as_mut()
-                .filter(|s| s.session == id && s.phase != Phase::Ended)
-            {
-                current.phase = Phase::Ended;
-                current.reason = Some(reason.to_owned());
-                true
-            } else {
-                false
-            }
-        };
-        if changed {
-            self.publish();
-        }
-    }
-
-    fn phase(&self, id: SessionId) -> Phase {
-        self.state
-            .lock()
-            .as_ref()
-            .filter(|s| s.session == id)
-            .map_or(Phase::Ended, |s| s.phase)
-    }
-
-    fn publish(&self) {
-        // Decisions and link progress occur on different threads. Read the newest state
-        // after acquiring publication ownership so a late Pending cannot replace Active.
-        let mut publication = self.publication.lock();
-        let snapshot = self.snapshot();
-        if *publication == snapshot {
-            return;
-        }
-        *publication = snapshot.clone();
-        (self.notify)(snapshot);
-        drop(publication);
-    }
-
-    pub(super) fn serve(&self, link: &mut PeerLink, request: &Envelope) {
+    pub(in crate::input) fn serve(&self, link: &mut PeerLink, request: &Envelope) {
         if let Err(reason) = self.admit_and_run(link, request) {
             let _ = wire::send(link, wire::ERROR, &reason);
         }
@@ -338,12 +196,5 @@ impl Receiver {
             last = Instant::now();
             wire::send(link, wire::ACK, &sequence)?;
         }
-    }
-}
-
-struct Released(Box<dyn Pointer>);
-impl Drop for Released {
-    fn drop(&mut self) {
-        let _ = self.0.release();
     }
 }
