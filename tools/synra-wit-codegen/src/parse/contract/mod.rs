@@ -27,6 +27,11 @@ pub struct Contract {
     pub host_interface: Option<String>,
 }
 
+mod package;
+mod views;
+
+use package::parse_package;
+
 impl Contract {
     /// Reads a WIT file.
     ///
@@ -289,45 +294,5 @@ impl Contract {
         })
     }
 
-    /// The host's interface, which is the one the capability table is about.
-    #[must_use]
-    pub fn host(&self) -> Option<&Interface> {
-        let name = self.host_interface.as_deref()?;
-        self.interfaces.iter().find(|interface| interface.name == name)
-    }
-
-    /// Every interface a plugin exports.
-    #[must_use]
-    pub fn exports(&self) -> Vec<&Interface> {
-        // Only the interfaces the world *names* as exports. `types` is declared in the file and named by nobody, so a
-        // filter on direction alone listed it — its default — and a reader would think the plugin had to implement it.
-        self.world_names
-            .iter()
-            .filter(|(_, direction)| *direction == Direction::Export)
-            .filter_map(|(name, _)| self.interfaces.iter().find(|interface| interface.name == *name))
-            .collect()
-    }
 }
 
-/// The package declaration, as `(name, version)`.
-fn parse_package(text: &str) -> Result<(String, String), ParseError> {
-    for (index, raw) in text.lines().enumerate() {
-        let trimmed = raw.trim();
-        let Some(rest) = trimmed.strip_prefix("package ") else {
-            continue;
-        };
-        let rest = rest.trim_end_matches(';').trim();
-
-        // `synra:plugin@1.0.0`, and a package with no version is legal WIT. The version is kept as text rather than
-        // parsed: this tool does not compare versions, it reports them.
-        return match rest.split_once('@') {
-            Some((name, version)) => Ok((name.to_owned(), version.to_owned())),
-            None if rest.is_empty() => Err(ParseError::Syntax {
-                line: index + 1,
-                reason: "a package declaration with no name".to_owned(),
-            }),
-            None => Ok((rest.to_owned(), String::new())),
-        };
-    }
-    Err(ParseError::NoPackage)
-}
