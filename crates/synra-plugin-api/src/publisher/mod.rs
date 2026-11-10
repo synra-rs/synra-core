@@ -51,6 +51,5 @@ pub use subject::{Digests, SigningSubject};
 pub use trust::{PluginTrust, PublisherTrustStore, SignatureCheck, Untrusted, check};
 
 #[cfg(test)]
-#[path = "../publisher_tests.rs"]
 mod tests;
 
