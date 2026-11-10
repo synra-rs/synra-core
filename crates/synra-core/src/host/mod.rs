@@ -48,6 +48,7 @@ mod connections;
 mod error;
 mod incoming;
 mod kernel;
+mod metrics;
 mod records;
 mod sharing;
 
