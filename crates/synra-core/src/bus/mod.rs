@@ -17,6 +17,7 @@
 mod subscription;
 mod queue;
 mod fanout;
+mod report;
 mod sequence;
 
 #[cfg(test)]

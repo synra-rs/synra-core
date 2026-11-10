@@ -1,12 +1,12 @@
 //! The bus itself, and the one lock it publishes under.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use parking_lot::Mutex;
 
 use super::queue::Subscriber;
-use super::subscription::{Delivery, SUBSCRIBER_QUEUE_CAPACITY, SubscriberId, SubscriberReport};
+use super::subscription::{Delivery, SubscriberId, SUBSCRIBER_QUEUE_CAPACITY};
 
 /// What a drain leaves behind: the numbered events still queued, whether the queue overflowed, and how many were
 /// dropped.
@@ -29,13 +29,13 @@ type Drained<E> = (Vec<(u64, E)>, bool, u64);
 /// repeat. The numbering is part of the wire contract, so it is asserted by a test rather than left to `0` being the
 /// natural default.
 pub struct EventBus<E> {
-    inner: Arc<Inner<E>>,
+    pub(in crate::bus) inner: Arc<Inner<E>>,
     next_id: AtomicU64,
 }
 
-struct Inner<E> {
-    next_seq: Mutex<u64>,
-    subscribers: Mutex<Vec<(SubscriberId, Subscriber<E>)>>,
+pub(in crate::bus) struct Inner<E> {
+    pub(in crate::bus) next_seq: Mutex<u64>,
+    pub(in crate::bus) subscribers: Mutex<Vec<(SubscriberId, Subscriber<E>)>>,
 }
 
 impl<E> Default for EventBus<E> {
@@ -101,10 +101,7 @@ impl<E: Clone> EventBus<E> {
     /// the counterpart, and the interface's teardown calls it.
     pub fn subscribe(&self) -> SubscriberId {
         let id = SubscriberId(self.next_id.fetch_add(1, Ordering::Relaxed));
-        self.inner
-            .subscribers
-            .lock()
-            .push((id, Subscriber::new()));
+        self.inner.subscribers.lock().push((id, Subscriber::new()));
         id
     }
 
@@ -191,7 +188,11 @@ impl<E: Clone> EventBus<E> {
         let first_seq = drained.first().map_or(0, |(seq, _)| *seq);
         let events: Vec<E> = drained.into_iter().map(|(_, event)| event).collect();
         if overflowed {
-            return Some(Delivery::Behind { events, first_seq, missed });
+            return Some(Delivery::Behind {
+                events,
+                first_seq,
+                missed,
+            });
         }
         if events.is_empty() {
             return None;
@@ -211,7 +212,8 @@ impl<E: Clone> EventBus<E> {
         // an early `return` as "the guard can be dropped here", which is true of this one and is the point — the guard
         // is released on the way out, and a caller that passed an identity the bus never issued is not a case worth
         // holding a lock for. What matters is that the *contains* path releases it too, which a block scope does.
-        let Some((_, subscriber)) = subscribers.iter_mut().find(|(existing, _)| *existing == id) else {
+        let Some((_, subscriber)) = subscribers.iter_mut().find(|(existing, _)| *existing == id)
+        else {
             drop(subscribers);
             return None;
         };
@@ -244,65 +246,12 @@ impl<E: Clone> EventBus<E> {
         let first_seq = queued.first().map_or(0, |(seq, _)| *seq);
         let events: Vec<E> = queued.into_iter().map(|(_, event)| event).collect();
         if overflowed {
-            return Some(Delivery::Behind { events, first_seq, missed });
+            return Some(Delivery::Behind {
+                events,
+                first_seq,
+                missed,
+            });
         }
         Some(Delivery::Events { events, first_seq })
-    }
-
-    /// What a subscriber has to say about itself.
-    #[must_use]
-    pub fn report(&self, id: SubscriberId) -> Option<SubscriberReport> {
-        let (dropped, delivered, queued, overflowed) = {
-            let subscribers = self.inner.subscribers.lock();
-            match subscribers.iter().find(|(existing, _)| *existing == id) {
-                Some((_, subscriber)) => (
-                    subscriber.dropped,
-                    subscriber.delivered,
-                    subscriber.queue.len(),
-                    subscriber.overflowed,
-                ),
-                None => return None,
-            }
-        };
-        Some(SubscriberReport { dropped, delivered, queued, overflowed })
-    }
-
-    /// What every subscriber has to say, for a diagnostic bundle.
-    #[must_use]
-    pub fn reports(&self) -> Vec<(SubscriberId, SubscriberReport)> {
-        let subscribers = self.inner.subscribers.lock();
-        let reports: Vec<(SubscriberId, SubscriberReport)> = subscribers
-            .iter()
-            .map(|(id, subscriber)| {
-                (
-                    *id,
-                    SubscriberReport {
-                        dropped: subscriber.dropped,
-                        delivered: subscriber.delivered,
-                        queued: subscriber.queue.len(),
-                        overflowed: subscriber.overflowed,
-                    },
-                )
-            })
-            .collect();
-        drop(subscribers);
-        reports
-    }
-
-    /// Clears a subscriber's counters without touching its queue.
-    ///
-    /// For a diagnostic tool that has recorded the numbers, or a test that wants a second measurement. The queue is not
-    /// touched because clearing the counts and dropping the events would be two decisions in one call, and the caller
-    /// that wanted both can read and then reset.
-    pub fn reset_counters(&self, id: SubscriberId) -> bool {
-        // The whole function is the critical section, and the answer is computed inside it. A guard whose lifetime is a
-        // function body with no early exits is the shape `significant_drop_in_scrutinee` asks for.
-        let mut subscribers = self.inner.subscribers.lock();
-        subscribers.iter_mut().find(|(existing, _)| *existing == id).is_some_and(|(_, subscriber)| {
-            subscriber.dropped = 0;
-            subscriber.delivered = 0;
-            subscriber.overflowed = false;
-            true
-        })
     }
 }
