@@ -91,7 +91,7 @@ The same applies to a `?` inside an expression that still holds a guard. Bind th
 
 ### A module that outgrows a file becomes a directory
 
-When one file passes roughly 500 lines of production code, split it — and split it **by who acts**, not by kind.
+When one production file passes 300 lines, split it — and split it **by who acts**, not by kind.
 
 ```
 crates/synra-core/src/session/
@@ -107,6 +107,11 @@ Grouping every error into one file and every struct into another is a split by s
 touches three files. Splitting by the actor keeps a change in one place.
 
 `mod.rs` re-exports everything the old flat module exported, so **a split is a change of layout and not of interface**.
+
+Production Rust files must stay at or below 300 lines. Test files may exceed that limit when a complete scenario benefits from
+remaining together. A feature that fills one file becomes a directory with a focused `mod.rs`. Mixed files are separated into
+feature modules and narrowly named reusable utilities. Catch-all utility modules are not a substitute for identifying the
+responsibility that owns the code.
 
 ### Splitting a file safely
 
