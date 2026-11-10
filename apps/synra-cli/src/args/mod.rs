@@ -23,8 +23,6 @@
 //! has forty because it drives every screen, and a person on a terminal wants seven. The mapping is the aggregate,
 //! which is why a new kernel feature tends to land inside an existing group rather than adding a command.
 
-use clap::Parser;
-
 mod common;
 mod misc;
 mod plugins;
@@ -36,7 +34,7 @@ pub use plugins::*;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::CommandFactory;
+    use clap::{CommandFactory, Parser};
 
     fn parse(args: &[&str]) -> Result<Cli, clap::Error> {
         Cli::try_parse_from(args)
