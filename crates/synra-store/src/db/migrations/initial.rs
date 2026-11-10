@@ -1,0 +1,240 @@
+//! Initial schema and transfer foundations.
+
+use super::Migration;
+use super::super::plugin_authority;
+
+pub(crate) const V1: Migration = Migration {
+        version: 1,
+        name: "init",
+        statements: &[
+            // The device's own identity. One row, enforced by the primary key being a constant.
+            "CREATE TABLE identity (
+                id            INTEGER PRIMARY KEY CHECK (id = 1),
+                device_id     TEXT NOT NULL,
+                display_name  TEXT NOT NULL,
+                platform      TEXT NOT NULL,
+                created_at_ms INTEGER NOT NULL
+            )",
+            // Paired devices, with the features the peer announced at pairing time so a link can be set up
+            // without re-negotiating.
+            "CREATE TABLE paired_devices (
+                device_id     TEXT PRIMARY KEY,
+                display_name  TEXT NOT NULL,
+                platform      TEXT NOT NULL,
+                features      TEXT NOT NULL DEFAULT '[]',
+                paired_at_ms  INTEGER NOT NULL,
+                last_seen_ms  INTEGER NOT NULL DEFAULT 0,
+                blocked       INTEGER NOT NULL DEFAULT 0 CHECK (blocked IN (0, 1))
+            )",
+            // Devices heard from, for name caching and ordering. Cacheable: losing it costs a rediscovery.
+            "CREATE TABLE devices_seen (
+                device_id     TEXT PRIMARY KEY,
+                display_name  TEXT NOT NULL,
+                platform      TEXT NOT NULL,
+                first_seen_ms INTEGER NOT NULL,
+                last_seen_ms  INTEGER NOT NULL,
+                source        TEXT NOT NULL
+            )",
+            // The configuration. Keyed by a dotted path so a nested structure round-trips through one table.
+            "CREATE TABLE config (
+                key        TEXT PRIMARY KEY,
+                value      TEXT NOT NULL,
+                updated_ms INTEGER NOT NULL
+            )",
+        ],
+    };
+
+pub(crate) const V2: Migration = Migration {
+        version: 2,
+        name: "plugins",
+        statements: &[
+            "CREATE TABLE plugin_authority_clock (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                revision INTEGER NOT NULL CHECK (typeof(revision) = 'integer' AND revision >= 0)
+            )",
+            "INSERT INTO plugin_authority_clock (id, revision) VALUES (1, 0)",
+            "CREATE TABLE plugins (
+                plugin_id       TEXT PRIMARY KEY,
+                enabled         INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+                trusted         INTEGER NOT NULL DEFAULT 0 CHECK (trusted IN (0, 1)),
+                health          TEXT NOT NULL DEFAULT 'unknown',
+                installed_at_ms INTEGER NOT NULL,
+                updated_at_ms   INTEGER NOT NULL,
+                authority_revision INTEGER NOT NULL DEFAULT 0
+            )",
+            // One row per version, so an upgrade keeps the previous artifact until the new one is confirmed.
+            "CREATE TABLE plugin_versions (
+                plugin_id    TEXT NOT NULL REFERENCES plugins(plugin_id) ON DELETE CASCADE,
+                version      TEXT NOT NULL,
+                artifact     TEXT NOT NULL,
+                digest       TEXT NOT NULL,
+                manifest     TEXT NOT NULL,
+                installed_ms INTEGER NOT NULL,
+                active       INTEGER NOT NULL DEFAULT 0 CHECK (active IN (0, 1)),
+                PRIMARY KEY (plugin_id, version)
+            )",
+            // The grants, with the manifest fingerprint they were approved against. The fingerprint is what
+            // makes an upgrade ask again: a manifest whose capability list changed is not the one the user
+            // agreed to, and comparing digests is how that is noticed without showing every permission again.
+            "CREATE TABLE plugin_grants (
+                plugin_id       TEXT NOT NULL REFERENCES plugins(plugin_id) ON DELETE CASCADE,
+                capability      TEXT NOT NULL,
+                granted         INTEGER NOT NULL CHECK (granted IN (0, 1)),
+                decided_ms      INTEGER NOT NULL,
+                manifest_digest TEXT NOT NULL,
+                PRIMARY KEY (plugin_id, capability)
+            )",
+            "CREATE TABLE plugin_actions (
+                plugin_id   TEXT NOT NULL REFERENCES plugins(plugin_id) ON DELETE CASCADE,
+                name        TEXT NOT NULL,
+                args_schema TEXT,
+                description TEXT,
+                PRIMARY KEY (plugin_id, name)
+            )",
+            plugin_authority::TRIGGERS,
+            "CREATE TABLE plugin_deps (
+                plugin_id     TEXT NOT NULL REFERENCES plugins(plugin_id) ON DELETE CASCADE,
+                depends_on    TEXT NOT NULL,
+                version_range TEXT NOT NULL,
+                optional      INTEGER NOT NULL DEFAULT 0 CHECK (optional IN (0, 1)),
+                PRIMARY KEY (plugin_id, depends_on)
+            )",
+            // The audit trail. A ring in memory, but the durable part is what makes the interface's "recent
+            // activity" survive a restart.
+            "CREATE TABLE plugin_audit (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                plugin_id  TEXT NOT NULL,
+                capability TEXT NOT NULL,
+                outcome    TEXT NOT NULL,
+                at_ms      INTEGER NOT NULL,
+                elapsed_ms INTEGER
+            )",
+            "CREATE INDEX plugin_audit_by_plugin ON plugin_audit (plugin_id, at_ms DESC)",
+            // Cross-device plugin state, so a plugin mirrored on two devices can reconcile.
+            "CREATE TABLE sync_records (
+                plugin_id    TEXT NOT NULL,
+                peer_device  TEXT NOT NULL,
+                version      TEXT NOT NULL,
+                digest       TEXT NOT NULL,
+                synced_at_ms INTEGER NOT NULL,
+                PRIMARY KEY (plugin_id, peer_device)
+            )",
+        ],
+    };
+
+pub(crate) const V3: Migration = Migration {
+        version: 3,
+        name: "transfers",
+        statements: &[
+            // Transfer sessions, which are what make resumption possible: the receiver's bitmap is the thing
+            // that is worth more than the bytes already sent.
+            "CREATE TABLE transfer_sessions (
+                transfer_id     TEXT PRIMARY KEY,
+                peer_device     TEXT NOT NULL,
+                direction       TEXT NOT NULL CHECK (direction IN ('send', 'receive')),
+                kind            TEXT NOT NULL,
+                byte_length     INTEGER NOT NULL,
+                chunk_size      INTEGER NOT NULL,
+                digest          TEXT NOT NULL,
+                received        BLOB,
+                total_blocks    INTEGER NOT NULL DEFAULT 0,
+                state           TEXT NOT NULL,
+                created_ms      INTEGER NOT NULL,
+                updated_ms      INTEGER NOT NULL,
+                local_path      TEXT
+            )",
+            // Sessions are kept for a while and then swept. The index is what makes the sweep cheap rather than
+            // a full scan on a database that may hold thousands.
+            "CREATE INDEX transfer_sessions_by_age ON transfer_sessions (updated_ms)",
+        ],
+    };
+
+pub(crate) const V4: Migration = Migration {
+        version: 4,
+        name: "intents",
+        statements: &[
+            // Intents, persisted only when they might be replayed: an offline queue entry, or an action whose
+            // result is still expected.
+            "CREATE TABLE intents (
+                intent_id    TEXT PRIMARY KEY,
+                origin       TEXT NOT NULL,
+                plugin_id    TEXT NOT NULL,
+                action       TEXT NOT NULL,
+                args         TEXT NOT NULL,
+                state        TEXT NOT NULL,
+                created_ms   INTEGER NOT NULL,
+                updated_ms   INTEGER NOT NULL,
+                expires_ms   INTEGER
+            )",
+            "CREATE INDEX intents_by_state ON intents (state, updated_ms)",
+        ],
+    };
+
+pub(crate) const V5: Migration = Migration {
+        version: 5,
+        name: "indexes",
+        statements: &[
+            // Added once the queries existed rather than up front, which is the honest order: an index added
+            // before its query is a guess, and a migration that only adds indexes is safe to append.
+            "CREATE INDEX devices_seen_by_recency ON devices_seen (last_seen_ms DESC)",
+            "CREATE INDEX plugin_versions_active ON plugin_versions (plugin_id) WHERE active = 1",
+            "CREATE INDEX plugin_audit_by_age ON plugin_audit (at_ms)",
+        ],
+    };
+
+pub(crate) const V6: Migration = Migration {
+        version: 6,
+        name: "paired-address",
+        statements: &[
+            // Where a paired device was last reached, as `host:port`. Recorded because it is the one fact about a peer
+            // this side *observed* rather than was told: the name is whatever the peer chose to call itself, and a user
+            // deciding about a prompt has nothing else to recognise a machine by. Nullable because a row written before
+            // this migration, or a pairing accepted with no socket under it — a local test — has no address, and an
+            // empty string is a value a later query would have to special-case.
+            "ALTER TABLE paired_devices ADD COLUMN last_address TEXT",
+        ],
+    };
+
+pub(crate) const V7: Migration = Migration {
+        version: 7,
+        name: "plugin-storage",
+        statements: &[
+            // ★ What a plugin keeps between runs, which until now was nothing at all.
+            //
+            // The WIT interface has declared `storage-get`/`set`/`delete`/`keys`/`quota` since it was written, the
+            // capability catalogue has `storage:local:read` and `storage:local:write`, and every host in the repository
+            // answered all five with `notImplemented` — so a plugin that wanted to remember a setting had to ask the user
+            // for it again on every run. This is the table that makes the capability mean something.
+            //
+            // The primary key is the pair, so a plugin's key space is its own and a `set` is an upsert. Nothing about the
+            // *value* is constrained: it is whatever the plugin serialised, because the kernel has no business parsing
+            // it — and a kernel that validated a plugin's private format would be one that had to change when the plugin
+            // did.
+            //
+            // `ON DELETE CASCADE` on the plugin row, so removing a plugin removes what it stored. The alternative is a
+            // table that grows for ever with the leavings of things nobody has installed, and no query that could
+            // attribute them to anything once the row above is gone.
+            "CREATE TABLE plugin_storage (
+                plugin_id    TEXT NOT NULL REFERENCES plugins(plugin_id) ON DELETE CASCADE,
+                key          TEXT NOT NULL,
+                value        TEXT NOT NULL,
+                updated_ms   INTEGER NOT NULL,
+                PRIMARY KEY (plugin_id, key)
+            )",
+            // Listing a plugin's keys is the one read that is not by primary key, and it is on a path a settings screen
+            // takes. Without this it is a scan of every plugin's storage to find one plugin's.
+            "CREATE INDEX plugin_storage_by_key ON plugin_storage(plugin_id, key)",
+        ],
+    };
+
+
+
+
+
+
+
+
+
+
+
+
