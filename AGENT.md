@@ -113,6 +113,13 @@ remaining together. A feature that fills one file becomes a directory with a foc
 feature modules and narrowly named reusable utilities. Catch-all utility modules are not a substitute for identifying the
 responsibility that owns the code.
 
+Before committing a Rust refactor, scan production portions with the repository's PowerShell check. Any result above 300 is
+unfinished work and must be split or explicitly identified as a test-only aggregation:
+
+```powershell
+$out = @(); foreach ($f in rg --files -g '*.rs') { $lines = Get-Content $f; $cut = $lines.Count; for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -match '^\s*#\[cfg\(test\)\]') { $cut = $i; break } }; if ($cut -gt 300) { $out += [pscustomobject]@{ Lines = $cut; Path = $f } } }; $out | Sort-Object Lines -Descending
+```
+
 ### Splitting a file safely
 
 This went wrong eight times on one file, for one reason: the boundaries were inferred instead of checked.
