@@ -7,8 +7,9 @@ name: checks
 # only exists in YAML is a check nobody can reproduce, and this repository has one recorded case of exactly that
 # (`NOTES/2026-02-the-feature-matrix-was-never-buildable.md`).
 #
-# The full suite runs through `release.yaml` on `v*` tags. The independent source-size workflow also runs on
-# pull requests, merge queues, and pushes to main.
+# ★ **This file has no trigger of its own.** It is a reusable workflow (`workflow_call`), invoked by `release.yaml` when
+# a `v*` tag is pushed. That is the one entry: merging to `main` does not run anything. The sibling `synra-js` repository
+# made the same trade first, and named the cost: a bad commit is found at release time, when it is already on `main`.
 #
 # ★ `cargo fmt --all --check` is deliberately absent.
 #
@@ -30,9 +31,6 @@ env:
   CARGO_INCREMENTAL: "0"
 
 jobs:
-  source-size:
-    uses: ./.github/workflows/source-size.yml
-
   checks:
     name: tests and clippy
     runs-on: ubuntu-latest
