@@ -2,13 +2,18 @@
 
 use std::path::Path;
 
+#[cfg(windows)]
+use enigo::{Direction, Enigo, Key, Keyboard, Settings};
+
 use crate::actions::{MAX_CLIPBOARD_BYTES, PlatformAction, Policies};
 use crate::error::PlatformError;
-use crate::guard::{PathUse, check_clipboard_text, check_key_chord, check_notification, check_path, check_url};
+use crate::guard::{
+    PathUse, check_clipboard_text, check_key_chord, check_notification, check_path, check_url,
+};
 use crate::host::Platform;
 
-use super::{CommandPlatform, Desktop};
 use super::super::powershell;
+use super::{CommandPlatform, Desktop};
 
 impl Platform for CommandPlatform {
     fn name(&self) -> &'static str {
@@ -91,7 +96,9 @@ impl Platform for CommandPlatform {
                 )?;
             }
             Desktop::Windows => {
-                let _ = self.powershell(powershell::KEYS, Some(chord))?;
+                if simulate_windows_native(chord)?.is_none() {
+                    let _ = self.powershell(powershell::KEYS, Some(chord))?;
+                }
             }
         }
         Ok(())
@@ -173,6 +180,58 @@ impl Platform for CommandPlatform {
     }
 }
 
-
-
-
+/// Emit the fixed Windows chords without routing them through SendKeys.
+///
+/// .NET SendKeys accepts `^c` but has no Windows-key token, so the native input path handles the built-in chords that
+/// the hotkey plugin uses. Unknown chords retain the existing SendKeys fallback for other platform clients.
+fn simulate_windows_native(chord: &str) -> Result<Option<()>, PlatformError> {
+    #[cfg(windows)]
+    {
+        let Some((modifier, key)) = (match chord {
+            "^c" => Some((Key::LControl, Key::Unicode('c'))),
+            "^x" => Some((Key::LControl, Key::Unicode('x'))),
+            "^v" => Some((Key::LControl, Key::Unicode('v'))),
+            "^z" => Some((Key::LControl, Key::Unicode('z'))),
+            "^y" => Some((Key::LControl, Key::Unicode('y'))),
+            "^a" => Some((Key::LControl, Key::Unicode('a'))),
+            "^s" => Some((Key::LControl, Key::Unicode('s'))),
+            "^f" => Some((Key::LControl, Key::Unicode('f'))),
+            "{LWIN}e" => Some((Key::LWin, Key::Unicode('e'))),
+            _ => None,
+        }) else {
+            return Ok(None);
+        };
+        let mut keyboard =
+            Enigo::new(&Settings::default()).map_err(|error| PlatformError::RunnerFailed {
+                program: "native keyboard".to_owned(),
+                reason: error.to_string(),
+            })?;
+        keyboard
+            .key(modifier, Direction::Press)
+            .map_err(|error| PlatformError::RunnerFailed {
+                program: "native keyboard".to_owned(),
+                reason: error.to_string(),
+            })?;
+        let key_result =
+            keyboard
+                .key(key, Direction::Click)
+                .map_err(|error| PlatformError::RunnerFailed {
+                    program: "native keyboard".to_owned(),
+                    reason: error.to_string(),
+                });
+        let release_result = keyboard.key(modifier, Direction::Release).map_err(|error| {
+            PlatformError::RunnerFailed {
+                program: "native keyboard".to_owned(),
+                reason: error.to_string(),
+            }
+        });
+        key_result?;
+        release_result?;
+        Ok(Some(()))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = chord;
+        Ok(None)
+    }
+}
