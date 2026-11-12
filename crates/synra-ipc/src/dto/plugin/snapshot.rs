@@ -22,6 +22,8 @@ pub struct PluginSnapshot {
     pub description: Option<String>,
     /// Its version.
     pub version: String,
+    /// Whether the installed bytes come from a local directory.
+    pub local_source: bool,
     /// Who published it.
     pub publisher: String,
     /// Whether it is enabled.

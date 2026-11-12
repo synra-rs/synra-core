@@ -1,6 +1,9 @@
 use synra_protocol::{DeviceId, PluginId};
 
-use super::super::{AuditEntryDto, CatalogItem, InstallSourceDto, PluginSnapshot, SyncFailure, SyncReport, UpdateInfo};
+use super::super::{
+    AuditEntryDto, CatalogItem, InstallSourceDto, PluginSnapshot, SyncFailure, SyncReport,
+    UpdateInfo,
+};
 use super::plugin_id;
 
 #[test]
@@ -10,6 +13,7 @@ fn a_plugin_snapshot_reports_its_state_rather_than_leaving_it_to_be_derived() {
     let plugin = PluginSnapshot {
         plugin_id: plugin_id(),
         data_path: "/tmp/synra/plugin-data/chat".to_owned(),
+        local_source: false,
         title: "Chat".to_owned(),
         description: None,
         version: "1.0.0".to_owned(),
@@ -28,8 +32,14 @@ fn a_plugin_snapshot_reports_its_state_rather_than_leaving_it_to_be_derived() {
     };
     assert!(plugin.enabled);
     assert_eq!(plugin.state, "faulted");
-    assert!(plugin.has_ui, "the card cannot offer a page it was told the plugin lacks");
-    assert_eq!(serde_json::to_value(&plugin).expect("serialises")["updateCheckedAtMs"], 123);
+    assert!(
+        plugin.has_ui,
+        "the card cannot offer a page it was told the plugin lacks"
+    );
+    assert_eq!(
+        serde_json::to_value(&plugin).expect("serialises")["updateCheckedAtMs"],
+        123
+    );
 
     let json = serde_json::to_string(&plugin).expect("serialises");
     let back: PluginSnapshot = serde_json::from_str(&json).expect("deserialises");
@@ -79,8 +89,13 @@ fn a_catalog_item_carries_a_capability_count_rather_than_the_list() {
 #[test]
 fn an_install_source_is_tagged() {
     for source in [
-        InstallSourceDto::Path { path: "/tmp/x.synra".to_owned() },
-        InstallSourceDto::Registry { plugin_id: plugin_id(), version: None },
+        InstallSourceDto::Path {
+            path: "/tmp/x.synra".to_owned(),
+        },
+        InstallSourceDto::Registry {
+            plugin_id: plugin_id(),
+            version: None,
+        },
     ] {
         let json = serde_json::to_string(&source).expect("serialises");
         assert!(json.contains("\"source\""), "{json}");
@@ -104,7 +119,14 @@ fn an_audit_entry_has_no_field_for_content() {
     let json = serde_json::to_string(&entry).expect("serialises");
     // Quoted, so a *field* named for content is caught and a capability whose value happens to contain the
     // word — `platform:open-url` contains `url` — is not a false positive.
-    for forbidden in ["\"payload\"", "\"content\"", "\"args\"", "\"body\"", "\"url\"", "\"text\""] {
+    for forbidden in [
+        "\"payload\"",
+        "\"content\"",
+        "\"args\"",
+        "\"body\"",
+        "\"url\"",
+        "\"text\"",
+    ] {
         assert!(!json.contains(forbidden), "{forbidden} appeared in {json}");
     }
 }
