@@ -2,7 +2,7 @@ use core::str::FromStr;
 
 use synra_protocol::{DeviceId, IntentId, PluginId, TransferId};
 
-use super::super::{KernelEvent, KernelEventEnvelope};
+use super::super::{DebugWire, KernelEvent, KernelEventEnvelope};
 use crate::dto::{DeviceCard, IdentitySnapshot, ScanState};
 
 fn card(id: &str) -> DeviceCard {
@@ -43,6 +43,37 @@ fn an_event_with_no_payload_carries_only_its_type() {
     let json = serde_json::to_string(&event).expect("serialises");
     let back: KernelEvent = serde_json::from_str(&json).expect("deserialises");
     assert_eq!(back, event);
+}
+
+#[test]
+fn a_wire_event_keeps_optional_correlation_fields_out_of_older_lines() {
+    let event = KernelEvent::DebugWire(Box::new(DebugWire {
+        at_ms: 1,
+        direction: "sent".to_owned(),
+        peer: "peer".to_owned(),
+        label: "_synra.intent.request".to_owned(),
+        bytes: 12,
+        trace_id: Some("trace-1".to_owned()),
+        request_id: Some("request-1".to_owned()),
+    }));
+    let json = serde_json::to_value(&event).expect("serialises");
+    assert_eq!(json["payload"]["traceId"], "trace-1");
+    assert_eq!(json["payload"]["requestId"], "request-1");
+
+    let older = serde_json::json!({
+        "type": "debugWire",
+        "payload": {
+            "atMs": 1,
+            "direction": "sent",
+            "peer": "peer",
+            "label": "_synra.intent.request",
+            "bytes": 12
+        }
+    });
+    let back: KernelEvent = serde_json::from_value(older).expect("older event deserialises");
+    assert!(
+        matches!(back, KernelEvent::DebugWire(line) if line.trace_id.is_none() && line.request_id.is_none())
+    );
 }
 
 #[test]

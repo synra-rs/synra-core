@@ -30,7 +30,14 @@ impl PeerLink {
                         .as_ref()
                         .map_or(0, |payload| payload.get().len());
                     self.count_bytes("bytes_received_total", received_len);
-                    self.trace_received(envelope.event.as_str(), received_len);
+                    let trace_id = envelope.trace_id.to_string();
+                    let request_id = envelope.request_id.to_string();
+                    self.trace_received(
+                        envelope.event.as_str(),
+                        received_len,
+                        Some(&trace_id),
+                        Some(&request_id),
+                    );
                     return Ok(Inbound::Envelope(Box::new(envelope)));
                 }
                 FrameKind::Chunk => {
@@ -54,7 +61,7 @@ impl PeerLink {
                     });
                 }
                 FrameKind::Ping => {
-                    self.trace_received("ping", 0);
+                    self.trace_received("ping", 0, None, None);
                     let previous = self.write_timeout_override;
                     if let Some(deadline) = deadline {
                         let remaining =
@@ -68,7 +75,7 @@ impl PeerLink {
                     let result = self.pong();
                     self.write_timeout_override = previous;
                     result?;
-                    self.trace_sent("pong", 0);
+                    self.trace_sent("pong", 0, None, None);
                 }
                 FrameKind::Pong => {}
                 FrameKind::Bye => return Err(LinkError::Closed),

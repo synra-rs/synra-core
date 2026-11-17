@@ -71,24 +71,34 @@ impl PeerLink {
     /// ★ The guard is the point: `WireEvent::sent` takes text, so a call that allocated and then found no sink would make
     /// every ordinary send pay for a debug view nobody opened. The event name is already a `&str`, so the only avoidable
     /// work is `DeviceId::to_string` — and with a daemon (which never installs a sink) that is every frame.
-    pub(super) fn trace_sent(&self, label: &str, bytes: usize) {
+    pub(super) fn trace_sent(
+        &self,
+        label: &str,
+        bytes: usize,
+        trace_id: Option<&str>,
+        request_id: Option<&str>,
+    ) {
         if synra_observe::wire::is_installed() {
-            synra_observe::wire::emit(&synra_observe::wire::WireEvent::sent(
-                self.peer.to_string(),
-                label,
-                bytes,
-            ));
+            synra_observe::wire::emit(
+                &synra_observe::wire::WireEvent::sent(self.peer.to_string(), label, bytes)
+                    .with_context(trace_id, request_id),
+            );
         }
     }
 
     /// Reports a received frame; see [`PeerLink::trace_sent`] for why the guard lives here.
-    pub(super) fn trace_received(&self, label: &str, bytes: usize) {
+    pub(super) fn trace_received(
+        &self,
+        label: &str,
+        bytes: usize,
+        trace_id: Option<&str>,
+        request_id: Option<&str>,
+    ) {
         if synra_observe::wire::is_installed() {
-            synra_observe::wire::emit(&synra_observe::wire::WireEvent::received(
-                self.peer.to_string(),
-                label,
-                bytes,
-            ));
+            synra_observe::wire::emit(
+                &synra_observe::wire::WireEvent::received(self.peer.to_string(), label, bytes)
+                    .with_context(trace_id, request_id),
+            );
         }
     }
 

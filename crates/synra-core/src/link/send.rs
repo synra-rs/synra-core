@@ -89,7 +89,14 @@ impl PeerLink {
         self.count_bytes("bytes_sent_total", payload_len);
         // ★ The debug tap sees the frame that actually went out, not the one the caller asked to send: a failed write
         // returns above and produces no line, which is what a reader comparing both ends needs.
-        self.trace_sent(envelope.event.as_str(), payload_len);
+        let trace_id = envelope.trace_id.to_string();
+        let request_id = envelope.request_id.to_string();
+        self.trace_sent(
+            envelope.event.as_str(),
+            payload_len,
+            Some(&trace_id),
+            Some(&request_id),
+        );
         Ok(())
     }
 

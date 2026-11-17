@@ -23,6 +23,12 @@ pub struct DebugWire {
     pub label: String,
     /// Payload bytes. Zero for a note.
     pub bytes: u64,
+    /// The trace shared by the envelope, when this line represents one.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub trace_id: Option<String>,
+    /// The request that carried the envelope, when this line represents one.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub request_id: Option<String>,
 }
 
 /// A change the interface should apply.

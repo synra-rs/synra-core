@@ -59,6 +59,10 @@ pub struct WireEvent {
     pub label: String,
     /// Payload bytes. Zero for a note.
     pub bytes: usize,
+    /// The trace shared by the envelope, when this line represents one.
+    pub trace_id: Option<String>,
+    /// The request that carried the envelope, when this line represents one.
+    pub request_id: Option<String>,
 }
 
 impl WireEvent {
@@ -92,7 +96,17 @@ impl WireEvent {
             peer: peer.into(),
             label: label.into(),
             bytes,
+            trace_id: None,
+            request_id: None,
         }
+    }
+
+    /// Attaches safe-to-display correlation identifiers without exposing the payload.
+    #[must_use]
+    pub fn with_context(mut self, trace_id: Option<&str>, request_id: Option<&str>) -> Self {
+        self.trace_id = trace_id.map(str::to_owned);
+        self.request_id = request_id.map(str::to_owned);
+        self
     }
 }
 
@@ -181,6 +195,16 @@ mod tests {
         let event = WireEvent::note("local", "dial failed");
         assert_eq!(event.direction.as_str(), "note");
         assert_eq!(event.bytes, 0);
+        assert!(event.trace_id.is_none());
+        assert!(event.request_id.is_none());
+    }
+
+    #[test]
+    fn a_wire_event_can_carry_correlation_without_payload() {
+        let event = WireEvent::sent("dev_b", "_synra.pair.request", 42)
+            .with_context(Some("trace-1"), Some("request-1"));
+        assert_eq!(event.trace_id.as_deref(), Some("trace-1"));
+        assert_eq!(event.request_id.as_deref(), Some("request-1"));
     }
 
     #[test]
