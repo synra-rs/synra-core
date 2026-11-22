@@ -113,6 +113,22 @@ fn error_round_trips_over_the_wire() {
 }
 
 #[test]
+fn suggestion_payloads_use_the_clients_camel_case_fields() {
+    let expected = serde_json::json!([
+        {"kind": "openSettings", "section": "general"},
+        {"kind": "requestCapability", "capability": "log:read"},
+        {"kind": "installPlugin", "pluginId": "@synra-plugin/example"},
+        {"kind": "connectDevice", "deviceId": "example"},
+        {"kind": "retry"},
+        {"kind": "viewLogs", "traceId": "example"}
+    ]);
+    let actual = serde_json::to_value(SuggestedAction::all()).expect("serialize suggestions");
+    assert_eq!(actual, expected);
+    let decoded: Vec<SuggestedAction> = serde_json::from_value(expected).expect("client-shaped actions");
+    assert_eq!(decoded, SuggestedAction::all());
+}
+
+#[test]
 fn unsupported_is_the_only_platform_limitation() {
     assert!(ErrorCode::Unsupported.is_platform_limitation());
     assert!(!ErrorCode::CapabilityDenied.is_platform_limitation());

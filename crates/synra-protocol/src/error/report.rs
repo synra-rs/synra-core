@@ -192,7 +192,7 @@ impl SynraError {
 /// Structured rather than a sentence so the interface can render a button, and so a translation
 /// layer never has to parse prose.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", tag = "kind")]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase", tag = "kind")]
 #[non_exhaustive]
 pub enum SuggestedAction {
     /// Open a settings section.
