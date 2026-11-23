@@ -63,7 +63,7 @@ itself, in the one place it would be inconvenient to say it
 "loaded": false,
 ```
 
-The CLI agrees ([`apps/synra-cli/src/session.rs`](../apps/synra-cli/src/session.rs)): `plugin list` is served and
+The CLI agrees ([`apps/synra-cli/src/session/mod.rs`](../apps/synra-cli/src/session/mod.rs)): `plugin list` is served and
 install/enable/disable "are not asked for at all".
 
 ### What this means for reading the roadmap

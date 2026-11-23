@@ -15,8 +15,7 @@ fn rust_files(dir: &Path) -> Vec<PathBuf> {
                 continue;
             }
             found.extend(rust_files(&path));
-        }
-        else if path.extension().is_some_and(|extension| extension == "rs") {
+        } else if path.extension().is_some_and(|extension| extension == "rs") {
             found.push(path);
         }
     }
@@ -29,15 +28,19 @@ fn rust_files(dir: &Path) -> Vec<PathBuf> {
 /// that has grown past this is a shell that has grown logic.
 pub(crate) fn guard_bins_are_thin(root: &Path) -> Vec<String> {
     const LIMIT: usize = 60;
-    ["apps/synra-cli", "apps/synra-daemon", "tools/synra-plugin-cli"]
-        .iter()
-        .filter_map(|crate_dir| {
-            let main = root.join(crate_dir).join("src/main.rs");
-            let text = std::fs::read_to_string(&main).ok()?;
-            let count = text.lines().count();
-            (count > LIMIT).then(|| format!("{crate_dir}/src/main.rs is {count} lines (limit {LIMIT})"))
-        })
-        .collect()
+    [
+        "apps/synra-cli",
+        "apps/synra-daemon",
+        "tools/synra-plugin-cli",
+    ]
+    .iter()
+    .filter_map(|crate_dir| {
+        let main = root.join(crate_dir).join("src/main.rs");
+        let text = std::fs::read_to_string(&main).ok()?;
+        let count = text.lines().count();
+        (count > LIMIT).then(|| format!("{crate_dir}/src/main.rs is {count} lines (limit {LIMIT})"))
+    })
+    .collect()
 }
 
 /// 4. `directories` decides where a platform keeps things, and there is exactly one place that may ask it.
@@ -45,7 +48,10 @@ pub(crate) fn guard_directories_is_contained(root: &Path) -> Vec<String> {
     let allowed = Path::new("crates/synra-store/src/paths.rs");
     rust_files(&root.join("crates"))
         .into_iter()
-        .filter(|path| path.strip_prefix(root).is_ok_and(|relative| relative != allowed))
+        .filter(|path| {
+            path.strip_prefix(root)
+                .is_ok_and(|relative| relative != allowed)
+        })
         .filter(|path| {
             std::fs::read_to_string(path).is_ok_and(|text| text.contains("directories::"))
         })
@@ -70,18 +76,24 @@ pub(crate) fn guard_directories_is_contained(root: &Path) -> Vec<String> {
 /// module goes. Everything else is production, and production may only delete a directory in the one place whose whole job
 /// is to own one.
 pub(crate) fn guard_directory_deletion_is_contained(root: &Path) -> Vec<String> {
-    /// The only production file allowed to remove a directory tree, and why: a sandbox owns directories to delete them.
-    const ALLOWED: &[&str] = &["crates/synra-store/src/sandbox.rs", "crates/synra-store/src/plugin_files.rs"];
+    // Ownership belongs to a module, whether it occupies one file or has been split into a directory.
+    const OWNERS: &[&str] = &[
+        "crates/synra-store/src/sandbox",
+        "crates/synra-store/src/plugin_files",
+    ];
 
     let mut offenders = Vec::new();
     for base in ["crates", "apps", "tools"] {
         for path in rust_files(&root.join(base)) {
-            let relative = path.strip_prefix(root).unwrap_or(&path);
-            let relative = relative.to_string_lossy().replace('\\', "/");
+            let relative_path = path.strip_prefix(root).unwrap_or(&path);
+            let relative = relative_path.to_string_lossy().replace('\\', "/");
             if is_test_file(&relative) {
                 continue;
             }
-            if ALLOWED.contains(&relative.as_str()) {
+            if OWNERS.iter().any(|owner| {
+                relative_path == Path::new(owner).with_extension("rs")
+                    || relative_path.starts_with(Path::new(owner))
+            }) {
                 continue;
             }
             // ★ And a checker cannot check itself: this file contains the name it looks for, in the code that does the
@@ -154,11 +166,16 @@ pub(crate) fn guard_daemon_dials_without_the_lock(root: &Path) -> Vec<String> {
 
 /// Whether the file name or its parent directory marks it as test code.
 fn is_test_file(relative: &str) -> bool {
-    relative.rsplit('/').next().is_some_and(|name| name.contains("test"))
+    relative
+        .rsplit('/')
+        .next()
+        .is_some_and(|name| name.contains("test"))
         || relative.split('/').any(|part| part == "tests")
 }
 
 /// Stops at the inline test boundary. A line comment cannot start with the attribute.
 fn production_lines(source: &str) -> impl Iterator<Item = &str> {
-    source.lines().take_while(|line| !line.trim_start().starts_with("#[cfg(test)]"))
+    source
+        .lines()
+        .take_while(|line| !line.trim_start().starts_with("#[cfg(test)]"))
 }

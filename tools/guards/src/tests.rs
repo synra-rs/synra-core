@@ -13,15 +13,16 @@
 
 use std::path::{Path, PathBuf};
 
-use super::*;
 use super::policy::dependencies::banned_lines;
+use super::*;
 
 /// A tree that removes itself.
 struct Root(PathBuf);
 
 impl Root {
     fn new(label: &str) -> Self {
-        let path = std::env::temp_dir().join(format!("synra-guards-{label}-{}", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("synra-guards-{label}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).expect("a temporary root");
         Self(path)
@@ -60,14 +61,29 @@ fn the_gui_guard_fires_on_a_banned_dependency() {
     assert_eq!(found.len(), 1, "the tauri line is a violation: {found:?}");
     assert!(found[0].contains("tauri"), "{found:?}");
     // And a tree without one is quiet, so the guard is not simply reporting everything.
-    assert!(banned_lines(&[line("synra-core"), line("serde 1")], &["synra-core"], &["tauri"]).is_empty());
+    assert!(
+        banned_lines(
+            &[line("synra-core"), line("serde 1")],
+            &["synra-core"],
+            &["tauri"]
+        )
+        .is_empty()
+    );
 }
 
 #[test]
 fn the_io_guard_fires_on_a_runtime_in_the_protocol_layer() {
     // The guard's own subject: `synra-protocol` is the part both ends agree on, and a runtime there would decide it.
-    let lines = [line("synra-protocol"), line("tokio 1.40.0"), line("serde 1")];
-    let found = banned_lines(&lines, &["synra-protocol"], &["tokio", "wasmtime", "rusqlite", "hyper"]);
+    let lines = [
+        line("synra-protocol"),
+        line("tokio 1.40.0"),
+        line("serde 1"),
+    ];
+    let found = banned_lines(
+        &lines,
+        &["synra-protocol"],
+        &["tokio", "wasmtime", "rusqlite", "hyper"],
+    );
 
     assert_eq!(found.len(), 1, "{found:?}");
     assert!(found[0].contains("tokio"), "{found:?}");
@@ -93,14 +109,23 @@ fn the_thin_bin_guard_fires_on_a_main_that_has_grown() {
 #[test]
 fn the_directories_guard_fires_outside_the_one_file_allowed_to_ask() {
     let root = Root::new("directories");
-    root.write("crates/synra-store/src/paths.rs", "let x = directories::BaseDirs::new();");
-    root.write("crates/synra-core/src/elsewhere.rs", "let x = directories::BaseDirs::new();");
+    root.write(
+        "crates/synra-store/src/paths.rs",
+        "let x = directories::BaseDirs::new();",
+    );
+    root.write(
+        "crates/synra-core/src/elsewhere.rs",
+        "let x = directories::BaseDirs::new();",
+    );
 
     let found = guard_directories_is_contained(root.path());
     assert_eq!(found.len(), 1, "only the second file: {found:?}");
     assert!(found[0].contains("elsewhere.rs"), "{found:?}");
     // And the allowed file is what is exempt, rather than the scan missing everything.
-    assert!(found.iter().all(|line| !line.contains("paths.rs")), "{found:?}");
+    assert!(
+        found.iter().all(|line| !line.contains("paths.rs")),
+        "{found:?}"
+    );
 }
 
 #[test]
@@ -108,7 +133,10 @@ fn the_deletion_guard_fires_outside_the_one_file_allowed_to_own_a_tree() {
     // ★ This guard had no test until round 120, which is the defect the module's own documentation names: a criterion
     // that cannot fail is not a criterion, and this one had never been shown to fail.
     let root = Root::new("deletion");
-    root.write("crates/synra-core/src/elsewhere.rs", "fn f() { let _ = remove_dir_all(p); }");
+    root.write(
+        "crates/synra-core/src/elsewhere.rs",
+        "fn f() { let _ = remove_dir_all(p); }",
+    );
 
     let found = guard_directory_deletion_is_contained(root.path());
     assert_eq!(found.len(), 1, "{found:?}");
@@ -136,9 +164,18 @@ fn the_deletion_guard_allows_the_sandbox_and_test_code() {
     // useless. These are the exemptions the rule names — the sandbox, a file whose name says test, a `tests`
     // directory, and code below a `#[cfg(test)]` marker that is actually a marker.
     let root = Root::new("deletion-allowed");
-    root.write("crates/synra-store/src/sandbox.rs", "fn f() { let _ = remove_dir_all(p); }");
-    root.write("crates/synra-core/src/tests.rs", "fn f() { let _ = remove_dir_all(p); }");
-    root.write("crates/synra-core/tests/it.rs", "fn f() { let _ = remove_dir_all(p); }");
+    root.write(
+        "crates/synra-store/src/sandbox.rs",
+        "fn f() { let _ = remove_dir_all(p); }",
+    );
+    root.write(
+        "crates/synra-core/src/tests.rs",
+        "fn f() { let _ = remove_dir_all(p); }",
+    );
+    root.write(
+        "crates/synra-core/tests/it.rs",
+        "fn f() { let _ = remove_dir_all(p); }",
+    );
     root.write(
         "crates/synra-core/src/below.rs",
         "fn production() {}\n#[cfg(test)]\nmod t { fn f() { let _ = remove_dir_all(p); } }",
@@ -146,6 +183,30 @@ fn the_deletion_guard_allows_the_sandbox_and_test_code() {
 
     let found = guard_directory_deletion_is_contained(root.path());
     assert!(found.is_empty(), "{found:?}");
+}
+
+#[test]
+fn deletion_ownership_follows_module_directories_without_allowing_similar_names() {
+    let root = Root::new("deletion-modules");
+    root.write(
+        "crates/synra-store/src/sandbox/mod.rs",
+        "fn f() { remove_dir_all(p); }",
+    );
+    root.write(
+        "crates/synra-store/src/plugin_files/cleanup.rs",
+        "fn f() { remove_dir_all(p); }",
+    );
+    assert!(guard_directory_deletion_is_contained(root.path()).is_empty());
+    root.write(
+        "crates/synra-store/src/sandbox_extra/mod.rs",
+        "fn f() { remove_dir_all(p); }",
+    );
+    root.write(
+        "crates/synra-core/src/sandbox/mod.rs",
+        "fn f() { remove_dir_all(p); }",
+    );
+    let found = guard_directory_deletion_is_contained(root.path());
+    assert_eq!(found.len(), 2, "{found:?}");
 }
 
 #[test]
@@ -176,7 +237,10 @@ fn the_dial_guard_allows_the_two_halves_and_test_code() {
         "apps/synra-daemon/src/transport/tests.rs",
         "fn f() { let mut host = l(); host.dial(a, None, n); }",
     );
-    root.write("apps/synra-daemon/src/x_test.rs", "fn f() { host.dial(a, None, n); }");
+    root.write(
+        "apps/synra-daemon/src/x_test.rs",
+        "fn f() { host.dial(a, None, n); }",
+    );
 
     let found = guard_daemon_dials_without_the_lock(root.path());
     assert!(found.is_empty(), "{found:?}");
@@ -195,7 +259,10 @@ fn the_gate_guard_fires_on_an_ungated_action() {
     assert_eq!(found.len(), 1, "{found:?}");
     assert!(found[0].contains("device-send"), "{found:?}");
     // The three families that only report facts are allowed to be ungated, and `env-locale` is one of them.
-    assert!(found.iter().all(|line| !line.contains("env-locale")), "{found:?}");
+    assert!(
+        found.iter().all(|line| !line.contains("env-locale")),
+        "{found:?}"
+    );
 }
 
 #[test]

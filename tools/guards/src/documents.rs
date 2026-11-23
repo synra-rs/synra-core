@@ -18,7 +18,9 @@ use super::total_checks;
 /// who follows it cannot tell whether the document is wrong or their tool is.
 pub(super) fn check_document_links(root: &Path) -> bool {
     let Some(parent) = root.parent() else {
-        println!("SKIP  the workspace has no parent directory, so the sibling documents cannot be looked for");
+        println!(
+            "SKIP  the workspace has no parent directory, so the sibling documents cannot be looked for"
+        );
         return true;
     };
 
@@ -45,13 +47,19 @@ pub(super) fn check_document_links(root: &Path) -> bool {
 
     if !absent.is_empty() {
         // Named, and still reported alongside whatever was found: a skip is a fact about this checkout, not a result.
-        println!("SKIP  not checked out, so their links were not read: {}", absent.join(", "));
+        println!(
+            "SKIP  not checked out, so their links were not read: {}",
+            absent.join(", ")
+        );
     }
     if problems.is_empty() {
         println!("ok    every link in {files} document(s) resolves");
         true
     } else {
-        println!("FAIL  {} document link(s) point at something that is not there", problems.len());
+        println!(
+            "FAIL  {} document link(s) point at something that is not there",
+            problems.len()
+        );
         for problem in problems.iter().take(20) {
             println!("        {}", problem.render());
         }
@@ -79,7 +87,9 @@ pub(super) fn check_document_links(root: &Path) -> bool {
 /// it cannot read reports `ok` for a document it did not read.
 pub(super) fn check_document_claims(root: &Path) -> bool {
     let Some(parent) = root.parent() else {
-        println!("SKIP  the workspace has no parent directory, so the sibling documents cannot be read");
+        println!(
+            "SKIP  the workspace has no parent directory, so the sibling documents cannot be read"
+        );
         return true;
     };
 
@@ -96,8 +106,9 @@ pub(super) fn check_document_claims(root: &Path) -> bool {
 
     // The code the claims are about: this workspace and the shell beside it, which is where the contract's commands live.
     let mut code = vec![root.to_path_buf()];
-    let shell = parent.join("synra-rust-app").join("src-tauri");
-    if shell.is_dir() {
+    if let Some(shell) = super::workspace::sibling_app(root)
+        && shell.is_dir()
+    {
         code.push(shell);
     }
 
@@ -114,7 +125,10 @@ pub(super) fn check_document_claims(root: &Path) -> bool {
     }
 
     if !absent.is_empty() {
-        println!("SKIP  not checked out, so their claims were not counted: {}", absent.join(", "));
+        println!(
+            "SKIP  not checked out, so their claims were not counted: {}",
+            absent.join(", ")
+        );
     }
 
     let wrong: Vec<&doc_claims::Checked> = checked
@@ -134,7 +148,10 @@ pub(super) fn check_document_claims(root: &Path) -> bool {
         );
         true
     } else {
-        println!("FAIL  {} documented count(s) no longer describe the code", wrong.len());
+        println!(
+            "FAIL  {} documented count(s) no longer describe the code",
+            wrong.len()
+        );
         for entry in &wrong {
             let where_ = format!("{}:{}", entry.claim.file.display(), entry.claim.line);
             let names = entry.claim.tokens.join("`/`");

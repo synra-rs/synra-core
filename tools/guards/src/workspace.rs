@@ -5,7 +5,7 @@ use std::process::Command;
 ///
 /// # ★ Why this is a guard and not a line in a document
 ///
-/// Because it was a line in a document, and the rule was broken anyway. `synra-rust-app` is a **separate workspace** that
+/// Because it was a line in a document, and the rule was broken anyway. `synra-app` is a **separate workspace** that
 /// depends on this one by path, so nothing here compiles it — and twice now a change to a `pub` signature in this
 /// workspace left the app unable to build while every check in this workspace stayed green:
 ///
@@ -34,12 +34,15 @@ use std::process::Command;
 /// it is paid on every `cargo run -p guards`. If it ever becomes the reason somebody stops running the guards, the honest
 /// change is to make it opt-in and say so here, not to delete it and go back to remembering.
 pub(super) fn check_sibling_app(root: &Path) -> bool {
-    let Some(app) = root.parent().map(|parent| parent.join("synra-rust-app").join("src-tauri")) else {
+    let Some(app) = sibling_app(root) else {
         println!("SKIP  the sibling app is not checked out, so nothing is built against this API");
         return true;
     };
     if !app.join("Cargo.toml").is_file() {
-        println!("SKIP  no sibling app at {} — a core-only clone has no app to break", app.display());
+        println!(
+            "SKIP  no sibling app at {} — a core-only clone has no app to break",
+            app.display()
+        );
         return true;
     }
 
@@ -77,6 +80,12 @@ pub(super) fn check_sibling_app(root: &Path) -> bool {
     }
 }
 
+/// The canonical sibling checkout, shared by compilation and document-claim checks.
+pub(super) fn sibling_app(root: &Path) -> Option<PathBuf> {
+    root.parent()
+        .map(|parent| parent.join("synra-app").join("src-tauri"))
+}
+
 /// The declared MSRV, checked by building with that toolchain.
 ///
 /// # Why this is a check and not a number
@@ -112,16 +121,26 @@ pub(super) fn check_msrv(root: &Path) -> bool {
             //
             // Every wording rustup has used is listed, because the first version of this check recognised only one of
             // them and reported a network timeout as a build failure — the exact mistake it exists to avoid.
-            if ["component download failed", "error downloading file", "could not download file"]
-                .iter()
-                .any(|phrase| stderr.contains(phrase))
+            if [
+                "component download failed",
+                "error downloading file",
+                "could not download file",
+            ]
+            .iter()
+            .any(|phrase| stderr.contains(phrase))
             {
                 println!("SKIP  the MSRV check needs a component that is not installed ({msrv})");
-                println!("        install it once with `rustup toolchain install {msrv}` while online");
+                println!(
+                    "        install it once with `rustup toolchain install {msrv}` while online"
+                );
                 return true;
             }
             println!("FAIL  the workspace does not build on its declared MSRV ({msrv})");
-            for line in stderr.lines().filter(|line| line.starts_with("error")).take(5) {
+            for line in stderr
+                .lines()
+                .filter(|line| line.starts_with("error"))
+                .take(5)
+            {
                 println!("        {line}");
             }
             false
@@ -160,5 +179,19 @@ pub(super) fn workspace_root() -> Option<PathBuf> {
         if !dir.pop() {
             return None;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sibling_app;
+    use std::path::Path;
+
+    #[test]
+    fn the_app_path_is_the_actual_sibling_checkout() {
+        assert_eq!(
+            sibling_app(Path::new("repos/synra-core")),
+            Some(Path::new("repos/synra-app/src-tauri").to_path_buf())
+        );
     }
 }
