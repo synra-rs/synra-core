@@ -2,19 +2,12 @@
 
 use synra_control::Refusal;
 use synra_protocol::error::ErrorCode;
-use synra_registry::{Packument, Version};
+use synra_registry::{Packument, RegistryKind, RegistrySource as Base, Version};
 
 use super::super::registry_install::NetworkFetch;
 
 #[cfg(test)]
 pub(super) use synra_core::plugin_updates::REGISTRY_KEY;
-
-#[derive(Debug)]
-struct Base {
-    url: String,
-    is_static: bool,
-    loopback: bool,
-}
 
 pub(super) struct Sources {
     bases: Vec<Base>,
@@ -22,32 +15,17 @@ pub(super) struct Sources {
 
 pub(super) struct Document {
     pub(super) document: Packument,
-    base: String,
+    source: Base,
     index: Option<String>,
-    loopback: bool,
 }
 
 impl Sources {
     pub(super) fn parse(raw: &str) -> Result<Self, String> {
         let value: serde_json::Value =
             serde_json::from_str(raw).map_err(|error| error.to_string())?;
-        let urls: Vec<String> = match value {
-            serde_json::Value::String(url) => vec![url],
-            serde_json::Value::Array(urls) => urls
-                .into_iter()
-                .map(|value| {
-                    value
-                        .as_str()
-                        .map(str::to_owned)
-                        .ok_or_else(|| "every registry must be a URL".to_owned())
-                })
-                .collect::<Result<_, _>>()?,
-            _ => return Err("plugins.registry must be a URL or an array of URLs".to_owned()),
-        };
-        let bases = urls
-            .iter()
-            .map(|url| parse_base(url))
-            .collect::<Result<Vec<_>, _>>()?;
+        let config = synra_registry::RegistryConfig::parse(Some(&value))
+            .map_err(|error| error.to_string())?;
+        let bases = config.sources().to_vec();
         if bases.is_empty() {
             return Err("plugins.registry names no registry".to_owned());
         }
@@ -64,14 +42,14 @@ impl Sources {
             if cancel.is_cancelled() {
                 return Err("the update check was cancelled".to_owned());
             }
-            let path = if base.is_static {
+            let path = if base.kind() == RegistryKind::Static {
                 format!("/{package}.json")
             } else {
                 format!("/{}", package.replace('/', "%2F"))
             };
-            let url = format!("{}{path}", base.url);
+            let url = format!("{}{path}", base.url());
             let response = match (NetworkFetch {
-                allow_loopback: base.loopback,
+                allow_loopback: base.loopback(),
             })
             .response(&url, 8 * 1024 * 1024)
             {
@@ -92,7 +70,7 @@ impl Sources {
             let parsed = std::str::from_utf8(&response.body)
                 .map_err(|error| error.to_string())
                 .and_then(|text| {
-                    if base.is_static {
+                    if base.kind() == RegistryKind::Static {
                         synra_registry::parse_static_index(text)
                             .map(|index| index.document)
                             .map_err(|error| error.to_string())
@@ -117,9 +95,8 @@ impl Sources {
             }
             return Ok(Document {
                 document,
-                base: base.url.clone(),
-                index: base.is_static.then_some(url),
-                loopback: base.loopback,
+                source: base.clone(),
+                index: (base.kind() == RegistryKind::Static).then_some(url),
             });
         }
         Err(failures.join("; "))
@@ -180,55 +157,26 @@ impl Sources {
 
     fn tarballs(&self, document: &Document, tarball: &str) -> Result<Vec<(String, bool)>, String> {
         if let Some(index) = &document.index {
-            return Ok(vec![(resolve(index, tarball)?, document.loopback)]);
+            return Ok(vec![(resolve(index, tarball)?, document.source.loopback())]);
         }
-        let path = tarball
-            .strip_prefix(&document.base)
-            .filter(|path| path.starts_with('/'))
-            .ok_or_else(|| "the tarball is not on the configured npm registry".to_owned())?;
-        let mut urls = vec![(tarball.to_owned(), document.loopback)];
+        let path = document
+            .source
+            .npm_artifact_path(tarball)
+            .map_err(|error| error.to_string())?;
+        let mut urls = vec![(
+            format!("{}{path}", document.source.url()),
+            document.source.loopback(),
+        )];
         urls.extend(
             self.bases
                 .iter()
-                .filter(|base| !base.is_static && base.url != document.base)
-                .map(|base| (format!("{}{path}", base.url), base.loopback)),
+                .filter(|base| {
+                    base.kind() == RegistryKind::Npm && base.url() != document.source.url()
+                })
+                .map(|base| (format!("{}{path}", base.url()), base.loopback())),
         );
         Ok(urls)
     }
-}
-
-fn parse_base(text: &str) -> Result<Base, String> {
-    let text = text.trim();
-    let (url, is_static) = text
-        .strip_prefix("static:")
-        .map_or((text, false), |url| (url.trim(), true));
-    let url = url.trim_end_matches('/');
-    let rest = url
-        .strip_prefix("https://")
-        .or_else(|| url.strip_prefix("http://"))
-        .ok_or_else(|| "a registry must use https or loopback http".to_owned())?;
-    if rest.is_empty() || rest.contains(['?', '#', '@']) || (!is_static && rest.contains('/')) {
-        return Err("the registry URL contains an invalid authority or path".to_owned());
-    }
-    let parsed = synra_core::network::NetworkGuard::for_hosts(&[])
-        .allowing_insecure(true)
-        .parse(url)
-        .map_err(|error| error.to_string())?;
-    let loopback = parsed.host == "localhost"
-        || parsed
-            .host
-            .parse::<std::net::IpAddr>()
-            .is_ok_and(|ip| ip.is_loopback());
-    if url.starts_with("http://") && !loopback {
-        return Err(
-            "HTTP is permitted only for an explicitly configured loopback registry".to_owned(),
-        );
-    }
-    Ok(Base {
-        url: url.to_owned(),
-        is_static,
-        loopback,
-    })
 }
 
 fn resolve(index: &str, tarball: &str) -> Result<String, String> {

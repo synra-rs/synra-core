@@ -30,11 +30,7 @@ impl NetworkFetch {
             .allowing_insecure(true)
             .parse(url)
             .map_err(|error| error.to_string())?;
-        let loopback = parsed.host == "localhost"
-            || parsed
-                .host
-                .parse::<std::net::IpAddr>()
-                .is_ok_and(|ip| ip.is_loopback());
+        let loopback = synra_registry::is_loopback_host(&parsed.host);
         let guard = synra_core::network::NetworkGuard::for_hosts(&[parsed.host])
             .allowing_insecure(self.allow_loopback && loopback)
             .with_policy(synra_core::network::IpPolicy {

@@ -56,8 +56,8 @@ pub use intent::{
 pub use pairing::{PairingAsk, PairingOffer, PairingOutcome, PairingPhase, PairingSnapshot};
 pub use plugin::{
     AuditEntryDto, CatalogItem, CatalogQuery, CatalogSort, InstallPreviewDto, InstallReport,
-    InstallSourceDto, PluginHealthDto, PluginSnapshot, PublisherDto, RemoveOptionsDto,
-    RemoveReport, SyncFailure, SyncPlanDto, SyncReport, SyncTarget, UpdateInfo,
+    InstallSourceDto, PluginHealthDto, PluginSnapshot, PublisherDto, RegistryProblem,
+    RemoveOptionsDto, RemoveReport, SyncFailure, SyncPlanDto, SyncReport, SyncTarget, UpdateInfo,
 };
 pub use transfer::{
     ReceivedFile, SendFileRequest, SendTextRequest, TransferSnapshot, TransferSummary,
