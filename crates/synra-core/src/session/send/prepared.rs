@@ -6,7 +6,7 @@ use synra_protocol::ids::{TraceId, TransferId};
 use synra_protocol::session::{SessionTimeouts, TransferAbortReason, TransferKind};
 
 use crate::link::{Inbound, LinkError, PeerLink};
-use crate::transfer::TransferSender;
+use crate::transfer::{AcknowledgedProgress, TransferSender};
 
 use super::super::types::{SessionError, SessionEvent};
 use super::super::wire::payload_of;
@@ -42,7 +42,7 @@ impl SendOptions {
 
 /// Proposes an already prepared object and succeeds only after a matching digest confirmation.
 ///
-/// `progress` reports newly acknowledged blocks, including repairs, rather than socket writes.
+/// `progress` reports cumulative acknowledged bytes and blocks, including repairs.
 /// Cancellation is sampled before each write and between bounded reads, including the final wait.
 /// Caller timeout overrides are restored on every return; a failed write must not be retried on
 /// this link because it may have left a partial frame on the wire.
@@ -54,7 +54,7 @@ pub fn send_prepared(
     sender: &mut TransferSender,
     options: SendOptions,
     cancelled: impl Fn() -> bool,
-    progress: impl FnMut(u32, u32),
+    progress: impl FnMut(AcknowledgedProgress),
 ) -> Result<Vec<SessionEvent>, SessionError> {
     let previous = link.timeout_overrides();
     let mut context = SendContext::new(options, cancelled, progress, link.write_deadline());
@@ -88,7 +88,7 @@ pub fn send_prepared(
 fn run(
     link: &mut PeerLink,
     sender: &mut TransferSender,
-    context: &mut SendContext<impl Fn() -> bool, impl FnMut(u32, u32)>,
+    context: &mut SendContext<impl Fn() -> bool, impl FnMut(AcknowledgedProgress)>,
 ) -> Result<Vec<SessionEvent>, SessionError> {
     context.prepare_write(link)?;
     let mut events = vec![propose(
@@ -145,7 +145,7 @@ fn run(
 
 fn bundle_result(
     link: &mut PeerLink,
-    context: &SendContext<impl Fn() -> bool, impl FnMut(u32, u32)>,
+    context: &SendContext<impl Fn() -> bool, impl FnMut(AcknowledgedProgress)>,
 ) -> Result<Option<crate::messaging::SyncResult>, SessionError> {
     let patience = crate::peer::Flags::production()
         .timeout
@@ -196,7 +196,7 @@ pub(super) struct SendContext<C, P> {
     write_timeout: Option<Duration>,
 }
 
-impl<C: Fn() -> bool, P: FnMut(u32, u32)> SendContext<C, P> {
+impl<C: Fn() -> bool, P: FnMut(AcknowledgedProgress)> SendContext<C, P> {
     pub(super) fn new(
         options: SendOptions,
         cancelled: C,
@@ -242,8 +242,8 @@ impl<C: Fn() -> bool, P: FnMut(u32, u32)> SendContext<C, P> {
         Ok(control)
     }
 
-    pub(super) fn advanced(&mut self, done: u32, total: u32) {
+    pub(super) fn advanced(&mut self, progress: AcknowledgedProgress) {
         self.last_progress = Instant::now();
-        (self.progress)(done, total);
+        (self.progress)(progress);
     }
 }

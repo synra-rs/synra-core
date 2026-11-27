@@ -4,7 +4,7 @@ use synra_protocol::ids::TraceId;
 use synra_protocol::session::ProgressBitmap;
 
 use crate::link::PeerLink;
-use crate::transfer::TransferSender;
+use crate::transfer::{AcknowledgedProgress, TransferSender};
 
 use super::super::types::{SessionError, SessionEvent};
 use super::super::wire::{Message, envelope_for};
@@ -54,7 +54,7 @@ pub fn send_blocks(
 ) -> Result<Vec<SessionEvent>, SessionError> {
     let previous = link.timeout_overrides();
     let options = SendOptions::new(TraceId::new(), 0, deadline);
-    let mut context = SendContext::new(options, || false, |_, _| {}, link.write_deadline());
+    let mut context = SendContext::new(options, || false, |_| {}, link.write_deadline());
     let outcome = send_observed(link, sender, &mut context);
     link.set_read_timeout(previous.0);
     link.set_write_timeout(previous.1);
@@ -64,7 +64,7 @@ pub fn send_blocks(
 pub(super) fn send_observed(
     link: &mut PeerLink,
     sender: &mut TransferSender,
-    context: &mut SendContext<impl Fn() -> bool, impl FnMut(u32, u32)>,
+    context: &mut SendContext<impl Fn() -> bool, impl FnMut(AcknowledgedProgress)>,
 ) -> Result<Vec<SessionEvent>, SessionError> {
     let total = u32::try_from(sender.blocks().len()).unwrap_or(u32::MAX);
     let mut pending = sender.outstanding().into_iter().peekable();
@@ -130,7 +130,7 @@ pub(super) fn send_observed(
         }
         if acknowledged > done {
             done = acknowledged;
-            context.advanced(done, total);
+            context.advanced(sender.acknowledged_progress(&bitmap, done));
         }
         in_flight.retain(|(index, _)| !bitmap.contains(*index));
         if let Some(highest) = bitmap.highest() {

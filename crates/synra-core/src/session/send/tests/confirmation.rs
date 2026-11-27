@@ -37,7 +37,7 @@ fn a_wrong_digest_or_transfer_id_cannot_confirm_success() {
                 peer.send(&reply).unwrap();
             });
             let error =
-                send_prepared(&mut local, &mut sender, options(), || false, |_, _| {}).unwrap_err();
+                send_prepared(&mut local, &mut sender, options(), || false, |_| {}).unwrap_err();
             assert!(if wrong_id {
                 matches!(error, SessionError::WrongTransfer { .. })
             } else {
@@ -73,7 +73,7 @@ fn cancellation_during_confirmation_sends_one_terminal_abort() {
             &mut sender,
             options(),
             || cancelled.load(Ordering::SeqCst),
-            |_, _| {},
+            |_| {},
         )
         .unwrap_err();
         assert_eq!(error, SessionError::Cancelled);
@@ -101,7 +101,7 @@ fn missing_confirmation_expires_and_restores_caller_timeouts() {
             assert_eq!(abort.reason, TransferAbortReason::IdleTimeout);
         });
         assert_eq!(
-            send_prepared(&mut local, &mut sender, options, || false, |_, _| {}),
+            send_prepared(&mut local, &mut sender, options, || false, |_| {}),
             Err(SessionError::TimedOut)
         );
         worker.join().unwrap();

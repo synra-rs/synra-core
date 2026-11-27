@@ -3,7 +3,8 @@ use super::*;
 #[test]
 fn backpressure_and_a_dropped_block_do_not_break_the_bounded_window() {
     let root = tempfile::tempdir().unwrap();
-    let mut sender = sender(&root, 100 * 1024);
+    let length = 100 * 1024 + 7;
+    let mut sender = sender(&root, length);
     let (mut local, mut peer) = links();
     let options = options();
     let mut progress = Vec::new();
@@ -34,7 +35,7 @@ fn backpressure_and_a_dropped_block_do_not_break_the_bounded_window() {
             &mut sender,
             options,
             || false,
-            |done, _| progress.push(done),
+            |acknowledged| progress.push(acknowledged),
         )
         .unwrap();
         assert!(
@@ -53,9 +54,15 @@ fn backpressure_and_a_dropped_block_do_not_break_the_bounded_window() {
         assert_eq!(repaired, vec![0]);
         worker.join().unwrap();
     });
-    assert_eq!(progress.last(), Some(&100));
-    assert!(progress.windows(2).all(|pair| pair[0] < pair[1]));
-    assert_eq!(std::fs::read(destination).unwrap(), vec![9; 100 * 1024]);
+    let final_progress = progress.last().unwrap();
+    assert_eq!(final_progress.blocks, 101);
+    assert_eq!(final_progress.bytes, length as u64);
+    assert!(
+        progress
+            .windows(2)
+            .all(|pair| pair[0].blocks < pair[1].blocks && pair[0].bytes < pair[1].bytes)
+    );
+    assert_eq!(std::fs::read(destination).unwrap(), vec![9; length]);
 }
 
 #[test]
@@ -94,7 +101,7 @@ fn a_peer_cannot_open_the_window_by_acknowledging_unsent_blocks() {
             peer.send(&reply).unwrap();
         });
         assert!(matches!(
-            send_prepared(&mut local, &mut sender, options(), || false, |_, _| {}),
+            send_prepared(&mut local, &mut sender, options(), || false, |_| {}),
             Err(SessionError::BadProgress(_))
         ));
         worker.join().unwrap();

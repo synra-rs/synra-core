@@ -1,6 +1,10 @@
 use synra_protocol::DeviceId;
+use synra_protocol::session::TransferAbortReason;
 
-use super::super::{SendFileRequest, TransferSnapshot};
+use super::super::{
+    PluginTransferFailure, PluginTransferState, PluginTransferStatus, SendFileRequest,
+    TransferSnapshot,
+};
 use super::{fixed_device_id, fixed_transfer_id};
 
 pub(super) fn transfer(received: u64, total: u64) -> TransferSnapshot {
@@ -49,6 +53,43 @@ fn a_transfer_round_trips() {
     assert!(json.contains("blocksTotal"), "{json}");
     let back: TransferSnapshot = serde_json::from_str(&json).expect("deserialises");
     assert_eq!(back, transfer(1, 2));
+}
+
+#[test]
+fn plugin_status_uses_stable_failure_reasons_and_omits_unset_terminal_fields() {
+    let mut status = PluginTransferStatus {
+        transfer_id: fixed_transfer_id("018f2b40-0000-7000-8000-000000000001"),
+        state: PluginTransferState::Transferring,
+        received_bytes: 12,
+        total_bytes: 17,
+        blocks_done: 1,
+        blocks_total: 2,
+        revision: 2,
+        ended_at_ms: None,
+        failure: None,
+    };
+    let active = serde_json::to_value(&status).expect("active status");
+    assert_eq!(active["receivedBytes"], 12);
+    assert!(active.get("endedAtMs").is_none());
+    assert!(active.get("failure").is_none());
+
+    status.state = PluginTransferState::Failed;
+    status.revision += 1;
+    status.ended_at_ms = Some(459);
+    status.failure = Some(PluginTransferFailure::PeerAborted {
+        reason: TransferAbortReason::TooLarge,
+    });
+    let terminal = serde_json::to_value(&status).expect("terminal status");
+    assert_eq!(terminal["state"], "failed");
+    assert_eq!(terminal["endedAtMs"], 459);
+    assert_eq!(
+        terminal["failure"],
+        serde_json::json!({"kind": "peer_aborted", "reason": "too_large"})
+    );
+    assert_eq!(
+        serde_json::from_value::<PluginTransferStatus>(terminal).unwrap(),
+        status
+    );
 }
 
 #[test]

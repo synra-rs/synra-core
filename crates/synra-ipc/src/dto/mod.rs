@@ -60,7 +60,8 @@ pub use plugin::{
     RemoveOptionsDto, RemoveReport, SyncFailure, SyncPlanDto, SyncReport, SyncTarget, UpdateInfo,
 };
 pub use transfer::{
-    ReceivedFile, SendFileRequest, SendTextRequest, TransferSnapshot, TransferSummary,
+    PluginTransferFailure, PluginTransferState, PluginTransferStatus, ReceivedFile, SendFileRequest,
+    SendTextRequest, TransferSnapshot, TransferSummary,
 };
 
 #[cfg(test)]

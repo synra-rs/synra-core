@@ -8,7 +8,7 @@ fn an_expired_total_deadline_never_proposes_or_writes_a_block() {
     let mut options = options();
     options.deadline = Instant::now();
     assert_eq!(
-        send_prepared(&mut local, &mut sender, options, || false, |_, _| {}),
+        send_prepared(&mut local, &mut sender, options, || false, |_| {}),
         Err(SessionError::TimedOut)
     );
     let notice = peer.receive().unwrap();
@@ -62,7 +62,7 @@ fn duplicate_progress_does_not_keep_an_idle_transfer_alive() {
             }
         });
         assert_eq!(
-            send_prepared(&mut local, &mut sender, options, || false, |_, _| {}),
+            send_prepared(&mut local, &mut sender, options, || false, |_| {}),
             Err(SessionError::TimedOut)
         );
         worker.join().unwrap();

@@ -6,6 +6,7 @@ use synra_protocol::session::{ProgressBitmap, TransferKind, TransferMeta, Transf
 
 use super::digest::ObjectDigest;
 use super::error::TransferError;
+use super::lifecycle::AcknowledgedProgress;
 use super::plan::{Block, plan_blocks};
 
 /// What a sender is doing with a file.
@@ -220,6 +221,24 @@ impl TransferSender {
                 .iter()
                 .zip(self.sent.as_bytes())
                 .all(|(received, sent)| received & !sent == 0)
+    }
+
+    /// Every planned block except the tail has the same size. Use the validated bitmap to
+    /// account for the tail, including when it is acknowledged before an earlier block.
+    pub(crate) fn acknowledged_progress(
+        &self,
+        bitmap: &ProgressBitmap,
+        blocks: u32,
+    ) -> AcknowledgedProgress {
+        let full_bytes = u64::from(blocks) * u64::from(self.chunk_size);
+        let bytes = self
+            .blocks
+            .last()
+            .filter(|tail| bitmap.contains(tail.index))
+            .map_or(full_bytes, |tail| {
+                full_bytes - u64::from(self.chunk_size - tail.len)
+            });
+        AcknowledgedProgress { bytes, blocks }
     }
 
     /// Replaces what this sender believes has arrived with what the receiver reported.

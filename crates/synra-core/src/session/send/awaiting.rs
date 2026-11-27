@@ -30,7 +30,7 @@ pub fn send_file(
         &mut sender,
         SendOptions::new(trace_id, now_ms, deadline),
         || false,
-        |_, _| {},
+        |_| {},
     )
 }
 
@@ -68,6 +68,6 @@ pub fn send_bundle(
         &mut sender,
         SendOptions::new(trace_id, now_ms, deadline),
         || false,
-        |_, _| {},
+        |_| {},
     )
 }

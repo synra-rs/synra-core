@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use synra_protocol::{DeviceId, TransferId};
+use synra_protocol::{DeviceId, TransferId, session::TransferAbortReason};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Transfers
@@ -73,6 +73,73 @@ impl TransferSnapshot {
         // file changed size on the sender. A progress of `1.4` would render outside its bar.
         (self.received_bytes as f64 / self.total_bytes as f64).clamp(0.0, 1.0)
     }
+}
+
+/// The lifecycle states observable by a plugin that sent a transfer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginTransferState {
+    /// The host has accepted the transfer and is waiting for a link or peer.
+    Pending,
+    /// The worker is exchanging or verifying blocks.
+    Transferring,
+    /// The receiver verified the complete object.
+    Completed,
+    /// The transfer stopped with a known failure.
+    Failed,
+    /// The transfer was cancelled before confirmation.
+    Cancelled,
+}
+
+/// Machine-readable causes of a failed transfer, without peer credentials or local paths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PluginTransferFailure {
+    /// The peer could not be reached or the connection closed.
+    Connection,
+    /// A transfer budget expired.
+    TimedOut,
+    /// The authenticated link could no longer be authorized.
+    Authorization,
+    /// The peer ended the transfer with a structured reason.
+    PeerAborted {
+        /// The reason received from the peer.
+        reason: TransferAbortReason,
+    },
+    /// The local file could not be read or written.
+    FileIo,
+    /// Object integrity could not be established.
+    Integrity,
+    /// The transfer messages did not satisfy the protocol.
+    Protocol,
+    /// The host could not start the worker.
+    WorkerUnavailable,
+}
+
+/// An authoritative transfer snapshot that the owner can query after the worker exits.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PluginTransferStatus {
+    /// The identifier returned when this transfer was accepted.
+    pub transfer_id: TransferId,
+    /// The last worker state known to the host.
+    pub state: PluginTransferState,
+    /// Object bytes confirmed by the receiver.
+    pub received_bytes: u64,
+    /// Planned size in bytes.
+    pub total_bytes: u64,
+    /// Distinct blocks confirmed by the receiver.
+    pub blocks_done: u32,
+    /// Planned block count.
+    pub blocks_total: u32,
+    /// Increases when this record changes.
+    pub revision: u64,
+    /// Set on terminal records, in Unix milliseconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ended_at_ms: Option<u64>,
+    /// Set when the terminal state is `failed`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure: Option<PluginTransferFailure>,
 }
 
 /// The compact form a device card carries.
