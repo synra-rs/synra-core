@@ -84,7 +84,7 @@ impl UploadPolicy {
     ///
     /// # Errors
     /// Refuses an invalid file size or exhausted capacity.
-    pub fn admit(self, usage: UploadUsage, bytes: u64) -> Result<(), UploadError> {
+    pub const fn admit(self, usage: UploadUsage, bytes: u64) -> Result<(), UploadError> {
         if bytes == 0 {
             return Err(UploadError::Empty);
         }
@@ -223,7 +223,7 @@ impl UploadProgress {
     }
 
     /// Closes the upload once. Returns whether the caller should release its resources.
-    pub fn close(&mut self, end: UploadEnd) -> bool {
+    pub const fn close(&mut self, end: UploadEnd) -> bool {
         if !matches!(self.phase, Phase::Receiving | Phase::HandingOff) {
             return false;
         }

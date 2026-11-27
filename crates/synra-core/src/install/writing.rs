@@ -4,6 +4,7 @@ use std::path::Path;
 
 use super::{InstallRefusal, Installed, Prepared, discard, signed_publisher};
 
+#[derive(Clone, Copy)]
 pub(super) enum WriteMode<'a> {
     Install,
     Replace,

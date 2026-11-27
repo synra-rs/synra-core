@@ -89,7 +89,10 @@ fn check_one(
         let Some(raw) = registry_setting(&db)? else {
             return Ok(None);
         };
-        let request_order = db.begin_plugin_update_check().map_err(|error| error.to_string())?;
+        let request_order = db
+            .begin_plugin_update_check()
+            .map_err(|error| error.to_string())?;
+        drop(db);
         (active, raw, request_order)
     };
     let sources = source::Sources::parse(&raw)?;

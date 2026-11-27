@@ -22,7 +22,9 @@ fn saved_check(runtime: &crate::runtime::Runtime, version: &str) -> PluginUpdate
         attempts: 0,
         retry_at_ms: None,
     };
-    assert!(db.save_plugin_update_check(&check).expect("save check"));
+    let saved = db.save_plugin_update_check(&check);
+    drop(db);
+    assert!(saved.expect("save check"));
     check
 }
 

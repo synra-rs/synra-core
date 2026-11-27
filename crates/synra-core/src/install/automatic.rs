@@ -166,7 +166,7 @@ fn admit(
     Ok(current.version)
 }
 
-fn change_size(previous: &PluginVersion, candidate: &PluginVersion) -> ChangeSize {
+const fn change_size(previous: &PluginVersion, candidate: &PluginVersion) -> ChangeSize {
     if previous.major() != candidate.major() {
         ChangeSize::Major
     } else if previous.minor() != candidate.minor() {
