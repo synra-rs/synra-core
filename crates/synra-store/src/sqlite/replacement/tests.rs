@@ -35,6 +35,7 @@ fn replacement<'a>(capabilities: &'a [String]) -> PluginReplacement<'a> {
         capabilities,
         publisher_id: None,
         fingerprint: None,
+        expected_update: None,
         now_ms: 2,
     }
 }

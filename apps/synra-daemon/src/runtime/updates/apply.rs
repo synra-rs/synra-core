@@ -1,32 +1,32 @@
 //! A lifecycle switch using the kernel's retained, verified replacement bytes.
 
 use synra_core::dispatch::PluginSet;
-use synra_core::plugin_updates::configured_policy;
+use synra_core::plugin_updates::automatic_check_is_current;
 use synra_core::supervisor::Cancellation;
 use synra_plugin_api::update::UpdatePolicy;
 use synra_protocol::PluginId;
+use synra_store::PluginUpdateCheck;
 
 use super::super::Runtime;
 
 pub(super) fn directory(
     runtime: &Runtime,
-    target: (&str, &str),
+    check: &PluginUpdateCheck,
     path: &std::path::Path,
-    registry: Option<&str>,
     policy: UpdatePolicy,
-    now_ms: i64,
     cancel: &Cancellation,
 ) -> Result<(), String> {
+    let version = check.available_version.as_deref().ok_or("the check offers no update")?;
     replace(
         runtime,
-        target,
+        (&check.plugin_id, version),
         path,
         Mode::Automatic {
-            registry,
+            check,
             policy,
             cancel,
         },
-        now_ms,
+        check.checked_at_ms,
     )
     .map(|_| ())
 }
@@ -44,7 +44,7 @@ pub(super) fn manual(
 #[derive(Clone, Copy)]
 enum Mode<'a> {
     Automatic {
-        registry: Option<&'a str>,
+        check: &'a PluginUpdateCheck,
         policy: UpdatePolicy,
         cancel: &'a Cancellation,
     },
@@ -53,15 +53,15 @@ enum Mode<'a> {
     },
 }
 
-enum Verified {
-    Automatic(synra_core::install::PreparedUpdate),
+enum Verified<'a> {
+    Automatic(synra_core::install::PreparedUpdate, &'a PluginUpdateCheck),
     Manual(synra_core::install::PreparedReplacement),
 }
 
-impl Verified {
+impl Verified<'_> {
     fn target(&self) -> (&str, &str) {
         match self {
-            Self::Automatic(update) => (update.plugin_id(), update.version()),
+            Self::Automatic(update, _) => (update.plugin_id(), update.version()),
             Self::Manual(update) => (update.plugin_id(), update.version()),
         }
     }
@@ -72,21 +72,21 @@ impl Verified {
         now_ms: i64,
     ) -> Result<synra_core::install::Installed, String> {
         match self {
-            Self::Automatic(update) => update.install(db, now_ms),
+            Self::Automatic(update, check) => update.install(db, check, now_ms),
             Self::Manual(update) => update.install(db, now_ms),
         }
         .map_err(|error| format!("{}: {}", error.stage, error.reason))
     }
 }
 
-impl Mode<'_> {
+impl<'a> Mode<'a> {
     fn ensure(&self, db: &synra_store::SynraDb) -> Result<(), String> {
         match self {
             Self::Automatic {
-                registry,
+                check,
                 policy,
                 cancel,
-            } => ensure(db, *registry, *policy, cancel),
+            } => ensure_automatic_check(db, check, *policy, cancel),
             Self::Manual { registry } => {
                 if super::registry_setting(db)?.as_deref() != *registry {
                     return Err("the registry changed during the update".to_owned());
@@ -103,10 +103,10 @@ impl Mode<'_> {
         runtime: &Runtime,
         path: &std::path::Path,
         now_ms: i64,
-    ) -> Result<Verified, String> {
+    ) -> Result<Verified<'a>, String> {
         let host = synra_plugin_host::verify::HostFacts::headless();
         match self {
-            Self::Automatic { policy, .. } => synra_core::install::prepare_automatic_update(
+            Self::Automatic { check, policy, .. } => synra_core::install::prepare_automatic_update(
                 db,
                 set.backend(),
                 &runtime.plugins_dir,
@@ -115,7 +115,7 @@ impl Mode<'_> {
                 host,
                 *policy,
             )
-            .map(Verified::Automatic),
+            .map(|update| Verified::Automatic(update, check)),
             Self::Manual { .. } => synra_core::install::prepare_replacement(
                 db,
                 set.backend(),
@@ -178,17 +178,16 @@ fn replace(
     Ok(installed)
 }
 
-fn ensure(
+pub(super) fn ensure_automatic_check(
     db: &synra_store::SynraDb,
-    registry: Option<&str>,
+    check: &PluginUpdateCheck,
     policy: UpdatePolicy,
     cancel: &Cancellation,
 ) -> Result<(), String> {
-    if cancel.is_cancelled()
-        || configured_policy(db) != Some(policy)
-        || super::registry_setting(db)?.as_deref() != registry
-    {
-        return Err("the automatic update was cancelled or its configuration changed".to_owned());
+    let current = automatic_check_is_current(db, check, policy, cancel)
+        .map_err(|error| error.to_string())?;
+    if !current {
+        return Err("the automatic update was cancelled or its check or policy changed".to_owned());
     }
     Ok(())
 }

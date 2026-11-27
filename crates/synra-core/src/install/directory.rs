@@ -74,7 +74,12 @@ fn from_directory_inner(
     replace: bool,
 ) -> Result<Installed, InstallRefusal> {
     let prepared = prepare(db, backend, source, now_ms, host, replace)?;
-    writing::write(db, plugins_dir, now_ms, prepared, replace)
+    let mode = if replace {
+        writing::WriteMode::Replace
+    } else {
+        writing::WriteMode::Install
+    };
+    writing::write(db, plugins_dir, now_ms, prepared, mode)
 }
 
 pub(crate) fn prepare(

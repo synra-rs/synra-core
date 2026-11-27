@@ -2,7 +2,7 @@
 
 use rusqlite::params;
 
-use super::{DbError, SynraDb};
+use super::{DbError, PluginUpdateCheck, SynraDb};
 
 /// The verified version being committed and the previous consent it may inherit.
 #[derive(Debug)]
@@ -27,6 +27,8 @@ pub struct PluginReplacement<'a> {
     pub publisher_id: Option<&'a str>,
     /// The signing key's fingerprint, when there was a signature.
     pub fingerprint: Option<&'a str>,
+    /// The check that authorized an automatic replacement.
+    pub expected_update: Option<&'a PluginUpdateCheck>,
     /// Commit time in epoch milliseconds.
     pub now_ms: i64,
 }
@@ -51,8 +53,15 @@ impl SynraDb {
                         why: error.to_string(),
                     }
                 })?;
-            let operation = || -> rusqlite::Result<()> {
+            let operation = || -> rusqlite::Result<bool> {
                 let transaction = self.connection.unchecked_transaction()?;
+                if let Some(check) = replacement.expected_update
+                    && (check.plugin_id != replacement.plugin_id
+                        || check.available_version.as_deref() != Some(replacement.version)
+                        || !check.is_current(&transaction)?)
+                {
+                    return Ok(false);
+                }
                 let preserve: bool = transaction.query_row(
                     "SELECT ?2 IS NOT NULL AND (?3 = '[]' OR EXISTS (SELECT 1 FROM plugin_grants WHERE plugin_id = ?1))
                      AND NOT EXISTS (SELECT 1 FROM plugin_grants WHERE plugin_id = ?1 AND manifest_digest != ?2)",
@@ -100,11 +109,16 @@ impl SynraDb {
                         replacement.now_ms
                     ],
                 )?;
-                transaction.commit()
+                transaction.commit()?;
+                Ok(true)
             };
-            operation().map_err(|error| DbError::Statement {
+            if operation().map_err(|error| DbError::Statement {
                 why: error.to_string(),
-            })
+            })? {
+                Ok(())
+            } else {
+                Err(DbError::Statement { why: "the automatic update check is no longer current".to_owned() })
+            }
         })
     }
 }

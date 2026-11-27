@@ -37,6 +37,28 @@ pub struct PluginUpdateCheck {
     pub retry_at_ms: Option<i64>,
 }
 
+impl PluginUpdateCheck {
+    pub(super) fn is_current(&self, connection: &rusqlite::Connection) -> rusqlite::Result<bool> {
+        connection.query_row(
+            "SELECT EXISTS (
+                 SELECT 1 FROM plugin_update_checks c JOIN plugin_versions v
+                   ON v.plugin_id = c.plugin_id AND v.version = c.current_version AND v.active = 1
+                 WHERE c.plugin_id = ?1 AND c.current_version = ?2 AND c.available_version IS ?3
+                   AND c.registry IS ?4 AND c.request_order = ?5
+                   AND c.registry IS (SELECT value FROM config WHERE key = 'plugins.registry')
+             )",
+            params![
+                self.plugin_id,
+                self.current_version,
+                self.available_version,
+                self.registry,
+                self.request_order.0,
+            ],
+            |row| row.get(0),
+        )
+    }
+}
+
 impl SynraDb {
     /// Reserves an order before starting an update check, including checks on other connections.
     ///
@@ -171,6 +193,16 @@ impl SynraDb {
     ) -> Result<Option<PluginUpdateCheck>, DbError> {
         self.read_plugin_update_checks(Some(plugin_id))
             .map(|rows| rows.into_iter().next())
+    }
+
+    /// Whether the given successful check still describes the installed version and configured source.
+    ///
+    /// # Errors
+    /// [`DbError::Statement`] when the check cannot be read.
+    pub fn is_plugin_update_check_current(&self, check: &PluginUpdateCheck) -> Result<bool, DbError> {
+        check
+            .is_current(&self.connection)
+            .map_err(|error| DbError::Statement { why: error.to_string() })
     }
 
     fn read_plugin_update_checks(

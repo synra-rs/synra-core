@@ -4,13 +4,20 @@ use std::path::Path;
 
 use super::{InstallRefusal, Installed, Prepared, discard, signed_publisher};
 
+pub(super) enum WriteMode<'a> {
+    Install,
+    Replace,
+    Automatic(&'a synra_store::PluginUpdateCheck),
+}
+
 pub(super) fn write(
     db: &mut synra_store::SynraDb,
     plugins_dir: &Path,
     now_ms: i64,
     prepared: Prepared,
-    replace: bool,
+    mode: WriteMode<'_>,
 ) -> Result<Installed, InstallRefusal> {
+    let replace = !matches!(mode, WriteMode::Install);
     let Prepared {
         manifest,
         manifest_json,
@@ -181,6 +188,10 @@ pub(super) fn write(
             capabilities: &capabilities,
             publisher_id: signed_by.as_ref().map(|publisher| publisher.publisher_id.as_str()),
             fingerprint: signed_by.as_ref().map(|publisher| publisher.fingerprint.as_str()),
+            expected_update: match mode {
+                WriteMode::Automatic(check) => Some(check),
+                WriteMode::Replace | WriteMode::Install => None,
+            },
             now_ms,
         })
     } else {

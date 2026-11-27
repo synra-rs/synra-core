@@ -40,7 +40,13 @@ impl PreparedReplacement {
                 "the installed version changed during preparation",
             ));
         }
-        writing::write(db, &self.plugins_dir, now_ms, self.prepared, true)
+        writing::write(
+            db,
+            &self.plugins_dir,
+            now_ms,
+            self.prepared,
+            writing::WriteMode::Replace,
+        )
     }
 }
 

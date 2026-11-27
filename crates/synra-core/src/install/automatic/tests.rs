@@ -4,7 +4,7 @@ use ed25519_dalek::{Signer as _, SigningKey};
 use rstest::rstest;
 use std::sync::Arc;
 use synra_plugin_api::publisher::{Digests, SigningSubject};
-use synra_store::PluginVersionRecord;
+use synra_store::{PluginUpdateCheck, PluginVersionRecord};
 
 struct Fixture {
     root: PathBuf,
@@ -100,6 +100,22 @@ impl Fixture {
             .expect("installed")
             .version
     }
+
+    fn save_check(&self, version: &str) -> PluginUpdateCheck {
+        let check = PluginUpdateCheck {
+            plugin_id: "@acme/hello".to_owned(),
+            current_version: self.version(),
+            checked_at_ms: 3,
+            request_order: self.db.begin_plugin_update_check().expect("reserve request"),
+            registry: None,
+            available_version: Some(version.to_owned()),
+            added_capabilities: Vec::new(),
+            attempts: 0,
+            retry_at_ms: None,
+        };
+        assert!(self.db.save_plugin_update_check(&check).expect("save check"));
+        check
+    }
 }
 
 impl Drop for Fixture {
@@ -119,11 +135,12 @@ fn an_admitted_update_installs_the_verified_bytes_even_if_the_source_changes(
     let mut fixture = Fixture::new();
     fixture.install();
     fixture.source(version, 7, "@acme", false);
+    let check = fixture.save_check(version);
     let prepared = fixture.prepare(policy).expect("admitted");
     assert_eq!(prepared.plugin_id(), "@acme/hello");
     assert_eq!(prepared.version(), version);
     fixture.source("9.0.0", 9, "@other", true);
-    prepared.install(&mut fixture.db, 4).expect("update");
+    prepared.install(&mut fixture.db, &check, 4).expect("update");
     assert_eq!(fixture.version(), version);
     let text = std::fs::read_to_string(fixture.root.join("plugins/acme+hello/manifest.json"))
         .expect("installed bytes");
@@ -163,6 +180,7 @@ fn revoking_trust_after_preparation_refuses_the_commit() {
     let mut fixture = Fixture::new();
     fixture.install();
     fixture.source("1.1.0", 7, "@acme", false);
+    let check = fixture.save_check("1.1.0");
     let prepared = fixture.prepare(UpdatePolicy::AutoMinor).expect("admitted");
     fixture
         .db
@@ -175,7 +193,7 @@ fn revoking_trust_after_preparation_refuses_the_commit() {
         .expect("revoke");
     assert_eq!(
         prepared
-            .install(&mut fixture.db, 5)
+            .install(&mut fixture.db, &check, 5)
             .expect_err("refused")
             .stage,
         "update-policy"
@@ -197,6 +215,7 @@ fn unsigned_updates_and_replacing_the_installed_version_are_refused() {
         "update-policy"
     );
     fixture.source("1.1.0", 7, "@acme", false);
+    let check = fixture.save_check("1.1.0");
     let prepared = fixture.prepare(UpdatePolicy::AutoAll).expect("admitted");
     fixture
         .db
@@ -210,8 +229,26 @@ fn unsigned_updates_and_replacing_the_installed_version_are_refused() {
             ..Default::default()
         })
         .expect("replacement");
-    assert!(prepared.install(&mut fixture.db, 5).is_err());
+    assert!(prepared.install(&mut fixture.db, &check, 5).is_err());
     assert_eq!(fixture.version(), "1.0.1");
+}
+
+#[test]
+fn a_superseded_check_cannot_commit_even_when_its_version_and_time_match() {
+    let mut fixture = Fixture::new();
+    fixture.install();
+    fixture.source("1.1.0", 7, "@acme", false);
+    let check = fixture.save_check("1.1.0");
+    let prepared = fixture.prepare(UpdatePolicy::AutoAll).expect("admitted");
+    let installed_manifest = fixture.root.join("plugins/acme+hello/manifest.json");
+    let old_bytes = std::fs::read(&installed_manifest).expect("installed manifest");
+
+    let replacement = fixture.save_check("1.1.0");
+    let error = prepared.install(&mut fixture.db, &check, 4).expect_err("stale check");
+    assert_eq!(error.stage, "record");
+    assert_eq!(fixture.version(), "1.0.0");
+    assert_eq!(std::fs::read(installed_manifest).expect("restored manifest"), old_bytes);
+    assert!(fixture.db.is_plugin_update_check_current(&replacement).expect("current check"));
 }
 
 #[test]

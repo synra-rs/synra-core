@@ -180,6 +180,7 @@ fn automatic(
     policy: UpdatePolicy,
     cancel: &Cancellation,
 ) -> Result<(), String> {
+    apply::ensure_automatic_check(&runtime.db(), check, policy, cancel)?;
     if let Some(reason) = runtime
         .revocations
         .revokes(&check.plugin_id, &latest.version)
@@ -195,15 +196,7 @@ fn automatic(
             cancel,
         )
         .map_err(|error| error.to_string())?;
-    let outcome = apply::directory(
-        runtime,
-        (&check.plugin_id, &latest.version),
-        unpacked.path(),
-        check.registry.as_deref(),
-        policy,
-        check.checked_at_ms,
-        cancel,
-    );
+    let outcome = apply::directory(runtime, check, unpacked.path(), policy, cancel);
     unpacked.cleanup();
     outcome
 }

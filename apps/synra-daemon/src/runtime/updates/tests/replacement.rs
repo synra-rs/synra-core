@@ -7,6 +7,24 @@ use synra_core::supervisor::Cancellation;
 use super::{Registry, configure, installed, signed_source};
 use super::super::{apply, check_all, registry_setting, source};
 use synra_control::Kernel as _;
+use synra_store::PluginUpdateCheck;
+
+fn saved_check(runtime: &crate::runtime::Runtime, version: &str) -> PluginUpdateCheck {
+    let db = runtime.db();
+    let check = PluginUpdateCheck {
+        plugin_id: "@acme/hello".to_owned(),
+        current_version: "1.0.0".to_owned(),
+        checked_at_ms: 100,
+        request_order: db.begin_plugin_update_check().expect("reserve request"),
+        registry: registry_setting(&db).expect("registry"),
+        available_version: Some(version.to_owned()),
+        added_capabilities: Vec::new(),
+        attempts: 0,
+        retry_at_ms: None,
+    };
+    assert!(db.save_plugin_update_check(&check).expect("save check"));
+    check
+}
 
 #[test]
 fn a_refused_commit_restores_the_old_files_permissions_and_running_instance() {
@@ -15,7 +33,7 @@ fn a_refused_commit_restores_the_old_files_permissions_and_running_instance() {
     let registry = Registry::start();
     configure(&runtime, &registry, "auto-all", false);
     let previous = runtime.db().plugin_grants("@acme/hello").expect("grants");
-    let raw = registry_setting(&runtime.db()).expect("registry");
+    let check = saved_check(&runtime, "1.1.0");
     let backup = root.path().join("read-only.sqlite3");
     runtime.db().backup_to(&backup).expect("backup");
     runtime.db = Arc::new(Mutex::new(
@@ -26,11 +44,9 @@ fn a_refused_commit_restores_the_old_files_permissions_and_running_instance() {
     assert!(
         apply::directory(
             &runtime,
-            ("@acme/hello", "1.1.0"),
+            &check,
             &next,
-            raw.as_deref(),
             UpdatePolicy::AutoAll,
-            100,
             &Cancellation::new()
         )
         .is_err()
@@ -81,7 +97,8 @@ fn cancellation_and_changed_policy_registry_or_target_do_not_stop_the_old_instan
         ("auto-all", false, false, "@acme/hello", "2.0.0"),
     ] {
         configure(&runtime, &registry, policy, false);
-        let raw = registry_setting(&runtime.db()).expect("registry");
+        let mut check = saved_check(&runtime, version);
+        check.plugin_id = plugin.to_owned();
         if changed_registry {
             runtime
                 .db()
@@ -99,11 +116,9 @@ fn cancellation_and_changed_policy_registry_or_target_do_not_stop_the_old_instan
         assert!(
             apply::directory(
                 &runtime,
-                (plugin, version),
+                &check,
                 &next,
-                raw.as_deref(),
                 UpdatePolicy::AutoAll,
-                100,
                 &cancel
             )
             .is_err()

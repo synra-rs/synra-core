@@ -39,19 +39,33 @@ impl PreparedUpdate {
     ///
     /// # Errors
     ///
-    /// `update-policy` if the installed version or publisher decision changed; otherwise the installer's write errors.
+    /// `update-policy` if the installed version or publisher decision changed, or the package fails to match the check.
+    /// The installer also refuses a check superseded before the version switch commits.
     pub fn install(
         self,
         db: &mut synra_store::SynraDb,
+        check: &synra_store::PluginUpdateCheck,
         now_ms: i64,
     ) -> Result<Installed, InstallRefusal> {
+        if check.plugin_id != self.plugin_id()
+            || check.available_version.as_deref() != Some(self.version())
+            || check.current_version != self.previous_version
+        {
+            return Err(refused("the verified package does not match the saved update check"));
+        }
         let current = admit(db, &self.plugins_dir, &self.prepared, self.policy)?;
         if current != self.previous_version {
             return Err(refused(
                 "the installed version changed while preparing the update",
             ));
         }
-        writing::write(db, &self.plugins_dir, now_ms, self.prepared, true)
+        writing::write(
+            db,
+            &self.plugins_dir,
+            now_ms,
+            self.prepared,
+            writing::WriteMode::Automatic(check),
+        )
     }
 }
 

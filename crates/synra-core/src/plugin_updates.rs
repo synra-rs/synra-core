@@ -101,6 +101,22 @@ pub fn due_plugins(db: &SynraDb, now_ms: i64) -> Result<Vec<String>, DbError> {
         .collect())
 }
 
+/// Whether an automatic attempt still matches the user's policy and the saved check.
+///
+/// # Errors
+/// [`DbError`] when the saved check cannot be read.
+pub fn automatic_check_is_current(
+    db: &SynraDb,
+    check: &PluginUpdateCheck,
+    policy: UpdatePolicy,
+    cancel: &Cancellation,
+) -> Result<bool, DbError> {
+    if !automatic_policy_is_current(db, policy, cancel) {
+        return Ok(false);
+    }
+    db.is_plugin_update_check_current(check)
+}
+
 /// Persists a failed automatic attempt only while its policy, version, source and candidate are still current.
 ///
 /// Cancellation or a changed policy returns `false`, as does a superseded check; neither should create a retry.
@@ -116,13 +132,14 @@ pub fn record_failure(
     cancel: &Cancellation,
     now_ms: i64,
 ) -> Result<bool, DbError> {
-    if cancel.is_cancelled()
-        || policy == UpdatePolicy::NotifyOnly
-        || configured_policy(db) != Some(policy)
-    {
+    if !automatic_policy_is_current(db, policy, cancel) {
         return Ok(false);
     }
     db.note_update_failure(check, now_ms)
+}
+
+fn automatic_policy_is_current(db: &SynraDb, policy: UpdatePolicy, cancel: &Cancellation) -> bool {
+    !cancel.is_cancelled() && policy != UpdatePolicy::NotifyOnly && configured_policy(db) == Some(policy)
 }
 
 #[cfg(test)]
