@@ -183,6 +183,7 @@ mod tests {
             plugin_id: plugin.to_owned(),
             current_version: "1.0.0".to_owned(),
             checked_at_ms: 100,
+            request_order: db.begin_plugin_update_check().expect("reserve check"),
             registry: None,
             available_version: Some("1.1.0".to_owned()),
             added_capabilities: Vec::new(),

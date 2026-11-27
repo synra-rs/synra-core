@@ -32,7 +32,7 @@ fn the_counts_report_every_table_including_an_absent_one() {
     for (table, count) in &counts {
         assert_eq!(
             *count,
-            Some(i64::from(table == "plugin_authority_clock")),
+            Some(i64::from(matches!(table.as_str(), "plugin_authority_clock" | "plugin_update_clock"))),
             "{table}"
         );
     }

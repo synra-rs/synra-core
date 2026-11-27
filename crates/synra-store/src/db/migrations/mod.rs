@@ -38,7 +38,8 @@ pub const MIGRATIONS: &[Migration] = &[
     V14,
     V15,
     V16,
-    V17
+    V17,
+    V18,
 ];
 
 /// The schema version this build expects.

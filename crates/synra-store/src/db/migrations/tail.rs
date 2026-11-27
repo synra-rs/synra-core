@@ -56,6 +56,19 @@ pub(crate) const V17: Migration = Migration {
         ],
     };
 
+pub(crate) const V18: Migration = Migration {
+    version: 18,
+    name: "order-plugin-update-checks",
+    statements: &[
+        "CREATE TABLE plugin_update_clock (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            request_order INTEGER NOT NULL
+        )",
+        "INSERT INTO plugin_update_clock (id, request_order) VALUES (1, 0)",
+        "ALTER TABLE plugin_update_checks ADD COLUMN request_order INTEGER NOT NULL DEFAULT 0",
+    ],
+};
+
 
 
 

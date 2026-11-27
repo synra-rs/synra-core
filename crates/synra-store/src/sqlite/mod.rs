@@ -42,7 +42,7 @@ mod replacement;
 mod retries;
 pub use replacement::PluginReplacement;
 mod updates;
-pub use updates::PluginUpdateCheck;
+pub use updates::{PluginUpdateCheck, PluginUpdateOrder};
 mod sync;
 pub use retries::IntentRetryRow;
 mod versions;

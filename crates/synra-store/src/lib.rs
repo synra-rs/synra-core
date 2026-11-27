@@ -74,7 +74,7 @@ pub use records::{
 // a method no caller outside this crate can call at all.
 pub use sqlite::{
     ConfigChange, DbError, IntentRetryRow, Paired, PluginAuthority, PluginReplacement,
-    PluginUiSnapshot, PluginUpdateCheck, PluginVersionRecord, RestoreReport, SynraDb,
+    PluginUiSnapshot, PluginUpdateCheck, PluginUpdateOrder, PluginVersionRecord, RestoreReport, SynraDb,
     WriteObserver, migration_versions, restore_from,
 };
 mod plugin_files;

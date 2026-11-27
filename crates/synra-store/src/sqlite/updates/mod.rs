@@ -10,6 +10,10 @@ const RETRY_BASE_MS: i64 = 30 * 60 * 1000;
 /// After three failed attempts the daily check takes over; no unbounded counter is needed.
 const MAX_ATTEMPTS: u32 = 3;
 
+/// A durable order allocated before reading a plugin update source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PluginUpdateOrder(i64);
+
 /// The last successful registry check for one installed version, including a negative result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PluginUpdateCheck {
@@ -19,6 +23,8 @@ pub struct PluginUpdateCheck {
     pub current_version: String,
     /// When the registry answered, in milliseconds since the epoch.
     pub checked_at_ms: i64,
+    /// The request's order, independent of the wall clock and the order replies arrived.
+    pub request_order: PluginUpdateOrder,
     /// The serialized `plugins.registry` setting when the request began, or `None` when absent.
     pub registry: Option<String>,
     /// The newer version, or `None` when no update was available.
@@ -32,10 +38,27 @@ pub struct PluginUpdateCheck {
 }
 
 impl SynraDb {
+    /// Reserves an order before starting an update check, including checks on other connections.
+    ///
+    /// # Errors
+    /// [`DbError::Statement`] when SQLite cannot allocate the next order.
+    pub fn begin_plugin_update_check(&self) -> Result<PluginUpdateOrder, DbError> {
+        timed_write!(self, "plugin", {
+            self.connection
+                .query_row(
+                    "UPDATE plugin_update_clock SET request_order = request_order + 1
+                     WHERE id = 1 RETURNING request_order",
+                    [],
+                    |row| row.get(0).map(PluginUpdateOrder),
+                )
+                .map_err(|error| DbError::Statement { why: error.to_string() })
+        })
+    }
+
     /// Records a successful check if that version is still installed.
     ///
-    /// Returns `false` if the plugin was removed or replaced while the registry request was in flight. The test and
-    /// write share one statement, so a late answer cannot resurrect an uninstalled plugin's update.
+    /// Returns `false` when the installed version or source changed, or when this order has already been saved or
+    /// superseded. The conditions and write share one statement.
     ///
     /// # Errors
     ///
@@ -50,14 +73,15 @@ impl SynraDb {
                 })?;
             let written = self.connection.execute(
                 "INSERT INTO plugin_update_checks
-                    (plugin_id, current_version, checked_at_ms, available_version, added_capabilities, registry, attempts, retry_at_ms)
-                 SELECT ?1, ?2, ?3, ?4, ?5, ?6, 0, NULL
+                    (plugin_id, current_version, checked_at_ms, available_version, added_capabilities, registry, attempts, retry_at_ms, request_order)
+                 SELECT ?1, ?2, ?3, ?4, ?5, ?6, 0, NULL, ?7
                  WHERE EXISTS (SELECT 1 FROM plugin_versions
                      WHERE plugin_id = ?1 AND version = ?2 AND active = 1)
                     AND ?6 IS (SELECT value FROM config WHERE key = 'plugins.registry')
                  ON CONFLICT (plugin_id) DO UPDATE SET
                     current_version = excluded.current_version,
                     checked_at_ms = excluded.checked_at_ms,
+                    request_order = excluded.request_order,
                     available_version = excluded.available_version,
                     registry = excluded.registry,
                     added_capabilities = excluded.added_capabilities,
@@ -68,9 +92,10 @@ impl SynraDb {
                     retry_at_ms = CASE WHEN plugin_update_checks.available_version IS excluded.available_version
                                             AND plugin_update_checks.current_version = excluded.current_version
                                             AND plugin_update_checks.registry IS excluded.registry
-                                       THEN plugin_update_checks.retry_at_ms ELSE NULL END",
+                                       THEN plugin_update_checks.retry_at_ms ELSE NULL END
+                 WHERE plugin_update_checks.request_order < excluded.request_order",
                 params![check.plugin_id, check.current_version, check.checked_at_ms,
-                    check.available_version, capabilities, check.registry],
+                    check.available_version, capabilities, check.registry, check.request_order.0],
             ).map_err(|error| DbError::Statement { why: error.to_string() })?;
             Ok(written != 0)
         })
@@ -99,7 +124,7 @@ impl SynraDb {
                      SET attempts = MIN(attempts + 1, ?7),
                          retry_at_ms = CASE attempts WHEN 0 THEN ?6 WHEN 1 THEN ?8 ELSE NULL END
                      WHERE plugin_id = ?1 AND current_version = ?2
-                         AND available_version = ?3 AND registry IS ?4 AND checked_at_ms = ?5
+                         AND available_version = ?3 AND registry IS ?4 AND request_order = ?5
                          AND registry IS (SELECT value FROM config WHERE key = 'plugins.registry')
                          AND EXISTS (SELECT 1 FROM plugin_versions
                              WHERE plugin_id = ?1 AND version = ?2 AND active = 1)
@@ -109,7 +134,7 @@ impl SynraDb {
                         check.current_version,
                         check.available_version,
                         check.registry,
-                        check.checked_at_ms,
+                        check.request_order.0,
                         now_ms.saturating_add(RETRY_BASE_MS),
                         MAX_ATTEMPTS,
                         now_ms.saturating_add(RETRY_BASE_MS * 2)
@@ -154,7 +179,7 @@ impl SynraDb {
     ) -> Result<Vec<PluginUpdateCheck>, DbError> {
         let mut statement = self.connection.prepare(
             "SELECT c.plugin_id, c.current_version, c.checked_at_ms, c.available_version, c.added_capabilities,
-                    c.registry, c.attempts, c.retry_at_ms
+                    c.registry, c.attempts, c.retry_at_ms, c.request_order
              FROM plugin_update_checks c JOIN plugin_versions v
              ON v.plugin_id = c.plugin_id AND v.version = c.current_version AND v.active = 1
              WHERE (?1 IS NULL OR c.plugin_id = ?1)
@@ -168,6 +193,7 @@ impl SynraDb {
                         plugin_id: row.get(0)?,
                         current_version: row.get(1)?,
                         checked_at_ms: row.get(2)?,
+                        request_order: PluginUpdateOrder(row.get(8)?),
                         registry: row.get(5)?,
                         available_version: row.get(3)?,
                         added_capabilities: Vec::new(),

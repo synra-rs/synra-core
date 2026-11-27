@@ -78,7 +78,7 @@ fn check_one(
     cancel: &Cancellation,
     allow_automatic: bool,
 ) -> Result<Option<PluginUpdateCheck>, String> {
-    let (active, raw) = {
+    let (active, raw, request_order) = {
         let db = runtime.db();
         let Some(active) = db
             .active_plugin(plugin)
@@ -89,8 +89,8 @@ fn check_one(
         let Some(raw) = registry_setting(&db)? else {
             return Ok(None);
         };
-        drop(db);
-        (active, raw)
+        let request_order = db.begin_plugin_update_check().map_err(|error| error.to_string())?;
+        (active, raw, request_order)
     };
     let sources = source::Sources::parse(&raw)?;
     let document = sources.read(plugin, cancel)?;
@@ -126,6 +126,7 @@ fn check_one(
         current_version: active.version,
         registry: Some(raw),
         checked_at_ms: now_ms,
+        request_order,
         available_version: latest.map(|entry| entry.version.clone()),
         added_capabilities: added,
         attempts: 0,
@@ -140,7 +141,7 @@ fn check_one(
             .save_plugin_update_check(&check)
             .map_err(|error| error.to_string())?
         {
-            return Err("the installed version or registry changed during the check".to_owned());
+            return Err("the installed version, registry or saved check changed during the check".to_owned());
         }
         let selected = configured_policy(&db);
         drop(db);
