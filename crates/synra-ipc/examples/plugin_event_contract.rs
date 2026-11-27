@@ -1,12 +1,12 @@
 //! Produce the actual projected envelope and Core subscription matching decisions for frontend tests.
 
 use synra_ipc::event::{
-    PluginDevicePlatform, PluginDeviceTarget, PluginDevicesChanged, PluginEvent,
+    PluginCustomEvent, PluginDevicePlatform, PluginDeviceTarget, PluginDevicesChanged, PluginEvent,
     PluginEventEnvelope, PluginEventPoll, PluginEventRecovery,
 };
 use synra_ipc::{PluginTransferFailure, PluginTransferState, PluginTransferStatus};
 use synra_protocol::inbound::HandlePattern;
-use synra_protocol::{DeviceId, TransferId, session::TransferAbortReason};
+use synra_protocol::{DeviceId, TransferId, event::EventName, session::TransferAbortReason};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let envelope = PluginEventEnvelope {
@@ -65,9 +65,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let recovery = PluginEventRecovery {
         seq: 7,
         events: vec![envelope.event.clone(), transfer.event.clone()],
+        unreplayed_subscription_ids: Vec::new(),
+    };
+    let custom = PluginEventEnvelope {
+        seq: 3,
+        at: 26,
+        event: PluginEvent::Custom(
+            PluginCustomEvent::new(
+                EventName::parse("_plugin.@acme/chat.update")?,
+                [("message".to_owned(), serde_json::json!("测试🖱️"))]
+                    .into_iter()
+                    .collect(),
+            )
+            .ok_or("invalid fixture topic")?,
+        ),
+    };
+    let custom_recovery = PluginEventRecovery {
+        seq: 8,
+        events: vec![],
+        unreplayed_subscription_ids: vec![2],
     };
     let resync = PluginEventPoll::Reconcile { resync: true };
-    let contract = serde_json::json!({ "envelope": envelope, "transfer": transfer, "recovery": recovery, "resync": resync, "patterns": cases });
+    let contract = serde_json::json!({ "envelope": envelope, "transfer": transfer, "recovery": recovery, "resync": resync, "patterns": cases, "custom": custom, "customRecovery": custom_recovery });
     serde_json::to_writer_pretty(std::io::stdout().lock(), &contract)?;
     Ok(())
 }

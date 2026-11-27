@@ -37,10 +37,16 @@ impl EventService {
                 refused: 0,
                 unhandled: 0,
                 metrics: None,
+                observer: None,
                 remote_receipts: VecDeque::new(),
             }),
             wake: Condvar::new(),
         })
+    }
+
+    /// Install the host's observer for admitted custom events. Guest delivery keeps its own policy.
+    pub fn set_observer(&self, observer: Arc<EventObserver>) {
+        self.state.lock().observer = Some(observer);
     }
 
     pub(crate) fn bind(

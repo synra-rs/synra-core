@@ -74,6 +74,7 @@ impl EventService {
             self.check_source(pending, &set)?;
             set.event_executions()
         };
+        self.observe(pending)?;
         let event_json = serde_json::to_string(&EventContext {
             event: &pending.event,
             from: pending.from,
@@ -133,6 +134,22 @@ impl EventService {
         }
         if !matched {
             self.record(pending, None, None, false);
+        }
+        Ok(())
+    }
+
+    fn observe(&self, pending: &Pending) -> Result<(), SynraError> {
+        let state = self.state.lock();
+        if state.stopping {
+            return Err(stopped());
+        }
+        let observer = state.observer.clone();
+        drop(state);
+        if pending.deadline <= Instant::now() {
+            return Err(expired());
+        }
+        if let (Some(observer), Some(payload)) = (observer, pending.payload.as_object()) {
+            observer(&pending.event, payload);
         }
         Ok(())
     }

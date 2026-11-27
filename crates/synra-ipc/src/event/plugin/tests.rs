@@ -67,3 +67,19 @@ fn blocked_or_unpaired_devices_are_absent_even_when_online() {
     assert!(PluginDeviceTarget::from_card(&blocked).unwrap().is_none());
     assert!(PluginDeviceTarget::from_card(&unpaired).unwrap().is_none());
 }
+
+#[test]
+fn custom_envelopes_preserve_the_full_topic_and_require_an_object() {
+    let name = "_plugin.@acme/chat.note.created";
+    let raw = serde_json::json!({"seq":7,"at":20,"name":name,"payload":{"text":"你好"}});
+    let envelope: PluginEventEnvelope = serde_json::from_value(raw.clone()).unwrap();
+    assert_eq!(envelope.event.name(), name);
+    assert_eq!(serde_json::to_value(envelope).unwrap(), raw);
+    for raw in [
+        serde_json::json!({"name":"_synra.device.changed","payload":{}}),
+        serde_json::json!({"name":"_plugin.@acme/chat.*","payload":{}}),
+        serde_json::json!({"name":name,"payload":[]}),
+    ] {
+        assert!(serde_json::from_value::<PluginEvent>(raw).is_err());
+    }
+}

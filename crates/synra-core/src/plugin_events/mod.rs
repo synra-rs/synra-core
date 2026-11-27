@@ -9,7 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 use synra_protocol::{
-    event::EventName, DeviceId, ErrorCode, PluginId, RequestId, SynraError, TraceId,
+    DeviceId, ErrorCode, PluginId, RequestId, SynraError, TraceId, event::EventName,
 };
 
 pub(crate) mod context;
@@ -21,8 +21,8 @@ mod worker;
 pub(in crate::plugin_events) use service::refusal;
 
 pub use remote::{
-    answer_remote_event, RemoteAdmission, MAX_REMOTE_RECEIPTS, REMOTE_RECEIPT_EVENT,
-    REMOTE_RECEIPT_TTL,
+    MAX_REMOTE_RECEIPTS, REMOTE_RECEIPT_EVENT, REMOTE_RECEIPT_TTL, RemoteAdmission,
+    answer_remote_event,
 };
 
 #[cfg(test)]
@@ -34,6 +34,10 @@ pub const MAX_PENDING: usize = 128;
 pub const MAX_QUEUED_BYTES: usize = 8 * 1024 * 1024;
 /// A queued event expires rather than running long after its producer disappeared.
 pub const EVENT_TTL: Duration = Duration::from_secs(5);
+
+/// Receives a validated custom event before guest handler dispatch. Keep host observers nonblocking.
+pub type EventObserver =
+    dyn Fn(&EventName, &serde_json::Map<String, serde_json::Value>) + Send + Sync;
 
 /// The host-authenticated context delivered to lifecycle.on-event.
 #[derive(Serialize)]
@@ -135,6 +139,7 @@ struct State {
     refused: u64,
     unhandled: u64,
     metrics: Option<Arc<synra_observe::metrics::RingRecorder>>,
+    observer: Option<Arc<EventObserver>>,
     remote_receipts: VecDeque<remote::Receipt>,
 }
 

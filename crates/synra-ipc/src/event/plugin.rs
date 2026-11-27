@@ -1,7 +1,7 @@
 //! The projected page stream, with no management event or private device fields on its wire.
 
 use serde::{Deserialize, Serialize};
-use synra_protocol::DeviceId;
+use synra_protocol::{DeviceId, event::EventName};
 
 use crate::{DeviceCard, PluginTransferStatus};
 
@@ -99,6 +99,9 @@ pub enum PluginEvent {
     /// The current or terminal state of a transfer owned by the receiving plugin.
     #[serde(rename = "transfer.progress")]
     TransferProgress(PluginTransferStatus),
+    /// A custom event with its validated fully qualified topic.
+    #[serde(untagged)]
+    Custom(PluginCustomEvent),
 }
 
 impl PluginEvent {
@@ -109,11 +112,43 @@ impl PluginEvent {
 
     /// The event name used to match subscriptions.
     #[must_use]
-    pub const fn name(&self) -> &'static str {
+    pub fn name(&self) -> &str {
         match self {
             Self::DevicesChanged(_) => Self::DEVICES_CHANGED,
             Self::TransferProgress(_) => Self::TRANSFER_PROGRESS,
+            Self::Custom(event) => event.name.as_str(),
         }
+    }
+}
+
+/// The public name and JSON object from a custom plugin event.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginCustomEvent {
+    #[serde(deserialize_with = "custom_event_name")]
+    name: EventName,
+    /// The bounded application payload checked by the event service.
+    pub payload: serde_json::Map<String, serde_json::Value>,
+}
+
+impl PluginCustomEvent {
+    /// Construct a page event from a validated plugin topic and its object payload.
+    #[must_use]
+    pub fn new(
+        name: EventName,
+        payload: serde_json::Map<String, serde_json::Value>,
+    ) -> Option<Self> {
+        name.is_plugin().then_some(Self { name, payload })
+    }
+}
+
+fn custom_event_name<'de, D: serde::Deserializer<'de>>(decoder: D) -> Result<EventName, D::Error> {
+    let name = EventName::deserialize(decoder)?;
+    if name.is_plugin() {
+        Ok(name)
+    } else {
+        Err(serde::de::Error::custom(
+            "expected a custom plugin event name",
+        ))
     }
 }
 
@@ -144,12 +179,15 @@ pub enum PluginEventPoll {
 
 /// Authoritative snapshots and the next poll's sequence watermark.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PluginEventRecovery {
     /// Highest sequence retired by the recovery.
     pub seq: u64,
     /// Current snapshots matching the page's authorized subscriptions.
     pub events: Vec<PluginEvent>,
+    /// Logical subscriptions with custom occurrences beyond the page's acknowledged sequence.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unreplayed_subscription_ids: Vec<u32>,
 }
 
 #[cfg(test)]
