@@ -43,7 +43,7 @@ mod sequence;
 pub use payload::{DebugWire, KernelEvent, KernelEventEnvelope};
 pub use plugin::{
     PluginDevicePlatform, PluginDeviceTarget, PluginDevicesChanged, PluginEvent,
-    PluginEventEnvelope, UnknownDevicePlatform,
+    PluginEventEnvelope, PluginEventPoll, PluginEventRecovery, UnknownDevicePlatform,
 };
 pub use sequence::{EventVerdict, MAX_COUNTED_GAP, SequenceReport, SequenceTracker};
 

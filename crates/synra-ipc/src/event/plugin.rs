@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use synra_protocol::DeviceId;
 
-use crate::DeviceCard;
+use crate::{DeviceCard, PluginTransferStatus};
 
 /// Platform labels available to plugin device pickers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -96,17 +96,23 @@ pub enum PluginEvent {
     /// A visible device collection changed.
     #[serde(rename = "device.changed")]
     DevicesChanged(PluginDevicesChanged),
+    /// The current or terminal state of a transfer owned by the receiving plugin.
+    #[serde(rename = "transfer.progress")]
+    TransferProgress(PluginTransferStatus),
 }
 
 impl PluginEvent {
     /// Public topic for the paired-device snapshot.
     pub const DEVICES_CHANGED: &'static str = "device.changed";
+    /// Public topic for transfer status snapshots.
+    pub const TRANSFER_PROGRESS: &'static str = "transfer.progress";
 
     /// The event name used to match subscriptions.
     #[must_use]
     pub const fn name(&self) -> &'static str {
         match self {
             Self::DevicesChanged(_) => Self::DEVICES_CHANGED,
+            Self::TransferProgress(_) => Self::TRANSFER_PROGRESS,
         }
     }
 }
@@ -121,6 +127,29 @@ pub struct PluginEventEnvelope {
     /// The named public event.
     #[serde(flatten)]
     pub event: PluginEvent,
+}
+
+/// A page poll result. A lost host delivery asks the page to recover its snapshots.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum PluginEventPoll {
+    /// One sequenced event.
+    Event(PluginEventEnvelope),
+    /// The host cannot guarantee a continuous history for this page.
+    Reconcile {
+        /// Set when the page must call `event.resync` before polling again.
+        resync: bool,
+    },
+}
+
+/// Authoritative snapshots and the next poll's sequence watermark.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginEventRecovery {
+    /// Highest sequence retired by the recovery.
+    pub seq: u64,
+    /// Current snapshots matching the page's authorized subscriptions.
+    pub events: Vec<PluginEvent>,
 }
 
 #[cfg(test)]

@@ -2,10 +2,11 @@
 
 use synra_ipc::event::{
     PluginDevicePlatform, PluginDeviceTarget, PluginDevicesChanged, PluginEvent,
-    PluginEventEnvelope,
+    PluginEventEnvelope, PluginEventPoll, PluginEventRecovery,
 };
-use synra_protocol::DeviceId;
+use synra_ipc::{PluginTransferFailure, PluginTransferState, PluginTransferStatus};
 use synra_protocol::inbound::HandlePattern;
+use synra_protocol::{DeviceId, TransferId, session::TransferAbortReason};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let envelope = PluginEventEnvelope {
@@ -33,6 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ("device..changed", "device.changed"),
         ("device.ch*", "device.changed"),
         ("*.*.*.*.*", "a.b.c.d.e"),
+        ("transfer.*", "transfer.progress"),
     ]
     .map(|(pattern, name)| {
         let parsed = HandlePattern::parse(pattern);
@@ -43,7 +45,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "matches": parsed.is_ok_and(|value| value.matches(name)),
         })
     });
-    let contract = serde_json::json!({ "envelope": envelope, "patterns": cases });
+    let transfer = PluginEventEnvelope {
+        seq: 2,
+        at: 25,
+        event: PluginEvent::TransferProgress(PluginTransferStatus {
+            transfer_id: "b7f7f0c2-4a7e-4f1a-9a9a-2e2b6c1d0a11".parse::<TransferId>()?,
+            state: PluginTransferState::Failed,
+            received_bytes: 2,
+            total_bytes: 4,
+            blocks_done: 1,
+            blocks_total: 2,
+            revision: 3,
+            ended_at_ms: Some(24),
+            failure: Some(PluginTransferFailure::PeerAborted {
+                reason: TransferAbortReason::TooLarge,
+            }),
+        }),
+    };
+    let recovery = PluginEventRecovery {
+        seq: 7,
+        events: vec![envelope.event.clone(), transfer.event.clone()],
+    };
+    let resync = PluginEventPoll::Reconcile { resync: true };
+    let contract = serde_json::json!({ "envelope": envelope, "transfer": transfer, "recovery": recovery, "resync": resync, "patterns": cases });
     serde_json::to_writer_pretty(std::io::stdout().lock(), &contract)?;
     Ok(())
 }
