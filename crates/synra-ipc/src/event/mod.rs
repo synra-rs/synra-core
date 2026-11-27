@@ -37,9 +37,14 @@
 //! different distances from the user.
 
 mod payload;
+mod plugin;
 mod sequence;
 
 pub use payload::{DebugWire, KernelEvent, KernelEventEnvelope};
+pub use plugin::{
+    PluginDevicePlatform, PluginDeviceTarget, PluginDevicesChanged, PluginEvent,
+    PluginEventEnvelope, UnknownDevicePlatform,
+};
 pub use sequence::{EventVerdict, MAX_COUNTED_GAP, SequenceReport, SequenceTracker};
 
 #[cfg(test)]
