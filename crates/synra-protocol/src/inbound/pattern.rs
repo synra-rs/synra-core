@@ -78,12 +78,8 @@ pub enum PatternError {
 pub struct HandlePattern {
     /// The full pattern text.
     text: String,
-    /// The leading segments, up to the first wildcard.
-    prefix: String,
-    /// How many wildcard segments the pattern ends with.
+    /// How many whole segments are wildcards.
     wildcards: u8,
-    /// Total segment count, so a candidate can be rejected on length alone.
-    segments: usize,
 }
 
 impl HandlePattern {
@@ -103,16 +99,12 @@ impl HandlePattern {
             });
         }
 
-        let mut prefix = String::new();
         let mut wildcards: u8 = 0;
-        let mut segments = 0usize;
-        let mut still_prefix = true;
 
-        for segment in pattern.split('.') {
+        for (position, segment) in pattern.split('.').enumerate() {
             if segment.is_empty() {
                 return Err(PatternError::EmptySegment(pattern.to_owned()));
             }
-            segments += 1;
 
             if segment == "*" {
                 wildcards += 1;
@@ -122,13 +114,6 @@ impl HandlePattern {
                         max: MAX_PATTERN_WILDCARDS,
                     });
                 }
-                // Wildcards are only meaningful as a trailing run. A wildcard in the middle would
-                // make the pattern match a set whose shape depends on the candidate's length, which
-                // is exactly what "impossible to answer by reading a manifest" means.
-                if !still_prefix {
-                    continue;
-                }
-                still_prefix = false;
                 continue;
             }
 
@@ -139,7 +124,7 @@ impl HandlePattern {
                 return Err(PatternError::PartialWildcard(pattern.to_owned()));
             }
 
-            let valid = if segments == 2 && pattern.starts_with("_plugin.") {
+            let valid = if position == 1 && pattern.starts_with("_plugin.") {
                 PluginId::validate(segment).is_ok()
             } else {
                 segment
@@ -152,16 +137,12 @@ impl HandlePattern {
                     segment: segment.to_owned(),
                 });
             }
-
-            if still_prefix {
-                if !prefix.is_empty() {
-                    prefix.push('.');
-                }
-                prefix.push_str(segment);
-            }
         }
 
-        Ok(Self { text: pattern.to_owned(), prefix, wildcards, segments })
+        Ok(Self {
+            text: pattern.to_owned(),
+            wildcards,
+        })
     }
 
     /// Whether this pattern is exact, with no wildcards.
@@ -172,28 +153,20 @@ impl HandlePattern {
 
     /// Whether a name matches.
     ///
-    /// Cost is a segment count comparison in the common case, and a string comparison of the literal
-    /// prefix otherwise. It never walks the candidate character by character.
+    /// An exact pattern compares the whole name. A wildcard consumes one nonempty segment and all
+    /// literal segments must still match, including those that follow a wildcard.
     #[must_use]
     pub fn matches(&self, name: &str) -> bool {
         if self.wildcards == 0 {
             return self.text == name;
         }
 
-        let candidate_segments = name.split('.').count();
-        if candidate_segments != self.segments {
-            return false;
-        }
-
-        // The literal prefix is everything up to the first wildcard. Empty means the pattern is all
-        // wildcards, which matches any name of the right length.
-        if self.prefix.is_empty() {
-            return true;
-        }
-
-        name.len() > self.prefix.len()
-            && name.starts_with(self.prefix.as_str())
-            && name.as_bytes().get(self.prefix.len()) == Some(&b'.')
+        let mut candidate = name.split('.');
+        self.text.split('.').all(|expected| {
+            candidate
+                .next()
+                .is_some_and(|actual| !actual.is_empty() && (expected == "*" || expected == actual))
+        }) && candidate.next().is_none()
     }
 
     /// The pattern as declared.
@@ -202,7 +175,7 @@ impl HandlePattern {
         &self.text
     }
 
-    /// How many wildcard segments this pattern ends with.
+    /// How many whole wildcard segments this pattern contains.
     #[must_use]
     pub const fn wildcard_count(&self) -> u8 {
         self.wildcards

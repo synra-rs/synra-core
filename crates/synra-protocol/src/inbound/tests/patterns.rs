@@ -79,6 +79,15 @@ fn multiple_trailing_wildcards_are_allowed() {
 }
 
 #[test]
+fn a_wildcard_does_not_erase_the_following_literal() {
+    let pattern = HandlePattern::parse("_synra.*.changed").expect("valid");
+    assert!(pattern.matches("_synra.device.changed"));
+    assert!(!pattern.matches("_synra.device.failed"));
+    assert!(!pattern.matches("_synra.device.link.changed"));
+    assert!(!pattern.matches("_synra..changed"));
+}
+
+#[test]
 fn a_partial_wildcard_is_refused() {
     // `tex*` is a different feature. Accepting it silently would make a manifest mean something
     // its author did not intend.
