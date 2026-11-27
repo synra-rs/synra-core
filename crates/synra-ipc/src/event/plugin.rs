@@ -99,11 +99,14 @@ pub enum PluginEvent {
 }
 
 impl PluginEvent {
+    /// Public topic for the paired-device snapshot.
+    pub const DEVICES_CHANGED: &'static str = "device.changed";
+
     /// The event name used to match subscriptions.
     #[must_use]
     pub const fn name(&self) -> &'static str {
         match self {
-            Self::DevicesChanged(_) => "device.changed",
+            Self::DevicesChanged(_) => Self::DEVICES_CHANGED,
         }
     }
 }

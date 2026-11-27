@@ -30,10 +30,14 @@ pub enum PluginUiOp {
     LogWrite,
     /// Emit an event under this plugin's own namespace.
     EventEmit,
-    /// Subscribe to the kernel's event channel.
+    /// Add a pattern to the page's projected event stream.
     EventSubscribe,
     /// Drop a subscription.
     EventUnsubscribe,
+    /// Receive the next projected envelope on this page's stream.
+    EventPoll,
+    /// Re-read visible snapshots and reset the stream's delivery cursor.
+    EventResync,
     /// List devices this plugin may reach.
     DeviceList,
     /// Send an event to one device.
@@ -95,6 +99,8 @@ impl PluginUiOp {
         Self::EventEmit,
         Self::EventSubscribe,
         Self::EventUnsubscribe,
+        Self::EventPoll,
+        Self::EventResync,
         Self::DeviceList,
         Self::DeviceSend,
         Self::DeviceBroadcast,
@@ -132,6 +138,8 @@ impl PluginUiOp {
             Self::EventEmit => "event.emit",
             Self::EventSubscribe => "event.subscribe",
             Self::EventUnsubscribe => "event.unsubscribe",
+            Self::EventPoll => "event.poll",
+            Self::EventResync => "event.resync",
             Self::DeviceList => "device.list",
             Self::DeviceSend => "device.send",
             Self::DeviceBroadcast => "device.broadcast",
@@ -200,7 +208,11 @@ mod tests {
             "devices.forget",
             "config.set",
         ] {
-            assert_eq!(PluginUiOp::parse(denied), None, "{denied} is callable by a plugin page");
+            assert_eq!(
+                PluginUiOp::parse(denied),
+                None,
+                "{denied} is callable by a plugin page"
+            );
         }
     }
 
