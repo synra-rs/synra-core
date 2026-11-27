@@ -85,3 +85,50 @@ fn scoped_log_crosses_the_real_engine_and_revocation_refuses_later_calls() {
     }
     assert_eq!(host.called(), ["log", "log"]);
 }
+
+#[test]
+fn a_real_host_trap_keeps_its_kind_when_its_message_names_budgets() {
+    let bytes = crate::engine::test_component::component(wat::parse_str(COMPONENT).unwrap());
+    let backend = Arc::new(WasmtimeBackend::new(BackendKind::WasmtimeCranelift).unwrap());
+    let artifact = backend.compile(&bytes, "@acme/host-traps").unwrap();
+    let mut instance = Backend::new(backend)
+        .instantiate(artifact.as_ref())
+        .unwrap();
+    let mut grants = CapabilitySet::new();
+    grants.insert_str("log:info").unwrap();
+    let quota = Quota::default();
+    let message = "the logger rejected fuel, epoch and interrupt fields";
+    let host = Arc::new(Stub {
+        log_failure: Some(crate::CallError::new(
+            crate::CallError::HOST_FAILED,
+            message,
+        )),
+        ..Stub::default()
+    });
+    instance.set_session(LinkerSession::new(
+        PluginId::parse("@acme/host-traps").unwrap(),
+        grants,
+        Arc::new(Budget::new(quota.clone())),
+        host.clone(),
+    ));
+    let outcome = instance
+        .call(
+            &Work::Activate {
+                config_json: "2".to_owned(),
+            },
+            CallBudget::from_quota(&quota),
+        )
+        .unwrap();
+    let error = outcome.into_result().expect_err("the host call trapped");
+    assert_eq!(error.code, synra_protocol::ErrorCode::PluginTrapped);
+    assert_eq!(
+        error.details,
+        Some(Box::new(serde_json::json!({"kind":"trap"})))
+    );
+    assert!(
+        error.message.contains(crate::CallError::HOST_FAILED),
+        "{error}"
+    );
+    assert!(error.message.contains(message), "{error}");
+    assert_eq!(host.called(), ["log"]);
+}

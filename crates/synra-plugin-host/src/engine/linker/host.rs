@@ -7,7 +7,7 @@ use types::{DeviceKind, DeviceTarget, LogLevel, Outcome};
 fn text(state: &mut StoreData, name: &str, argument: &str) -> wasmtime::Result<String> {
     match run(state, &import_name(name), argument) {
         Answer::Ok(value) => Ok(value),
-        Answer::Denied(error) => Err(anyhow::anyhow!("{error}")),
+        Answer::Denied(error) => Err(error.into()),
     }
 }
 

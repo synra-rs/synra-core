@@ -8,6 +8,7 @@ mod backend;
 pub(super) mod bindings;
 mod compile;
 mod config;
+mod failure;
 mod imports;
 mod instance;
 mod invoke;

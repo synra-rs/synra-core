@@ -61,25 +61,14 @@ const SPINS_ON_DEACTIVATE: &str = r#"
 )
 "#;
 
-/// A component whose `deactivate` grows its memory until it is not allowed to.
-///
-/// # Why the guest has to notice the refusal itself
-///
-/// A denied `memory.grow` does **not** trap: it returns -1, because that is what the instruction is defined to do, and the
-/// engine's limiter is answering the question rather than ending the call. So a guest that keeps asking forever is a guest
-/// that loops — which is why this one checks the answer and traps when it is refused. The trap is therefore evidence about
-/// the **limiter**: the only way to reach it is for `memory.grow` to have said no.
-///
-/// The engine records that a refusal happened (`memory_refused`), so the outcome names the ceiling rather than reporting a
-/// generic trap a plugin author could do nothing with.
-const GROWS_UNTIL_REFUSED: &str = r#"
+/// Exercises the host ceiling without synthesizing a guest trap on growth failure.
+const GROWS_MEMORY: &str = r#"
 (component
   (core module $m
     (memory (export "memory") 1)
     (func (export "grow")
       (loop $l
-        (if (i32.eq (memory.grow (i32.const 1)) (i32.const -1))
-          (then (unreachable)))
+        (drop (memory.grow (i32.const 1)))
         (br $l))))
   (core instance $i (instantiate $m))
   (func $deactivate

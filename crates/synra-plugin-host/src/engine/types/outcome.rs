@@ -20,7 +20,8 @@ pub struct CallBudget {
     pub fuel: Option<u64>,
     /// How long this call may take, or `None` for no limit.
     pub timeout: Option<std::time::Duration>,
-    /// How much the plugin's memory may grow during this call, in bytes, or `None` for no limit.
+    /// Resulting size ceiling for growth of each linear memory, in bytes.
+    /// `None` uses the backend's default. It does not shrink memory already allocated.
     pub max_memory_growth: Option<u64>,
 }
 
@@ -38,7 +39,7 @@ impl CallBudget {
         }
     }
 
-    /// A budget with nothing limited, for a fixture.
+    /// No explicit call limits, for fixtures. Backend defaults still apply.
     #[must_use]
     pub const fn unlimited() -> Self {
         Self { fuel: None, timeout: None, max_memory_growth: None }

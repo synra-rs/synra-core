@@ -15,6 +15,8 @@ pub(crate) struct Stub {
     pub(crate) secret: Option<String>,
     /// Override the sample clipboard result, including absence and an empty text value.
     pub(crate) clipboard: Option<Option<String>>,
+    /// An error a real WIT void import can propagate as a host trap.
+    pub(crate) log_failure: Option<CallError>,
     /// How many bytes its storage is holding, which the quota check reads.
     ///
     /// Settable rather than derived from what `storage-set` was asked to write, because the number that matters is what
@@ -89,7 +91,7 @@ impl Host for Stub {
             "log",
             &format!("{level}/{message}/{}", context.unwrap_or("-")),
         );
-        Ok(())
+        self.log_failure.clone().map_or(Ok(()), Err)
     }
     fn event_emit(&self, _plugin: &PluginId, event: &str, payload: &str) -> Result<(), CallError> {
         self.record("event-emit", &format!("{event}/{payload}"));

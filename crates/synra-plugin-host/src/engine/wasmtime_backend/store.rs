@@ -1,16 +1,53 @@
 //! Per-instance authorization, accounting and enforced resource limits.
 
+use std::time::Duration;
+
 use super::config::INSTANTIATION_CEILING;
-use wasmtime::{StoreLimits, StoreLimitsBuilder};
+use crate::engine::CallBudget;
+use wasmtime::StoreLimits;
+
+#[derive(Clone, Copy)]
+pub(super) struct EffectiveBudget {
+    pub(super) fuel: Option<u64>,
+    pub(super) timeout: Option<Duration>,
+    pub(super) memory_ceiling: usize,
+}
+
+impl From<CallBudget> for EffectiveBudget {
+    fn from(budget: CallBudget) -> Self {
+        Self {
+            fuel: budget.fuel,
+            timeout: budget.timeout,
+            memory_ceiling: budget
+                .max_memory_growth
+                .map_or(INSTANTIATION_CEILING, |bytes| {
+                    usize::try_from(bytes).unwrap_or(usize::MAX)
+                }),
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("requested linear memory of {desired} bytes exceeds the host ceiling of {limit} bytes")]
+pub(super) struct MemoryCeilingExceeded {
+    pub(super) limit: usize,
+    desired: usize,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(super) enum GrowthRefusal {
+    #[error("requested {desired} bytes with a linear memory maximum of {maximum} bytes")]
+    Maximum { desired: usize, maximum: usize },
+    #[error("the engine could not allocate the requested linear memory: {0:#}")]
+    Allocation(anyhow::Error),
+}
 
 /// What an instance's store holds.
 pub(crate) struct StoreData {
-    /// The ceiling a growth is measured against, kept here because the engine's limiter does not report it back.
-    pub(super) ceiling: usize,
-    /// Set when a growth the budget refused was attempted, so a call can report *why* it trapped rather than a
-    /// generic trap the plugin author cannot act on.
-    pub(super) memory_refused: bool,
-    pub(super) limits: StoreLimits,
+    memory_ceiling: usize,
+    /// Latest recoverable growth failure, for diagnostics on an independent trap in the same call.
+    pub(super) growth_refusal: Option<GrowthRefusal>,
+    limits: StoreLimits,
     /// The plugin whose calls this instance makes, when the host gave it one.
     ///
     /// `None` for an instance the host built without a session, which is the only way a host function can be reached
@@ -40,37 +77,51 @@ impl StoreData {
     /// Creates bounded instance state without a host authorization session.
     pub(in crate::engine) fn new() -> Self {
         Self {
-            ceiling: INSTANTIATION_CEILING,
-            memory_refused: false,
-            limits: StoreLimitsBuilder::new()
-                .memory_size(INSTANTIATION_CEILING)
-                .build(),
+            memory_ceiling: INSTANTIATION_CEILING,
+            growth_refusal: None,
+            limits: StoreLimits::default(),
             session: None,
             host_calls: 0,
             side_effects: true,
         }
+    }
+
+    pub(super) fn begin_call(&mut self, budget: EffectiveBudget, side_effects: bool) {
+        self.memory_ceiling = budget.memory_ceiling;
+        self.growth_refusal = None;
+        self.side_effects = side_effects;
     }
 }
 
 impl wasmtime::ResourceLimiter for StoreData {
     fn memory_growing(
         &mut self,
-        current: usize,
+        _current: usize,
         desired: usize,
         maximum: Option<usize>,
     ) -> anyhow::Result<bool> {
-        // The engine's own limiter does the accounting; what this adds is remembering *that* it refused, because the
-        // trap that follows says only that a memory could not grow.
-        let permitted = self.limits.memory_growing(current, desired, maximum)?;
-        if !permitted {
-            self.memory_refused = true;
+        // A stricter module or allocator maximum keeps Wasm's recoverable `memory.grow` failure.
+        if let Some(maximum) = maximum
+            && maximum <= self.memory_ceiling
+            && desired > maximum
+        {
+            self.growth_refusal = Some(GrowthRefusal::Maximum { desired, maximum });
+            return Ok(false);
         }
-        Ok(permitted)
+        // Trap at the host policy boundary so the error chain identifies the actual cause.
+        if desired > self.memory_ceiling {
+            return Err(MemoryCeilingExceeded {
+                limit: self.memory_ceiling,
+                desired,
+            }
+            .into());
+        }
+        Ok(true)
     }
 
     fn memory_grow_failed(&mut self, error: anyhow::Error) -> anyhow::Result<()> {
-        self.memory_refused = true;
-        self.limits.memory_grow_failed(error)
+        self.growth_refusal = Some(GrowthRefusal::Allocation(error));
+        Ok(())
     }
 
     fn table_growing(

@@ -76,7 +76,13 @@ fn typed_device_lists_and_quota_are_not_flattened_into_other_component_types() {
 #[test]
 fn calls_without_a_session_fail_closed_and_still_count_as_host_attempts() {
     let mut data = StoreData::new();
-    assert!(data.env_sdk_version().is_err());
+    let error = data
+        .env_sdk_version()
+        .expect_err("an import without a session must fail");
+    assert_eq!(
+        error.downcast_ref::<CallError>().unwrap().code,
+        CallError::HOST_FAILED
+    );
     assert!(matches!(
         data.storage_get("known".to_owned()).unwrap(),
         types::Outcome::Err(_)

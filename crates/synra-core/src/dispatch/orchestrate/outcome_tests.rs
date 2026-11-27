@@ -14,7 +14,7 @@ fn device(tail: u8) -> DeviceId {
         .expect("device id")
 }
 
-fn guest(failed: bool, payload: &str) -> Vec<u8> {
+fn guest(failed: bool, payload: &str, before_execute: &str) -> Vec<u8> {
     let flag = u8::from(failed);
     let length = payload.len();
     let bytes: String = payload
@@ -35,6 +35,7 @@ fn guest(failed: bool, payload: &str) -> Vec<u8> {
     (global.set $next (i32.add (local.get $ptr) (local.get 3)))
     (local.get $ptr))
   (func (export "synra:plugin/share@1.0.0#execute") (param i32 i32 i32 i32) (result i32)
+    {before_execute}
     (if (global.get $answered) (then (unreachable)))
     (global.set $answered (i32.const 1))
     (i32.store8 (i32.const 256) (i32.const {flag}))
@@ -81,14 +82,14 @@ fn guest(failed: bool, payload: &str) -> Vec<u8> {
         .expect("component")
 }
 
-fn plugins(failed: bool, payload: &str) -> Arc<Mutex<PluginSet>> {
+fn plugins(wasm: Vec<u8>) -> Arc<Mutex<PluginSet>> {
     let engine = synra_plugin_host::engine::WasmtimeBackend::new(BackendKind::WasmtimeCranelift)
         .expect("engine");
     let mut set = PluginSet::new(Backend::new(Arc::new(engine)), Arc::new(RefusingHost));
     set.load(crate::dispatch::PluginSpec {
         id: plugin(),
         version: "1.0.0".to_owned(),
-        wasm: guest(failed, payload),
+        wasm,
         grants: synra_capability::CapabilitySet::new(),
         policy: InstancePolicy::Stateful,
         limit: 1,
@@ -177,7 +178,7 @@ fn real_guest_outcomes_match_locally_remotely_and_after_result_replay_from_sqlit
         ),
     ] {
         for target in [device(1), device(2)] {
-            let plugins = plugins(failed, payload);
+            let plugins = plugins(guest(failed, payload, ""));
             let board = Arc::new(Mutex::new(Board::new()));
             let now = synra_store::sqlite::now_ms();
             let id = offered(&mut board.lock(), target, now);
@@ -252,4 +253,46 @@ fn real_guest_outcomes_match_locally_remotely_and_after_result_replay_from_sqlit
             }
         }
     }
+}
+
+#[test]
+fn remote_execution_replies_with_the_plugin_quota_memory_ceiling() {
+    let ceiling = synra_plugin_host::quota::Quota::default().max_memory_bytes;
+    let pages = ceiling.div_ceil(64 * 1024);
+    let grow = format!("(drop (memory.grow (i32.const {pages})))");
+    let plugins = plugins(guest(false, "null", &grow));
+    let board = Arc::new(Mutex::new(Board::new()));
+    let now = synra_store::sqlite::now_ms();
+    let id = offered(&mut board.lock(), device(2), now);
+    let outbound = decide(
+        &plugins,
+        &board,
+        device(1),
+        &id.to_string(),
+        None,
+        None,
+        now + 1000,
+    )
+    .expect("decision")
+    .outbound
+    .expect("remote invocation");
+    let receiver = Arc::new(Mutex::new(Board::new()));
+    let reply = accept_remote(
+        &plugins,
+        &receiver,
+        device(2),
+        &outbound.envelope,
+        now + 1000,
+    )
+    .expect("remote execution")
+    .expect("reply");
+    let (result, _) = crate::intent::remote::result_from(&reply)
+        .expect("remote result")
+        .into_outcome();
+    let error = result.expect_err("the actual memory ceiling must stop the guest");
+    assert_eq!(error.code, synra_protocol::ErrorCode::PluginTrapped);
+    assert_eq!(
+        error.details.as_deref(),
+        Some(&serde_json::json!({"kind":"memoryExceeded","limit":ceiling}))
+    );
 }
