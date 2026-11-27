@@ -37,19 +37,11 @@ use parking_lot::Mutex;
 use synra_protocol::ids::PluginId;
 
 mod calls;
-mod network;
 
 #[cfg(test)]
 mod event_tests;
 #[cfg(test)]
 mod tests;
-
-/// One plugin's fetcher, and the hosts it was built for.
-///
-/// ★ A name rather than the type written out at the field: the tuple means "this client, for exactly these hosts", and
-/// spelling it inline made the field the most complicated thing in the struct. The alias lets the field's doc say *why* the
-/// host list is stored beside the client instead of a reader having to reconstruct it from a nested generic.
-type FetchClients = Mutex<std::collections::HashMap<PluginId, (Vec<String>, Arc<synra_fetch::Client>)>>;
 
 /// The daemon's answer to a plugin's host calls.
 pub(crate) struct KernelHost {
@@ -74,7 +66,7 @@ pub(crate) struct KernelHost {
     /// time — so `max_concurrent` would never refuse anything. The host list is stored beside it because the guard is built
     /// from the plugin's grants, and a user who withdraws a host must not keep reaching it through a cached client: when
     /// the list changes, the client is rebuilt.
-    fetch_clients: FetchClients,
+    fetch_clients: synra_fetch::PluginClients,
     /// The database, for the two questions that are answered from what is recorded: which capabilities the user granted,
     /// and what the interface was configured with.
     db: Arc<Mutex<synra_store::SynraDb>>,
@@ -98,7 +90,7 @@ impl KernelHost {
             // the builders on `Policies` are how a caller would — a daemon that let a plugin widen its own allowances
             // would defeat the point of having them.
             platform: synra_platform::HeadlessPlatform::default(),
-            fetch_clients: Mutex::new(std::collections::HashMap::new()),
+            fetch_clients: synra_fetch::PluginClients::default(),
         }
     }
 

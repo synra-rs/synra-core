@@ -64,7 +64,9 @@ impl Client {
         self.fetch_scoped(request, None)
     }
 
-    /// Fetches for a plugin using its current grants on every redirect before network IO.
+    /// Fetches for a plugin using its current grants on each hop before network IO.
+    ///
+    /// Grants determine destination and method. The guard supplies scheme, IP and redirect limits.
     ///
     /// # Errors
     /// As [`Self::fetch`], including capability denial for the actual host or HTTP method.

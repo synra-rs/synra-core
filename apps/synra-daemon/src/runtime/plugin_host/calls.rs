@@ -3,7 +3,7 @@
 use synra_plugin_host::host_calls::{CallError, Host, PlatformAction};
 use synra_protocol::ids::PluginId;
 
-use super::{KernelHost, network::fetcher_for};
+use super::KernelHost;
 
 /// The refusal this host gives for everything it does not implement.
 ///
@@ -193,8 +193,9 @@ impl Host for KernelHost {
     }
 
     fn fetch(&self, plugin: &PluginId, request_json: &str) -> Result<String, CallError> {
-        let client = fetcher_for(self, plugin)?;
-        client.fetch_plugin(request_json, &self.granted(plugin))
+        self.fetch_clients
+            .get(plugin)
+            .fetch_plugin(request_json, &self.granted(plugin))
     }
 
     fn transfer_send(&self, _p: &PluginId, _k: &str, _t: &str, _m: &str) -> Result<String, CallError> {

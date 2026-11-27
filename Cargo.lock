@@ -2649,6 +2649,7 @@ dependencies = [
  "synra-testkit",
  "synra-wit-codegen",
  "thiserror",
+ "url",
  "wasmtime",
  "wat",
  "wit-component",

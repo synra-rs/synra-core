@@ -237,13 +237,22 @@ impl NetworkGuard {
     /// refuses — because a redirect is a second request that must pass everything the first one did. "The first hop was
     /// allowed" is not a property a later hop inherits.
     pub fn next_hop(&self, followed: u8, location: &str) -> Result<Checked, Refusal> {
+        self.check_redirect_limit(followed)?;
+        self.check_url(location)
+    }
+
+    /// Checks the number of redirects before authorizing the next target.
+    ///
+    /// # Errors
+    /// Returns [`ErrorCode::RedirectBlocked`] when the limit is reached.
+    pub fn check_redirect_limit(&self, followed: u8) -> Result<(), Refusal> {
         if followed >= self.max_redirects {
             return Err(Refusal::new(
                 ErrorCode::RedirectBlocked,
                 format!("more than {} redirects", self.max_redirects),
             ));
         }
-        self.check_url(location)
+        Ok(())
     }
 
     /// The hosts this guard was built for.

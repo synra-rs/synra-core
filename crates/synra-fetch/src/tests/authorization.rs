@@ -26,7 +26,7 @@ fn authorized_fetch_scopes_are_rechecked_for_the_method_of_every_redirect() {
     let target = destination.url("/final").replace("127.0.0.1", "localhost");
     let source = Server::start(move |_| response(302, "", &[("location", &target)]));
     let client = Client::new(
-        NetworkGuard::for_hosts(&["127.0.0.1".to_owned(), "localhost".to_owned()])
+        NetworkGuard::for_hosts(&[])
             .allowing_insecure(true)
             .with_policy(IpPolicy {
                 allow_loopback: true,
@@ -39,6 +39,7 @@ fn authorized_fetch_scopes_are_rechecked_for_the_method_of_every_redirect() {
     let grants = [
         "network:fetch:127.0.0.1:POST".to_owned(),
         "network:fetch:localhost:GET".to_owned(),
+        "network:fetch:**".to_owned(),
     ];
     let denied = client.fetch_authorized(&request, &grants).unwrap_err();
     assert_eq!(denied.code, ErrorCode::CapabilityDenied, "{denied}");

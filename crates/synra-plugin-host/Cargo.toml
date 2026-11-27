@@ -15,6 +15,7 @@ synra-plugin-api = { path = "../synra-plugin-api", version = "0.1.0" }
 synra-observe = { path = "../synra-observe", version = "0.1.0" }
 
 http = "=1.5.0"
+url = "2.5"
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

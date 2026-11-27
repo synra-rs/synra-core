@@ -9,7 +9,8 @@ fn every_function_in_the_contract_reaches_the_host_rather_than_an_unknown_functi
     // function, and this drives every one of them: a function the table lists and `run` does not handle answers
     // `unknownFunction`, which is the failure that would otherwise reach a plugin author as their own mistake.
     let host = Stub::with_devices(&[("device-a", "Laptop", "desktop")]);
-    let grants = all_capabilities();
+    let mut grants = all_capabilities();
+    grants.insert_str("network:fetch:example").expect("concrete fetch grant");
     let budget = budget();
     let mut audit = Vec::new();
     let mut calls = session(&host, &grants, &budget, &mut audit);

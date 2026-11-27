@@ -27,29 +27,26 @@
 //! The **body is a string**, not parsed JSON, because a response is not always JSON — a plugin fetching a CSV or a web
 //! page is doing something ordinary, and a host that parsed the body would be a host that refused most of the web.
 //!
-//! # Two entries, one body policy
+//! # Request entry points and limits
 //!
-//! [`Client::fetch`] is the plugin-facing one: text, lossy UTF-8 at the edge. [`Client::fetch_bytes`] answers raw bytes
-//! for the cases where decoding is corruption — a registry tarball (16 §4.1). Both go through the same guard, the same
-//! redirect loop and the same ceiling; the only difference is the last step.
+//! [`Client::fetch_plugin`] receives each plugin's grants for a text request. [`Client::fetch`] and
+//! [`Client::fetch_bytes`] use the host's configured destinations. The same redirect loop enforces IP and size limits.
 //!
 //! # The order of the checks, which is the whole design
 //!
 //! `10 §4.4` names seven steps and this module is the first four; the remaining three are limits, and they are
 //! [`Limits`]. The order matters and is not rearranged here:
 //!
-//! 1. the scheme and the host, by [`synra_core::network::NetworkGuard::check_url`];
+//! 1. the target and scheme, using request grants for plugins and the network guard for host requests;
 //! 2. the addresses the name resolved to, by `check_resolved` — **every** one of them;
-//! 3. the request, with redirects followed **by this module** rather than by the client, so each hop goes back through
-//!    `check_url`;
+//! 3. the request, with redirects followed by this module so every hop repeats the target checks;
 //! 4. the response size.
 //!
 //! # Why the redirects are followed here
 //!
 //! Because the design requires each hop to be re-validated, and an HTTP client that follows redirects internally offers a
 //! hop *count* and nothing else — no hook at which a second hop can be refused. So the client is configured to follow
-//! none, and [`Client::fetch`] loops: read the `Location`, ask [`synra_core::network::NetworkGuard::next_hop`], repeat. A
-//! redirect to a host nobody granted is refused at that moment, which is the only moment it can be.
+//! none. The loop reads `Location`, checks the redirect count, and validates the next target before resolving it.
 //!
 //! # Why the addresses are resolved here rather than by the client
 //!
@@ -85,9 +82,11 @@
 )]
 
 mod client;
+mod plugin_clients;
 mod types;
 
 pub use client::Client;
+pub use plugin_clients::PluginClients;
 pub use types::{BinaryResponse, DEFAULT_TIMEOUT, Limits, Request, Response};
 
 #[cfg(test)]

@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::time::Instant;
 
 use synra_core::network::Refusal;
@@ -28,28 +29,11 @@ impl Client {
                 .checked_sub(started.elapsed())
                 .ok_or_else(|| timeout_refusal(&request.url, self.limits.timeout))?;
 
-            if let Some(grants) = grants {
-                synra_plugin_host::host_calls::network_scope::authorize_request(
-                    grants,
-                    &url,
-                    &request.method,
-                )
-                .map_err(|error| {
-                    Refusal::new(
-                        if error.code == synra_plugin_host::CallError::CAPABILITY_DENIED {
-                            ErrorCode::CapabilityDenied
-                        } else {
-                            ErrorCode::InvalidArgument
-                        },
-                        error.message,
-                    )
-                })?;
-            }
-            let checked = self.guard.check_url(&url)?;
+            let (target, checked) = self.check_target(&url, &request.method, grants)?;
             let addresses = self.resolve(&checked)?;
             let agent = self.agent(&addresses, remaining)?;
 
-            let mut response = self.one_request(&agent, request, body, &url)?;
+            let mut response = self.one_request(&agent, request, body, &target)?;
 
             let status = response.status().as_u16();
             let status_text = response.status().canonical_reason().unwrap_or_default().to_owned();
@@ -72,7 +56,7 @@ impl Client {
                         format!("{status} without a `location` header, so there is nowhere to follow"),
                     ));
                 };
-                let _ = self.guard.next_hop(hop, location)?;
+                self.guard.check_redirect_limit(hop)?;
                 url = location.clone();
                 continue;
             }
@@ -112,12 +96,34 @@ impl Client {
             return Ok(Fetched { status, status_text, headers, url, redirected, text, bytes });
         }
 
-        // The loop returns on the last iteration's non-redirect, so this is reached only when every hop redirected —
-        // which `next_hop` refuses before the counter gets here. A refusal rather than a panic, because this workspace
-        // denies `panic` in production code and an unreachable branch is not a licence to break that.
+        // The caller's redirect limit can be tighter than the guard's.
         Err(Refusal::new(
             ErrorCode::RedirectBlocked,
             format!("more than {} redirects", self.limits.max_redirects),
         ))
+    }
+
+    fn check_target<'a>(
+        &self,
+        url: &'a str,
+        method: &str,
+        grants: Option<&synra_capability::CapabilitySet>,
+    ) -> Result<(Cow<'a, str>, synra_core::network::Checked), Refusal> {
+        let Some(grants) = grants else {
+            return Ok((Cow::Borrowed(url), self.guard.check_url(url)?));
+        };
+        let target = synra_plugin_host::host_calls::network_scope::authorize_request(
+            grants, url, method,
+        )
+        .map_err(|error| {
+            let code = if error.code == synra_plugin_host::CallError::CAPABILITY_DENIED {
+                ErrorCode::CapabilityDenied
+            } else {
+                ErrorCode::InvalidArgument
+            };
+            Refusal::new(code, error.message)
+        })?;
+        let checked = self.guard.parse(target.as_str())?;
+        Ok((Cow::Owned(target.into()), checked))
     }
 }
