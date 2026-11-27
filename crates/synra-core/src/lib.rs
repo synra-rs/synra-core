@@ -130,8 +130,7 @@ pub use plugin::{
 };
 pub use plugin_sync::{
     ConflictPolicy, ReceiverDuty, RemoteState, SyncAction, SyncError, SyncInbox, SyncOutcome,
-    SyncRecord, SyncSession, SyncSessionId, SyncTable, compare_versions as compare_plugin_versions,
-    decide as decide_sync,
+    SyncRecord, SyncSession, SyncSessionId, SyncTable, decide as decide_sync,
 };
 pub use routing::{EventId, EventRegistry, RouteOutcome, RouterError};
 pub use sessions::{

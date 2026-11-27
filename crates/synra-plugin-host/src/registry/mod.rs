@@ -60,10 +60,9 @@ mod packument;
 mod versions;
 
 pub use config::{FetchFailure, PackagePattern, RegistryConfig, RegistryMirror};
-pub use integrity::{Integrity, check_integrity, compare_versions};
+pub use integrity::{Integrity, check_integrity};
 pub use packument::{Dist, Packument, SizeBlock, SynraBlock, VersionEntry};
 pub use versions::{VersionTags, Versions};
 
 #[cfg(test)]
 mod tests;
-

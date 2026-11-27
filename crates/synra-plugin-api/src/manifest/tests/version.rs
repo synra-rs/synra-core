@@ -1,5 +1,5 @@
-use rstest::rstest;
 use super::super::version::{check_version, compare_versions};
+use rstest::rstest;
 
 #[rstest]
 #[case("1.0.0")]
@@ -19,6 +19,8 @@ fn legal_versions_are_accepted(#[case] version: &str) {
 #[case("1.0.0.0")]
 #[case("v1.0.0")]
 #[case("01.0.0")]
+#[case("1.0.0-01")]
+#[case("18446744073709551616.0.0")]
 #[case("1.0.0-")]
 #[case("1.0.0+")]
 #[case("1.0.0-rc..1")]
@@ -90,4 +92,17 @@ fn a_prerelease_sorts_below_its_release() {
 fn comparing_an_illegal_version_is_an_error_not_an_ordering() {
     assert!(compare_versions("1.0", "1.0.0").is_err());
     assert!(compare_versions("1.0.0", "nonsense").is_err());
+}
+
+#[test]
+fn precedence_ignores_build_metadata_and_compares_large_prereleases_numerically() {
+    use core::cmp::Ordering;
+    assert_eq!(
+        compare_versions("1.0.0+build.1", "1.0.0+build.9").unwrap(),
+        Ordering::Equal
+    );
+    assert_eq!(
+        compare_versions("1.0.0-18446744073709551616", "1.0.0-alpha").unwrap(),
+        Ordering::Less
+    );
 }

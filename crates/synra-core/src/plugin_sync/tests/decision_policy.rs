@@ -155,24 +155,31 @@ fn ask_carries_both_versions_so_the_user_can_decide() {
 }
 
 #[test]
-fn the_version_comparison_does_not_get_ten_wrong() {
-    // The mistake that ships an old version to everybody: `1.10.0` sorts before `1.9.0` as text.
-    assert_eq!(
-        compare_versions("1.10.0", "1.9.0"),
-        core::cmp::Ordering::Greater
+fn ordered_sync_policies_use_prerelease_precedence_and_preserve_digest_conflicts() {
+    let decide_pair = |ours, version, policy| decide(ours, "a", &theirs(version, "b"), policy);
+    assert!(matches!(
+        decide_pair("1.0.0-rc.2", "1.0.0-rc.10", ConflictPolicy::NeverDowngrade),
+        SyncAction::Skip { .. }
+    ));
+    assert!(decide_pair("1.0.0-rc.10", "1.0.0-rc.2", ConflictPolicy::KeepNewest).is_push());
+    assert!(
+        decide_pair(
+            "1.0.0+build.1",
+            "1.0.0+build.9",
+            ConflictPolicy::NeverDowngrade
+        )
+        .is_push()
     );
-    assert_eq!(
-        compare_versions("2.0.0", "10.0.0"),
-        core::cmp::Ordering::Less
-    );
-    assert_eq!(
-        compare_versions("1.0.0", "1.0.0"),
-        core::cmp::Ordering::Equal
-    );
-    assert_eq!(
-        compare_versions("1.0.0", "1.0.0-rc.1"),
-        core::cmp::Ordering::Greater
-    );
+    assert!(matches!(
+        decide_pair("1.0.0+build.9", "1.0.0+build.1", ConflictPolicy::KeepNewest),
+        SyncAction::Skip { .. }
+    ));
+    for policy in [ConflictPolicy::NeverDowngrade, ConflictPolicy::KeepNewest] {
+        assert!(matches!(
+            decide_pair("1.0.0", "2026-11-27", policy),
+            SyncAction::Refuse { .. }
+        ));
+    }
 }
 
 #[test]

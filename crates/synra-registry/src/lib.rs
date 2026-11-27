@@ -40,7 +40,7 @@ pub mod source;
 pub mod static_index;
 
 pub use extract::{ExtractError, Limits, extract_tgz};
-pub use packument::{Dist, Packument, SelectError, Version, is_newer};
+pub use packument::{Dist, Packument, SelectError, Version};
 pub use source::{
     ArtifactError, ConfigError, ConfigReason, RegistryConfig, RegistryKind, RegistrySource,
     is_loopback_host,

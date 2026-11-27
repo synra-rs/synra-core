@@ -36,7 +36,7 @@ impl Versions {
     ///
     /// Because it is used to *say what there is* — in a message listing the versions a package has — and a list in
     /// alphabetical order is one a reader can find a string in. Choosing between two versions is
-    /// [`compare_versions`]'s job, and doing it by accident here is how `1.10.0` sorts before `1.9.0`.
+    /// the plugin version's job, and doing it by accident here is how `1.10.0` sorts before `1.9.0`.
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.0.keys().map(String::as_str)
     }
@@ -44,6 +44,10 @@ impl Versions {
     /// Every entry, for a caller that has to look at all of them.
     pub fn values(&self) -> impl Iterator<Item = &VersionEntry> {
         self.0.values()
+    }
+
+    pub(super) fn entries(&self) -> impl Iterator<Item = (&str, &VersionEntry)> {
+        self.0.iter().map(|(key, entry)| (key.as_str(), entry))
     }
 
     /// How many versions there are.
@@ -91,7 +95,9 @@ impl VersionTags {
 
     /// Every `(tag, version)` pair, in tag order.
     pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
-        self.0.iter().map(|(tag, version)| (tag.as_str(), version.as_str()))
+        self.0
+            .iter()
+            .map(|(tag, version)| (tag.as_str(), version.as_str()))
     }
 
     /// How many tags there are.
@@ -106,4 +112,3 @@ impl VersionTags {
         self.0.is_empty()
     }
 }
-

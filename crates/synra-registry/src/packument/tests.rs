@@ -71,17 +71,30 @@ fn something_that_is_not_a_packument_is_a_named_refusal() {
 
 #[test]
 fn only_a_genuinely_newer_version_is_an_update() {
-    // ★ Equality was the old rule, so an installed 2.0 with a registry latest of 1.9 was reported as "an update to
-    // 1.9" — a downgrade under the wrong word. Semver orders; strings do not.
-    assert!(super::is_newer("1.10.0", "1.9.0"));
-    assert!(super::is_newer("2.0.0", "1.9.0"));
-    assert!(!super::is_newer("1.9.0", "1.10.0"), "a downgrade is not an update");
-    assert!(!super::is_newer("2.0.0", "2.0.0"), "the same version is not an update");
-    assert!(super::is_newer("2.0.0", "2.0.0-rc.1"), "a release is newer than its candidate");
-    assert!(!super::is_newer("2.0.0-rc.1", "2.0.0"), "a candidate is older than its release");
-    // A non-semver version has no order, so the honest fallback is "different".
-    assert!(super::is_newer("2026-10-19", "2026-10-18"));
-    assert!(!super::is_newer("2026-10-19", "2026-10-19"));
+    let packument = Packument::parse(DOCUMENT).expect("a document");
+    for older in ["1.1.0", "1.2.0-rc.1"] {
+        assert_eq!(
+            packument.latest_upgrade(older).unwrap().unwrap().version,
+            "1.2.0"
+        );
+    }
+    for current in ["1.2.0", "1.2.0+build.9", "1.10.0"] {
+        assert!(packument.latest_upgrade(current).unwrap().is_none());
+    }
+    assert!(matches!(
+        packument.latest_upgrade("2026-10-19"),
+        Err(super::SelectError::InvalidVersion(_))
+    ));
+
+    let corrupt = Packument::parse(&DOCUMENT.replace("1.2.0", "1.0.0-01")).unwrap();
+    assert!(matches!(
+        corrupt.latest_upgrade("1.0.0"),
+        Err(super::SelectError::InvalidVersion(_))
+    ));
+    assert!(matches!(
+        corrupt.select(None),
+        Err(super::SelectError::InvalidVersion(_))
+    ));
 }
 
 #[test]
@@ -99,10 +112,27 @@ fn a_range_picks_the_newest_matching_version() {
     .to_string();
     let packument = Packument::parse(&document).expect("a document");
 
-    assert_eq!(packument.select(Some("^1.9")).expect("a match").version, "1.10.0");
-    assert_eq!(packument.select(Some("~1.9.0")).expect("a match").version, "1.9.0");
-    assert_eq!(packument.select(Some("1.10.0")).expect("exact").version, "1.10.0");
+    assert_eq!(
+        packument.select(Some("^1.9")).expect("a match").version,
+        "1.10.0"
+    );
+    assert_eq!(
+        packument.select(Some("~1.9.0")).expect("a match").version,
+        "1.9.0"
+    );
+    assert_eq!(
+        packument.select(Some("1.10.0")).expect("exact").version,
+        "1.10.0"
+    );
     assert_eq!(packument.select(None).expect("latest").version, "1.9.0");
+    assert_eq!(
+        packument.select(Some("latest")).expect("latest").version,
+        "1.9.0"
+    );
+    assert!(matches!(
+        packument.select(Some("1.8.0")),
+        Err(super::SelectError::NoSuchVersion(_, _))
+    ));
     assert!(matches!(
         packument.select(Some("^2")),
         Ok(version) if version.version == "2.0.0"

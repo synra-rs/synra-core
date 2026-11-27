@@ -13,6 +13,7 @@
 //! document said.
 
 use std::collections::BTreeMap;
+use synra_plugin_api::manifest::{ManifestError, PluginVersion, PluginVersionReq};
 
 use serde::Deserialize;
 
@@ -91,7 +92,9 @@ impl Packument {
     /// deliberately did not tag.
     #[must_use]
     pub fn latest(&self) -> Option<&Version> {
-        self.dist_tags.get("latest").and_then(|version| self.versions.get(version))
+        self.dist_tags
+            .get("latest")
+            .and_then(|version| self.versions.get(version))
     }
 
     /// One version by its string.
@@ -105,7 +108,20 @@ impl Packument {
         self.versions.keys().map(String::as_str)
     }
 
-    /// The version a request names: an exact version, a semver range, or `latest`.
+    /// The publisher's latest entry when it advances the installed version.
+    ///
+    /// # Errors
+    /// Reports invalid installed or published versions and a dangling `latest` tag.
+    pub fn latest_upgrade(&self, installed: &str) -> Result<Option<&Version>, SelectError> {
+        let installed = PluginVersion::parse(installed)?;
+        let Some(key) = self.dist_tags.get("latest") else {
+            return Ok(None);
+        };
+        let (entry, version) = self.exact(key)?;
+        Ok(version.cmp_precedence(&installed).is_gt().then_some(entry))
+    }
+
+    /// The version a request names: an exact version, a publisher tag, or a SemVer range.
     ///
     /// # Why a range is resolved here rather than at each caller
     ///
@@ -119,32 +135,52 @@ impl Packument {
     /// [`SelectError::NoSuchVersion`] when the exact version is absent and the request is not a range that matches one of
     /// the published versions.
     pub fn select<'a>(&'a self, requested: Option<&str>) -> Result<&'a Version, SelectError> {
-        let Some(requested) = requested else {
-            return self
-                .latest()
-                .ok_or_else(|| SelectError::NoLatest(self.name.clone()));
-        };
-        if let Some(version) = self.at(requested) {
-            return Ok(version);
+        let requested = requested.unwrap_or("latest");
+        if requested != "latest"
+            && (self.versions.contains_key(requested) || PluginVersion::parse(requested).is_ok())
+        {
+            return self.exact(requested).map(|(entry, _)| entry);
         }
-        let range = semver::VersionReq::parse(requested)
+        if let Some(key) = self.dist_tags.get(requested) {
+            return self.exact(key).map(|(entry, _)| entry);
+        }
+        if requested == "latest" {
+            return Err(SelectError::NoLatest(self.name.clone()));
+        }
+        let range = PluginVersionReq::parse(requested)
             .map_err(|_| SelectError::NoSuchVersion(self.name.clone(), requested.to_owned()))?;
-        let mut best: Option<semver::Version> = None;
-        let mut chosen: Option<&Version> = None;
-        for (name, version) in &self.versions {
-            let Ok(parsed) = semver::Version::parse(name) else {
-                continue;
-            };
-            if !range.matches(&parsed) {
-                continue;
-            }
-            if best.as_ref().is_none_or(|current| &parsed > current) {
-                best = Some(parsed);
-                chosen = Some(version);
+        let mut best: Option<(&Version, PluginVersion)> = None;
+        for (key, entry) in &self.versions {
+            let candidate = parse_entry(key, entry)?;
+            // Keys are visited in string order, so equivalent builds have a deterministic tie-break.
+            if range.matches(&candidate)
+                && best
+                    .as_ref()
+                    .is_none_or(|(_, current)| candidate.cmp_precedence(current).is_gt())
+            {
+                best = Some((entry, candidate));
             }
         }
-        chosen.ok_or_else(|| SelectError::NoSuchVersion(self.name.clone(), requested.to_owned()))
+        best.map(|(entry, _)| entry)
+            .ok_or_else(|| SelectError::NoSuchVersion(self.name.clone(), requested.to_owned()))
     }
+
+    fn exact(&self, key: &str) -> Result<(&Version, PluginVersion), SelectError> {
+        let entry = self
+            .at(key)
+            .ok_or_else(|| SelectError::NoSuchVersion(self.name.clone(), key.to_owned()))?;
+        Ok((entry, parse_entry(key, entry)?))
+    }
+}
+
+fn parse_entry(key: &str, entry: &Version) -> Result<PluginVersion, SelectError> {
+    if entry.version != key {
+        return Err(SelectError::MismatchedVersion {
+            key: key.to_owned(),
+            entry: entry.version.clone(),
+        });
+    }
+    Ok(PluginVersion::parse(key)?)
 }
 
 /// Why a version request could not be satisfied.
@@ -156,24 +192,17 @@ pub enum SelectError {
     /// The requested version and range both match nothing.
     #[error("{0} does not publish {1}")]
     NoSuchVersion(String, String),
-}
-
-/// Whether `candidate` is a genuine upgrade over `installed`.
-///
-/// # Why equality is not enough
-///
-/// Because a device can hold a version **newer** than the registry's `latest`: a rollback, a local build, a mirror that has
-/// not caught up. Reporting that as an update offers the user a downgrade under the word "update". Semantic versions are
-/// ordered; strings are not — `2.0.0-rc.1` is older than `2.0.0`, and `1.10.0` is newer than `1.9.0`.
-///
-/// A version that is not semver cannot be ordered, so the answer falls back to "different is an update" — the behaviour
-/// before this existed, kept for the builds that publish date-style versions rather than making their update check fail.
-#[must_use]
-pub fn is_newer(candidate: &str, installed: &str) -> bool {
-    match (semver::Version::parse(candidate), semver::Version::parse(installed)) {
-        (Ok(candidate), Ok(installed)) => candidate > installed,
-        _ => candidate != installed,
-    }
+    /// An installed version or an entry being considered has invalid SemVer.
+    #[error(transparent)]
+    InvalidVersion(#[from] ManifestError),
+    /// The registry names two different versions for one entry.
+    #[error("registry version key {key:?} identifies an entry for {entry:?}")]
+    MismatchedVersion {
+        /// Version map key.
+        key: String,
+        /// Version reported by its entry.
+        entry: String,
+    },
 }
 
 #[cfg(test)]

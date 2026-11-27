@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use synra_plugin_api::Manifest;
-use synra_plugin_api::manifest::compare_versions;
+use synra_plugin_api::manifest::PluginVersion;
 use synra_plugin_api::publisher::Fingerprint;
 use synra_plugin_api::update::{ChangeSize, UpdateAction, UpdateFacts, UpdatePolicy, decide};
 use synra_plugin_host::{Backend, verify::HostFacts};
@@ -96,21 +96,16 @@ fn admit(
         .active_plugin(candidate.id.as_str())
         .map_err(|error| refused(error.to_string()))?
         .ok_or_else(|| refused("the plugin is no longer installed"))?;
-    if compare_versions(&candidate.version, &current.version)
-        .map_err(|error| refused(error.to_string()))?
-        != std::cmp::Ordering::Greater
-    {
+    let offered =
+        PluginVersion::parse(&candidate.version).map_err(|error| refused(error.to_string()))?;
+    let installed =
+        PluginVersion::parse(&current.version).map_err(|error| refused(error.to_string()))?;
+    if !offered.cmp_precedence(&installed).is_gt() {
         return Err(refused(
             "automatic updates must advance the installed version",
         ));
     }
-    if candidate
-        .version
-        .split('+')
-        .next()
-        .unwrap_or_default()
-        .contains('-')
-    {
+    if offered.is_prerelease() {
         return Err(refused("prerelease versions require a manual update"));
     }
     let directory = plugins_dir.join(synra_store::sanitise_component(candidate.id.as_str()));
@@ -138,7 +133,7 @@ fn admit(
         Fingerprint::parse(&new.fingerprint).map_err(|error| refused(error.to_string()))?;
     let mut facts = UpdateFacts::routine(
         trust_store(db).classify(&new.publisher_id, &new_key),
-        change_size(&previous.version, &candidate.version),
+        change_size(&installed, &offered),
     );
     if old_key != new_key {
         facts.publisher_key_changed = Some((old_key, new_key));
@@ -157,12 +152,10 @@ fn admit(
     Ok(current.version)
 }
 
-fn change_size(previous: &str, candidate: &str) -> ChangeSize {
-    let mut old = previous.split('.');
-    let mut new = candidate.split('.');
-    if old.next() != new.next() {
+fn change_size(previous: &PluginVersion, candidate: &PluginVersion) -> ChangeSize {
+    if previous.major() != candidate.major() {
         ChangeSize::Major
-    } else if old.next() != new.next() {
+    } else if previous.minor() != candidate.minor() {
         ChangeSize::Minor
     } else {
         ChangeSize::Patch

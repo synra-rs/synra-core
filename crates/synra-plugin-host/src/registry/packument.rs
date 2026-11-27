@@ -3,9 +3,9 @@
 use serde::{Deserialize, Serialize};
 
 use super::digests::ArtifactDigests;
-use super::integrity::compare_versions;
-use super::{FetchFailure, MAX_PACKUMENT_BYTES, MAX_VERSIONS};
 use super::versions::{VersionTags, Versions};
+use super::{FetchFailure, MAX_PACKUMENT_BYTES, MAX_VERSIONS};
+use synra_plugin_api::manifest::{ManifestError, PluginVersion};
 use synra_plugin_api::publisher::SignatureFile;
 
 /// What a registry says about one version of a package.
@@ -103,14 +103,18 @@ impl Packument {
     /// [`MAX_VERSIONS`] versions, or does not have the shape a packument has — each with the reason, because "could
     /// not read the packument" leaves whoever is configuring a mirror with nothing to check.
     pub fn parse(registry: &str, bytes: &[u8]) -> Result<Self, FetchFailure> {
-        let malformed = |reason: String| FetchFailure::Malformed { registry: registry.to_owned(), reason };
+        let malformed = |reason: String| FetchFailure::Malformed {
+            registry: registry.to_owned(),
+            reason,
+        };
         if bytes.len() > MAX_PACKUMENT_BYTES {
             return Err(malformed(format!(
                 "it is {} bytes, and the limit is {MAX_PACKUMENT_BYTES}",
                 bytes.len()
             )));
         }
-        let packument: Self = serde_json::from_slice(bytes).map_err(|error| malformed(error.to_string()))?;
+        let packument: Self =
+            serde_json::from_slice(bytes).map_err(|error| malformed(error.to_string()))?;
         if packument.name.is_empty() {
             return Err(malformed("it names no package".to_owned()));
         }
@@ -119,6 +123,15 @@ impl Packument {
                 "it lists {} versions, and the limit is {MAX_VERSIONS}",
                 packument.versions.len()
             )));
+        }
+        for (key, entry) in packument.versions.entries() {
+            if key != entry.version {
+                return Err(malformed(format!(
+                    "version key {key:?} names entry {:?}",
+                    entry.version
+                )));
+            }
+            PluginVersion::parse(key).map_err(|error| malformed(error.to_string()))?;
         }
         Ok(packument)
     }
@@ -129,23 +142,27 @@ impl Packument {
     /// never published one.
     #[must_use]
     pub fn tagged(&self, tag: &str) -> Option<&VersionEntry> {
-        self.dist_tags.get(tag).and_then(|version| self.versions.get(version))
+        self.dist_tags
+            .get(tag)
+            .and_then(|version| self.versions.get(version))
     }
 
-    /// The newest version, as a registry orders them.
+    /// Highest SemVer precedence for callers whose policy permits an untagged fallback.
     ///
-    /// # Why this is string ordering and not semantic
-    ///
-    /// Because a packument's `versions` is a map and JSON maps have no order, so "newest" has to be *decided*. The
-    /// registry settles it with `dist-tags.latest`, and that is what [`Self::tagged`] reads. This fallback exists for
-    /// a mirror that sent no tags, and it compares by the numeric components so that `1.10.0` sorts after `1.9.0`
-    /// rather than before it — which plain string ordering gets wrong and which is the mistake that ships an old
-    /// version to everybody.
-    #[must_use]
-    pub fn newest(&self) -> Option<&VersionEntry> {
-        self.versions
-            .values()
-            .max_by(|first, second| compare_versions(&first.version, &second.version))
+    /// # Errors
+    /// Reports invalid version metadata.
+    pub fn newest(&self) -> Result<Option<&VersionEntry>, ManifestError> {
+        let mut best: Option<(&VersionEntry, PluginVersion)> = None;
+        for entry in self.versions.values() {
+            let version = PluginVersion::parse(&entry.version)?;
+            if best
+                .as_ref()
+                .is_none_or(|(_, current)| version.cmp_precedence(current).is_gt())
+            {
+                best = Some((entry, version));
+            }
+        }
+        Ok(best.map(|(entry, _)| entry))
     }
 
     /// The version a caller asked for.
@@ -171,5 +188,3 @@ impl Packument {
         })
     }
 }
-
-

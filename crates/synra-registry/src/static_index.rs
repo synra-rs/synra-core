@@ -11,7 +11,7 @@
 //! ```jsonc
 //! {
 //!   "name": "@acme/hello",
-//!   "latest": "1.2.0",                       // optional; the last entry when absent
+//!   "latest": "1.2.0",                       // optional; highest precedence when absent
 //!   "versions": [
 //!     {
 //!       "version": "1.2.0",
@@ -23,11 +23,8 @@
 //! }
 //! ```
 //!
-//! # Why "the last entry" rather than a version comparison
-//!
-//! Because this crate has no semver implementation and the documents are small enough for an author to order. A reader that
-//! sorted version strings itself would rank `1.10.0` below `1.9.0`, which is the kind of quiet wrong answer a format should
-//! not invite; stating `latest` is the honest way to say it, and the fallback is the order the author wrote.
+//! An explicit `latest` is the publisher's choice. Otherwise the highest SemVer precedence wins.
+//! Equivalent builds are selected by the lowest version spelling in string order.
 //!
 //! # What is still verified
 //!
@@ -35,6 +32,7 @@
 //! install checks the bytes against a signature before believing them.
 
 use std::collections::BTreeMap;
+use synra_plugin_api::manifest::PluginVersion;
 
 use serde::Deserialize;
 
@@ -45,7 +43,7 @@ use crate::packument::{Dist, Packument, PackumentError, Version};
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Index {
     name: String,
-    /// The version an install without one takes; the last entry when absent.
+    /// The version an install without one takes; highest SemVer precedence when absent.
     #[serde(default)]
     latest: Option<String>,
     versions: Vec<Entry>,
@@ -92,17 +90,24 @@ pub struct StaticIndex {
 pub fn parse(text: &str) -> Result<StaticIndex, PackumentError> {
     let index: Index = serde_json::from_str(text)
         .map_err(|error| PackumentError::Unreadable(error.to_string()))?;
-    if index.versions.is_empty() {
-        return Err(PackumentError::Unreadable("it lists no versions".to_owned()));
-    }
-
     let mut versions = BTreeMap::new();
+    let mut highest: Option<(&str, PluginVersion)> = None;
     for entry in &index.versions {
         if versions.contains_key(&entry.version) {
             return Err(PackumentError::Unreadable(format!(
                 "version {} is listed twice",
                 entry.version
             )));
+        }
+        let parsed = PluginVersion::parse(&entry.version)
+            .map_err(|error| PackumentError::Unreadable(error.to_string()))?;
+        if highest.as_ref().is_none_or(|(name, current)| {
+            parsed
+                .cmp_precedence(current)
+                .then_with(|| name.cmp(&entry.version.as_str()))
+                .is_gt()
+        }) {
+            highest = Some((&entry.version, parsed));
         }
         versions.insert(
             entry.version.clone(),
@@ -119,6 +124,8 @@ pub fn parse(text: &str) -> Result<StaticIndex, PackumentError> {
         );
     }
 
+    let (highest, _) =
+        highest.ok_or_else(|| PackumentError::Unreadable("it lists no versions".to_owned()))?;
     let latest = match &index.latest {
         Some(latest) if versions.contains_key(latest) => latest.clone(),
         Some(latest) => {
@@ -126,18 +133,17 @@ pub fn parse(text: &str) -> Result<StaticIndex, PackumentError> {
                 "latest names {latest}, which is not listed"
             )));
         }
-        // The author's order, not a string comparison; see the module docs.
-        None => index
-            .versions
-            .last()
-            .map(|entry| entry.version.clone())
-            .unwrap_or_default(),
+        None => highest.to_owned(),
     };
 
     let mut dist_tags = BTreeMap::new();
     dist_tags.insert("latest".to_owned(), latest);
     Ok(StaticIndex {
-        document: Packument { name: index.name, dist_tags, versions },
+        document: Packument {
+            name: index.name,
+            dist_tags,
+            versions,
+        },
         publishers: index.publishers,
     })
 }
@@ -174,16 +180,20 @@ mod tests {
     }
 
     #[test]
-    fn without_latest_the_last_entry_is_used() {
-        // ★ The order the author wrote, not a version comparison: this crate has no semver, and `1.9.0` sorts after
-        // `1.10.0` as text — a fallback someone could not see would be wrong exactly where releases are.
-        let index = parse(&document(&["1.10.0", "1.9.0"], None)).expect("an index");
-        assert_eq!(index.document.latest().expect("a latest").version, "1.9.0");
+    fn without_latest_the_highest_precedence_wins_independently_of_order() {
+        for versions in [["1.0.0-rc.10", "1.0.0-rc.2"], ["1.0.0-rc.2", "1.0.0-rc.10"]] {
+            let index = parse(&document(&versions, None)).expect("an index");
+            assert_eq!(
+                index.document.latest().expect("a latest").version,
+                "1.0.0-rc.10"
+            );
+        }
     }
 
     #[test]
     fn a_latest_the_list_does_not_carry_is_refused() {
-        let refused = parse(&document(&["1.0.0"], Some("2.0.0"))).expect_err("it names a missing version");
+        let refused =
+            parse(&document(&["1.0.0"], Some("2.0.0"))).expect_err("it names a missing version");
         assert!(refused.to_string().contains("2.0.0"), "{refused}");
     }
 
@@ -216,8 +226,17 @@ mod tests {
         })
         .to_string();
         let index = parse(&body).expect("an index");
-        let manifest = index.document.at("1.2.0").expect("the version").synra.as_ref().expect("the manifest");
-        assert_eq!(manifest.capabilities.first().expect("a capability").cap, "log:*");
+        let manifest = index
+            .document
+            .at("1.2.0")
+            .expect("the version")
+            .synra
+            .as_ref()
+            .expect("the manifest");
+        assert_eq!(
+            manifest.capabilities.first().expect("a capability").cap,
+            "log:*"
+        );
     }
 
     #[test]
@@ -231,7 +250,10 @@ mod tests {
         })
         .to_string();
         let index = parse(&body).expect("an index");
-        assert_eq!(index.publishers.get("@acme").map(String::as_str), Some("AB12 CD34 EF56 7890"));
+        assert_eq!(
+            index.publishers.get("@acme").map(String::as_str),
+            Some("AB12 CD34 EF56 7890")
+        );
     }
 
     #[test]

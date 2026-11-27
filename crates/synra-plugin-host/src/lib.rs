@@ -84,7 +84,7 @@ pub use host_calls::{
 };
 pub use registry::{
     DEFAULT_REGISTRY, Dist, FetchFailure, Integrity, MAX_PACKUMENT_BYTES, MAX_VERSIONS, PackagePattern, Packument,
-    RegistryConfig, RegistryMirror, SizeBlock, SynraBlock, VersionEntry, check_integrity, compare_versions,
+    RegistryConfig, RegistryMirror, SizeBlock, SynraBlock, VersionEntry, check_integrity,
 };
 pub use verify::{
     Candidate, DependencyGraph, HostFacts, Report as VerifyReport, Stage, Step, Verdict as VerifyVerdict, VerifyError,

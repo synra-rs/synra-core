@@ -5,36 +5,6 @@ use sha2::{Digest, Sha256, Sha384, Sha512};
 
 use super::FetchFailure;
 
-/// Compares two version strings by their numeric parts.
-///
-/// Not a semver implementation, and deliberately: the only question this answers is "which of these two is newer",
-/// for a registry that sent no `latest` tag. A pre-release is treated as *older* than its release, which is the one
-/// semantic rule that matters for picking a default and the one a plain comparison gets wrong.
-#[must_use]
-pub fn compare_versions(first: &str, second: &str) -> core::cmp::Ordering {
-    let parts = |version: &str| -> (Vec<u64>, bool) {
-        let (core, pre) = version.split_once('-').map_or((version, ""), |(core, pre)| (core, pre));
-        let numbers = core
-            .split(['.', '+'])
-            .map(|part| part.parse::<u64>().unwrap_or(0))
-            .collect();
-        (numbers, !pre.is_empty())
-    };
-    let (left, left_pre) = parts(first);
-    let (right, right_pre) = parts(second);
-    match left.cmp(&right) {
-        core::cmp::Ordering::Equal => {
-            // A release is newer than its own pre-releases.
-            match (left_pre, right_pre) {
-                (true, false) => core::cmp::Ordering::Less,
-                (false, true) => core::cmp::Ordering::Greater,
-                _ => core::cmp::Ordering::Equal,
-            }
-        }
-        other => other,
-    }
-}
-
 /// A digest a downloaded artifact must hash to.
 ///
 /// # The algorithm is named in the digest
@@ -60,7 +30,10 @@ impl Integrity {
     /// string nobody can check is one that reads as "no integrity", and that is the answer that lets a substituted
     /// tarball through.
     pub fn parse(registry: &str, text: &str) -> Result<Self, FetchFailure> {
-        let malformed = |reason: String| FetchFailure::Malformed { registry: registry.to_owned(), reason };
+        let malformed = |reason: String| FetchFailure::Malformed {
+            registry: registry.to_owned(),
+            reason,
+        };
         let (algorithm, digest) = text
             .split_once('-')
             .ok_or_else(|| malformed(format!("`{text}` is not an SRI digest")))?;
@@ -70,7 +43,9 @@ impl Integrity {
             "sha384" => 48,
             "sha512" => 64,
             other => {
-                return Err(malformed(format!("`{other}` is not a digest this build computes")));
+                return Err(malformed(format!(
+                    "`{other}` is not a digest this build computes"
+                )));
             }
         };
         if digest.is_empty() {
@@ -85,7 +60,10 @@ impl Integrity {
                 decoded.len()
             )));
         }
-        Ok(Self { algorithm, digest: digest.trim_end_matches('=').to_owned() })
+        Ok(Self {
+            algorithm,
+            digest: digest.trim_end_matches('=').to_owned(),
+        })
     }
 
     /// Whether some bytes hash to this digest.
@@ -116,7 +94,11 @@ impl Integrity {
 ///
 /// [`FetchFailure::IntegrityMismatch`], which is the failure that must never fall through to another mirror, and
 /// [`FetchFailure::Malformed`] when the registry declared an integrity nobody can check.
-pub fn check_integrity(registry: &str, declared: &str, bytes: &[u8]) -> Result<Integrity, FetchFailure> {
+pub fn check_integrity(
+    registry: &str,
+    declared: &str,
+    bytes: &[u8],
+) -> Result<Integrity, FetchFailure> {
     let integrity = Integrity::parse(registry, declared)?;
     if !integrity.matches(bytes) {
         return Err(FetchFailure::IntegrityMismatch {
@@ -126,5 +108,3 @@ pub fn check_integrity(registry: &str, declared: &str, bytes: &[u8]) -> Result<I
     }
     Ok(integrity)
 }
-
-

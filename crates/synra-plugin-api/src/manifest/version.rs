@@ -1,12 +1,6 @@
-//! Plugin identifiers and version ordering.
-//!
-//! # Why version arithmetic is hand-written
-//!
-//! Because a manifest is read by the host, and the host must agree with a publisher's toolchain about what `1.2.0-rc.1`
-//! precedes. Delegating to a dependency would make the host's answer whatever that dependency says, so the comparison is
-//! here, explicit, and testable.
+//! Plugin identifiers, Semantic Versions and version requirements.
 
-
+use core::cmp::Ordering;
 use synra_protocol::PluginId;
 
 use super::error::ManifestError;
@@ -27,7 +21,9 @@ pub fn to_project_slug(id: &PluginId) -> Result<String, ManifestError> {
     let stripped = name.strip_prefix("synra-plugin-").unwrap_or(name);
 
     if stripped.is_empty() || !is_slug_segment(stripped) {
-        return Err(ManifestError::UnsluggedId { id: text.to_owned() });
+        return Err(ManifestError::UnsluggedId {
+            id: text.to_owned(),
+        });
     }
     Ok(stripped.to_owned())
 }
@@ -106,125 +102,86 @@ pub fn check_plugin_id(id: &str) -> Result<(), ManifestError> {
     Ok(())
 }
 
-/// Checks a version string is a legal semver.
-///
-/// Hand-written rather than pulled from the `semver` crate: the manifest needs `major.minor.patch` with
-/// optional pre-release and build metadata, and a dependency for that is one more thing to keep current in a
-/// crate whose whole job is to be a stable contract.
+/// A parsed plugin version. Equality includes build identity, while precedence excludes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginVersion(semver::Version);
+
+impl PluginVersion {
+    /// Parse a complete `major.minor.patch` version with optional prerelease and build identifiers.
+    ///
+    /// # Errors
+    /// Returns [`ManifestError::BadVersion`] for malformed or unrepresentable input.
+    pub fn parse(version: &str) -> Result<Self, ManifestError> {
+        semver::Version::parse(version)
+            .map(Self)
+            .map_err(|error| ManifestError::BadVersion {
+                version: version.to_owned(),
+                reason: error.to_string(),
+            })
+    }
+
+    /// Compare SemVer precedence, excluding build metadata.
+    #[must_use]
+    pub fn cmp_precedence(&self, other: &Self) -> Ordering {
+        self.0.cmp_precedence(&other.0)
+    }
+
+    /// The major version component.
+    #[must_use]
+    pub const fn major(&self) -> u64 {
+        self.0.major
+    }
+
+    /// The minor version component.
+    #[must_use]
+    pub const fn minor(&self) -> u64 {
+        self.0.minor
+    }
+
+    /// Whether this version precedes its associated stable release.
+    #[must_use]
+    pub fn is_prerelease(&self) -> bool {
+        !self.0.pre.is_empty()
+    }
+}
+
+/// A SemVer requirement used by plugin manifests and registry selection.
+#[derive(Debug, Clone)]
+pub struct PluginVersionReq(semver::VersionReq);
+
+impl PluginVersionReq {
+    /// Parse a SemVer range such as `^1.2` or `>=1.2.0, <2.0.0`.
+    ///
+    /// # Errors
+    /// Returns [`ManifestError::BadVersion`] if the requirement is malformed.
+    pub fn parse(requirement: &str) -> Result<Self, ManifestError> {
+        semver::VersionReq::parse(requirement)
+            .map(Self)
+            .map_err(|error| ManifestError::BadVersion {
+                version: requirement.to_owned(),
+                reason: format!("invalid version requirement: {error}"),
+            })
+    }
+
+    /// Test a parsed version against this requirement.
+    #[must_use]
+    pub fn matches(&self, version: &PluginVersion) -> bool {
+        self.0.matches(&version.0)
+    }
+}
+
+/// Check a manifest version against the plugin version grammar.
 ///
 /// # Errors
-///
-/// [`ManifestError::BadVersion`] with the reason.
+/// Returns [`ManifestError::BadVersion`] when parsing fails.
 pub fn check_version(version: &str) -> Result<(), ManifestError> {
-    let bad = |reason: &str| ManifestError::BadVersion {
-        version: version.to_owned(),
-        reason: reason.to_owned(),
-    };
-
-    // Build metadata first, since it may contain `+` and dots.
-    let (without_build, _build) = match version.split_once('+') {
-        Some((head, build)) => {
-            if build.is_empty() || !build.split('.').all(is_identifier) {
-                return Err(bad("build metadata is empty or malformed"));
-            }
-            (head, Some(build))
-        }
-        None => (version, None),
-    };
-
-    let (core, _pre) = match without_build.split_once('-') {
-        Some((head, pre)) => {
-            if pre.is_empty() || !pre.split('.').all(is_identifier) {
-                return Err(bad("a pre-release is empty or malformed"));
-            }
-            (head, Some(pre))
-        }
-        None => (without_build, None),
-    };
-
-    let parts: Vec<&str> = core.split('.').collect();
-    if parts.len() != 3 {
-        return Err(bad("a version is `major.minor.patch`"));
-    }
-    for part in parts {
-        if part.is_empty() || !part.chars().all(|ch| ch.is_ascii_digit()) {
-            return Err(bad("each of major, minor and patch must be digits"));
-        }
-        // A leading zero is legal only for the number zero itself.
-        if part.len() > 1 && part.starts_with('0') {
-            return Err(bad("a numeric part must not have a leading zero"));
-        }
-    }
-    Ok(())
+    PluginVersion::parse(version).map(|_| ())
 }
 
-/// Whether a pre-release or build identifier is well formed.
-fn is_identifier(text: &str) -> bool {
-    !text.is_empty()
-        && text
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
-}
-
-/// Compares two versions, returning their ordering.
-///
-/// Pre-release versions sort *below* the release they lead to, which is the rule that makes `1.0.0-rc.1` less
-/// than `1.0.0`. Getting that backwards would let a release candidate satisfy a minimum that the release was
-/// written for.
+/// Compare complete version strings by SemVer precedence.
 ///
 /// # Errors
-///
-/// [`ManifestError::BadVersion`] if either string is not a legal semver.
-pub fn compare_versions(left: &str, right: &str) -> Result<core::cmp::Ordering, ManifestError> {
-    check_version(left)?;
-    check_version(right)?;
-
-    let parse = |version: &str| {
-        let (without_build, _) = version.split_once('+').unwrap_or((version, ""));
-        let (core, pre) = without_build.split_once('-').unwrap_or((without_build, ""));
-        let numbers: Vec<u64> = core
-            .split('.')
-            .filter_map(|part| part.parse::<u64>().ok())
-            .collect();
-        (numbers, pre.to_owned())
-    };
-
-    let (left_numbers, left_pre) = parse(left);
-    let (right_numbers, right_pre) = parse(right);
-
-    match left_numbers.cmp(&right_numbers) {
-        core::cmp::Ordering::Equal => {}
-        other => return Ok(other),
-    }
-
-    Ok(match (left_pre.is_empty(), right_pre.is_empty()) {
-        // A release is above any of its pre-releases.
-        (true, true) => core::cmp::Ordering::Equal,
-        (true, false) => core::cmp::Ordering::Greater,
-        (false, true) => core::cmp::Ordering::Less,
-        // Both are pre-releases: compared identifier by identifier.
-        (false, false) => compare_prerelease(&left_pre, &right_pre),
-    })
-}
-
-/// Compares two pre-release strings.
-fn compare_prerelease(left: &str, right: &str) -> core::cmp::Ordering {
-    let left_parts: Vec<&str> = left.split('.').collect();
-    let right_parts: Vec<&str> = right.split('.').collect();
-
-    for (a, b) in left_parts.iter().zip(&right_parts) {
-        let ordering = match (a.parse::<u64>(), b.parse::<u64>()) {
-            // Numeric identifiers compare numerically, so `rc.10` is above `rc.9` rather than below it.
-            (Ok(a), Ok(b)) => a.cmp(&b),
-            // A numeric identifier is below an alphanumeric one.
-            (Ok(_), Err(_)) => core::cmp::Ordering::Less,
-            (Err(_), Ok(_)) => core::cmp::Ordering::Greater,
-            (Err(_), Err(_)) => a.cmp(b),
-        };
-        if ordering != core::cmp::Ordering::Equal {
-            return ordering;
-        }
-    }
-    // Fewer identifiers is lower, so `rc` is below `rc.1`.
-    left_parts.len().cmp(&right_parts.len())
+/// Returns [`ManifestError::BadVersion`] if either input is malformed.
+pub fn compare_versions(left: &str, right: &str) -> Result<Ordering, ManifestError> {
+    Ok(PluginVersion::parse(left)?.cmp_precedence(&PluginVersion::parse(right)?))
 }

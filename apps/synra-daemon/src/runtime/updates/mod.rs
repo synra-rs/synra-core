@@ -96,8 +96,8 @@ fn check_one(
     let document = sources.read(plugin, cancel)?;
     let latest = document
         .document
-        .latest()
-        .filter(|entry| synra_registry::is_newer(&entry.version, &active.version));
+        .latest_upgrade(&active.version)
+        .map_err(|error| error.to_string())?;
     let previous = std::fs::read_to_string(
         runtime
             .plugins_dir

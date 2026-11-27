@@ -1,4 +1,5 @@
 use super::*;
+use synra_plugin_api::manifest::{check_version, compare_versions};
 
 /// What to do about what the other device has.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,6 +98,11 @@ pub fn decide(
     policy: ConflictPolicy,
 ) -> SyncAction {
     let Some(theirs_version) = theirs.version.as_deref() else {
+        if let Err(error) = check_version(ours_version) {
+            return SyncAction::Refuse {
+                why: error.to_string(),
+            };
+        }
         return SyncAction::Push {
             why: "the other device does not have this plugin".to_owned(),
         };
@@ -121,61 +127,32 @@ pub fn decide(
             ours: ours_version.to_owned(),
             theirs: Some(theirs_version.to_owned()),
         },
-        ConflictPolicy::NeverDowngrade => {
-            if compare_versions(ours_version, theirs_version).is_lt() {
-                // ★ The rule the default exists for: the other device has something newer, and sending this one would
-                // take it backwards.
-                SyncAction::Skip {
-                    why: format!(
-                        "the other device is on {theirs_version} and this device has {ours_version}, which is older"
-                    ),
-                }
-            } else {
-                SyncAction::Push {
-                    why: format!("{ours_version} is not older than {theirs_version}"),
-                }
-            }
-        }
-        ConflictPolicy::KeepNewest => {
-            if compare_versions(ours_version, theirs_version).is_gt() {
-                SyncAction::Push {
-                    why: format!("{ours_version} is newer than {theirs_version}"),
-                }
-            } else {
-                SyncAction::Skip {
-                    why: format!("{theirs_version} is at least as new as {ours_version}"),
-                }
-            }
+        ConflictPolicy::NeverDowngrade | ConflictPolicy::KeepNewest => {
+            decide_by_precedence(ours_version, theirs_version, policy)
         }
     }
 }
 
-/// Compares two version strings by their numeric parts.
-///
-/// The same shape the registry's comparison has, and for the same reason: the one semantic rule that matters for
-/// picking between two versions is that a release is newer than its own pre-releases, and plain string ordering gets
-/// `1.10.0` and `1.9.0` backwards.
-#[must_use]
-pub fn compare_versions(first: &str, second: &str) -> core::cmp::Ordering {
-    let parts = |version: &str| -> (Vec<u64>, bool) {
-        let (core, pre) = version
-            .split_once('-')
-            .map_or((version, ""), |(core, pre)| (core, pre));
-        let numbers = core
-            .split(['.', '+'])
-            .map(|part| part.parse::<u64>().unwrap_or(0))
-            .collect();
-        (numbers, !pre.is_empty())
-    };
-    let (left, left_pre) = parts(first);
-    let (right, right_pre) = parts(second);
-    match left.cmp(&right) {
-        core::cmp::Ordering::Equal => match (left_pre, right_pre) {
-            (true, false) => core::cmp::Ordering::Less,
-            (false, true) => core::cmp::Ordering::Greater,
-            _ => core::cmp::Ordering::Equal,
+fn decide_by_precedence(ours: &str, theirs: &str, policy: ConflictPolicy) -> SyncAction {
+    use core::cmp::Ordering;
+    match compare_versions(ours, theirs) {
+        Err(error) => SyncAction::Refuse {
+            why: error.to_string(),
         },
-        other => other,
+        Ok(Ordering::Greater) => SyncAction::Push {
+            why: format!("{ours} is newer than {theirs}"),
+        },
+        Ok(Ordering::Equal) if policy == ConflictPolicy::NeverDowngrade => SyncAction::Push {
+            why: format!("{ours} and {theirs} have the same precedence and different bytes"),
+        },
+        Ok(Ordering::Less) if policy == ConflictPolicy::NeverDowngrade => SyncAction::Skip {
+            why: format!(
+                "the other device is on {theirs} and this device has {ours}, which is older"
+            ),
+        },
+        Ok(_) => SyncAction::Skip {
+            why: format!("{theirs} is at least as new as {ours}"),
+        },
     }
 }
 

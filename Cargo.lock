@@ -2586,6 +2586,7 @@ dependencies = [
  "jsonschema",
  "proptest",
  "rstest",
+ "semver",
  "serde",
  "serde_json",
  "sha2",
@@ -2702,7 +2703,6 @@ name = "synra-registry"
 version = "0.1.0"
 dependencies = [
  "flate2",
- "semver",
  "serde",
  "serde_json",
  "synra-plugin-api",

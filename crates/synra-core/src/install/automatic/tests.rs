@@ -2,9 +2,9 @@ use super::*;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use ed25519_dalek::{Signer as _, SigningKey};
 use rstest::rstest;
-use synra_store::PluginVersionRecord;
 use std::sync::Arc;
 use synra_plugin_api::publisher::{Digests, SigningSubject};
+use synra_store::PluginVersionRecord;
 
 struct Fixture {
     root: PathBuf,
@@ -36,7 +36,9 @@ impl Fixture {
             HostFacts::headless(),
         )
         .expect("first install");
-        let fingerprint = self.db.publishers().expect("publishers")[0].fingerprint.clone();
+        let fingerprint = self.db.publishers().expect("publishers")[0]
+            .fingerprint
+            .clone();
         self.db
             .set_publisher_trust("@acme", &fingerprint, synra_store::TRUST_TRUSTED, 2)
             .expect("trust");
@@ -136,6 +138,8 @@ fn an_admitted_update_installs_the_verified_bytes_even_if_the_source_changes(
 #[case("1.0.1", 7, "@acme", false, UpdatePolicy::NotifyOnly)]
 #[case("0.9.0", 7, "@acme", false, UpdatePolicy::AutoAll)]
 #[case("1.0.0", 7, "@acme", false, UpdatePolicy::AutoAll)]
+#[case("1.0.0+build.9", 7, "@acme", false, UpdatePolicy::AutoAll)]
+#[case("1.0.1-01", 7, "@acme", false, UpdatePolicy::AutoAll)]
 #[case("1.1.0-rc.1", 7, "@acme", false, UpdatePolicy::AutoAll)]
 #[case("1.1.0", 9, "@acme", false, UpdatePolicy::AutoAll)]
 #[case("1.1.0", 7, "@other", false, UpdatePolicy::AutoAll)]
@@ -163,8 +167,10 @@ fn revoking_trust_after_preparation_refuses_the_commit() {
     fixture
         .db
         .set_publisher_trust(
-            "@acme", &fixture.db.publishers().expect("publishers")[0].fingerprint,
-            synra_store::TRUST_REVOKED, 4,
+            "@acme",
+            &fixture.db.publishers().expect("publishers")[0].fingerprint,
+            synra_store::TRUST_REVOKED,
+            4,
         )
         .expect("revoke");
     assert_eq!(
@@ -194,7 +200,15 @@ fn unsigned_updates_and_replacing_the_installed_version_are_refused() {
     let prepared = fixture.prepare(UpdatePolicy::AutoAll).expect("admitted");
     fixture
         .db
-        .record_plugin_version(&PluginVersionRecord { plugin_id: "@acme/hello", version: "1.0.1", artifact: "plugin.wasm", digest: "digest", manifest: "{}", installed_ms: 4, ..Default::default() })
+        .record_plugin_version(&PluginVersionRecord {
+            plugin_id: "@acme/hello",
+            version: "1.0.1",
+            artifact: "plugin.wasm",
+            digest: "digest",
+            manifest: "{}",
+            installed_ms: 4,
+            ..Default::default()
+        })
         .expect("replacement");
     assert!(prepared.install(&mut fixture.db, 5).is_err());
     assert_eq!(fixture.version(), "1.0.1");
@@ -204,8 +218,9 @@ fn unsigned_updates_and_replacing_the_installed_version_are_refused() {
 fn manual_replacements_keep_verified_bytes_and_recheck_version_and_revocation() {
     for reason in ["source", "version", "revocation"] {
         let mut fixture = Fixture::new();
+        fixture.source("1.1.0-rc.2", 7, "@acme", false);
         fixture.install();
-        fixture.source("1.1.0-beta.1", 7, "@acme", false);
+        fixture.source("1.1.0-rc.10", 7, "@acme", false);
         let prepared = crate::install::prepare_replacement(
             &fixture.db,
             &fixture.backend,
@@ -223,14 +238,24 @@ fn manual_replacements_keep_verified_bytes_and_recheck_version_and_revocation() 
             .expect("changed source"),
             "version" => fixture
                 .db
-                .record_plugin_version(&PluginVersionRecord { plugin_id: "@acme/hello", version: "1.0.1", artifact: "plugin.wasm", digest: "digest", manifest: "{}", installed_ms: 4, ..Default::default() })
+                .record_plugin_version(&PluginVersionRecord {
+                    plugin_id: "@acme/hello",
+                    version: "1.0.1",
+                    artifact: "plugin.wasm",
+                    digest: "digest",
+                    manifest: "{}",
+                    installed_ms: 4,
+                    ..Default::default()
+                })
                 .expect("different installed version"),
             _ => {
                 fixture
                     .db
                     .set_publisher_trust(
-                        "@acme", &fixture.db.publishers().expect("publishers")[0].fingerprint,
-                        synra_store::TRUST_REVOKED, 4,
+                        "@acme",
+                        &fixture.db.publishers().expect("publishers")[0].fingerprint,
+                        synra_store::TRUST_REVOKED,
+                        4,
                     )
                     .expect("revoke");
             }
@@ -243,10 +268,10 @@ fn manual_replacements_keep_verified_bytes_and_recheck_version_and_revocation() 
                     .expect("installed bytes"),
                 synra_testkit::component::inert_component().expect("a valid component")
             );
-            assert_eq!(fixture.version(), "1.1.0-beta.1");
+            assert_eq!(fixture.version(), "1.1.0-rc.10");
         } else {
             assert!(outcome.is_err());
-            assert_ne!(fixture.version(), "1.1.0-beta.1");
+            assert_ne!(fixture.version(), "1.1.0-rc.10");
         }
     }
 }

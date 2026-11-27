@@ -1,6 +1,8 @@
 use crate::manifest::error::ManifestError;
 use crate::manifest::types::{Manifest, ManifestContext};
-use crate::manifest::version::{check_plugin_id, check_version, compare_versions};
+use crate::manifest::version::{
+    PluginVersionReq, check_plugin_id, check_version, compare_versions,
+};
 
 impl Manifest {
     /// The complete package id and versions.
@@ -24,9 +26,11 @@ impl Manifest {
             let check = |kind: &'static str, path: &str| {
                 if present.iter().any(|artifact| artifact == path) {
                     Ok(())
-                }
-                else {
-                    Err(ManifestError::MissingArtifact { kind, path: path.to_owned() })
+                } else {
+                    Err(ManifestError::MissingArtifact {
+                        kind,
+                        path: path.to_owned(),
+                    })
                 }
             };
             if let Some(headless) = &self.runtime.headless {
@@ -59,7 +63,7 @@ impl Manifest {
                     through: vec![self.id.to_string()],
                 });
             }
-            check_version(dependency.version.trim_start_matches(['^', '~', '=', '>', '<', ' ']))?;
+            PluginVersionReq::parse(&dependency.version)?;
         }
         Ok(())
     }
@@ -84,5 +88,4 @@ impl Manifest {
         }
         Ok(())
     }
-
 }
