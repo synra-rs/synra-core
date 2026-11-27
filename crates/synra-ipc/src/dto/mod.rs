@@ -43,6 +43,7 @@ mod intent;
 mod pairing;
 mod plugin;
 mod transfer;
+mod upload;
 
 pub use config::{
     ConfigPatch, ConfigSnapshot, DiagExportOptions, DiagExportResult, ProbeReportDto,
@@ -62,6 +63,10 @@ pub use plugin::{
 pub use transfer::{
     PluginTransferFailure, PluginTransferState, PluginTransferStatus, ReceivedFile, SendFileRequest,
     SendTextRequest, TransferSnapshot, TransferSummary,
+};
+pub use upload::{
+    PluginUploadAppend, PluginUploadBegin, PluginUploadChunk, PluginUploadEnded, PluginUploadHandle,
+    PluginUploadOpened, PluginUploadSent,
 };
 
 #[cfg(test)]

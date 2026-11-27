@@ -35,6 +35,7 @@ mod plan;
 mod receiver;
 mod send;
 mod sender;
+pub mod upload;
 
 pub use digest::ObjectDigest;
 pub use error::TransferError;

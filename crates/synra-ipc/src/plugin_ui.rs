@@ -66,8 +66,6 @@ pub enum PluginUiOp {
     PlatformOpenUrl,
     /// Show a notification.
     PlatformNotify,
-    /// Send a blob as a transfer.
-    TransferSend,
     /// Start a chunked transfer: the page will follow with `transfer.chunk` and `transfer.finish`.
     TransferBegin,
     /// Append one chunk of a transfer the page started.
@@ -115,7 +113,6 @@ impl PluginUiOp {
         Self::ClipboardWrite,
         Self::PlatformOpenUrl,
         Self::PlatformNotify,
-        Self::TransferSend,
         Self::TransferBegin,
         Self::TransferChunk,
         Self::TransferFinish,
@@ -154,7 +151,6 @@ impl PluginUiOp {
             Self::ClipboardWrite => "clipboard.write",
             Self::PlatformOpenUrl => "platform.openUrl",
             Self::PlatformNotify => "platform.notify",
-            Self::TransferSend => "transfer.send",
             Self::TransferBegin => "transfer.begin",
             Self::TransferChunk => "transfer.chunk",
             Self::TransferFinish => "transfer.finish",
