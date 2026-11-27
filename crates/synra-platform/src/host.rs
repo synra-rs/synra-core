@@ -10,8 +10,9 @@ use std::path::Path;
 use super::actions::{PlatformAction, Policies};
 use super::error::PlatformError;
 use super::guard::{
-    PathUse, check_clipboard_text, check_key_chord, check_notification, check_path, check_url,
+    PathUse, check_clipboard_text, check_notification, check_path, check_url,
 };
+use crate::KeyChord;
 
 /// What a host can do.
 ///
@@ -63,8 +64,7 @@ pub trait Platform: Send + Sync {
     ///
     /// [`PlatformError::SimulateKeysNotGranted`], [`PlatformError::NoRecentInteraction`] or
     /// [`PlatformError::Unavailable`].
-    fn simulate_keys(&self, chord: &str) -> Result<(), PlatformError> {
-        let _ = chord;
+    fn simulate_keys(&self, _chord: &KeyChord) -> Result<(), PlatformError> {
         Err(PlatformError::Unsupported("simulate keys"))
     }
 
@@ -170,8 +170,7 @@ impl Platform for HeadlessPlatform {
         Err(PlatformError::Unsupported("show a file location"))
     }
 
-    fn simulate_keys(&self, chord: &str) -> Result<(), PlatformError> {
-        check_key_chord(chord)?;
+    fn simulate_keys(&self, _chord: &KeyChord) -> Result<(), PlatformError> {
         if !self.policies.allows_simulate_keys() {
             return Err(PlatformError::SimulateKeysNotGranted);
         }

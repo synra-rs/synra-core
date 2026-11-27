@@ -4,22 +4,22 @@ use crate::host::Platform;
 use crate::{PlatformAction, PlatformError, Policies};
 
 use super::super::{CommandPlatform, Desktop};
-use super::over_recorder;
+use super::{Recorder, over_recorder};
 
 #[test]
 fn the_supported_actions_are_the_ones_a_menu_can_offer() {
-    // ★ The list an interface draws from. A menu item that is never available is worse than one that explains why it
-    // is not, so the list is the *askable* set rather than the implemented one.
-    let (_, platform) = over_recorder(Desktop::MacOs);
+    let (recorder, platform) = over_recorder(Desktop::Linux);
     let actions = platform.supported_actions();
     assert!(actions.contains(&PlatformAction::OpenUrl));
     assert!(actions.contains(&PlatformAction::Notify));
     assert!(actions.contains(&PlatformAction::WriteClipboard));
     assert!(!actions.contains(&PlatformAction::SimulateKeys), "it is off by default");
+    assert_eq!(recorder.count(), 0);
 
-    // With the policy on, it is offered.
+    // The enabled policy lets a usable backend advertise the action.
     let platform = platform.with_policies(Policies::new().with_simulate_keys(true));
     assert!(platform.supported_actions().contains(&PlatformAction::SimulateKeys));
+    assert_eq!(recorder.commands(), ["xdotool getdisplaygeometry"]);
 
     let (_, platform) = over_recorder(Desktop::Linux);
     assert!(
@@ -27,6 +27,17 @@ fn the_supported_actions_are_the_ones_a_menu_can_offer() {
             .supported_actions()
             .contains(&PlatformAction::WriteClipboard)
     );
+}
+
+#[test]
+fn an_unavailable_keyboard_is_not_advertised_with_the_policy_enabled() {
+    let platform = CommandPlatform::with(Desktop::Linux, Box::new(Recorder::failing()))
+        .with_policies(Policies::new().with_simulate_keys(true));
+    assert!(!platform.supported_actions().contains(&PlatformAction::SimulateKeys));
+    assert!(matches!(
+        platform.simulate_keys(&"Ctrl+C".parse().unwrap()),
+        Err(PlatformError::Unsupported(_))
+    ));
 }
 
 #[test]

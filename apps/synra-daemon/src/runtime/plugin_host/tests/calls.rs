@@ -128,6 +128,16 @@ fn a_bad_address_is_the_plugins_mistake_rather_than_a_missing_feature() {
 }
 
 #[test]
+fn the_daemon_reports_a_malformed_keyboard_chord_as_a_bad_argument() {
+    let host = host_with(&[("platform:simulate-keys", true)]);
+    let refused = host
+        .platform(&id("@acme/notes"), synra_plugin_host::PlatformAction::SimulateKeys, "Ctrl++")
+        .expect_err("invalid chord");
+    assert_eq!(refused.code, synra_plugin_host::CallError::BAD_ARGUMENT);
+    assert!(refused.message.contains("empty part"));
+}
+
+#[test]
 fn the_answers_that_exist_are_the_daemons_own() {
     let host = host_with(&[]);
 

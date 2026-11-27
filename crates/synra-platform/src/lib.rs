@@ -59,6 +59,7 @@ pub mod desktop;
 pub mod error;
 pub mod guard;
 mod host;
+mod keys;
 pub mod pointer;
 
 pub use actions::{
@@ -68,10 +69,11 @@ pub use actions::{
 pub use desktop::{CommandPlatform, CommandRunner, Desktop, SystemRunner};
 pub use error::{PathRefusal, PlatformError, UrlRefusal};
 pub use guard::{
-    RateLimiter, check_clipboard_text, check_key_chord, check_notification, check_path, check_url,
+    RateLimiter, check_clipboard_text, check_notification, check_path, check_url,
     check_url_length,
 };
 pub use host::{HeadlessPlatform, Platform};
+pub use keys::{Key, KeyChord, KeyChordError, Modifier};
 
 #[cfg(test)]
 mod proptests;

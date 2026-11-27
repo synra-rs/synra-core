@@ -2,15 +2,13 @@
 
 use std::path::Path;
 
-#[cfg(windows)]
-use enigo::{Direction, Enigo, Key, Keyboard, Settings};
-
 use crate::actions::{MAX_CLIPBOARD_BYTES, PlatformAction, Policies};
 use crate::error::PlatformError;
 use crate::guard::{
-    PathUse, check_clipboard_text, check_key_chord, check_notification, check_path, check_url,
+    PathUse, check_clipboard_text, check_notification, check_path, check_url,
 };
 use crate::host::Platform;
+use crate::KeyChord;
 
 use super::super::powershell;
 use super::{CommandPlatform, Desktop};
@@ -65,43 +63,12 @@ impl Platform for CommandPlatform {
         Ok(())
     }
 
-    fn simulate_keys(&self, chord: &str) -> Result<(), PlatformError> {
-        check_key_chord(chord)?;
+    fn simulate_keys(&self, chord: &KeyChord) -> Result<(), PlatformError> {
         if !self.policies.allows_simulate_keys() {
             return Err(PlatformError::SimulateKeysNotGranted);
         }
-        // ★ The rate limit is the whole of the protection here: a plugin that can type into whatever window is focused
-        // can do anything the user can, and the interval is what makes it a slow, visible thing rather than a
-        // keystroke storm.
-        self.limiter
-            .admit(PlatformAction::SimulateKeys, Self::now_ms())?;
-        match self.desktop {
-            Desktop::Linux => {
-                let _ = self.run("xdotool", &["key", "--", chord])?;
-            }
-            Desktop::MacOs => {
-                // A fixed program that reads the chord from `argv`, for the same reason the notification does.
-                let _ = self.run(
-                    "osascript",
-                    &[
-                        "-e",
-                        "on run argv",
-                        "-e",
-                        "tell application \"System Events\" to keystroke (item 1 of argv)",
-                        "-e",
-                        "end run",
-                        "--",
-                        chord,
-                    ],
-                )?;
-            }
-            Desktop::Windows => {
-                if simulate_windows_native(chord)?.is_none() {
-                    let _ = self.powershell(powershell::KEYS, Some(chord))?;
-                }
-            }
-        }
-        Ok(())
+        self.limiter.admit(PlatformAction::SimulateKeys, Self::now_ms())?;
+        self.emit_chord(*chord)
     }
 
     fn read_clipboard(&self) -> Result<Option<String>, PlatformError> {
@@ -159,79 +126,21 @@ impl Platform for CommandPlatform {
     }
 
     fn supported_actions(&self) -> Vec<PlatformAction> {
-        if !self.runner.is_available() {
-            return Vec::new();
-        }
-        // ★ The list an interface draws its menu from, and it is the *askable* list rather than the implemented one:
-        // `SimulateKeys` is offered when the policy allows it, because a menu item that is never available is worse
-        // than one that explains why it is not.
-        let mut actions = vec![
-            PlatformAction::OpenUrl,
-            PlatformAction::OpenPath,
-            PlatformAction::RevealPath,
-            PlatformAction::Notify,
-            PlatformAction::ReadClipboard,
-            PlatformAction::WriteClipboard,
-        ];
-        if self.policies.allows_simulate_keys() {
+        let mut actions = if self.runner.is_available() {
+            vec![
+                PlatformAction::OpenUrl,
+                PlatformAction::OpenPath,
+                PlatformAction::RevealPath,
+                PlatformAction::Notify,
+                PlatformAction::ReadClipboard,
+                PlatformAction::WriteClipboard,
+            ]
+        } else {
+            Vec::new()
+        };
+        if self.policies.allows_simulate_keys() && self.keyboard_available() {
             actions.push(PlatformAction::SimulateKeys);
         }
         actions
-    }
-}
-
-/// Emit the fixed Windows chords without routing them through SendKeys.
-///
-/// .NET SendKeys accepts `^c` but has no Windows-key token, so the native input path handles the built-in chords that
-/// the hotkey plugin uses. Unknown chords retain the existing SendKeys fallback for other platform clients.
-fn simulate_windows_native(chord: &str) -> Result<Option<()>, PlatformError> {
-    #[cfg(windows)]
-    {
-        let Some((modifier, key)) = (match chord {
-            "^c" => Some((Key::LControl, Key::Unicode('c'))),
-            "^x" => Some((Key::LControl, Key::Unicode('x'))),
-            "^v" => Some((Key::LControl, Key::Unicode('v'))),
-            "^z" => Some((Key::LControl, Key::Unicode('z'))),
-            "^y" => Some((Key::LControl, Key::Unicode('y'))),
-            "^a" => Some((Key::LControl, Key::Unicode('a'))),
-            "^s" => Some((Key::LControl, Key::Unicode('s'))),
-            "^f" => Some((Key::LControl, Key::Unicode('f'))),
-            "{LWIN}e" => Some((Key::LWin, Key::Unicode('e'))),
-            _ => None,
-        }) else {
-            return Ok(None);
-        };
-        let mut keyboard =
-            Enigo::new(&Settings::default()).map_err(|error| PlatformError::RunnerFailed {
-                program: "native keyboard".to_owned(),
-                reason: error.to_string(),
-            })?;
-        keyboard
-            .key(modifier, Direction::Press)
-            .map_err(|error| PlatformError::RunnerFailed {
-                program: "native keyboard".to_owned(),
-                reason: error.to_string(),
-            })?;
-        let key_result =
-            keyboard
-                .key(key, Direction::Click)
-                .map_err(|error| PlatformError::RunnerFailed {
-                    program: "native keyboard".to_owned(),
-                    reason: error.to_string(),
-                });
-        let release_result = keyboard.key(modifier, Direction::Release).map_err(|error| {
-            PlatformError::RunnerFailed {
-                program: "native keyboard".to_owned(),
-                reason: error.to_string(),
-            }
-        });
-        key_result?;
-        release_result?;
-        Ok(Some(()))
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = chord;
-        Ok(None)
     }
 }

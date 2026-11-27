@@ -6,6 +6,7 @@ use crate::actions::{PlatformAction, Policies};
 use crate::error::PlatformError;
 use crate::guard::RateLimiter;
 use crate::host::Platform;
+use crate::{KeyChord, Modifier};
 
 use super::{CommandRunner, Desktop, SystemRunner};
 use crate::desktop::powershell;
@@ -16,6 +17,7 @@ pub struct CommandPlatform {
     desktop: Desktop,
     runner: Box<dyn CommandRunner>,
     limiter: RateLimiter,
+    key_input: parking_lot::Mutex<()>,
 }
 
 impl std::fmt::Debug for CommandPlatform {
@@ -52,6 +54,7 @@ impl CommandPlatform {
             desktop,
             runner,
             limiter: RateLimiter::new(Policies::new()),
+            key_input: parking_lot::Mutex::new(()),
         }
     }
 
@@ -87,23 +90,8 @@ impl CommandPlatform {
     pub fn read_selected_clipboard(&self) -> Result<Option<String>, PlatformError> {
         self.limiter
             .admit(PlatformAction::SimulateKeys, Self::now_ms())?;
-        match self.desktop {
-            Desktop::Linux => {
-                let _ = self.run("xdotool", &["key", "--", "ctrl+c"])?;
-            }
-            Desktop::MacOs => {
-                let _ = self.run(
-                    "osascript",
-                    &[
-                        "-e",
-                        "tell application \"System Events\" to keystroke \"c\" using {command down}",
-                    ],
-                )?;
-            }
-            Desktop::Windows => {
-                let _ = self.powershell(powershell::KEYS, Some("ctrl+c"))?;
-            }
-        }
+        let modifier = if self.desktop == Desktop::MacOs { Modifier::Meta } else { Modifier::Ctrl };
+        self.emit_chord(KeyChord::copy_with(modifier))?;
         std::thread::sleep(Duration::from_millis(50));
         self.read_clipboard()
     }
@@ -188,4 +176,5 @@ impl Default for CommandPlatform {
 
 
 mod actions;
+mod keys;
 

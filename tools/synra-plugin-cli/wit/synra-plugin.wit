@@ -246,7 +246,11 @@ interface host {
     /// @capability("platform:reveal-path")
     platform-reveal-path: func(path: string) -> outcome;
 
-    /// Synthesize a keystroke.
+    /// Synthesize one keyboard chord, such as Ctrl+Shift+S or Meta+E.
+    ///
+    /// Use Ctrl, Alt, Shift and Meta as distinct modifiers before a single key.
+    /// The main key is A through Z, 0 through 9, F1 through F12, or a named key
+    /// such as Enter, Tab, ArrowLeft or NumpadAdd. Meta means Command on macOS.
     ///
     /// Off by default and never granted implicitly: a plugin that can type into whatever window is focused can do
     /// anything the user can.

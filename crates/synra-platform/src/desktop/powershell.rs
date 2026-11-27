@@ -10,7 +10,6 @@ const PREFIX: &str = concat!(
 
 pub(super) const READ: &str = "$value=Get-Clipboard -Raw -Format Text; Write-SynraJson $value";
 pub(super) const WRITE: &str = "$value=[Console]::In.ReadToEnd(); Set-Clipboard -Value $value";
-pub(super) const KEYS: &str = "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait([Console]::In.ReadToEnd())";
 pub(super) const NOTIFY: &str = "$value=ConvertFrom-Json -InputObject ([Console]::In.ReadToEnd()); New-BurntToastNotification -Text $value.title,$value.body | Out-Null";
 
 impl CommandPlatform {

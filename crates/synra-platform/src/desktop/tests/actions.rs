@@ -83,7 +83,8 @@ fn simulating_keys_is_refused_by_policy_before_the_rate_limit_or_the_runner() {
     // default — and the refusal is about the policy rather than about the interval, which is the message an author
     // needs.
     let (recorder, platform) = over_recorder(Desktop::Linux);
-    match platform.simulate_keys("ctrl+s") {
+    let chord = "Ctrl+Shift+S".parse().unwrap();
+    match platform.simulate_keys(&chord) {
         Err(PlatformError::SimulateKeysNotGranted) => {}
         other => panic!("expected a policy refusal, got {other:?}"),
     }
@@ -91,23 +92,33 @@ fn simulating_keys_is_refused_by_policy_before_the_rate_limit_or_the_runner() {
 
     // With the policy allowing it, the chord reaches the desktop's own tool.
     let (recorder, platform) = over_recorder(Desktop::Linux);
-    let platform = platform.with_policies(Policies::new().with_simulate_keys(true));
-    platform.simulate_keys("ctrl+s").expect("simulated");
+    let platform = platform.with_policies(
+        Policies::new()
+            .with_simulate_keys(true)
+            .with_key_chord_interval(std::time::Duration::from_secs(3_600)),
+    );
+    platform.simulate_keys(&chord).expect("simulated");
+    assert!(matches!(platform.simulate_keys(&chord), Err(PlatformError::RateLimited { .. })));
     assert_eq!(
         recorder.commands(),
-        vec!["xdotool key -- ctrl+s".to_owned()]
+        [
+            "xdotool getdisplaygeometry",
+            "xdotool keydown -- Control_L",
+            "xdotool keydown -- Shift_L",
+            "xdotool keydown -- s",
+            "xdotool keyup -- s",
+            "xdotool keyup -- Shift_L",
+            "xdotool keyup -- Control_L",
+        ]
     );
 }
 
 #[test]
 fn a_chord_that_is_not_a_chord_is_refused_before_the_runner() {
-    // A chord reaches a command line, so what may be in one is checked rather than trusted.
-    // The guard's job is what a chord may *be*, not whether it is a key the desktop knows: a chord reaches a program's
-    // argument list, so an empty one and an over-long one are refused, and `ctrl+;` is left to the desktop to reject.
-    for chord in ["", "   ", "a".repeat(200).as_str()] {
+    for chord in ["", "   ", "Ctrl+;", "a".repeat(200).as_str()] {
         let (recorder, platform) = over_recorder(Desktop::MacOs);
         let platform = platform.with_policies(Policies::new().with_simulate_keys(true));
-        let refused = platform.simulate_keys(chord);
+        let refused = chord.parse().and_then(|chord| platform.simulate_keys(&chord));
         assert!(refused.is_err(), "{chord:?} was accepted");
         assert_eq!(recorder.count(), 0, "{chord:?} ran a program");
     }

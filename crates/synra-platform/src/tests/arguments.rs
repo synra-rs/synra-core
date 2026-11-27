@@ -1,6 +1,7 @@
 use super::super::actions::{MAX_NOTIFICATION_LEN, MAX_CHORD_LEN};
 use super::super::error::PlatformError;
-use super::super::guard::{check_notification, check_key_chord};
+use super::super::guard::check_notification;
+use crate::{KeyChord, KeyChordError};
 
 #[test]
 fn a_notification_within_its_limits_is_accepted() {
@@ -33,15 +34,40 @@ fn a_notification_is_measured_in_characters() {
 }
 
 #[test]
-fn an_empty_key_chord_is_refused() {
-    // Not "no keys": a call that does nothing, and a loop of them would still hold the rate limiter.
+fn a_single_chord_normalizes_modifiers_and_key_names() {
+    for (input, expected) in [
+        ("shift + ctrl + s", "Ctrl+Shift+S"),
+        ("alt+TAB", "Alt+Tab"),
+        ("meta+e", "Meta+E"),
+        ("ctrl+NumpadAdd", "Ctrl+NumpadAdd"),
+        ("shift+f12", "Shift+F12"),
+        ("0", "0"),
+        ("pageup", "PageUp"),
+    ] {
+        let chord = input.parse::<KeyChord>().unwrap();
+        assert_eq!(chord.to_string(), expected);
+        assert_eq!(chord.to_string().parse(), Ok(chord));
+    }
+}
+
+#[test]
+fn malformed_chords_report_the_parse_failure() {
+    for (input, reason) in [
+        ("   ", KeyChordError::EmptyPart),
+        ("Ctrl++", KeyChordError::EmptyPart),
+        ("Ctrl+CTRL+C", KeyChordError::DuplicateModifier),
+        ("Ctrl+Shift", KeyChordError::MissingKey),
+        ("c+d", KeyChordError::ExpectedModifier),
+        ("cmd+c", KeyChordError::ExpectedModifier),
+        ("Ctrl+F01", KeyChordError::UnknownKey),
+        ("Ctrl+F13", KeyChordError::UnknownKey),
+        ("^c", KeyChordError::UnknownKey),
+        ("Ctrl+S Alt+F4", KeyChordError::ExpectedModifier),
+    ] {
+        assert_eq!(input.parse::<KeyChord>(), Err(PlatformError::BadKeyChord(reason)), "{input}");
+    }
     assert!(matches!(
-        check_key_chord("   "),
-        Err(PlatformError::Unavailable(_))
-    ));
-    assert_eq!(check_key_chord("cmd+c"), Ok(()));
-    assert!(matches!(
-        check_key_chord(&"x".repeat(MAX_CHORD_LEN + 1)),
+        "x".repeat(MAX_CHORD_LEN + 1).parse::<KeyChord>(),
         Err(PlatformError::TooLong { field: "key chord", .. })
     ));
 }

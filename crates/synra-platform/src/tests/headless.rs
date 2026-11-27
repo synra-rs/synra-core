@@ -18,13 +18,13 @@ fn a_headless_host_performs_nothing() {
     // Key simulation is refused for a second reason before the host is consulted: it is off by default, and
     // that refusal is about the policy rather than about the host having no keyboard.
     assert!(matches!(
-        host.simulate_keys("cmd+c"),
+        host.simulate_keys(&"Meta+C".parse().unwrap()),
         Err(PlatformError::SimulateKeysNotGranted)
     ));
     // With the policy in place it reaches the host, which then refuses.
     let granted = HeadlessPlatform::with_policies(Policies::new().with_simulate_keys(true));
     assert!(matches!(
-        granted.simulate_keys("cmd+c"),
+        granted.simulate_keys(&"Meta+C".parse().unwrap()),
         Err(PlatformError::Unsupported(_))
     ));
     assert!(host.supported_actions().is_empty());

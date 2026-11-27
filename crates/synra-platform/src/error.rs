@@ -38,6 +38,23 @@ pub enum PlatformError {
     #[error("simulating keys is not enabled; the user has to turn it on in settings")]
     SimulateKeysNotGranted,
 
+    /// A single portable key chord could not be parsed.
+    #[error("invalid key chord: {0}")]
+    BadKeyChord(#[from] crate::KeyChordError),
+
+    /// Another chord holds the keyboard for this desktop.
+    #[error("another keyboard chord is in progress")]
+    KeyInputBusy,
+
+    /// One or more pressed keys could not be released.
+    #[error("keyboard release failed ({failures:?}), input error: {input:?}")]
+    KeyReleaseFailed {
+        /// The first failed press, when one occurred.
+        input: Option<String>,
+        /// All release failures, in the order attempted.
+        failures: Vec<String>,
+    },
+
     /// The user is not interacting, so a plugin may not type on their behalf.
     #[error("keys cannot be simulated: the last interaction was {elapsed_ms}ms ago")]
     NoRecentInteraction {
@@ -175,6 +192,9 @@ impl PlatformError {
             })),
             Self::RunnerFailed { program, .. } => {
                 Some(serde_json::json!({"kind": "commandFailed", "program": program}))
+            }
+            Self::KeyReleaseFailed { input, failures } => {
+                Some(serde_json::json!({"kind": "keyReleaseFailed", "input": input, "releases": failures}))
             }
             _ => None,
         }

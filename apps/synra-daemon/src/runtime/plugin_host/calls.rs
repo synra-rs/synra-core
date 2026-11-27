@@ -220,6 +220,7 @@ impl Host for KernelHost {
                 // whole reason the guard runs before the refusal.
                 synra_platform::PlatformError::BadUrl { .. }
                 | synra_platform::PlatformError::BadPath { .. }
+                | synra_platform::PlatformError::BadKeyChord(_)
                 | synra_platform::PlatformError::TooLong { .. }
                 | synra_platform::PlatformError::SimulateKeysNotGranted => CallError::BAD_ARGUMENT,
                 // And "this build has no browser" is `notImplemented`, which is a different fact about a different
@@ -245,7 +246,9 @@ impl Host for KernelHost {
             PlatformAction::RevealPath => self
                 .platform
                 .reveal_path(std::path::Path::new(argument), None),
-            PlatformAction::SimulateKeys => self.platform.simulate_keys(argument),
+            PlatformAction::SimulateKeys => argument
+                .parse()
+                .and_then(|chord| self.platform.simulate_keys(&chord)),
             PlatformAction::ReadClipboard => {
                 return self.platform.read_clipboard().map_err(refusal);
             }
