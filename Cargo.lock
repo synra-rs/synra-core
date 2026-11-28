@@ -2413,6 +2413,7 @@ name = "synra-control"
 version = "0.2.0"
 dependencies = [
  "interprocess",
+ "rustix",
  "serde",
  "serde_json",
  "synra-protocol",

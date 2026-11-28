@@ -9,8 +9,10 @@ use interprocess::local_socket::{GenericFilePath, ToFsName};
 #[cfg(windows)]
 use interprocess::local_socket::{GenericNamespaced, ToNsName};
 
+#[cfg(windows)]
+use super::namespaced_name;
+use super::{REPLY_TIMEOUT, SocketError, socket_path};
 use crate::{Decoder, Request, Response, encode};
-use super::{REPLY_TIMEOUT, SocketError, namespaced_name, socket_path};
 
 /// A client talking to a kernel.
 #[derive(Debug)]

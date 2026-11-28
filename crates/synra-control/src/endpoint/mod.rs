@@ -191,6 +191,8 @@ fn namespaced_name(path: &Path) -> String {
 
 mod client;
 mod listener;
+#[cfg(unix)]
+mod unix;
 
 pub use client::Client;
 pub use listener::{Listener, serve_stream};

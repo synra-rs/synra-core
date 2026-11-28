@@ -102,8 +102,11 @@ pub(super) fn check_msrv(root: &Path) -> bool {
     let output = Command::new("cargo")
         .arg(&toolchain)
         .arg("check")
+        .arg("--locked")
         .arg("--workspace")
         .arg("--all-targets")
+        // The error filter below expects plain text even when CI forces Cargo color.
+        .args(["--color", "never"])
         .current_dir(root)
         .output();
 

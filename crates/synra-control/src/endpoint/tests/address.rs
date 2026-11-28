@@ -91,16 +91,16 @@ fn every_socket_error_explains_itself() {
 }
 
 #[test]
+#[cfg(unix)]
 fn a_stale_socket_does_not_stop_the_next_kernel_binding() {
     // ★ A unix socket outlives the process that made it: a kernel that was killed leaves one behind, and binding
     // where it is fails with "address in use" for a kernel that is not running. A user who killed a kernel and
     // started another has to be able to start it.
     let dir = TempDir::new("stale");
-    let first = Listener::bind(dir.path()).expect("binds");
-    let path = first.path().to_path_buf();
-    drop(first);
-    // On unix the entry remains; on Windows a named pipe leaves nothing. Either way the next bind has to work.
-    let _ = path;
+    let path = socket_path(dir.path());
+    let first = std::os::unix::net::UnixListener::bind(&path).expect("binds");
+    drop(first); // The standard library listener leaves its socket entry on disk.
+    assert!(path.exists(), "the stale socket is still present");
 
     let second = Listener::bind(dir.path());
     assert!(
@@ -108,6 +108,32 @@ fn a_stale_socket_does_not_stop_the_next_kernel_binding() {
         "a stale socket stopped the bind: {:?}",
         second.err()
     );
+}
+
+#[test]
+#[cfg(unix)]
+fn a_live_socket_without_a_lock_is_preserved() {
+    let dir = TempDir::new("live");
+    let path = socket_path(dir.path());
+    let first = std::os::unix::net::UnixListener::bind(&path).expect("binds");
+
+    assert!(Listener::bind(dir.path()).is_err(), "the address is in use");
+    assert!(
+        Client::connect(dir.path()).is_ok(),
+        "the original listener remains reachable"
+    );
+    drop(first);
+}
+
+#[test]
+#[cfg(unix)]
+fn a_regular_file_at_the_socket_path_is_preserved() {
+    let dir = TempDir::new("file");
+    let path = socket_path(dir.path());
+    std::fs::write(&path, b"existing file").expect("writes");
+
+    assert!(Listener::bind(dir.path()).is_err(), "the address is in use");
+    assert_eq!(std::fs::read(&path).expect("reads"), b"existing file");
 }
 
 #[test]
@@ -140,4 +166,5 @@ fn a_second_kernel_cannot_bind_while_the_first_is_listening() {
     let second = Listener::bind(dir.path());
     assert!(second.is_err(), "a second kernel bound the same socket");
     drop(first);
+    assert!(Listener::bind(dir.path()).is_ok(), "shutdown released the address");
 }

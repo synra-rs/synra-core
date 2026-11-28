@@ -1,23 +1,28 @@
 //! Listening and serving one local control connection.
 
 use std::io::{Read, Write};
+#[cfg(unix)]
+use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 
+use interprocess::local_socket::Stream;
 use interprocess::local_socket::traits::Listener as _;
-use interprocess::local_socket::{ListenerOptions, Stream};
-#[cfg(unix)]
-use interprocess::local_socket::{GenericFilePath, ToFsName};
 #[cfg(windows)]
-use interprocess::local_socket::{GenericNamespaced, ToNsName};
+use interprocess::local_socket::{GenericNamespaced, ListenerOptions, ToNsName};
 
+#[cfg(windows)]
+use super::namespaced_name;
+use super::{SocketError, check_bindable, socket_path};
 use crate::{Server, SessionState};
-use super::{SocketError, check_bindable, namespaced_name, socket_path};
 
 /// A kernel listening for clients.
 #[derive(Debug)]
 pub struct Listener {
     listener: interprocess::local_socket::Listener,
     path: PathBuf,
+    // Release the lock after the listener has removed its socket entry on drop.
+    #[cfg(unix)]
+    _bind_lock: OwnedFd,
 }
 
 impl Listener {
@@ -40,40 +45,31 @@ impl Listener {
         let path = socket_path(data_dir);
         check_bindable(&path)?;
 
+        let bind_error = |error: std::io::Error| SocketError::Bind {
+            path: path.clone(),
+            why: error.to_string(),
+        };
         #[cfg(unix)]
-        let name = path
-            .as_path()
-            .to_fs_name::<GenericFilePath>()
-            .map_err(|error| SocketError::Bind {
-                path: path.clone(),
-                why: error.to_string(),
-            })?;
-        // The owned name is kept in a binding, because the `Name` a conversion produces borrows from it — and a
-        // temporary would be dropped at the end of the statement that made it.
+        let (listener, bind_lock) = super::unix::bind(&path).map_err(bind_error)?;
         #[cfg(windows)]
-        let owned = namespaced_name(&path);
-        #[cfg(windows)]
-        let name = owned
-            .as_str()
-            .to_ns_name::<GenericNamespaced>()
-            .map_err(|error| SocketError::Bind {
-                path: path.clone(),
-                why: error.to_string(),
-            })?;
+        let listener = {
+            let owned = namespaced_name(&path);
+            let name = owned
+                .as_str()
+                .to_ns_name::<GenericNamespaced>()
+                .map_err(bind_error)?;
+            ListenerOptions::new()
+                .name(name)
+                .create_sync()
+                .map_err(bind_error)?
+        };
 
-        let listener = ListenerOptions::new()
-            .name(name)
-            // The two halves of the same decision: reclaim a name a dead kernel left, and overwrite what is left rather
-            // than refusing. A user who killed a kernel has to be able to start another.
-            .reclaim_name(true)
-            .try_overwrite(true)
-            .create_sync()
-            .map_err(|error| SocketError::Bind {
-                path: path.clone(),
-                why: error.to_string(),
-            })?;
-
-        Ok(Self { listener, path })
+        Ok(Self {
+            listener,
+            path,
+            #[cfg(unix)]
+            _bind_lock: bind_lock,
+        })
     }
 
     /// Where it is listening.
