@@ -1,4 +1,4 @@
-use super::*;
+use super::Duration;
 
 /// How long a task is given to notice it was cancelled before the shutdown gives up on it.
 ///

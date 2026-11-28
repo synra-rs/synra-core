@@ -1,4 +1,4 @@
-use super::*;
+use super::{Board, Choice, IntentCandidate, IntentId, IntentState};
 
 impl Board {
     /// Adds a plugin's answer to an intent that is still matching.

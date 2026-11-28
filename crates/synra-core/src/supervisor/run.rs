@@ -1,4 +1,4 @@
-use super::*;
+use super::{Arc, Cancellation, StopReason, Supervisor, SupervisorError, TaskId, thread};
 
 /// Runs a task under supervision, on a thread of its own.
 ///

@@ -1,4 +1,4 @@
-use super::*;
+use super::{Cancellation, Duration, IntentId, RetryQueue, RetryStatus};
 
 /// How one attempt ended, as the runner needs to know it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

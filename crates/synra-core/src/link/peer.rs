@@ -1,4 +1,4 @@
-use super::*;
+use super::{Arc, DeviceId, Flags, FrameDecoder, LinkStream, PeerLink};
 
 impl PeerLink {
     /// Wraps a completed handshake.

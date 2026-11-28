@@ -1,4 +1,4 @@
-use super::*;
+use super::{BTreeSet, DeviceId, PluginId, SyncSessionId, TransferId};
 
 /// Why a sync was refused by the receiver.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

@@ -1,4 +1,4 @@
-use super::*;
+use super::{AdmissionRefusal, Board, Duration, IntentError, IntentId, IntentState, SynraError};
 
 impl Board {
     /// Records the outcome a device reported.

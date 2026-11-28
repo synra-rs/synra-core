@@ -4,7 +4,7 @@ use synra_plugin_api::Manifest;
 use synra_plugin_host::Backend;
 use synra_plugin_host::verify::HostFacts;
 
-use super::*;
+use super::{InstallRefusal, Installed, discard_unpacked, from_directory, update_from_directory};
 
 /// A `.tgz` a registry published, opened into a directory this process owns.
 ///

@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    Arc, BackendError, CapabilitySet, CompiledArtifact, HashMap, InstancePolicy, Lifecycle, Mutex,
+    PluginId, PluginInstance,
+};
 
 /// Why a plugin could not be loaded, called, or removed.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

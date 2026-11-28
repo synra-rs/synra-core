@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    Board, Choice, DeviceId, Duration, ENDED_MEMORY, HashMap, Intent, IntentId, IntentSource,
+    IntentState, MATCHING_WINDOW, RequestId, TraceId, candidate_of,
+};
 
 impl Board {
     /// An empty board.

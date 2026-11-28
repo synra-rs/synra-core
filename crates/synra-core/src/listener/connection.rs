@@ -3,10 +3,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::host::Host;
-use crate::inbound::Inbox;
 use parking_lot::Mutex;
 
-use super::traffic;
+use super::messages;
+use super::traffic::{TrafficCallbacks, TrafficContext};
 use super::types::no_cancel;
 use super::types::no_kernel_events;
 use super::{
@@ -183,40 +183,28 @@ pub fn handle_within_with(
         }
     };
 
-    let peer = link.peer();
-    let events = Vec::new();
-    // The transfers that finished on this connection, kept for the caller rather than only printed.
-    let finished = Vec::new();
-    // ★ The connection's transfer state: a proposal is remembered here, and the blocks that follow it are written into the
-    // file it named. Without this the loop below would see a block as an unexpected frame and close the link — which is
-    // what it did before, and why `send --file` could not work.
-    let inbox = Inbox::new(data_dir);
-    // The last step reported, so a completion can name the transfer it ends: `Decision::Finished` carries a path and a
-    // size, not an identifier, and a consumer that wants to close the row it opened needs the identifier.
-    let last_progress: Option<crate::session::InboundProgress> = None;
     // ★ The shared desk, not a per-connection state. A prompt raised on this connection is answered by a user who is not
     // on it at all, and a per-connection state would make that answer invisible here — the dialer would wait out its own
     // thirty-second window for a decision the user had already made.
     // ★ 配对的那张桌子：随连接线程带进来，但它属于整套 Host——另一个连接上的人也会改它。
     let desk = host.lock().pairing();
 
-    traffic::run(
-        host,
+    messages::run_loop(
         link,
-        peer,
-        peer_address,
-        data_dir,
-        router,
-        timeout,
-        on_finished,
-        on_progress,
-        offer,
-        should_cancel,
-        on_kernel_events,
-        events,
-        finished,
-        inbox,
-        last_progress,
-        desk,
+        &peer_address,
+        &TrafficContext {
+            host,
+            data_dir,
+            router,
+            timeout,
+            desk: &desk,
+        },
+        &TrafficCallbacks {
+            on_finished,
+            on_progress,
+            offer,
+            should_cancel,
+            on_kernel_events,
+        },
     )
 }

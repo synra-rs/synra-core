@@ -1,4 +1,4 @@
-use super::*;
+use super::{Deserialize, DeviceId, PluginId, Serialize};
 
 /// What an intent will carry once a plugin has been chosen.
 ///

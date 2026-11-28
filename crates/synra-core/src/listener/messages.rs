@@ -1,44 +1,38 @@
-use std::path::Path;
-use std::sync::Arc;
-use std::time::Duration;
-
-use parking_lot::Mutex;
-use synra_protocol::ids::DeviceId;
-
 use crate::SessionError;
-use crate::dispatch::orchestrate::Router;
-use crate::host::Host;
 use crate::inbound::{Decision, Inbox};
 use crate::link::{LinkError, PeerLink};
-use crate::pairing::Service;
 use crate::session::InboundProgress;
 
 use super::close_reason;
 use super::delivered;
-use super::{
-    CancelCallback, FinishedCallback, FinishedTransfer, InboundProgressEvent, KernelEventCallback,
-    PATIENCE, ProgressCallback, Served,
-};
+use super::traffic::{TrafficCallbacks, TrafficContext};
+use super::{FinishedTransfer, InboundProgressEvent, PATIENCE, Served};
 
 pub(super) fn run_loop(
-    host: &Arc<Mutex<Host>>,
     mut link: PeerLink,
-    peer: DeviceId,
-    peer_address: String,
-    data_dir: &Path,
-    router: &Arc<Router>,
-    timeout: Duration,
-    on_finished: &FinishedCallback,
-    on_progress: &Arc<ProgressCallback>,
-    offer: &Arc<crate::inbound::OfferCallback>,
-    should_cancel: &Arc<CancelCallback>,
-    on_kernel_events: &Arc<KernelEventCallback>,
-    mut events: Vec<String>,
-    mut finished: Vec<FinishedTransfer>,
-    mut inbox: Inbox,
-    mut last_progress: Option<InboundProgress>,
-    desk: Arc<Service>,
+    peer_address: &str,
+    context: &TrafficContext<'_>,
+    callbacks: &TrafficCallbacks<'_>,
 ) -> Served {
+    let TrafficContext { host, data_dir, .. } = *context;
+    let TrafficCallbacks {
+        on_finished,
+        on_progress,
+        offer,
+        should_cancel,
+        on_kernel_events,
+    } = *callbacks;
+    let peer = link.peer();
+    let mut events = Vec::new();
+    // The transfers that finished on this connection, kept for the caller rather than only printed.
+    let mut finished = Vec::new();
+    // ★ The connection's transfer state: a proposal is remembered here, and the blocks that follow it are written into the
+    // file it named. Without this the loop would see a block as an unexpected frame and close the link — which is
+    // what it did before, and why `send --file` could not work.
+    let mut inbox = Inbox::new(data_dir);
+    // The last step reported, so a completion can name the transfer it ends: `Decision::Finished` carries a path and a
+    // size, not an identifier, and a consumer that wants to close the row it opened needs the identifier.
+    let mut last_progress: Option<InboundProgress> = None;
     let pairing_db = synra_store::SynraDb::open(&data_dir.join(synra_store::DB_FILE_NAME));
     loop {
         // ★ Checked between messages, because the link belongs to this loop. A cancel that took effect only after the
@@ -66,22 +60,17 @@ pub(super) fn run_loop(
             &mut link,
             synra_store::sqlite::now_ms(),
             PATIENCE,
-            &peer_address,
+            peer_address,
             offer.as_ref(),
         ) {
             Ok(decision) => match decision {
                 decision @ Decision::Delivered { .. } => {
                     if let Some(served) = delivered::handle(
                         decision,
-                        host,
                         &mut link,
-                        peer,
-                        data_dir,
-                        router,
-                        timeout,
+                        context,
                         on_kernel_events,
                         &pairing_db,
-                        &desk,
                         &mut events,
                         &mut finished,
                     ) {

@@ -17,7 +17,7 @@
 //! So the type does not offer a single `dir()`: a caller has to say which of the three it means, and a file
 //! written to the wrong one is a decision somebody made rather than a default they fell into.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf, Prefix};
 
 /// The database's file name inside the data directory.
 ///
@@ -231,6 +231,18 @@ pub fn sanitise_component(id: &str) -> String {
         return "_".to_owned();
     }
     trimmed.to_owned()
+}
+
+/// Whether a path names a Windows device, verbatim path, or network share.
+///
+/// The backslash prefix is recognised on Unix too, where those bytes are ordinary filename characters.
+#[must_use]
+pub fn is_windows_namespace(path: &Path) -> bool {
+    path.as_os_str().as_encoded_bytes().starts_with(br"\\")
+        || matches!(
+            path.components().next(),
+            Some(Component::Prefix(prefix)) if !matches!(prefix.kind(), Prefix::Disk(_))
+        )
 }
 
 /// Whether a path is inside a directory, comparing component by component.

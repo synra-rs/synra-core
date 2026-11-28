@@ -1,4 +1,4 @@
-use super::*;
+use super::{Arc, AuditSink, HealthSink, Loaded, PluginId, PluginSet};
 
 impl PluginSet {
     /// What plugins have done, oldest first.

@@ -220,13 +220,19 @@ fn the_windows_device_namespace_is_refused_rather_than_normalised() {
     // literal name for a directory called `..` rather than a way back up the tree. The same text therefore does not
     // mean the same place, and a check that stripped the prefix would be comparing a name with a different one.
     let policies = Policies::new();
-    let verbatim = if cfg!(windows) { r"\\?\C:\data\file.txt" } else { r"\\?\tmp\file.txt" };
-
-    match check_path(Path::new(verbatim), PathUse::Reveal, &policies, None) {
-        Err(PlatformError::BadPath { reason, .. }) => {
-            assert_eq!(reason, PathRefusal::DeviceNamespace, "{verbatim}")
+    for path in [
+        r"\\?\C:\data\file.txt",
+        r"\\.\COM1",
+        r"\\server\share\file.txt",
+        #[cfg(windows)]
+        "//server/share/file.txt",
+    ] {
+        match check_path(Path::new(path), PathUse::Reveal, &policies, None) {
+            Err(PlatformError::BadPath { reason, .. }) => {
+                assert_eq!(reason, PathRefusal::DeviceNamespace, "{path}")
+            }
+            other => panic!("{path:?} should be refused, got {other:?}"),
         }
-        other => panic!("{verbatim:?} should be refused, got {other:?}"),
     }
 }
 

@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    Choice, Deserialize, DeviceId, IntentId, IntentSource, IntentState, RequestId, Serialize,
+    TraceId,
+};
 
 /// An intent, with everything known about it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

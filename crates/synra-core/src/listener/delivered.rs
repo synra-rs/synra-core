@@ -1,30 +1,18 @@
-use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
 
-use parking_lot::Mutex;
-use synra_protocol::ids::DeviceId;
-
-use crate::dispatch::orchestrate::Router;
-use crate::host::Host;
 use crate::inbound::Decision;
 use crate::link::PeerLink;
-use crate::pairing::Service;
 
+use super::traffic::TrafficContext;
 use super::{FinishedTransfer, KernelEventCallback, Served};
 use super::{events, pairing};
 
 pub(super) fn handle(
     decision: Decision,
-    host: &Arc<Mutex<Host>>,
     link: &mut PeerLink,
-    peer: DeviceId,
-    data_dir: &Path,
-    router: &Arc<Router>,
-    timeout: Duration,
+    context: &TrafficContext<'_>,
     on_kernel_events: &Arc<KernelEventCallback>,
     pairing_db: &Result<synra_store::SynraDb, synra_store::DbError>,
-    desk: &Arc<Service>,
     events: &mut Vec<String>,
     finished: &mut Vec<FinishedTransfer>,
 ) -> Option<Served> {
@@ -36,6 +24,14 @@ pub(super) fn handle(
     else {
         return None;
     };
+    let TrafficContext {
+        host,
+        data_dir,
+        router,
+        timeout,
+        desk,
+    } = *context;
+    let peer = link.peer();
     if let Some(envelope) = request.as_ref()
         && crate::input::serve_if_requested(host, link, envelope)
     {

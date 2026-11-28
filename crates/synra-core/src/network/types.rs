@@ -1,4 +1,4 @@
-use super::*;
+use super::{ErrorCode, IpAddr};
 
 /// How many redirects a single request may follow.
 ///

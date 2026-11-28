@@ -1,6 +1,9 @@
 use std::path::Path;
 
-use super::*;
+use super::{
+    Arc, AuditRing, Config, EventBus, Host, Identity, Kernel, KernelConfig, KernelError, Mutex,
+    NodeRole, StartupVerdict, Supervisor, SynraDb,
+};
 
 impl Kernel {
     /// Builds a kernel over an already-open store.

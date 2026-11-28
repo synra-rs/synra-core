@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    PluginId, ReceiverDuty, SyncAction, SyncDirection, SyncId, SyncRecord, SyncSessionId,
+    SyncVerdict, TraceId,
+};
 
 /// What the receiving device did about a package, once it had it.
 ///

@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use synra_plugin_api::Manifest;
 
-use super::*;
+use super::{InstallRefusal, MAX_PACKAGE_BYTES};
 
 /// Writes a directory as a `.synra` archive, for the side that sends one.
 ///

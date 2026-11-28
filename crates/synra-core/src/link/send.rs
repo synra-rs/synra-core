@@ -1,5 +1,8 @@
 use super::receive::is_a_timeout;
-use super::*;
+use super::{
+    Bytes, ChunkFrame, Envelope, Frame, FrameBody, FrameEncoder, FrameKind, LinkError, PeerLink,
+    Write, transport_error,
+};
 
 impl PeerLink {
     /// Sends an envelope.

@@ -1,4 +1,4 @@
-use super::*;
+use super::{PluginId, ReceiverDuty, SyncError, SyncOutcome, SyncSession, SyncSessionId};
 
 /// The receiving side of the flow in `16` §5.2, as steps that cannot be skipped.
 ///

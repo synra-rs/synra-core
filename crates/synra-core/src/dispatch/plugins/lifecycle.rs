@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    Arc, Authority, BackendError, HashMap, Lifecycle, Loaded, Mutex, PluginId, PluginSet,
+    PluginSetError, PluginSpec, State, Transition,
+};
 
 impl PluginSet {
     /// Compiles a plugin and makes it askable.

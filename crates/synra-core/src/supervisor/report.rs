@@ -1,4 +1,4 @@
-use super::*;
+use super::TaskId;
 
 /// What a shutdown left behind.
 #[derive(Debug, Clone, PartialEq, Eq)]

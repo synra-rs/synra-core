@@ -15,6 +15,7 @@ use synra_protocol::{
 pub(crate) mod context;
 mod policy;
 mod remote;
+mod report;
 mod service;
 mod worker;
 

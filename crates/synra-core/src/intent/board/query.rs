@@ -1,4 +1,4 @@
-use super::*;
+use super::{Board, DeviceId, Duration, Intent, IntentId, IntentState, RequestId};
 
 impl Board {
     /// The intent under an id.

@@ -1,4 +1,4 @@
-use super::*;
+use super::{IpAddr, IpPolicy, unwrap_mapped};
 
 impl IpPolicy {
     /// Whether one address may be reached.

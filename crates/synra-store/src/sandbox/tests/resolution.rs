@@ -15,7 +15,15 @@ fn an_absolute_path_is_refused() {
     } else {
         "/etc/passwd"
     };
-    for path in [rooted, "\\\\server\\share"] {
+    for path in [
+        rooted,
+        r"\\server\share",
+        r"\\?\C:\data\file.txt",
+        #[cfg(windows)]
+        r"\tmp\file.txt",
+        #[cfg(windows)]
+        "C:file.txt",
+    ] {
         assert!(
             matches!(
                 fixture.sandbox.resolve(FILES, path),

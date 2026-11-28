@@ -1,4 +1,4 @@
-use super::*;
+use super::{DeviceId, PluginId, SyncAction, SyncError, TraceId};
 
 /// 一条同步记录的标识。
 ///

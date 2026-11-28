@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    AtomicU64, Cancellation, Criticality, Decision, HashMap, Mutex, Ordering, ShutdownReport,
+    StopReason, SupervisorError, TaskId, TaskRecord, TaskSpec, decide_for,
+};
 
 /// The registry: what should be running, what is, and what was decided when something stopped.
 ///

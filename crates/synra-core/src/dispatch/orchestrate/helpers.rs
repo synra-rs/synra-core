@@ -1,4 +1,4 @@
-use super::*;
+use super::{Board, CandidateView, RouteError};
 
 /// An intent identifier from its text.
 pub(super) fn parse_intent(text: &str) -> Result<synra_protocol::ids::IntentId, RouteError> {

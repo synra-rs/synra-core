@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    Bytes, Envelope, Frame, FrameBody, FrameEncoder, FrameKind, Inbound, LinkError, PeerLink, Read,
+    transport_error,
+};
 
 impl PeerLink {
     /// Reads the next thing the peer sent, whichever plane it is on.

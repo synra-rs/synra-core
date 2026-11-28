@@ -1,4 +1,4 @@
-use super::*;
+use super::RemoteState;
 use synra_plugin_api::manifest::{check_version, compare_versions};
 
 /// What to do about what the other device has.

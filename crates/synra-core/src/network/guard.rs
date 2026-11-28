@@ -1,4 +1,4 @@
-use super::*;
+use super::{ErrorCode, IpAddr, IpPolicy, MAX_REDIRECTS, MAX_URL_LEN, Refusal, normalise_host};
 
 /// A URL that passed the checks before resolution.
 #[derive(Debug, Clone, PartialEq, Eq)]

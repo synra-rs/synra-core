@@ -50,7 +50,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const PATIENCE: Duration = synra_protocol::limits::HELLO_TIMEOUT;
 
 /// Why a connection ended, as the label of `links_closed_total`.
-fn close_reason(error: &crate::SessionError) -> &'static str {
+const fn close_reason(error: &crate::SessionError) -> &'static str {
     match error {
         crate::SessionError::Link(crate::link::LinkError::Unauthorized) => "authorization",
         crate::SessionError::Link(crate::link::LinkError::AuthorizationUnavailable { .. }) => {

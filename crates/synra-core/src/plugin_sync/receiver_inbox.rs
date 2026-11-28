@@ -1,4 +1,4 @@
-use super::*;
+use super::{BTreeMap, DeviceId, PluginId, SyncError, SyncSession, SyncSessionId, TransferId};
 
 /// The chunks of a round, kept while they arrive — the receiving half of `16` §5.2 ④–⑦.
 ///

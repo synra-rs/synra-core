@@ -1,6 +1,6 @@
 use synra_plugin_api::publisher::{Fingerprint, PublisherTrustStore, SignatureFile, VerifyOutcome};
 
-use super::*;
+use super::SignedPublisher;
 
 /// The publisher decisions this device has made, in the shape the verifier takes.
 ///

@@ -1,4 +1,4 @@
-use super::*;
+use super::PluginId;
 
 /// One round of synchronisation, as the sender sees it.
 ///

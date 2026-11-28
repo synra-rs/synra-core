@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    Config, Delivery, DeviceId, Host, Kernel, KernelError, KernelEvent, KernelSnapshot,
+    StartupVerdict, SubscriberId, SynraDb, TaskSpec,
+};
 
 impl Kernel {
     /// Registers a long-running task, and starts it.

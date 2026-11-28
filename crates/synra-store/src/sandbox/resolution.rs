@@ -1,8 +1,8 @@
 //! Resolves plugin paths against a canonical sandbox root.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
-use crate::paths::{PathError, is_within};
+use crate::paths::{PathError, is_windows_namespace, is_within};
 
 use super::{PluginDataRoot, SUBDIRECTORIES};
 
@@ -34,7 +34,7 @@ impl PluginDataRoot {
     ///
     /// # Errors
     ///
-    /// * [`PathError::Absolute`] if the path starts at the root of the filesystem.
+    /// * [`PathError::Absolute`] if the path names a root, Windows drive, or Windows namespace.
     /// * [`PathError::BadComponent`] if it names a subdirectory that is not one of the two.
     /// * [`PathError::Escapes`] if it resolves outside the subdirectory — through `..`, or through a symlink
     ///   that points out.
@@ -49,15 +49,11 @@ impl PluginDataRoot {
         let base = self.subdirectory(subdirectory)?;
 
         let relative_path = Path::new(relative);
-        if relative_path.is_absolute() {
-            return Err(PathError::Absolute(relative.to_owned()));
-        }
-
         // A drive-relative path on Windows, such as `C:foo`, is neither absolute nor relative in the way this
         // function means, and `join` would replace the base with it.
-        if relative_path
-            .components()
-            .any(|component| matches!(component, std::path::Component::Prefix(_)))
+        if relative_path.has_root()
+            || matches!(relative_path.components().next(), Some(Component::Prefix(_)))
+            || is_windows_namespace(relative_path)
         {
             return Err(PathError::Absolute(relative.to_owned()));
         }

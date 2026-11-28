@@ -1,4 +1,4 @@
-use super::*;
+use super::{Arc, Backend, CapabilitySet, PluginId, PluginSet};
 
 impl PluginSet {
     /// The engine these plugins run on.

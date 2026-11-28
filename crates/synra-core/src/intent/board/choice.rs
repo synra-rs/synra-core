@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    Board, CandidateChoice, DeviceId, IntentCandidate, IntentError, IntentId, IntentState,
+    RequestId,
+};
 
 impl Board {
     /// Picks a candidate the user was shown.

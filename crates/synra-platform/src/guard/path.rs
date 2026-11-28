@@ -56,10 +56,7 @@ pub fn is_reserved_name(component: &str) -> bool {
 /// sandbox root can contain it, and treating it as a path to compare would be pretending otherwise.
 #[must_use]
 pub fn is_device_namespace(path: &Path) -> bool {
-    matches!(
-        path.components().next(),
-        Some(Component::Prefix(prefix)) if prefix.as_os_str().to_string_lossy().starts_with(r"\\")
-    )
+    synra_store::paths::is_windows_namespace(path)
 }
 
 /// How a path is being used, which decides which checks apply.
@@ -97,16 +94,15 @@ pub fn check_path(
     if text.chars().any(char::is_control) {
         return Err(refuse(PathRefusal::ControlCharacter));
     }
-    if !path.is_absolute() {
-        return Err(refuse(PathRefusal::NotAbsolute));
-    }
-
     // ★ The Windows traps, and why they are checked here rather than where the file is opened.
     //
     // Each of these makes the kernel's idea of a name differ from the file system's. A check made at the point of the open
     // would be a check that had already decided which of the two it was talking to.
     if is_device_namespace(path) {
         return Err(refuse(PathRefusal::DeviceNamespace));
+    }
+    if !path.is_absolute() {
+        return Err(refuse(PathRefusal::NotAbsolute));
     }
     for component in path.components() {
         let text = component.as_os_str().to_string_lossy();

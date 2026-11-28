@@ -1,4 +1,4 @@
-use super::*;
+use super::{DeviceId, PluginId, PluginList, PluginSummary, TraceId};
 
 /// Which round of sync a message belongs to.
 ///

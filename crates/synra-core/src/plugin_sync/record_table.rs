@@ -1,4 +1,4 @@
-use super::*;
+use super::{BTreeMap, DeviceId, PluginId, RemoteState};
 
 /// Every device's last known state for one plugin, so a report can say what is where.
 #[derive(Debug, Clone, Default)]

@@ -1,4 +1,4 @@
-use super::*;
+use super::{Duration, Envelope, ErrorCode, LinkError, Outbound, PeerLink, SynraError, events};
 
 /// Sends one envelope and, when `wait` is given, reads the one answer the same connection carries.
 ///

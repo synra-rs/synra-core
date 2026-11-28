@@ -1,4 +1,4 @@
-use super::*;
+use super::{Duration, HashMap, HashSet, IntentId, RetryPolicy, RetryQueue, RetryStatus};
 
 impl RetryQueue {
     /// An empty queue.

@@ -1,4 +1,4 @@
-use super::*;
+use super::{DeviceId, PluginId};
 
 /// What went wrong while routing, in the protocol's own terms.
 ///
