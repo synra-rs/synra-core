@@ -22,6 +22,19 @@ fn every_template_produces_a_manifest_the_kernel_accepts() {
             kind.as_str()
         );
         assert_eq!(manifest.version, "0.1.0");
+        assert_eq!(manifest.sdk.min, synra_plugin_host::SDK_VERSION);
+
+        let files = scaffold.as_map();
+        let cargo = files
+            .get("Cargo.toml")
+            .expect("a Cargo manifest")
+            .parse::<toml_edit::DocumentMut>()
+            .expect("valid Cargo TOML");
+        let sdk = cargo
+            .get("dependencies")
+            .and_then(|dependencies| dependencies.get("synra-plugin-sdk"))
+            .and_then(toml_edit::Item::as_str);
+        assert_eq!(sdk, Some(manifest.sdk.min.as_str()));
     }
 }
 

@@ -131,6 +131,7 @@ impl Scaffold {
 
         // A crate manifest, so `build` has something to compile. Written as text rather than left out, because a
         // scaffold whose `build` needs a file the author has to invent is a scaffold that does not build.
+        // The guest SDK and host inherit the same workspace version.
         let crate_manifest = format!(
             r#"[package]
 name = "{name}"
@@ -143,7 +144,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 # The SDK supplies the component ABI; all effects go through its capability-gated host imports.
-synra-plugin-sdk = "0.1"
+synra-plugin-sdk = "{sdk_version}"
 
 # Release builds are what get published, and a plugin is loaded once and called many times.
 [profile.release]
@@ -154,6 +155,7 @@ panic = "abort"
 strip = true
 "#,
             name = slug,
+            sdk_version = synra_plugin_host::SDK_VERSION,
         );
 
         match kind {

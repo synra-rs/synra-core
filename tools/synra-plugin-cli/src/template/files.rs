@@ -13,13 +13,14 @@ pub(super) fn manifest_json(plugin_id: &str, version: &str, title: &str, kind: T
   "title": "{title}",
   "description": "A {kind} plugin for Synra.",
   "publisher": {{ "id": "your-publisher-id" }},
-  "sdk": {{ "min": "0.1.0" }},
+  "sdk": {{ "min": "{sdk_version}" }},
   "wit": "synra:plugin@1.0.0",
   {blocks},
   "capabilities": []
 }}
 "#,
         schema = synra_plugin_api::manifest::MANIFEST_SCHEMA,
+        sdk_version = synra_plugin_host::SDK_VERSION,
         kind = kind.as_str(),
     )
 }
