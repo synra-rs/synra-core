@@ -2380,7 +2380,7 @@ dependencies = [
 
 [[package]]
 name = "synra-capability"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "compact_str",
  "proptest",
@@ -2394,7 +2394,7 @@ dependencies = [
 
 [[package]]
 name = "synra-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "rstest",
@@ -2410,7 +2410,7 @@ dependencies = [
 
 [[package]]
 name = "synra-control"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "interprocess",
  "serde",
@@ -2421,7 +2421,7 @@ dependencies = [
 
 [[package]]
 name = "synra-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -2458,7 +2458,7 @@ dependencies = [
 
 [[package]]
 name = "synra-daemon"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "clap",
@@ -2492,7 +2492,7 @@ dependencies = [
 
 [[package]]
 name = "synra-error-guard"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "proc-macro2",
  "serde_json",
@@ -2502,7 +2502,7 @@ dependencies = [
 
 [[package]]
 name = "synra-fetch"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "parking_lot",
  "serde",
@@ -2517,7 +2517,7 @@ dependencies = [
 
 [[package]]
 name = "synra-ipc"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "proptest",
  "rstest",
@@ -2532,7 +2532,7 @@ dependencies = [
 
 [[package]]
 name = "synra-net"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "parking_lot",
  "proptest",
@@ -2546,7 +2546,7 @@ dependencies = [
 
 [[package]]
 name = "synra-observe"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "metrics",
  "parking_lot",
@@ -2564,7 +2564,7 @@ dependencies = [
 
 [[package]]
 name = "synra-platform"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "enigo",
  "parking_lot",
@@ -2579,7 +2579,7 @@ dependencies = [
 
 [[package]]
 name = "synra-plugin-api"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek",
@@ -2597,7 +2597,7 @@ dependencies = [
 
 [[package]]
 name = "synra-plugin-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "clap",
@@ -2629,7 +2629,7 @@ dependencies = [
 
 [[package]]
 name = "synra-plugin-host"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2658,7 +2658,7 @@ dependencies = [
 
 [[package]]
 name = "synra-plugin-sdk"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "synra-wit-codegen",
  "wit-bindgen",
@@ -2666,7 +2666,7 @@ dependencies = [
 
 [[package]]
 name = "synra-plugin-ui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "parking_lot",
  "proptest",
@@ -2683,7 +2683,7 @@ dependencies = [
 
 [[package]]
 name = "synra-protocol"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "compact_str",
@@ -2701,7 +2701,7 @@ dependencies = [
 
 [[package]]
 name = "synra-registry"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "flate2",
  "serde",
@@ -2714,7 +2714,7 @@ dependencies = [
 
 [[package]]
 name = "synra-store"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "parking_lot",
  "proptest",
@@ -2730,7 +2730,7 @@ dependencies = [
 
 [[package]]
 name = "synra-testkit"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "parking_lot",
@@ -2753,14 +2753,14 @@ dependencies = [
 
 [[package]]
 name = "synra-testkit-alloc"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "proptest",
 ]
 
 [[package]]
 name = "synra-wit-codegen"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "tempfile",
  "thiserror",
